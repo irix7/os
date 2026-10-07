@@ -1,0 +1,21 @@
+{
+  "abi": "n32",
+  "arch": "mips64",
+  "cpu": "mips3",
+  "crt-objects-fallback": "false",
+  "data-layout": "E-m:e-p:32:32-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128",
+  "eh-frame-header": false,
+  "emit-debug-gdb-scripts": false,
+  "features": "+mips3,+soft-float,+noabicalls",
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "llvm-abiname": "n32",
+  "llvm-args": ["-mno-check-zero-division"],
+  "llvm-target": "mips64",
+  "max-atomic-width": 64,
+  "panic-strategy": "abort",
+  "relocation-model": "static",
+  "target-endian": "big",
+  "target-pointer-width": 32,
+  "vendor": "sgi"
+}
