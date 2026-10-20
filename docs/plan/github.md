@@ -458,6 +458,19 @@ scripts/github/bootstrap.sh
 
 The script never deletes labels, issues, milestones or projects. Re-running it is safe.
 
+### 16.1 Known limitations
+
+- The `gh project` CLI reports `unknown owner type` for some organisation-owned projects.
+  Use the GraphQL API or the Project UI for fields and items.
+- The Projects API applies a cost-based secondary rate limit. A burst of item/field edits
+  can fail even when the hourly quota looks healthy. The issues are created first, so no
+  work is lost; re-run the bootstrap later or drag the issues into the Project in the UI.
+- The views are created with the right layout. Filters, grouping and visible fields are
+  configured in the UI (the API for views is limited).
+- `PROJECT_URL` and `PROJECT_TOKEN` must be set manually for `project.yml`; until then the
+  workflow skips. `PROJECT_TOKEN` needs the `project` scope.
+- The default CodeQL setup is used; do not add a custom `codeql.yml`.
+
 ## 17. Free-feature matrix
 
 | Feature | Free tier | How IRIX 7 uses it |
