@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kernel-test", "crates/boot-protocol-tests"]
+members = ["kernel-test", "crates/boot-protocol-tests", "rom"]
 
 [profile.dev]
 panic = "abort"

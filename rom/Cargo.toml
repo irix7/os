@@ -1,0 +1,28 @@
+[package]
+name = "rom"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rom"
+path = "src/main.rs"
+# A no_main MIPS ROM binary: only built for cross-compilation (never host-tested,
+# links std would conflict with the no_std panic_handler).
+required-features = ["cross"]
+
+[features]
+default = []
+cross = []
+
+[lib]
+path = "src/lib.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[dependencies]
