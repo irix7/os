@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-only
 //! Scheduler — EDF and fair run queues.
 //!
 //! Two classes (D14):

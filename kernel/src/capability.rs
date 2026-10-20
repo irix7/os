@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-only
 //! Capability table — handles with rights, derivation, delegation, revocation.
 //!
 //! A capability is an unforgeable reference to an object plus a rights bitmap

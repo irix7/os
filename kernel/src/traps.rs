@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-only
 //! Trap and exception handling.
 //!
 //! MIPS III exception model:

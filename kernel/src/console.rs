@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-only
 //! Serial console driver (Z85C30 ESCC inside the IOC2).
 //!
 //! Hardware facts (see `docs/research/indy-hardware.md` §15.3):
