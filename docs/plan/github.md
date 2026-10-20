@@ -299,7 +299,6 @@ GitHub Actions fills the gaps:
 |---|---|---|
 | `ci.yml` | PR, push to `main` | fmt, clippy, test, host build, cross-build (M0 gate), typos, markdownlint |
 | `security.yml` | PR, push, schedule | `cargo-deny`, `cargo-audit`, dependency review, secret scan status |
-| `codeql.yml` | PR, push, schedule | CodeQL for Rust and Actions |
 | `scorecard.yml` | schedule, push to `main` | OpenSSF Scorecard and SARIF upload |
 | `licence.yml` | PR, push | licence headers, third-party notices, SBOM |
 | `docs.yml` | PR, push to `main` | mdBook build and GitHub Pages deploy |
@@ -312,6 +311,10 @@ GitHub Actions fills the gaps:
 | `release-drafter.yml` | push to `main` | draft release notes |
 | `hardware.yml` | `workflow_dispatch` | run on the self-hosted `indy` runner |
 | `nightly.yml` | schedule | nightly build and boot test |
+
+CodeQL is enabled through the repository's **default setup** (Settings → Code security),
+not a custom workflow. A custom `codeql.yml` cannot coexist with the default setup; the
+default setup is the GitHub-native, zero-maintenance option.
 
 ### 10.2 Runners
 
