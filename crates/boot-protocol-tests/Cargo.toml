@@ -1,0 +1,13 @@
+[package]
+name = "boot-protocol-tests"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+
+# Tests run on the host under std. The BootInfo layout, CRC32C and validation
+# logic only use `core` so they are trivially portable to the o32 ROM and n32
+# kernel build-std contexts (see docs/spec/boot-protocol.md).
+
+
