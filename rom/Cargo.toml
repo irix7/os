@@ -26,6 +26,17 @@ panic = "abort"
 opt-level = 2
 
 [dependencies]
-# No dependencies yet. The ROM's DHCP/DNS/HTTP stack (smoltcp, 0BSD, cleared in
-# docs/map.md) is deferred: smoltcp does not compile with the pinned nightly
-# (exhaustiveness-check changes on #[non_exhaustive] enums), see issue #2.
+# smoltcp: embedded TCP/IP stack (0BSD, cleared in docs/map.md) for the ROM's
+# DHCP/DNS/HTTP stack. Builds with the pinned nightly when both proto-ipv4 and
+# proto-ipv6 are enabled (otherwise the #[non_exhaustive] Address enum matches
+# are non-exhaustive); see issue #2.
+smoltcp = { version = "0.13", default-features = false, features = [
+    "alloc",
+    "medium-ethernet",
+    "proto-ipv4",
+    "proto-ipv6",
+    "proto-dhcpv4",
+    "socket-udp",
+    "socket-tcp",
+    "socket-dhcpv4",
+] }
