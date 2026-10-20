@@ -13,6 +13,8 @@
 
 #![no_std]
 
+pub mod seeq;
+
 use core::ptr::{read_volatile, write_volatile};
 
 /// Z85C30 ESCC register window, kseg1 virtual base.
