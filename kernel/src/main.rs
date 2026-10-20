@@ -144,3 +144,4 @@ fn panic(_info: &PanicInfo) -> ! {
 mod tests {
     // Kernel tests run on the host; no hardware access.
 }
+
