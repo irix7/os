@@ -12,7 +12,11 @@
 //! complete: the ROM only needs to print its progress marker and errors.
 
 #![no_std]
+#![allow(static_mut_refs)]
+#![allow(suspicious_runtime_symbol_definitions)]
 
+pub mod allocator;
+pub mod net;
 pub mod seeq;
 
 use core::ptr::{read_volatile, write_volatile};
