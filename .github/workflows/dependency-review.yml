@@ -19,7 +19,7 @@ jobs:
         run: echo "exists=$(test -f Cargo.toml && echo yes || echo no)" >> "$GITHUB_OUTPUT"
       - name: Review dependencies
         if: steps.workspace.outputs.exists == 'yes'
-        uses: actions/dependency-review-action@v4
+        uses: actions/dependency-review-action@v5
         with:
           fail-on-severity: high
           comment-summary-in-pr: always
