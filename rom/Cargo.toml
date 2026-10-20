@@ -26,3 +26,7 @@ panic = "abort"
 opt-level = 2
 
 [dependencies]
+# smoltcp: embedded TCP/IP stack (0BSD, cleared in docs/map.md); intended for the
+# ROM's DHCP/DNS/HTTP stack. NOT pinned yet: smoltcp does not compile with the
+# pinned nightly (exhaustiveness-check changes), see issue #2. Revisit when the
+# toolchain or smoltcp is reconciled.

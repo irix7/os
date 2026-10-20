@@ -95,6 +95,16 @@ jobs:
             --target targets/mips3-sgi-irix7-n32.json
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
             --target targets/mips2-sgi-irix7-o32.json
+      - name: Build ROM bin for o32 (build-std, M1)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export PATH="$RUST_LLD_DIR:$PATH"
+          # The ROM bin is gated behind the `cross` feature (it is a no_main
+          # MIPS binary that is never host-tested).
+          cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
+            --target targets/mips2-sgi-irix7-o32.json \
+            --bin rom
 
   docs:
     name: Docs
