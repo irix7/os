@@ -213,3 +213,4 @@ pub fn dhcpv4_configure(device: &mut SeeqDevice) -> Option<Ipv4Cidr> {
         timestamp = next;
     }
 }
+# rom: M1 netboot CI trigger
