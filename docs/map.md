@@ -65,7 +65,7 @@ External Rust crates the kernel and compat container may depend on are recorded 
 
 ### abi_stable
 
-Source: https://crates.io/crates/abi_stable
+Source: <https://crates.io/crates/abi_stable>
 
 The abi_stable crate provides a stable ABI surface for Rust types across crate and compiler-version boundaries, which is what the native ABI / legacy ABI layer boundary wants: Rust code exporting types and functions in a layout that does not depend on the particular rustc version that built them. It is a candidate dependency for the FFI seam between the kernel's native capability/object model and the compat container's translation layer, and for any Rust ABI exported to legacy IRIX 6.5 binaries.
 
