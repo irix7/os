@@ -22,15 +22,24 @@ All notable changes to IRIX 7 are recorded here. The format follows
   items, hardware-in-the-loop and nightly builds.
 - Community and governance files: contributing, code of conduct, security policy, support,
   governance and maintainers.
+- Root Cargo workspace (`Cargo.toml`, `Cargo.lock`) so CI runs the Rust jobs; `kernel-test`
+  is the freestanding `no_std` tracer bullet.
+- `-Z build-std=core,alloc` cross-builds for `mips3-sgi-irix7-n32` and
+  `mips2-sgi-irix7-o32` (compiles `core`/`alloc` from source).
+- Nix devshell (`flake.nix`) pinning rustc, cargo, rustfmt, clippy, gcc and binutils.
 
 ### Changed
 
 - README links the architecture spec and the plan.
 - `docs/map.md` records the advanced decisions and the research index.
+- CI cross-build job (`.github/workflows/ci.yml`) is now the M0 gate: `continue-on-error`
+  removed, pinned nightly + `rust-src`, host `cc`, `rust-lld`, `-Zjson-target-spec`, and
+  `Swatinem/rust-cache` (`m0-cross`).
 
 ### Fixed
 
-- Nothing yet.
+- `kernel-test` `panic_handler` is now `#[cfg(not(test))]` so the host test harness (which
+  links std) no longer conflicts with the freestanding `no_std` crate.
 
 ## [0.0.0] — 2026-10-20
 
