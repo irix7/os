@@ -1,0 +1,11 @@
+[workspace]
+resolver = "2"
+members = ["kernel-test"]
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
