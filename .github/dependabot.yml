@@ -1,7 +1,9 @@
 version: 2
 updates:
   - package-ecosystem: cargo
-    directory: "/"
+    # Switch to "/" when the root workspace exists (M0). Until then, the only
+    # Cargo manifest is the tracer-bullet scratch crate.
+    directory: "/kernel-test"
     schedule:
       interval: weekly
       day: monday
