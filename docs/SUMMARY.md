@@ -1,6 +1,7 @@
 # Summary
 
 - [Introduction](README.md)
+- [Install guide](install.md)
 - [Project map](map.md)
 
 ## Architecture
