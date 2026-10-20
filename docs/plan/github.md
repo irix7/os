@@ -2,7 +2,7 @@
 
 **Status:** living document
 **Scope:** the organisation, repositories, Project, labels, templates, automation, CI, security and every free GitHub feature that is useful to IRIX 7.
-**Current state (2026-10-20):** `irix7/os` is public; Issues and Projects are enabled; Discussions and Wiki are now enabled; the advanced labels and the `v0.1`–`v1.0` milestones exist; Project **#2, IRIX 7 — Roadmap**, is linked to the repository; the M0–M10 and cross-cutting epics exist. An existing Project, **IRIX 6.5.7m rebuild**, covers the precursor work.
+**Current state (2026-10-21):** `irix7/os` is public; Issues and Projects are enabled; Discussions and Wiki are enabled; the advanced labels and the `v0.1`–`v1.0` milestones exist; Project **#2, IRIX 7 — Roadmap**, is linked to the repository; the M0–M10 and cross-cutting epics exist and are attached to the Project with their fields set. An existing Project, **IRIX 6.5.7m rebuild**, covers the precursor work.
 
 The goal is a project-management goliath that costs **$0/month** and still behaves like a
 serious engineering organisation: every issue tracked, every release reproducible, every
@@ -465,6 +465,8 @@ The script never deletes labels, issues, milestones or projects. Re-running it i
 - The Projects API applies a cost-based secondary rate limit. A burst of item/field edits
   can fail even when the hourly quota looks healthy. The issues are created first, so no
   work is lost; re-run the bootstrap later or drag the issues into the Project in the UI.
+  The initial bulk sync was completed on 2026-10-21; the caveat applies to future bulk
+  changes.
 - The views are created with the right layout. Filters, grouping and visible fields are
   configured in the UI (the API for views is limited).
 - `PROJECT_URL` and `PROJECT_TOKEN` must be set manually for `project.yml`; until then the
