@@ -1,0 +1,45 @@
+name: Research task
+description: A question that needs evidence, not code
+title: "[Research]: "
+labels: ["type/research"]
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: One atomic question. If it has sub-questions, list them.
+    validations:
+      required: true
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why now
+      description: Which decision or milestone does this unblock?
+    validations:
+      required: true
+
+  - type: textarea
+    id: sources
+    attributes:
+      label: Sources to check
+      description: Primary sources, repos, papers, docs, prior art.
+
+  - type: input
+    id: timebox
+    attributes:
+      label: Timebox
+      description: How long before we stop and decide with what we have?
+      placeholder: "2 days"
+
+  - type: textarea
+    id: findings
+    attributes:
+      label: Findings
+      description: Fill this in as the research progresses.
+
+  - type: textarea
+    id: recommendation
+    attributes:
+      label: Recommendation
+      description: The answer, the evidence, and the residual uncertainty.

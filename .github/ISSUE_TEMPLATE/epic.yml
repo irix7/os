@@ -1,0 +1,49 @@
+name: Epic
+description: A milestone-sized body of work
+title: "[Epic]: "
+labels: ["type/epic"]
+body:
+  - type: input
+    id: goal
+    attributes:
+      label: Goal
+      description: One sentence.
+    validations:
+      required: true
+
+  - type: textarea
+    id: demo
+    attributes:
+      label: Demo
+      description: What the user sees when this is done.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A testable checklist.
+      value: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: Milestones, ADRs, hardware, interfaces.
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+      description: What this epic deliberately does not do.
+
+  - type: textarea
+    id: links
+    attributes:
+      label: Links
+      description: Spec, ADR, research, related issues.

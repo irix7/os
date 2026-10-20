@@ -1,0 +1,48 @@
+# Rust
+/target
+**/target
+**/*.rs.bk
+**/*.profraw
+**/*.profdata
+
+# mdBook
+/book
+
+# Build and image artefacts
+*.o
+*.elf
+*.bin
+*.img
+*.iso
+*.erofs
+*.raw
+*.qcow2
+*.chd
+*.diff.chd
+*.map
+*.sym
+
+# Logs and dumps
+*.log
+*.dmp
+*.core
+
+# Secrets and local configuration
+.env
+.env.*
+*.token
+secrets/
+*.pem
+*.key
+
+# Nix
+.direnv/
+result
+result-*
+
+# Editors and OS
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/

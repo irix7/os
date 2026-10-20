@@ -1,0 +1,22 @@
+{
+  "name": "IRIX 7",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu-24.04",
+  "features": {
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "nightly",
+      "profile": "minimal"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "rustup component add rust-src rustfmt clippy llvm-tools-preview",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "rust-lang.rust-analyzer",
+        "tamasfe.even-better-toml",
+        "redhat.vscode-yaml",
+        "DavidAnson.vscode-markdownlint"
+      ]
+    }
+  }
+}

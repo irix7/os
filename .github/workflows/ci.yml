@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo fmt --all -- --check
+          else
+            echo "No Rust workspace yet; skipping."
+          fi
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo clippy --workspace --all-targets -- -D warnings
+          else
+            echo "No Rust workspace yet; skipping."
+          fi
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo test --workspace
+          else
+            echo "No Rust workspace yet; skipping."
+          fi
+
+  cross:
+    name: Cross-build (M0 gate)
+    runs-on: ubuntu-latest
+    # M0 is the first milestone. Until build-std is unblocked this job is
+    # informational; remove continue-on-error when M0 is green.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Build n32 and o32
+        run: |
+          if [ ! -f Cargo.toml ]; then
+            echo "No Rust workspace yet; skipping."
+            exit 0
+          fi
+          cargo build -Z build-std=core,alloc --target targets/mips3-sgi-irix7-n32.json
+          cargo build -Z build-std=core,alloc --target targets/mips2-sgi-irix7-o32.json
+
+  docs:
+    name: Docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: peaceiris/actions-mdbook@v2
+        with:
+          mdbook-version: latest
+      - name: mdbook build
+        run: mdbook build
+
+  lint:
+    name: Markdown and spelling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: markdownlint
+        run: npx --yes markdownlint-cli2 "**/*.md" "#book" "#docs/research/**"
+      - name: typos
+        uses: crate-ci/typos@master

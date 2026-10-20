@@ -1,0 +1,46 @@
+name: Hardware
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Test suite
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - boot
+          - x11
+          - xfs
+          - full
+      machine:
+        description: Machine
+        required: true
+        default: indy-a
+        type: choice
+        options:
+          - indy-a
+          - indy-b
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    name: ${{ inputs.machine }} / ${{ inputs.suite }}
+    runs-on: [self-hosted, indy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the hardware suite
+        env:
+          INDY_MACHINE: ${{ inputs.machine }}
+          INDY_SUITE: ${{ inputs.suite }}
+        run: ./scripts/hardware/run.sh
+      - name: Upload logs and captures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hardware-${{ inputs.machine }}-${{ inputs.suite }}
+          path: artifacts/hardware/
+          retention-days: 14

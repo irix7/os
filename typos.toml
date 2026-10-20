@@ -1,0 +1,26 @@
+[files]
+extend-exclude = ["docs/research/**", "THIRD-PARTY-NOTICES.md"]
+
+[default.extend-words]
+IRIX = "IRIX"
+Indy = "Indy"
+Guinness = "Guinness"
+Fullhouse = "Fullhouse"
+Seeq = "Seeq"
+HPC3 = "HPC3"
+WD33C93 = "WD33C93"
+REX3 = "REX3"
+RB2 = "RB2"
+VC2 = "VC2"
+XMAP9 = "XMAP9"
+HAL2 = "HAL2"
+DS1386 = "DS1386"
+Vino = "Vino"
+sproc = "sproc"
+hinv = "hinv"
+dmedia = "dmedia"
+procntl = "procntl"
+syssgi = "syssgi"
+arenal = "arenal"
+tio = "tio"
+picocom = "picocom"

@@ -1,0 +1,16 @@
+[book]
+title = "IRIX 7"
+authors = ["IRIX 7 contributors"]
+language = "en-AU"
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "navy"
+git-repository-url = "https://github.com/irix7/os"
+edit-url-template = "https://github.com/irix7/os/edit/main/docs/{path}"
+site-url = "/os/"

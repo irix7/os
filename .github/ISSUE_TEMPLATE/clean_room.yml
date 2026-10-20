@@ -1,0 +1,59 @@
+name: Clean-room concern
+description: Report a provenance, similarity or licence concern
+title: "[Clean-room]: "
+labels: ["area/clean-room", "risk/high", "status/clean-room-review"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do **not** paste SGI source, decompiled output or proprietary material here.
+        Describe the concern and point to the file/commit; a clean-room reviewer will
+        follow up privately if needed.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Concern type
+      options:
+        - Similarity to SGI source
+        - Provenance / authorship
+        - Licence compatibility
+        - Access control (irix6)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What looks wrong, and where?
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: File / commit / PR
+      placeholder: "src/kernel/tlb.rs @ 1a2b3c4"
+
+  - type: dropdown
+    id: urgency
+    attributes:
+      label: Urgency
+      options:
+        - Block the merge
+        - Fix before release
+        - Investigate
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I have not included SGI-derived source in this report.
+          required: true
+        - label: I understand the report may be handled privately.
+          required: true

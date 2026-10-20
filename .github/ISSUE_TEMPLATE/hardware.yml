@@ -1,0 +1,56 @@
+name: Hardware task
+description: Real-Indy, rig, SCSI, serial, PROM, GIO or repair work
+title: "[Hardware]: "
+labels: ["type/hardware", "hardware/indy"]
+body:
+  - type: dropdown
+    id: machine
+    attributes:
+      label: Machine
+      options:
+        - Indy A
+        - Indy B
+        - Both
+        - iris emulator
+        - Lab host
+    validations:
+      required: true
+
+  - type: input
+    id: board
+    attributes:
+      label: Board / part
+      description: Graphics, Vino, Indy Video, SCSI, PSU, RTC, RAM, cable.
+      placeholder: "Newport 24-bit XL"
+
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What needs to happen, and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      render: shell
+
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: Pass/fail, measurements, photos, serial log.
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety
+      options:
+        - label: I have read the hardware-lab safety section.
+          required: true
+        - label: The machine is powered off and unplugged before opening it.
+          required: true
+        - label: I recorded the original NVRAM/disk state before changing anything.
+          required: true
