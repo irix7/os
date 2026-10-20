@@ -1,0 +1,25 @@
+[package]
+name = "kernel"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "kernel"
+path = "src/main.rs"
+# A no_main MIPS kernel binary: only built for cross-compilation (never host-tested,
+# links std would conflict with the no_std panic_handler).
+required-features = ["cross"]
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[features]
+default = []
+cross = []
+
+[dependencies]
