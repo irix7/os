@@ -15,9 +15,15 @@
 #![allow(static_mut_refs)]
 #![allow(suspicious_runtime_symbol_definitions)]
 
+extern crate alloc;
+
 pub mod allocator;
+pub mod boot;
+pub mod hex;
+pub mod http;
 pub mod net;
 pub mod seeq;
+pub mod sha256;
 
 use core::ptr::{read_volatile, write_volatile};
 
