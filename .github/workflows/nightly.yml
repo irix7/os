@@ -1,0 +1,54 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Nightly build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo build --workspace
+          else
+            echo "No Rust workspace yet; skipping."
+          fi
+      - name: Tests
+        run: |
+          if [ -f Cargo.toml ]; then
+            cargo test --workspace
+          else
+            echo "No Rust workspace yet; skipping."
+          fi
+
+  hardware:
+    name: Nightly hardware smoke
+    needs: build
+    if: ${{ vars.NIGHTLY_HARDWARE == 'true' }}
+    runs-on: [self-hosted, indy]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run smoke
+        env:
+          INDY_MACHINE: indy-a
+          INDY_SUITE: smoke
+        run: ./scripts/hardware/run.sh
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-hardware
+          path: artifacts/hardware/
+          retention-days: 7

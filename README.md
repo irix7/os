@@ -15,9 +15,18 @@ capability/object interface.
   awareness.
 - Backward-only compatibility; forward compatibility is out.
 
-Design decisions live in `irix7/project`: ADR-0008 (compatibility mandate),
-ADR-0009/0014 (clean-room), ADR-0010 (kernel), ADR-0011 (native interface),
-ADR-0012 (licence), ADR-0013 (scope).
+The advanced architecture is in [`docs/spec/architecture.md`](docs/spec/architecture.md), with
+the evidence base in [`docs/research/`](docs/research/). It frames IRIX 7 as the successor SGI
+might have built: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace
+drivers, an R2-first boot, an in-OS MCP control plane, and a new IRIX-inspired desktop.
+
+The plan is in [`docs/plan/`](docs/plan/): milestones, GitHub, risks, interfaces, hardware lab,
+testing, security, release, legal, community and cost. Live tracking is the
+[IRIX 7 — Roadmap](https://github.com/orgs/irix7/projects/2); the documentation site is
+[irix7.github.io/os](https://irix7.github.io/os/).
+
+Design decisions live in `irix7/project` (ADR-0001–0020); the advanced architecture decisions
+D1–D31 are in `docs/spec/architecture.md` §2.2.
 
 ## Status
 

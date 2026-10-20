@@ -1,0 +1,62 @@
+name: Licence and SBOM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  licence:
+    name: Licence gate
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for a workspace
+        id: workspace
+        run: echo "exists=$(test -f Cargo.toml && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: cargo-deny licences
+        if: steps.workspace.outputs.exists == 'yes'
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses
+
+  spdx:
+    name: SPDX headers
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check Rust files
+        run: |
+          missing=0
+          while IFS= read -r -d '' f; do
+            if ! grep -q "SPDX-License-Identifier" "$f"; then
+              echo "Missing SPDX header: $f"
+              missing=1
+            fi
+          done < <(find . -name '*.rs' -not -path './target/*' -not -path './kernel-test/*' -print0)
+          exit "$missing"
+
+  sbom:
+    name: SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: irix7.spdx.json
+          artifact-name: irix7-spdx
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: irix7.spdx.json
+          retention-days: 30

@@ -1,0 +1,50 @@
+name: Security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    name: cargo-deny
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for a workspace
+        id: workspace
+        run: echo "exists=$(test -f Cargo.toml && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: Run cargo-deny
+        if: steps.workspace.outputs.exists == 'yes'
+        uses: EmbarkStudios/cargo-deny-action@v2
+
+  cargo-audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for a lockfile
+        id: lock
+        run: echo "exists=$(test -f Cargo.lock && echo yes || echo no)" >> "$GITHUB_OUTPUT"
+      - name: Run cargo-audit
+        if: steps.lock.outputs.exists == 'yes'
+        uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  secret-scan-status:
+    name: Secret scanning status
+    runs-on: ubuntu-latest
+    steps:
+      - name: Note
+        run: |
+          echo "Secret scanning and push protection are configured in repository settings."
+          echo "This job is a reminder; GitHub performs the scan natively."

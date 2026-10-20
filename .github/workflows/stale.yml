@@ -1,0 +1,36 @@
+name: Stale
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    name: Mark and close stale items
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/stale@v9
+        with:
+          days-before-stale: 60
+          days-before-close: 14
+          stale-issue-label: stale
+          stale-pr-label: stale
+          stale-issue-message: >
+            This issue has been quiet for 60 days. It will close in 14 days unless
+            there is new activity. If it is still relevant, comment or update it.
+          stale-pr-message: >
+            This pull request has been quiet for 60 days. It will close in 14 days
+            unless there is new activity.
+          close-issue-message: >
+            Closed as stale. Reopen if the work is still wanted.
+          close-pr-message: >
+            Closed as stale. Reopen if the work is still wanted.
+          exempt-issue-labels: "priority/P0,priority/P1,type/epic,status/blocked"
+          exempt-pr-labels: "priority/P0,priority/P1,status/blocked"
+          remove-stale-when-updated: true
+          operations-per-run: 100

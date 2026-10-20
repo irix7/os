@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/irix7/os/discussions
+    about: Ask a question, share a demo, or discuss a design idea.
+  - name: Security report
+    url: https://github.com/irix7/os/security/advisories/new
+    about: Report a vulnerability privately. Do not open a public issue.
+  - name: Documentation
+    url: https://irix7.github.io/os/
+    about: Read the architecture, plan and research first.

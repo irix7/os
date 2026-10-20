@@ -1,0 +1,72 @@
+name: Architecture decision (ADR)
+description: Propose or record an architecture, interface, security or licence decision
+title: "[ADR]: "
+labels: ["type/adr", "status/needs-adr"]
+body:
+  - type: input
+    id: title
+    attributes:
+      label: Decision title
+      placeholder: "Hybrid SAS/MMU isolation"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: status
+    attributes:
+      label: Proposed status
+      options:
+        - Proposed
+        - Accepted
+        - Rejected
+        - Superseded
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: The problem, constraints, hardware and prior decisions.
+    validations:
+      required: true
+
+  - type: textarea
+    id: decision
+    attributes:
+      label: Decision
+      description: What we will do.
+    validations:
+      required: true
+
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: What becomes easier, harder, more expensive or impossible.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What else was on the table, and why it lost.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: Links to research, prototypes, benchmarks or hardware tests.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I checked the existing ADRs in irix7/project/docs/adr/.
+          required: true
+        - label: This decision crosses a subsystem or interface boundary.
+          required: true

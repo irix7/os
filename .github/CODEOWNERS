@@ -1,0 +1,44 @@
+# CODEOWNERS
+# Replace @belikh with the area teams as they form:
+#   @irix7/maintainers @irix7/kernel @irix7/compat @irix7/display @irix7/infra @irix7/clean-room
+
+*                       @belikh
+
+# Kernel and architecture
+/docs/spec/             @belikh
+/src/kernel/            @belikh
+/kernel/                @belikh
+
+# Compatibility container
+/src/compat/            @belikh
+/compat/                @belikh
+
+# Drivers and boot
+/src/drivers/           @belikh
+/src/boot/              @belikh
+/boot/                  @belikh
+
+# Display and X11
+/src/display/           @belikh
+/src/x11/               @belikh
+
+# Storage
+/src/storage/           @belikh
+/src/fs/                @belikh
+
+# Network and MCP
+/src/net/               @belikh
+/src/mcp/               @belikh
+
+# Toolchain and CI
+/targets/               @belikh
+/.github/               @belikh
+/scripts/               @belikh
+/flake.nix              @belikh
+/rust-toolchain.toml    @belikh
+
+# Clean-room and legal
+/docs/plan/legal.md     @belikh
+/docs/plan/security.md  @belikh
+/SECURITY.md            @belikh
+/CODE_OF_CONDUCT.md     @belikh

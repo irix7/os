@@ -1,0 +1,95 @@
+name: Bug report
+description: Report a reproducible defect in IRIX 7
+title: "[Bug]: "
+labels: ["type/bug", "status/needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please search existing issues first, and do not include
+        secrets (MCP tokens, R2 keys, private keys) in logs.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: The release tag or commit hash.
+      placeholder: v0.1.0 or 1a2b3c4
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Kernel
+        - Compatibility (IRIX ABI)
+        - Drivers
+        - Display / X11
+        - Storage
+        - Network
+        - Toolchain
+        - Infra / CI
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Hardware
+      options:
+        - iris emulator
+        - Real Indy
+        - Both
+        - Not hardware-specific
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The exact commands or actions.
+      render: shell
+      placeholder: |
+        1. boot ...
+        2. run ...
+        3. observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, serial output or screen capture
+      description: Paste the relevant lines. Remove secrets.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and Discussions.
+          required: true
+        - label: I read CONTRIBUTING.md and the clean-room policy.
+          required: true
+        - label: This report contains no secrets or SGI-derived source.
+          required: true

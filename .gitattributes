@@ -1,0 +1,18 @@
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.pdf binary
+*.img binary
+*.iso binary
+*.erofs binary
+*.raw binary
+*.qcow2 binary
+*.chd binary
+
+docs/research/*.md linguist-documentation
+docs/spec/*.md linguist-documentation
+docs/plan/*.md linguist-documentation

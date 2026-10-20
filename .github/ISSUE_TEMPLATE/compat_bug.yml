@@ -1,0 +1,72 @@
+name: IRIX compatibility bug
+description: An IRIX 6.5 binary that does not run correctly
+title: "[Compat]: "
+labels: ["type/bug", "area/compat", "hardware/both"]
+body:
+  - type: input
+    id: irix_version
+    attributes:
+      label: IRIX version
+      placeholder: "6.5.7m / 6.5.22"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: abi
+    attributes:
+      label: ABI
+      options:
+        - o32
+        - n32
+        - n64
+        - Unknown
+    validations:
+      required: true
+
+  - type: input
+    id: binary
+    attributes:
+      label: Binary
+      description: Name and SHA-256. Do not attach proprietary binaries.
+      placeholder: "xterm 9f2c... (sha256)"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Serial output, `errno`, syscall trace, screen capture.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: The binary runs on IRIX 6.5.7m (or the reference rig).
+          required: true
+        - label: I did not attach SGI source or a proprietary binary.
+          required: true

@@ -1,0 +1,73 @@
+"area/kernel":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/kernel/**"
+          - "kernel/**"
+          - "crates/kernel/**"
+
+"area/compat":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/compat/**"
+          - "compat/**"
+          - "crates/compat/**"
+
+"area/drivers":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/drivers/**"
+          - "src/boot/**"
+          - "drivers/**"
+
+"area/display":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/display/**"
+          - "src/x11/**"
+          - "display/**"
+
+"area/storage":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/storage/**"
+          - "src/fs/**"
+          - "storage/**"
+
+"area/network":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "src/net/**"
+          - "src/mcp/**"
+          - "net/**"
+
+"area/toolchain":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "targets/**"
+          - "rust-toolchain.toml"
+          - "flake.nix"
+          - "flake.lock"
+
+"area/infra":
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "scripts/**"
+
+"area/docs":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+
+"area/security":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "SECURITY.md"
+          - "docs/plan/security.md"
+
+"area/clean-room":
+  - changed-files:
+      - any-glob-to-any-file:
+          - "clean-room/**"
+          - "harness/**"

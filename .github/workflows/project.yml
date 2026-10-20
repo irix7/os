@@ -1,0 +1,23 @@
+name: Project
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  pull_request:
+    types: [opened, reopened, labeled]
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  add:
+    name: Add to the roadmap
+    runs-on: ubuntu-latest
+    if: ${{ vars.PROJECT_URL != '' }}
+    steps:
+      - uses: actions/add-to-project@v1
+        with:
+          project-url: ${{ vars.PROJECT_URL }}
+          github-token: ${{ secrets.PROJECT_TOKEN }}

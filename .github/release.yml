@@ -1,0 +1,37 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+  categories:
+    - title: Features
+      labels:
+        - type/feature
+    - title: Fixes
+      labels:
+        - type/bug
+    - title: Compatibility
+      labels:
+        - area/compat
+    - title: Display and media
+      labels:
+        - area/display
+    - title: Storage
+      labels:
+        - area/storage
+    - title: Networking and MCP
+      labels:
+        - area/network
+    - title: Documentation and specs
+      labels:
+        - area/docs
+        - type/adr
+    - title: Infrastructure and toolchain
+      labels:
+        - area/infra
+        - area/toolchain
+    - title: Security
+      labels:
+        - area/security
+    - title: Other changes
+      labels:
+        - "*"
