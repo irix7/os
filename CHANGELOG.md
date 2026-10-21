@@ -13,6 +13,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   fetches a kernel over HTTP, verifies SHA-256 and jumps to the hand-off address.
 - One canonical `targets/mips3-sgi-irix7-n32.json` target for both the ROM and the kernel.
 - `rom/linker.ld` and the `rom/src/boot/` reset, memory-sizing and memory-test assembly.
+- Research note on Meta CRAM and compressed RAM (`docs/research/compressed-ram.md`);
+  compressed RAM is rejected for the Indy in favour of the read-only EROFS root.
 - Advanced architecture specification (`docs/spec/architecture.md`), including the D1–D31
   decision register, hybrid SAS/MMU isolation, the native capability ABI, the IRIX
   compatibility container, R2-first boot, EROFS root, X11, the native display server and the

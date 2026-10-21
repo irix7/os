@@ -1862,6 +1862,7 @@ planning aid, not a legal opinion.
 | **ext4/FAT32 as the root image** | Little-endian, feature-heavy, not designed for read-only random-access images. EROFS is the right tool. |
 | **RedoxFS as the primary native FS** | Little-endian, Redox-coupled, no fsck. It is the fallback if I7FS slips, not the first choice. |
 | **9P2000.L as the native dialect** | Linux-VFS-shaped; encodes Linux errno/stat semantics. 9P2000 is native; 9P2000.L is a compatibility front end only. |
+| **CRAM-style compressed RAM, zram/zswap, tiered memory** | The Indy has no cache-coherent memory-side compression, CXL or NUMA. Software compression costs ~0.2–0.45 ms per 4 KiB page at 75 MHz (LZ4 decode, estimated), thrashes a 16 KiB direct-mapped D-cache and adds TLB/PTE churn for a ~1.3–2× capacity gain. Compression stays in the read-only EROFS root (§11.2); see [`../research/compressed-ram.md`](../research/compressed-ram.md). |
 
 ---
 
