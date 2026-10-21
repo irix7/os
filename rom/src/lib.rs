@@ -24,6 +24,7 @@ pub mod aes;
 pub mod allocator;
 pub mod boot;
 pub mod cache;
+pub mod dns;
 pub mod gloss;
 pub mod hex;
 pub mod http;
@@ -32,6 +33,10 @@ pub mod ntp;
 pub mod ramtest;
 pub mod sha256;
 pub mod telnet;
+
+/// TLS 1.3 / HTTPS client.  Only compiled with the `tls` feature.
+#[cfg(feature = "tls")]
+pub mod tls;
 
 use core::ptr::{read_volatile, write_volatile};
 

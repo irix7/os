@@ -392,6 +392,7 @@ fn count_now() -> u32 {
 pub struct DhcpLease {
     pub address: Ipv4Cidr,
     pub router: Option<Ipv4Address>,
+    pub dns_servers: alloc::vec::Vec<Ipv4Address>,
 }
 
 /// Run DHCPv4 on an existing interface and return the assigned lease.
@@ -421,6 +422,11 @@ pub fn dhcpv4_configure(
                 return Some(DhcpLease {
                     address: config.address,
                     router: config.router,
+                    dns_servers: config
+                        .dns_servers
+                        .iter()
+                        .copied()
+                        .collect::<alloc::vec::Vec<_>>(),
                 });
             }
             Some(dhcpv4::Event::Deconfigured) => {

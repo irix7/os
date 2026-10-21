@@ -42,6 +42,7 @@ pub struct ConsoleInfo {
     pub ram_size: usize,
     pub reserved_bytes: usize,
     pub ntp_time: Option<u64>,
+    pub dns: Ipv4Address,
     pub board: &'static str,
     pub cpu: &'static str,
     pub firmware: &'static str,

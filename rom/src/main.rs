@@ -7,10 +7,15 @@ extern crate alloc;
 use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
+use rom::dns;
 use rom::net::SeeqDevice;
 use rom::{serial_init, serial_write_byte, serial_write_str};
 use smoltcp::iface::{Interface, SocketSet, SocketStorage};
-use smoltcp::wire::{HardwareAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, Ipv4Address};
+
+/// TLS/HTTPS client (only with the `tls` feature).
+#[cfg(feature = "tls")]
+use rom::tls;
 
 /// Kernel/server used for the bring-up fetch.  The iris NAT lets the guest
 /// reach host sockets, so this is the host's LAN address and a local HTTP
@@ -18,6 +23,12 @@ use smoltcp::wire::{HardwareAddress, IpCidr, Ipv4Address};
 const HTTP_SERVER_IP: [u8; 4] = [10, 1, 1, 3];
 const HTTP_SERVER_PORT: u16 = 18080;
 const HTTP_SERVER_HOST: &str = "10.1.1.3";
+
+/// HTTPS server used when the `tls` feature is enabled.
+#[cfg(feature = "tls")]
+const HTTPS_SERVER_PORT: u16 = 18443;
+#[cfg(feature = "tls")]
+const HTTPS_SERVER_HOST: &str = "10.1.1.3";
 
 /// Hand-off addresses (physical, per the boot protocol).
 const KERNEL_KSEG0: u32 = 0x8804_0000;
@@ -220,6 +231,7 @@ pub extern "C" fn rom_main() -> ! {
         ram_size,
         reserved_bytes: 11 * 1024 * 1024,
         ntp_time: None,
+        dns: Ipv4Address::new(0, 0, 0, 0),
         board: "SGI Indy (IP22)",
         cpu: "MIPS R4400",
         firmware: "IRIX 7 ROM",
@@ -257,13 +269,73 @@ pub extern "C" fn rom_main() -> ! {
     let _ = unix_time;
 
     info.stage = "http";
+    serial_write_str("ROM: dns...");
+    // Resolve the kernel server hostname via DNS (DHCP servers, then gateway,
+    // then public resolvers).  Falls back to the compiled-in IPv4 address if
+    // resolution fails, so air-gapped or DNS-less boots still work.
+    let dns_servers = dns::default_dns_servers(&lease.dns_servers, lease.router);
+    let mut resolver = match rom::dns::DnsResolver::new(&mut socket_set, &dns_servers) {
+        Some(r) => r,
+        None => {
+            serial_write_str("resolver init failed\r\n");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+    let resolved = match resolver.start(&mut iface, &mut socket_set, HTTP_SERVER_HOST) {
+        Ok(_) => {
+            // Poll until the query completes.  The console stays responsive
+            // while we wait.
+            loop {
+                let timestamp = rom::net::clock_now();
+                let _ = iface.poll(timestamp, seeq, &mut socket_set);
+                if let Some(c) = console.as_mut() {
+                    c.service(&mut socket_set, &info);
+                }
+                resolver.poll(&mut socket_set);
+                rom::net::clock_tick();
+                if resolver.is_done() {
+                    break;
+                }
+                if rom::net::clock_now() > timestamp + smoltcp::time::Duration::from_millis(15_000) {
+                    break;
+                }
+            }
+            match resolver.take_result() {
+                Some(Ok(lookup)) => lookup.addresses.into_iter().next(),
+                Some(Err(())) | None => None,
+            }
+        }
+        Err(_) => None,
+    };
+    let server_ip = match resolved {
+        Some(IpAddress::Ipv4(ip)) => {
+            serial_write_str(&alloc::format!("ok, {}\r\n", ip));
+            ip
+        }
+        _ => {
+            serial_write_str(&alloc::format!(
+                "failed, using compiled-in {}\r\n",
+                HTTP_SERVER_HOST
+            ));
+            Ipv4Address::new(
+                HTTP_SERVER_IP[0],
+                HTTP_SERVER_IP[1],
+                HTTP_SERVER_IP[2],
+                HTTP_SERVER_IP[3],
+            )
+        }
+    };
+    // Record the DNS server used for the kernel hand-off (BootInfo.dns).
+    info.dns = lease
+        .dns_servers
+        .first()
+        .copied()
+        .or(lease.router)
+        .unwrap_or(Ipv4Address::new(0, 0, 0, 0));
+    info.stage = "http";
     serial_write_str("ROM: http get...");
-    let server_ip = Ipv4Address::new(
-        HTTP_SERVER_IP[0],
-        HTTP_SERVER_IP[1],
-        HTTP_SERVER_IP[2],
-        HTTP_SERVER_IP[3],
-    );
     match rom::http::http_get(
         &mut iface,
         &mut socket_set,
@@ -287,6 +359,29 @@ pub extern "C" fn rom_main() -> ! {
                 print_hex8(b);
             }
             serial_write_str("\r\n");
+
+            #[cfg(feature = "tls")]
+            {
+                serial_write_str("ROM: https get...");
+                match rom::tls::https_get(
+                    &mut iface,
+                    &mut socket_set,
+                    seeq,
+                    server_ip,
+                    HTTPS_SERVER_PORT,
+                    HTTPS_SERVER_HOST,
+                    "/kernel",
+                ) {
+                    Ok(https_result) => {
+                        serial_write_str("ok, ");
+                        serial_write_str(&alloc::format!("{}", https_result.body.len()));
+                        serial_write_str(" bytes\r\n");
+                    }
+                    Err(()) => {
+                        serial_write_str("failed\r\n");
+                    }
+                }
+            }
 
             // Copy the fetched image to the hand-off address.  The body is in
             // the ROM heap; the kernel expects it at 0x8804_0000.
@@ -362,6 +457,7 @@ pub extern "C" fn rom_main() -> ! {
             boot_info.ip =
                 u32::from_be_bytes([ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3]]);
             boot_info.netmask = !(0xFFFF_FFFFu32 << (32 - ip.prefix_len()));
+            boot_info.dns = u32::from_be_bytes(info.dns.octets());
             boot_info.checksum = rom::boot::bootinfo_checksum(&boot_info);
             unsafe {
                 core::ptr::write_volatile(BOOTINFO_KSEG0 as *mut rom::boot::BootInfo, boot_info);
