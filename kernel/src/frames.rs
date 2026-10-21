@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Frame allocator — buddy allocator over the ARCS memory descriptor list.
 //!
 //! No probing of nonexistent banks (the hardware does not bus-error cleanly).

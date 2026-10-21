@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! AES block cipher (FIPS 197).
 //!
 //! Implements AES-128 and AES-256 encryption/decryption in ECB mode, plus

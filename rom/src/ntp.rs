@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! NTP (Network Time Protocol) client.
 //!
 //! Sends an NTPv4 request to an NTP server and parses the response to obtain

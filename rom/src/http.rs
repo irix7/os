@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Minimal HTTP/1.1 client for the ROM's netboot path.
 //!
 //! Performs GET requests with Range support over smoltcp TCP sockets,

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 #![cfg_attr(not(test), no_main)]
 #![no_std]
 #![feature(asm_experimental_arch)]

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! ROM serial console driver (Z85C30 ESCC inside the IOC2).
 //!
 //! Hardware facts (from the original IP22 ARCS PROM source):

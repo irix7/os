@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! BootInfo binary contract between the ROM and the kernel.
 //!
 //! Layout matches [`docs/spec/boot-protocol.md`](docs/spec/boot-protocol.md) §3

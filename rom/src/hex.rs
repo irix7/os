@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Hex encoding helpers (lowercase).
 //!
 //! Small, dependency-free hex encoding for printing digests and MAC addresses.

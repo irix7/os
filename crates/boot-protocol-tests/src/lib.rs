@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Boot protocol (ROM <-> kernel) conformance primitives.
 //!
 //! Implements the `BootInfo` binary contract from

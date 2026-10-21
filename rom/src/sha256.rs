@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! SHA-256 hash function (FIPS 180-4).
 //!
 //! Implemented in-house to avoid pulling in the `sha2` crate and its
