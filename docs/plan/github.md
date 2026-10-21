@@ -301,7 +301,7 @@ GitHub Actions fills the gaps:
 | `security.yml` | PR, push, schedule | `cargo-deny`, `cargo-audit`, dependency review, secret scan status |
 | `scorecard.yml` | schedule, push to `main` | OpenSSF Scorecard and SARIF upload |
 | `licence.yml` | PR, push | licence headers, third-party notices, SBOM |
-| `docs.yml` | PR, push to `main` | mdBook build and GitHub Pages deploy |
+| `docs.yml` | PR, push to `main`, schedule, dispatch | mdBook build, roadmap sync, and GitHub Pages deploy |
 | `release.yml` | tag `v*` | build image, SBOM, checksums, cosign sign, R2 upload, GitHub Release |
 | `project.yml` | issues, PRs | add to Project; detailed field mapping is manual or via the UI |
 | `stale.yml` | schedule | mark and close stale items |
@@ -469,8 +469,12 @@ The script never deletes labels, issues, milestones or projects. Re-running it i
   changes.
 - The views are created with the right layout. Filters, grouping and visible fields are
   configured in the UI (the API for views is limited).
-- `PROJECT_URL` and `PROJECT_TOKEN` must be set manually for `project.yml`; until then the
-  workflow skips. `PROJECT_TOKEN` needs the `project` scope.
+- `PROJECT_URL` and `PROJECT_TOKEN` must be set manually for `project.yml` and the
+  scheduled roadmap sync in `docs.yml`; until then `project.yml` skips and the docs build
+  falls back to closed epics and release tags. `PROJECT_TOKEN` needs the `project` scope,
+  plus repository write access if it is used to open the `roadmap/sync` pull request.
+  The sync is described in
+  [`tree/README.md`](https://github.com/irix7/os/blob/main/tree/README.md).
 - The default CodeQL setup is used; do not add a custom `codeql.yml`.
 
 ## 17. Free-feature matrix

@@ -31,6 +31,17 @@ Rust workspace exists, it records the known candidates and their licences.
 | Nix | LGPL-2.1 | Build environment |
 | mdBook | MPL-2.0 | Documentation site |
 
+## Website fonts
+
+The generated roadmap site bundles three typefaces under the SIL Open Font License 1.1.
+Their licence texts are in `tree/assets/fonts/`.
+
+| Typeface | Licence | Use |
+|---|---|---|
+| Fraunces | SIL OFL 1.1 | Display and panel headings |
+| Space Grotesk | SIL OFL 1.1 | Interface and node labels |
+| IBM Plex Mono | SIL OFL 1.1 | Metadata and code |
+
 ## Notes
 
 - GPL-2.0-only code is not incorporated; it is reference-only.

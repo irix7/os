@@ -1,0 +1,1033 @@
+{
+  "meta": {
+    "title": "The Tree of IRIX 7",
+    "short": "IRIX 7",
+    "version": "2026.10",
+    "updated": "21 October 2026",
+    "repo": "https://github.com/irix7/os",
+    "docs": "https://irix7.github.io/os/",
+    "description": "A living, interactive map of the IRIX 7 operating system roadmap.",
+    "intro": [
+      "IRIX 7 is a clean-room, Rust-native operating system for the SGI Indy: the successor SGI might have built, running IRIX 6.5 binaries unchanged.",
+      "The Tree is its living roadmap. The roots are the foundations, the trunk is the control plane, and every branch is a dependency you can follow all the way to a release.",
+      "Nothing here is a date. It is a map of what must be true before the next thing can grow."
+    ],
+    "note": "Grown from docs/plan/milestones.md. Statuses sync from the IRIX 7 Roadmap project.",
+    "site": "https://irix7.github.io/os/tree/",
+    "project": "https://github.com/orgs/irix7/projects/2"
+  },
+  "statuses": {
+    "done": {
+      "label": "Done",
+      "colour": "#8fe3c0",
+      "note": "Landed, built and tested."
+    },
+    "active": {
+      "label": "In progress",
+      "colour": "#ff9e6d",
+      "note": "Being built now."
+    },
+    "planned": {
+      "label": "Planned",
+      "colour": "#c9b8ff",
+      "note": "Committed for v1.0."
+    },
+    "exploring": {
+      "label": "Exploring",
+      "colour": "#7cc7ff",
+      "note": "Research and design; the shape may still change."
+    },
+    "pruned": {
+      "label": "Pruned",
+      "colour": "#697086",
+      "note": "Deliberately out of scope for v1.0."
+    }
+  },
+  "branches": {
+    "foundation": {
+      "name": "Foundations",
+      "colour": "#ffb08a"
+    },
+    "control": {
+      "name": "Control plane",
+      "colour": "#ffd37a"
+    },
+    "storage": {
+      "name": "Storage & filesystems",
+      "colour": "#63d8c6"
+    },
+    "compat": {
+      "name": "Compatibility",
+      "colour": "#8ab8ff"
+    },
+    "graphics": {
+      "name": "Graphics",
+      "colour": "#f49ad4"
+    },
+    "native": {
+      "name": "Native ABI",
+      "colour": "#c9f08a"
+    },
+    "release": {
+      "name": "Releases",
+      "colour": "#ffe08a"
+    },
+    "mycelium": {
+      "name": "Workstreams",
+      "colour": "#79e0d0"
+    },
+    "compost": {
+      "name": "Compost",
+      "colour": "#7b8296"
+    }
+  },
+  "dependencies": [
+    {
+      "from": "m4",
+      "to": "m5",
+      "label": "compat needs storage"
+    },
+    {
+      "from": "m6",
+      "to": "m7",
+      "label": "X11 needs a display"
+    },
+    {
+      "from": "m4",
+      "to": "m9",
+      "label": "cells need block I/O"
+    },
+    {
+      "from": "m8",
+      "to": "m10",
+      "label": "v1.0"
+    },
+    {
+      "from": "m7",
+      "to": "m10",
+      "label": "v1.0"
+    },
+    {
+      "from": "m6",
+      "to": "m10",
+      "label": "v1.0"
+    },
+    {
+      "from": "m9",
+      "to": "m10",
+      "label": "v1.0"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "seed",
+      "kind": "seed",
+      "branch": "foundation",
+      "status": "active",
+      "title": "IRIX 7",
+      "subtitle": "IP22 · MIPS R4400",
+      "summary": "A clean-room Rust operating system for the SGI Indy, carrying IRIX's identity forward as first-class services."
+    },
+    {
+      "id": "m0",
+      "kind": "milestone",
+      "branch": "foundation",
+      "status": "done",
+      "code": "M0",
+      "title": "Toolchain",
+      "fullTitle": "Toolchain unblocked",
+      "anchor": [
+        1080,
+        2050
+      ],
+      "summary": "A reproducible cross-compilation path for n32/MIPS III and o32/MIPS II, pinned in Nix and gated in CI.",
+      "demo": "CI cross-compiles a no_std binary for both targets, and the tracer bullet prints its marker on iris.",
+      "criteria": [
+        "`-Z build-std` builds `core` and `alloc` for both custom targets.",
+        "The LLVM path works for n32 and o32; the `rustc_codegen_gcc` path is still pending.",
+        "The Nix devshell pins rustc, GCC, binutils and the target specs.",
+        "A clean checkout builds the tracer bullet without manual steps.",
+        "CI caches the toolchain and the target artefacts.",
+        "The build is reproducible (same inputs → same hashes) — still being verified."
+      ],
+      "deps": "Access to `irix7/project`, the Nix flake, the captured sysroot, iris.",
+      "estimate": "2–4 weeks",
+      "risks": "Host-toolchain glue; GCC-backend disk space; nightly drift.",
+      "docs": "../plan/milestones.html#m0--toolchain-unblocked"
+    },
+    {
+      "id": "m1",
+      "kind": "milestone",
+      "branch": "foundation",
+      "status": "active",
+      "code": "M1",
+      "title": "ROM netboot",
+      "fullTitle": "ROM netboot",
+      "anchor": [
+        1500,
+        2060
+      ],
+      "summary": "A no_std Rust ROM that wakes the Indy, brings up the Seeq network, fetches a kernel over HTTP and verifies it before the jump.",
+      "demo": "In iris, the ROM prints a DHCP lease, fetches a kernel and bundle from a local server, prints the digests, and jumps to a stub that prints `hello from the kernel`.",
+      "criteria": [
+        "Serial console works from the first instruction.",
+        "Seeq 8003 initialises, transmits and receives; HPC3 DMA works.",
+        "smoltcp brings up IPv4 and IPv6; DHCP and DNS work.",
+        "HTTP/1.1 GET with Range support works.",
+        "SHA-256 verification of the kernel and bundle.",
+        "The ROM fits in 512 KiB–1 MiB.",
+        "Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.",
+        "The handoff structure is documented in boot-protocol.md."
+      ],
+      "deps": "M0, R2 (or a local HTTP server), a test kernel stub.",
+      "estimate": "4–6 weeks",
+      "risks": "Seeq DMA descriptor flags; ARCS/ECOFF; cache flush before the jump; ROM size; 10 Mbit timeouts.",
+      "docs": "../plan/milestones.html#m1--rom-netboot"
+    },
+    {
+      "id": "m2",
+      "kind": "milestone",
+      "branch": "foundation",
+      "status": "active",
+      "code": "M2",
+      "title": "Kernel core",
+      "fullTitle": "Kernel core",
+      "anchor": [
+        1920,
+        2050
+      ],
+      "summary": "The privileged framework: traps, TLB, CP0 timer, frames, scheduler, capabilities and a panic path that tells you the truth.",
+      "demo": "The kernel prints the ARCS memory map, calibrates the timer, runs two tasks with EDF and fair classes, handles a deliberate page fault, and panics cleanly with a register dump.",
+      "criteria": [
+        "Exception vectors, TLB refill and `eret` work on MIPS III.",
+        "CP0 `Count`/`Compare` calibrated against the 8254 reference.",
+        "Frame allocator from the ARCS memory descriptor list; no probing.",
+        "16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.",
+        "Capability table with generation counters and rights.",
+        "EDF and fair run queues; `is_running` debug assertion.",
+        "Panic screen with registers, stack trace and a serial dump.",
+        "The `ctl`/`data`/`status` driver interface is specified and unit-tested."
+      ],
+      "deps": "M1.",
+      "estimate": "6–10 weeks",
+      "risks": "TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage.",
+      "docs": "../plan/milestones.html#m2--kernel-core",
+      "note": "The framework cross-builds; it has not yet booted on iris."
+    },
+    {
+      "id": "m3",
+      "kind": "milestone",
+      "branch": "control",
+      "status": "planned",
+      "code": "M3",
+      "title": "Control plane",
+      "fullTitle": "Network + MCP + shell",
+      "anchor": [
+        1500,
+        1600
+      ],
+      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built.",
+      "demo": "An agent connects to the Indy over Streamable HTTP with a bearer token, runs `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.",
+      "criteria": [
+        "Network cell owns the Seeq, exposes `/net`, and survives a reset.",
+        "MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.",
+        "Tools: `shell.exec`, `fs.read`, `fs.write`, `fs.list`, `serial.read`, `serial.write`, `screen.capture`, `system.reset`, `system.poweroff`.",
+        "Bearer token authentication; no TLS in v1; binds to the LAN interface.",
+        "Shell: `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot`, `poweroff`.",
+        "`system.reset` is guarded by the watchdog and returns after the reboot.",
+        "The agent loop is documented and reproducible.",
+        "The MCP control plane is a cell, not a kernel thread."
+      ],
+      "deps": "M2, R2/local HTTP, a host-side MCP client.",
+      "estimate": "4–6 weeks",
+      "risks": "MCP prompt injection; full root; no audit; network driver bugs.",
+      "docs": "../plan/milestones.html#m3--network--mcp--shell"
+    },
+    {
+      "id": "m4",
+      "kind": "milestone",
+      "branch": "storage",
+      "status": "planned",
+      "code": "M4",
+      "title": "Storage",
+      "fullTitle": "SCSI + block + EROFS",
+      "anchor": [
+        720,
+        1420
+      ],
+      "summary": "Read the root image from R2 over HTTP Range through a userspace block and filesystem stack — with the disk absent or present.",
+      "demo": "The shell runs `cat /etc/motd` and `ls /` from the EROFS root image; a write to `/tmp` goes to the overlay; the machine boots with no SCSI disk.",
+      "criteria": [
+        "SCSI cell initialises the WD33C93 and reads blocks.",
+        "Block cell exposes a block-device capability and an LRU cache.",
+        "EROFS reader mounts the standard little-endian image; byte-order codec tested.",
+        "HTTP Range client fetches 64–256 KiB blocks with read-ahead.",
+        "SHA-256 verifies the image before mount.",
+        "Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).",
+        "The boot path works with the disk absent and with the disk present.",
+        "All storage drivers are de-privileged cells."
+      ],
+      "deps": "M3 (network), M2 (framework).",
+      "estimate": "8–12 weeks",
+      "risks": "SCSI DMA/direction; EROFS corner cases; R2 latency; 10 Mbit throughput.",
+      "docs": "../plan/milestones.html#m4--scsi--block--erofs"
+    },
+    {
+      "id": "m5",
+      "kind": "milestone",
+      "branch": "compat",
+      "status": "planned",
+      "code": "M5",
+      "title": "IRIX binaries",
+      "fullTitle": "First IRIX binary",
+      "anchor": [
+        1180,
+        1340
+      ],
+      "summary": "Run one real IRIX 6.5 o32 binary unchanged: ELF loader, o32 syscall decode, a minimal IRIX libc and the compatibility corpus.",
+      "demo": "An o32 `hello` binary from the IRIX 6.5.7m sysroot prints `hello, IRIX 7` and exits with status 0; the shell reports the exit status.",
+      "criteria": [
+        "ELF loader maps the o32 image and its interpreter/libs.",
+        "o32 syscall decode: `write`, `exit`, `open`, `close`, `read`, `brk`, `getpid`.",
+        "Minimal IRIX libc: `write`, `exit`, `open`, `close`, `read`, `malloc`/`free`, `printf`.",
+        "Argument and environment passing; stack layout correct.",
+        "`errno` mapping; exit status propagation.",
+        "The test binary and expected output are in the compatibility corpus.",
+        "The clean-room provenance of the binary and the libc is recorded.",
+        "Backward compatibility only: no forward promises."
+      ],
+      "deps": "M2, M4.",
+      "estimate": "8–12 weeks",
+      "risks": "ABI details; libc surface; stack/register conventions; big-endian.",
+      "docs": "../plan/milestones.html#m5--first-irix-binary"
+    },
+    {
+      "id": "m6",
+      "kind": "milestone",
+      "branch": "graphics",
+      "status": "exploring",
+      "code": "M6",
+      "title": "Display",
+      "fullTitle": "Display + native desktop",
+      "anchor": [
+        1820,
+        1340
+      ],
+      "summary": "A native display server and a minimal IRIX-inspired desktop: window, text, cursor, damage repair, 8-bit indexed.",
+      "demo": "A native window shows `hello, IRIX 7`, moves, raises and redraws with damage tracking; the hardware cursor moves; the desktop has a launcher and a clock.",
+      "criteria": [
+        "Newport REX3 blit, fill, line and text paths work.",
+        "VC2 mode programming (1024×768 or 1280×1024) and XMAP9 palette.",
+        "Hardware cursor in the XMAP9 auxiliary plane.",
+        "Retained window images and damage-driven repair.",
+        "Display lease for a full-screen cell.",
+        "Input: keyboard and mouse events.",
+        "A minimal native desktop: launcher, window manager, clock, terminal.",
+        "The display protocol is documented in display-protocol.md."
+      ],
+      "deps": "M2, M4.",
+      "estimate": "8–12 weeks",
+      "risks": "Undocumented VRAM size; REX3 FIFO depth; 24-bit planar mode; input.",
+      "docs": "../plan/milestones.html#m6--display--native-desktop"
+    },
+    {
+      "id": "m7",
+      "kind": "milestone",
+      "branch": "compat",
+      "status": "exploring",
+      "code": "M7",
+      "title": "X11",
+      "fullTitle": "X11",
+      "anchor": [
+        1080,
+        700
+      ],
+      "summary": "Run real IRIX X clients under a clean-room Rust X11 server in display-lease mode.",
+      "demo": "`xterm` and `twm` run under X11 on the Indy; the keyboard and mouse work; the server survives an X client crash.",
+      "criteria": [
+        "X11 connection handshake, MSBFirst, setup reply.",
+        "Core protocol: windows, GCs, pixmaps, fonts, events, properties, selections.",
+        "8-bit PseudoColor and 24-bit TrueColor visuals.",
+        "Extensions required by the corpus: SHAPE, MIT-SHM (or a local equivalent), XTEST.",
+        "Xlib ABI subset sufficient for `xterm`/`twm`.",
+        "Display lease integration with the native display server.",
+        "X Test Suite subset passes.",
+        "The X11 server is a native cell; legacy clients are MMU processes."
+      ],
+      "deps": "M5 (libc), M6 (display).",
+      "estimate": "12–20 weeks",
+      "risks": "Xlib/Motif surface; protocol corner cases; performance; 4Dwm parity.",
+      "docs": "../plan/milestones.html#m7--x11"
+    },
+    {
+      "id": "m8",
+      "kind": "milestone",
+      "branch": "storage",
+      "status": "exploring",
+      "code": "M8",
+      "title": "XFS",
+      "fullTitle": "XFS read-only",
+      "anchor": [
+        520,
+        780
+      ],
+      "summary": "Read an IRIX 6.5 XFS v4 disk image: superblock, allocation groups, inodes, extents and the bmap B+tree.",
+      "demo": "`ls /mnt/irix` lists an IRIX 6.5 disk image and `cat` reads a file.",
+      "criteria": [
+        "Superblock, AG headers, inode core, extents, bmap B+tree.",
+        "Four directory forms, symlinks, clean-log check.",
+        "Big-endian metadata; no byte swapping on the hot path.",
+        "Refuses a dirty log with a clear message.",
+        "Test corpus: clean IRIX 6.5 images, large files, sparse files, symlinks.",
+        "`fsck`-style consistency checks for the reader.",
+        "The XFS server is a userspace cell over a block-device capability.",
+        "No log replay and no write path in v1.0."
+      ],
+      "deps": "M4.",
+      "estimate": "8–12 weeks",
+      "risks": "IRIX v4 specifics (v1 dirs, ACLs); dirty logs; corrupted images.",
+      "docs": "../plan/milestones.html#m8--xfs-read-only"
+    },
+    {
+      "id": "m9",
+      "kind": "milestone",
+      "branch": "native",
+      "status": "exploring",
+      "code": "M9",
+      "title": "Native cells",
+      "fullTitle": "Native cell + capability ABI",
+      "anchor": [
+        2280,
+        1420
+      ],
+      "summary": "Load and run a native Rust cell through the capability ABI and the Unix-shaped libc.",
+      "demo": "A Rust cell opens a file, maps a shared buffer, calls a server over a channel, and prints `hello from a cell`; `fork`/`exec` on a small cell works.",
+      "criteria": [
+        "Cell loader: `.o` relocation, `CellNamespace`, symbol resolution.",
+        "Capability table: rights, derivation, delegation, revocation.",
+        "Synchronous IPC + shared memory; `Port` events.",
+        "Native libc: `open`/`read`/`write`/`close`/`mmap`/`fork`/`exec`/`wait`.",
+        "Process = one cell with a Unix personality; fd = capability.",
+        "`fork` is limited to small cells; `posix_spawn`/`exec` is the preferred path.",
+        "ABI version negotiation; incompatible cells are refused.",
+        "The native ABI is documented in native-abi.md."
+      ],
+      "deps": "M2, M3, M4.",
+      "estimate": "8–12 weeks",
+      "risks": "`fork` in a SAS kernel; cell relocation; capability/namespace impedance.",
+      "docs": "../plan/milestones.html#m9--native-cell--capability-abi"
+    },
+    {
+      "id": "m10",
+      "kind": "milestone",
+      "branch": "release",
+      "status": "planned",
+      "code": "M10",
+      "title": "Real Indy",
+      "fullTitle": "Real-Indy release",
+      "anchor": [
+        1500,
+        380
+      ],
+      "summary": "Boot, run and update IRIX 7 on a real Indy from R2: the integration gate where every branch has to hold.",
+      "demo": "A real Indy cold-boots from the ROM, fetches the kernel and root image from R2, starts MCP, runs X11, reads an XFS disk, and updates to a new image with rollback.",
+      "criteria": [
+        "Cold boot on both real Indys (or the supported configuration).",
+        "Graphics board detection (Newport 8-bit/24-bit; XZ/Extreme if present).",
+        "SCSI, Seeq, HAL2, Vino detection and basic operation.",
+        "MCP over the real network; watchdog recovery.",
+        "X11 `xterm`/`twm` on the real hardware.",
+        "XFS read-only on a real IRIX disk.",
+        "Image update: fetch, verify, A/B switch, rollback.",
+        "Installer/user/admin docs; troubleshooting guide.",
+        "SBOM, checksums, signature, release notes.",
+        "The release is reproducible from a clean checkout."
+      ],
+      "deps": "All milestones.",
+      "estimate": "8–12 weeks",
+      "risks": "Hardware failures; real-Indy configuration; R2 quotas; last-mile bugs.",
+      "docs": "../plan/milestones.html#m10--real-indy-release",
+      "accent": "#ffe08a"
+    },
+    {
+      "id": "m3-network",
+      "kind": "feature",
+      "parent": "m3",
+      "branch": "control",
+      "status": "planned",
+      "title": "Network cell",
+      "summary": "A de-privileged cell owns the Seeq 8003, exposes `/net`, and survives a reset without taking the kernel with it."
+    },
+    {
+      "id": "m3-mcp",
+      "kind": "feature",
+      "parent": "m3",
+      "branch": "control",
+      "status": "planned",
+      "title": "MCP server",
+      "summary": "Streamable HTTP, bearer token, tools for shell, files, serial, screen capture, reset and poweroff."
+    },
+    {
+      "id": "m3-shell",
+      "kind": "feature",
+      "parent": "m3",
+      "branch": "control",
+      "status": "planned",
+      "title": "Agent shell",
+      "summary": "A small shell with `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot` and `poweroff` over the control plane."
+    },
+    {
+      "id": "m3-watchdog",
+      "kind": "feature",
+      "parent": "m3",
+      "branch": "control",
+      "status": "planned",
+      "title": "Watchdog",
+      "summary": "The DS1386 watchdog guards `system.reset`; a wedged cell is recovered rather than babysat."
+    },
+    {
+      "id": "m4-scsi",
+      "kind": "feature",
+      "parent": "m4",
+      "branch": "storage",
+      "status": "planned",
+      "title": "WD33C93 SCSI",
+      "summary": "Initialise the WD33C93, read blocks and expose a block-device capability to userspace."
+    },
+    {
+      "id": "m4-block",
+      "kind": "feature",
+      "parent": "m4",
+      "branch": "storage",
+      "status": "planned",
+      "title": "Block cache",
+      "summary": "An LRU cache with explicit DMA sync, sized for 10 Mbit reads and a 64 MiB-class machine."
+    },
+    {
+      "id": "m4-erofs",
+      "kind": "feature",
+      "parent": "m4",
+      "branch": "storage",
+      "status": "planned",
+      "title": "EROFS reader",
+      "summary": "Mount the standard little-endian EROFS root image, with a tested big-endian byte-order codec."
+    },
+    {
+      "id": "m4-range",
+      "kind": "feature",
+      "parent": "m4",
+      "branch": "storage",
+      "status": "planned",
+      "title": "HTTP range",
+      "summary": "Fetch 64–256 KiB root-image blocks with read-ahead, and verify the image before mount."
+    },
+    {
+      "id": "m5-elf",
+      "kind": "feature",
+      "parent": "m5",
+      "branch": "compat",
+      "status": "planned",
+      "title": "ELF loader",
+      "summary": "Map an o32 image and its interpreter and libraries with the right stack layout and protections."
+    },
+    {
+      "id": "m5-syscalls",
+      "kind": "feature",
+      "parent": "m5",
+      "branch": "compat",
+      "status": "planned",
+      "title": "o32 syscalls",
+      "summary": "Decode the first o32 call set: write, exit, open, close, read, brk and getpid."
+    },
+    {
+      "id": "m5-libc",
+      "kind": "feature",
+      "parent": "m5",
+      "branch": "compat",
+      "status": "planned",
+      "title": "IRIX libc",
+      "summary": "A minimal clean-room libc: file I/O, memory allocation, printf and errno mapping."
+    },
+    {
+      "id": "m5-corpus",
+      "kind": "feature",
+      "parent": "m5",
+      "branch": "compat",
+      "status": "planned",
+      "title": "Compat corpus",
+      "summary": "Record the test binary, its expected output and its clean-room provenance before it runs."
+    },
+    {
+      "id": "m6-newport",
+      "kind": "feature",
+      "parent": "m6",
+      "branch": "graphics",
+      "status": "exploring",
+      "title": "Newport REX3",
+      "summary": "Blit, fill, line and text paths, plus VC2 mode programming and the XMAP9 palette."
+    },
+    {
+      "id": "m6-damage",
+      "kind": "feature",
+      "parent": "m6",
+      "branch": "graphics",
+      "status": "exploring",
+      "title": "Damage repair",
+      "summary": "Retained window images and damage-driven redraws, so moving a window does not repaint the world."
+    },
+    {
+      "id": "m6-lease",
+      "kind": "feature",
+      "parent": "m6",
+      "branch": "graphics",
+      "status": "exploring",
+      "title": "Display lease",
+      "summary": "A full-screen lease for a cell that wants the framebuffer, with a clean path back to the desktop."
+    },
+    {
+      "id": "m6-desktop",
+      "kind": "feature",
+      "parent": "m6",
+      "branch": "graphics",
+      "status": "exploring",
+      "title": "Native desktop",
+      "summary": "Launcher, window manager, clock and terminal: IRIX-inspired, not a pixel-for-pixel relic."
+    },
+    {
+      "id": "m7-core",
+      "kind": "feature",
+      "parent": "m7",
+      "branch": "compat",
+      "status": "exploring",
+      "title": "X11 core",
+      "summary": "Handshake, MSBFirst, windows, GCs, pixmaps, fonts, events, properties and selections."
+    },
+    {
+      "id": "m7-xlib",
+      "kind": "feature",
+      "parent": "m7",
+      "branch": "compat",
+      "status": "exploring",
+      "title": "Xlib subset",
+      "summary": "Enough Xlib ABI for `xterm` and `twm`, without pretending to be the whole X ecosystem."
+    },
+    {
+      "id": "m7-ext",
+      "kind": "feature",
+      "parent": "m7",
+      "branch": "compat",
+      "status": "exploring",
+      "title": "SHAPE + XTEST",
+      "summary": "The extensions the corpus actually needs: SHAPE, a local MIT-SHM equivalent and XTEST."
+    },
+    {
+      "id": "m7-clients",
+      "kind": "feature",
+      "parent": "m7",
+      "branch": "compat",
+      "status": "exploring",
+      "title": "xterm + twm",
+      "summary": "Real IRIX clients on the real display path; a client crash must not take the server down."
+    },
+    {
+      "id": "m8-super",
+      "kind": "feature",
+      "parent": "m8",
+      "branch": "storage",
+      "status": "exploring",
+      "title": "XFS v4 reader",
+      "summary": "Superblock, allocation-group headers, inode cores and the clean-log check."
+    },
+    {
+      "id": "m8-btree",
+      "kind": "feature",
+      "parent": "m8",
+      "branch": "storage",
+      "status": "exploring",
+      "title": "B+tree extents",
+      "summary": "Walk the bmap B+tree and extents without byte-swapping on the hot path."
+    },
+    {
+      "id": "m8-dirs",
+      "kind": "feature",
+      "parent": "m8",
+      "branch": "storage",
+      "status": "exploring",
+      "title": "Dirs + symlinks",
+      "summary": "All four directory forms, symlinks and the v1 quirks of an IRIX 6.5 disk."
+    },
+    {
+      "id": "m8-log",
+      "kind": "feature",
+      "parent": "m8",
+      "branch": "storage",
+      "status": "exploring",
+      "title": "Clean-log guard",
+      "summary": "Refuse a dirty log with a clear message. XFS writes and replay stay in the compost."
+    },
+    {
+      "id": "m9-loader",
+      "kind": "feature",
+      "parent": "m9",
+      "branch": "native",
+      "status": "exploring",
+      "title": "Cell loader",
+      "summary": "Relocate a `.o`, resolve its `CellNamespace` and load it into a fresh capability domain."
+    },
+    {
+      "id": "m9-rights",
+      "kind": "feature",
+      "parent": "m9",
+      "branch": "native",
+      "status": "exploring",
+      "title": "Capability rights",
+      "summary": "Rights, derivation, delegation and revocation — with generation counters that make stale handles loud."
+    },
+    {
+      "id": "m9-ipc",
+      "kind": "feature",
+      "parent": "m9",
+      "branch": "native",
+      "status": "exploring",
+      "title": "IPC + ports",
+      "summary": "Synchronous IPC, shared memory and port events: the native equivalent of a syscall surface."
+    },
+    {
+      "id": "m9-libc",
+      "kind": "feature",
+      "parent": "m9",
+      "branch": "native",
+      "status": "exploring",
+      "title": "Native libc",
+      "summary": "A Unix-shaped libc where a process is one cell and a file descriptor is a capability."
+    },
+    {
+      "id": "v0.1",
+      "kind": "release",
+      "parent": "m3",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.1",
+      "title": "Developer harness",
+      "anchor": [
+        1710,
+        1520
+      ],
+      "summary": "Serial, network, MCP, shell, reset and watchdog — the machine becomes programmable.",
+      "includes": [
+        "Serial console",
+        "Network cell",
+        "MCP server",
+        "Agent shell",
+        "Watchdog recovery"
+      ],
+      "audience": "The developer and the agent."
+    },
+    {
+      "id": "v0.2",
+      "kind": "release",
+      "parent": "m5",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.2",
+      "title": "First IRIX binary",
+      "anchor": [
+        1270,
+        1245
+      ],
+      "summary": "One real IRIX 6.5 binary runs unchanged, with a minimal libc and a compatibility corpus.",
+      "includes": [
+        "ELF loader",
+        "o32 syscalls",
+        "Minimal IRIX libc",
+        "Compat corpus"
+      ],
+      "audience": "Compatibility testers."
+    },
+    {
+      "id": "v0.3",
+      "kind": "release",
+      "parent": "m6",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.3",
+      "title": "Native desktop",
+      "anchor": [
+        1930,
+        1245
+      ],
+      "summary": "Newport display, a native window system and a small IRIX-inspired desktop.",
+      "includes": [
+        "Newport REX3",
+        "Damage repair",
+        "Hardware cursor",
+        "Desktop shell"
+      ],
+      "audience": "Early users."
+    },
+    {
+      "id": "v0.4",
+      "kind": "release",
+      "parent": "m7",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.4",
+      "title": "X11",
+      "anchor": [
+        1185,
+        615
+      ],
+      "summary": "A clean-room X11 server in display-lease mode, running `xterm` and `twm`.",
+      "includes": [
+        "X11 core",
+        "Xlib subset",
+        "SHAPE + XTEST",
+        "xterm + twm"
+      ],
+      "audience": "IRIX application testers."
+    },
+    {
+      "id": "v0.5",
+      "kind": "release",
+      "parent": "m8",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.5",
+      "title": "XFS read-only",
+      "anchor": [
+        640,
+        690
+      ],
+      "summary": "Read a real IRIX 6.5 XFS disk image, with a clean-log guard and no write path.",
+      "includes": [
+        "XFS v4 reader",
+        "B+tree extents",
+        "Dirs + symlinks",
+        "Consistency checks"
+      ],
+      "audience": "Data-recovery users."
+    },
+    {
+      "id": "v0.6",
+      "kind": "release",
+      "parent": "m9",
+      "branch": "release",
+      "status": "planned",
+      "version": "v0.6",
+      "title": "Native cells",
+      "anchor": [
+        2360,
+        1300
+      ],
+      "summary": "Native Rust cells, a capability ABI and a Unix-shaped native libc.",
+      "includes": [
+        "Cell loader",
+        "Capability rights",
+        "IPC + ports",
+        "Native libc"
+      ],
+      "audience": "Rust developers."
+    },
+    {
+      "id": "v1.0",
+      "kind": "release",
+      "parent": "m10",
+      "branch": "release",
+      "status": "planned",
+      "version": "v1.0",
+      "title": "Real Indy",
+      "anchor": [
+        1500,
+        270
+      ],
+      "summary": "A real Indy as a daily driver: cold boot from R2, MCP, X11, XFS and signed A/B updates.",
+      "includes": [
+        "Cold boot on real hardware",
+        "MCP over the LAN",
+        "X11 xterm/twm",
+        "XFS read-only",
+        "Signed A/B updates"
+      ],
+      "audience": "The project."
+    },
+    {
+      "id": "ws-provenance",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "active",
+      "title": "Clean-room provenance",
+      "summary": "Harness-enforced provenance, similarity screening, DCO and access control for the private source tree.",
+      "items": [
+        "Harness",
+        "Similarity screen",
+        "DCO",
+        "Access control"
+      ]
+    },
+    {
+      "id": "ws-ci",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "done",
+      "title": "CI + automation",
+      "summary": "Cross-build, emulator boot, smoke harness, hardware-in-the-loop and releases.",
+      "items": [
+        "Cross-build gate",
+        "Emulator boot",
+        "Smoke harness",
+        "Release drafting"
+      ]
+    },
+    {
+      "id": "ws-docs",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "done",
+      "title": "Documentation",
+      "summary": "The book, the interface specs, install and troubleshooting guides, ADRs and this tree.",
+      "items": [
+        "mdBook",
+        "Interface specs",
+        "Install guide",
+        "ADRs"
+      ]
+    },
+    {
+      "id": "ws-security",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "planned",
+      "title": "Security",
+      "summary": "Threat model, MCP modes, supply-chain gates and vulnerability disclosure.",
+      "items": [
+        "Threat model",
+        "MCP guardrails",
+        "SBOM",
+        "Disclosure"
+      ]
+    },
+    {
+      "id": "ws-hardware",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "done",
+      "title": "Hardware lab",
+      "summary": "Two Indys, serial, SCSI emulation, spares and backups — the only real proof that matters.",
+      "items": [
+        "Two Indys",
+        "Serial rig",
+        "SCSI emulation",
+        "Spares"
+      ]
+    },
+    {
+      "id": "ws-performance",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "exploring",
+      "title": "Performance",
+      "summary": "Benchmarks tracked over time, never used as a merge gate.",
+      "items": [
+        "Boot time",
+        "Frame time",
+        "I/O throughput",
+        "Regression tracking"
+      ]
+    },
+    {
+      "id": "ws-community",
+      "kind": "workstream",
+      "branch": "mycelium",
+      "status": "planned",
+      "title": "Community",
+      "summary": "Contributing, governance, good-first issues and release notes that tell the truth.",
+      "items": [
+        "Governance",
+        "Good-first issues",
+        "Release notes",
+        "Code of conduct"
+      ]
+    },
+    {
+      "id": "p-isdn",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "ISDN",
+      "summary": "The Indy's ISDN option is not in v1.0.",
+      "reason": "Rare hardware, no test target and no user story. The compost is the right place."
+    },
+    {
+      "id": "p-video",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "Indy Video",
+      "summary": "Video output is deferred until the real boards are probed.",
+      "reason": "The video path needs hardware we cannot yet characterise. It waits outside v1.0."
+    },
+    {
+      "id": "p-3d",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "3D acceleration",
+      "summary": "No GL or GLX acceleration in v1.0.",
+      "reason": "2D display and X11 compatibility come first; accelerating 3D is a different project."
+    },
+    {
+      "id": "p-xfs-write",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "XFS writes",
+      "summary": "XFS is read-only; log replay and write-back are out.",
+      "reason": "A read-only compatibility server is the smaller, honest promise. Data integrity first."
+    },
+    {
+      "id": "p-glx",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "GLX + rootless X",
+      "summary": "X11 is lease-based; GLX and rootless embedding are out.",
+      "reason": "The corpus needs `xterm` and `twm`, not a full X desktop compositor."
+    },
+    {
+      "id": "p-posix",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "Full POSIX",
+      "summary": "The native ABI is capability-first, not POSIX-first.",
+      "reason": "The Unix shape is a compatibility surface, not the native design centre."
+    },
+    {
+      "id": "p-i7fs",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "I7FS in v1.0",
+      "summary": "A new on-disk format is not a v1.0 dependency.",
+      "reason": "EROFS and read-only XFS carry v1.0. I7FS is a later experiment."
+    },
+    {
+      "id": "p-indigo",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "Indigo Magic parity",
+      "summary": "The new desktop is IRIX-inspired, not a pixel-for-pixel recreation.",
+      "reason": "The goal is a good native desktop, not a museum exhibit."
+    },
+    {
+      "id": "p-forward",
+      "kind": "pruned",
+      "branch": "compost",
+      "status": "pruned",
+      "title": "Forward compatibility",
+      "summary": "Native IRIX 7 binaries will not run on IRIX 6.5.",
+      "reason": "Backward compatibility is the mandate. Forward compatibility is explicitly out."
+    }
+  ]
+}
