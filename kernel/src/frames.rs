@@ -66,6 +66,8 @@ static mut FRAME_META: [FrameMeta; MAX_FRAMES] = [FrameMeta {
 /// Initialise the frame allocator from the ARCS memory descriptor list.
 pub fn init(descs: &[MemDesc], count: usize) {
     unsafe {
+        // Cap the count to avoid overflowing the MEM_DESCS array.
+        let count = count.min(MAX_MEM_DESCS);
         MEM_DESC_COUNT = count;
         for i in 0..count {
             MEM_DESCS[i] = descs[i];
