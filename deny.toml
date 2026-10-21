@@ -3,7 +3,8 @@
 
 [[lint]]
 # Licenses that are allowed for dependencies.
-allow = [
+licenses = { 
+  allow = [
     # Permissive licenses (GPLv3-compatible)
     "0BSD",
     "BSD-2-Clause",
@@ -18,25 +19,25 @@ allow = [
     "GPL-3.0-or-later",
     "LGPL-3.0-only",
     "LGPL-3.0-or-later",
-]
-
-# Deny non-GPL-compatible licenses.
-deny = [
+  ]
+  # Deny non-GPL-compatible licenses.
+  deny = [
     "GPL-2.0-only",
     "GPL-2.0-or-later",
     "AGPL-*",
-]
+  ]
+}
 
 # When a dependency has multiple licenses, any one matching `allow` is enough.
-multiple = "any"
+# multiple = "any"
 
 # Scope of the check: dependencies (not dev-dependencies unless they are
 # needed for building).
-scope = "dependencies"
+# scope = "dependencies"
 
 # Check both the workspace and member crates.
-include-workspace-members = true
-include-workspace-excludes = false
+# include-workspace-members = true
+# include-workspace-excludes = false
 
 [[registry]]
 # Allow all crates from crates.io by default (filtered by license above).
