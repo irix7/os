@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! ROM network stack: Seeq 8003 + HPC3 PDMA as a smoltcp `Device`, plus a
 //! DHCPv4 client.
 //!

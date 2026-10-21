@@ -53,21 +53,21 @@ o32 support belongs to the future IRIX binary-compatibility layer, not to the fi
 
 ## Build Commands
 
-### Host build (for tests):
+### Host build for tests
 
 ```bash
 cargo build
 cargo test
 ```
 
-### Cross-build the kernel:
+### Cross-build the kernel
 
 ```bash
 cargo build -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
 ```
 
-### Cross-build the ROM:
+### Cross-build the ROM
 
 The ROM links its text at the PROM reset window (`0xBFC00000`) and its writable data in
 DRAM (`0xA8700000`), so it needs `rom/linker.ld`:
@@ -78,7 +78,7 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
   --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
 ```
 
-### Produce a raw PROM image:
+### Produce a raw PROM image
 
 The PROM socket takes raw bytes at physical `0x1FC00000` (kseg1 `0xBFC00000`), not an ELF:
 

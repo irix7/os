@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! A minimal bump allocator for the ROM.
 //!
 //! The ROM runs very early, before a frame allocator exists, so smoltcp's

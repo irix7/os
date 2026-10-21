@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! A tiny `no_std` subset of Charmbracelet's Lip Gloss.
 //!
 //! The upstream Rust ports (`lipgloss`, `rusty-lipgloss`, `charming-lipgloss`)

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Results of the stackless DRAM test.
 //!
 //! `reset.S` runs `memtest.S` before it creates a stack, copies `.data`, or

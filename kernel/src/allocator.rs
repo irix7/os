@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Minimal memory primitives required by smoltcp and core when compiled for a
 //! freestanding target without libc. compiler_builtins does not always emit
 //! these as linkable symbols on MIPS targets.

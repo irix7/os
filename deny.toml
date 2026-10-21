@@ -1,0 +1,4 @@
+# cargo-deny configuration for IRIX 7.
+# Project is GPL-3.0-only. Dependencies must be GPLv3-compatible.
+
+licenses = { allow = ["MIT", "Apache-2.0", "0BSD", "ISC", "Unlicense", "BSD-2-Clause", "BSD-3-Clause", "GPL-3.0-only", "GPL-3.0-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later"] }

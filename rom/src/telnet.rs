@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! Polled ROM console over telnet, styled with a small no_std Lip Gloss subset.
 //!
 //! iris forwards host `127.0.0.1:2323` to guest port 23 by default.  The
