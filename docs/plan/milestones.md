@@ -87,9 +87,10 @@ tracer bullet boots on iris and prints its marker.
 the PROM window at `0xBFC00000`, initialises the Indy, brings up the Seeq 8003, runs
 smoltcp, fetches a kernel over HTTP, verifies SHA-256, and jumps to the kernel.
 
-**Demo:** in iris, the ROM boots from the raw PROM image, prints the DHCP lease and NTP time,
-fetches a test kernel from a local HTTP server, prints the digest, and jumps to a stub that
-prints `KERNEL STUB OK`.
+**Demo:** in iris, the ROM boots from the raw PROM image, prints the DHCP lease, opens a
+telnet console, prints the NTP time, fetches the kernel from a local HTTP server, verifies
+the digest, and jumps to the real n32 kernel, which prints `kernel: up`. The telnet console
+remains live after the hand-off.
 
 **Acceptance criteria:**
 
@@ -103,6 +104,7 @@ prints `KERNEL STUB OK`.
 - [x] SHA-256 verification of the fetched kernel.
 - [x] The ROM fits in 512 KiB–1 MiB.
 - [ ] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
+- [x] Telnet ROM console opens after DHCP and stays live after the kernel starts.
 - [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
 - [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
 - [x] Caches are enabled and flushed before the handoff.

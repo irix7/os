@@ -1148,14 +1148,20 @@ The ROM is a separate `no_std` Rust artefact:
 | Stack | smoltcp, IPv4 + DHCPv4 + NTP; IPv6 and DNS planned |
 | Application | HTTP/1.1 client; HTTPS/TLS planned |
 | Integrity | SHA-256 of the kernel and boot bundle |
-| Console | Serial (Z85C30) and/or framebuffer text |
+| Console | Serial (Z85C30); telnet ROM console on guest port 23 |
 | Payload | Kernel + boot bundle, loaded to a kseg0 address agreed with the kernel linker script (for example `0x8804_0000`, mapping physical `0x0804_0000`; the Indy's RAM starts at physical `0x0800_0000`) |
-| Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry |
+| Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry; the live network stack and telnet console remain in place |
 
 The ROM's network driver is an exception to "all drivers are cells" (D17): it must exist
 before any cell can be loaded. It is a minimal polled/DMA driver, not the full
-network cell. The kernel reinitialises the Seeq and starts the network cell from the boot
-bundle; it does not inherit the ROM's state.
+network cell.
+
+The ROM and kernel are one program at two link addresses, not a firmware/kernel pair. The
+Seeq device, smoltcp `Interface`, `SocketSet`, clock and telnet console are initialised
+once by the ROM and stay live across the hand-off. The kernel uses those same objects in
+place; it does not reinitialise the Seeq or create a second network stack. The boot-bundle
+network cell layers policy and `/net` on top of the inherited device, and the resident
+console service is polled from the kernel idle path.
 
 The ROM's TLS story is deliberately simple: the public OS image is not secret, so the ROM
 fetches it over **HTTP** and verifies a SHA-256 digest baked into the ROM. TLS is not

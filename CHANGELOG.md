@@ -18,6 +18,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - Kernel handoff: the real n32 kernel is linked at `0x88040000`, receives a physical
   `BootInfo` in `$a0`, uses its memory map for the frame allocator, and runs with caches
   enabled.
+- Telnet ROM console on guest port 23, created immediately after DHCP. The network stack,
+  clock and console session stay live across the hand-off; the kernel polls the resident
+  `rom_console_poll` service so the console remains available after `kernel: up`.
 - Advanced architecture specification (`docs/spec/architecture.md`), including the D1–D31
   decision register, hybrid SAS/MMU isolation, the native capability ABI, the IRIX
   compatibility container, R2-first boot, EROFS root, X11, the native display server and the

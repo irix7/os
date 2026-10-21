@@ -9,18 +9,21 @@ it is not an ECOFF image loaded by ARCS.
 1. `src/boot/reset.S` starts at `0xBFC00000` with no stack and no writable data.
 2. It invalidates the TLB, maps the bank-probe window, initialises the SCC console, then
    calls `memsize.S` to size and map DRAM and `memtest.S` to test every byte of it.
-3. Only after the RAM test does it set `$sp` to `0xA8800000`, copy `.data` from its PROM
+3. Only after the RAM test does it set `$sp` to `0xA8A00000`, copy `.data` from its PROM
    load image to `0xA8700000`, clear `.bss`, and enter Rust.
-4. Rust initialises the Seeq 8003 (MAC from the Dallas NVRAM `eaddr` slot), runs DHCP, NTP
-   and an HTTP GET on one smoltcp interface, verifies SHA-256, copies the image to
-   `0x88040000`, and jumps to it.
+4. Rust initialises the Seeq 8003 (MAC from the Dallas NVRAM `eaddr` slot), runs DHCP, and
+   opens a telnet ROM console on guest port 23. NTP and an HTTP GET then run on the same
+   smoltcp interface; the image is copied to `0x88040000` and the kernel is entered.
+5. The network stack, clock and telnet session stay live. The kernel calls the resident
+   `rom_console_poll` service from its idle path, so the console remains available after
+   `kernel: up`.
 
 ## Memory layout
 
 | Range | Use |
 |---|---|
 | `0xBFC00000` | ROM text/rodata, executed in place |
-| `0xA8700000` | `.data`/`.bss` + 2 MiB heap |
+| `0xA8700000` | `.data`/`.bss` + 2 MiB heap + persistent network/console state |
 | `0xA8A00000` | initial ROM stack top (grows down) |
 | `0x88040000` | kernel load/entry (`0x08040000` physical) |
 | `0x88200000` | kernel stack top |
@@ -29,7 +32,10 @@ it is not an ECOFF image loaded by ARCS.
 | `0xBFBD4000` | Seeq 8003 registers |
 | `0xBFB94000` / `0xBFB96000` | HPC3 ENET RX / TX DMA |
 
-The low 512 KiB of DRAM is a special alias window and is deliberately not used.
+The low 512 KiB of DRAM is a special alias window and is deliberately not used. The
+`BootInfo` memory map reserves the first 11 MiB (kernel image, kernel stack, `BootInfo`,
+ROM data/heap/stack and the persistent console state); the frame allocator only sees the
+remainder.
 
 ## Build
 
@@ -53,8 +59,19 @@ cd /mnt/europa/iris
   --monitor-port 9998 --serial-log serial.log
 ```
 
-The console is SCC channel B and is exposed on TCP port **8881** (channel A is 8880).
-`--serial-log` is the simplest way to capture it.
+The serial console is SCC channel B and is exposed on TCP port **8881** (channel A is
+8880). `--serial-log` is the simplest way to capture it.
+
+The ROM also opens a telnet console on guest TCP port **23**. iris forwards host
+`127.0.0.1:2323` to guest 23 by default:
+
+```bash
+telnet 127.0.0.1 2323
+```
+
+It prints the boot log and a `ROM>` prompt. The initial window waits for `boot` (or about
+five seconds with no client); after that the same session stays live across the kernel
+hand-off.
 
 ## Kernel fetch
 
@@ -80,4 +97,6 @@ default).
 - DHCP, NTP and HTTP work on one network stack; SHA-256 matches the served image.
 - The real n32 kernel is linked at `0x88040000`, receives `BootInfo` in `$a0`, uses the
   memory map for its frame allocator, runs with caches enabled and prints `kernel: up`.
+- The telnet ROM console is created immediately after DHCP and remains live after the
+  kernel boots; the kernel polls the resident network/console service.
 - HTTPS/TLS is not implemented yet; the boot specification currently requires only HTTP.

@@ -30,6 +30,7 @@ pub mod net;
 pub mod ntp;
 pub mod ramtest;
 pub mod sha256;
+pub mod telnet;
 
 use core::ptr::{read_volatile, write_volatile};
 
@@ -108,8 +109,27 @@ fn tx_ready() -> bool {
     rd(RR0) & 0x04 != 0 // bit 2: tx buffer empty
 }
 
+/// Rolling boot log mirrored to the telnet console when a client connects.
+/// The log is linear and truncates at 4 KiB; that is ample for the ROM's
+/// progress messages.
+const BOOT_LOG_SIZE: usize = 4096;
+static mut BOOT_LOG: [u8; BOOT_LOG_SIZE] = [0; BOOT_LOG_SIZE];
+static mut BOOT_LOG_LEN: usize = 0;
+
+/// Return the boot messages captured since `rom_main` started.
+pub fn boot_log() -> &'static [u8] {
+    unsafe { &BOOT_LOG[..BOOT_LOG_LEN] }
+}
+
 /// Write one byte to the serial console (polled).
 pub fn serial_write_byte(b: u8) {
+    unsafe {
+        let len = BOOT_LOG_LEN;
+        if len < BOOT_LOG_SIZE {
+            BOOT_LOG[len] = b;
+            BOOT_LOG_LEN = len + 1;
+        }
+    }
     // Spin until the transmitter can accept another byte.
     while !tx_ready() {
         core::hint::spin_loop();

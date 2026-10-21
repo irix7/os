@@ -9,6 +9,7 @@
 //! 2,208,988,800 seconds.
 
 use crate::net::SeeqDevice;
+use crate::telnet::{ConsoleInfo, TelnetConsole};
 use alloc::boxed::Box;
 use alloc::format;
 use smoltcp::iface::{Interface, SocketSet};
@@ -64,6 +65,8 @@ pub fn query_ntp(
     socket_set: &mut SocketSet,
     device: &mut SeeqDevice,
     server_ip: Ipv4Address,
+    console: Option<&mut TelnetConsole>,
+    info: &ConsoleInfo,
 ) -> Option<u64> {
     // The socket set outlives this call, so the packet buffers must too.
     let rx_meta = Box::leak(Box::new(
@@ -98,8 +101,12 @@ pub fn query_ntp(
     let mut timestamp = start;
     let timeout = Duration::from_millis(10_000);
 
+    let mut console = console;
     loop {
         let _ = iface.poll(timestamp, device, socket_set);
+        if let Some(c) = console.as_deref_mut() {
+            c.service(socket_set, info);
+        }
 
         // Check for a received NTP response.
         let sock = socket_set.get_mut::<UdpSocket>(udp_handle);

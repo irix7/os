@@ -129,6 +129,12 @@ pub fn print_dec(mut v: usize) {
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
+/// Resident ROM console/network poll routine, from `BootInfo` offset 0xF0.
+/// It is part of the same program at a different address; calling it keeps
+/// the ROM-initialised network stack and telnet session live.
+static mut CONSOLE_POLL: u32 = 0;
+static mut NET_STATE: u32 = 0;
+
 /// Kernel entry point, called from `boot.S` with the physical BootInfo address.
 #[no_mangle]
 pub extern "C" fn kernel_main(boot_info: u32) -> ! {
@@ -144,6 +150,13 @@ pub extern "C" fn kernel_main(boot_info: u32) -> ! {
         print_hex8((magic >> 8) as u8);
         print_hex8(magic as u8);
         println("");
+    }
+
+    let console_poll = unsafe { read_volatile((bi as usize + 0xF0) as *const u32) };
+    let net_state = unsafe { read_volatile((bi as usize + 0xF4) as *const u32) };
+    unsafe {
+        CONSOLE_POLL = console_poll;
+        NET_STATE = net_state;
     }
 
     // Pull the memory map out of BootInfo (offsets 0x10 and 0x18) and give it
@@ -179,6 +192,12 @@ pub extern "C" fn kernel_main(boot_info: u32) -> ! {
 
 fn idle_loop() -> ! {
     loop {
+        let poll = unsafe { CONSOLE_POLL };
+        let net = unsafe { NET_STATE };
+        if poll != 0 && net != 0 {
+            let service: extern "C" fn(u32) = unsafe { core::mem::transmute(poll as usize) };
+            service(net);
+        }
         core::hint::spin_loop();
     }
 }

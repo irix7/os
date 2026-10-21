@@ -100,12 +100,24 @@ Compile-time assertions in both codebases check the size and offsets.
 | `0xE0` | 8 | `ram_size` | Usable RAM in bytes |
 | `0xE8` | 4 | `board_id` | 0 Indy, 1 Indigo2 IP22, 2 Indigo2 IP28, 3 unknown |
 | `0xEC` | 4 | `prom_version` | ARCS/PROM version, 0 if unknown |
-| `0xF0` | 16 | `reserved` | Zero |
+| `0xF0` | 4 | `console_poll` | Kseg1 virtual address of the resident console/network poll routine; 0 if absent |
+| `0xF4` | 4 | `net_state` | Kseg1 virtual address of the live network/console state passed to `console_poll`; 0 if absent |
+| `0xF8` | 4 | `seeq_state` | Kseg1 virtual address of the live Seeq device; 0 if absent |
+| `0xFC` | 4 | `reserved` | Zero |
 
 `BootInfo` is followed by the memory map and the strings; the ROM places them in a reserved
 region and records their physical addresses.
 
-### 3.1 Flags
+### 3.1 Resident console service
+
+The ROM and kernel are one program at two link addresses. The ROM initialises the Seeq
+device, `Interface`, `SocketSet`, clock and telnet console once. `net_state` and
+`seeq_state` point at that live state and `console_poll` points at a resident routine that
+drives it; the kernel calls the routine from its idle path with `net_state`. The kernel must not re-create the network
+stack or console, and the memory map must reserve the RAM holding the shared state. The
+telnet console therefore remains available while the kernel is running.
+
+### 3.2 Flags
 
 | Bit | Meaning |
 |---|---|

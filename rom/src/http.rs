@@ -6,6 +6,7 @@
 //! network stack carries DHCP, NTP and the kernel fetch.
 
 use crate::net::SeeqDevice;
+use crate::telnet::{ConsoleInfo, TelnetConsole};
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
@@ -40,6 +41,8 @@ pub fn http_get(
     host: &str,
     path: &str,
     range: Option<&str>,
+    console: Option<&mut TelnetConsole>,
+    info: &ConsoleInfo,
 ) -> Result<FetchResult, ()> {
     // Create a TCP socket with leaked buffers (live for the duration of the
     // fetch; the bump allocator never frees).
@@ -61,8 +64,12 @@ pub fn http_get(
     let deadline = start + Duration::from_millis(HTTP_TIMEOUT_MS);
 
     // Wait for connection establishment.
+    let mut console = console;
     loop {
         let _ = iface.poll(timestamp, device, socket_set);
+        if let Some(c) = console.as_deref_mut() {
+            c.service(socket_set, info);
+        }
         let state = socket_set.get_mut::<TcpSocket>(tcp_handle).state();
         if state == tcp::State::Established {
             break;
@@ -108,27 +115,35 @@ pub fn http_get(
     let mut body = Vec::new();
     loop {
         let _ = iface.poll(timestamp, device, socket_set);
-        let sock = socket_set.get_mut::<TcpSocket>(tcp_handle);
+        let state = {
+            let sock = socket_set.get_mut::<TcpSocket>(tcp_handle);
 
-        let mut chunk = [0u8; 512];
-        loop {
-            match sock.recv_slice(&mut chunk) {
-                Ok(0) => break,
-                Ok(n) => {
-                    if headers_done {
-                        body.extend_from_slice(&chunk[..n]);
-                    } else {
-                        headers.extend_from_slice(&chunk[..n]);
-                        if let Some(pos) = find_header_end(&headers) {
-                            content_length = parse_content_length(&headers[..pos]);
-                            body.extend_from_slice(&headers[pos + 4..]);
-                            headers.clear();
-                            headers_done = true;
+            let mut chunk = [0u8; 512];
+            loop {
+                match sock.recv_slice(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if headers_done {
+                            body.extend_from_slice(&chunk[..n]);
+                        } else {
+                            headers.extend_from_slice(&chunk[..n]);
+                            if let Some(pos) = find_header_end(&headers) {
+                                content_length = parse_content_length(&headers[..pos]);
+                                body.extend_from_slice(&headers[pos + 4..]);
+                                headers.clear();
+                                headers_done = true;
+                            }
                         }
                     }
+                    Err(_) => break,
                 }
-                Err(_) => break,
             }
+
+            sock.state()
+        };
+
+        if let Some(c) = console.as_deref_mut() {
+            c.service(socket_set, info);
         }
 
         // A Content-Length gives an exact end, independent of how the FIN is
@@ -139,7 +154,6 @@ pub fn http_get(
             }
         }
 
-        let state = sock.state();
         if state == tcp::State::Closed || state == tcp::State::LastAck {
             break;
         }

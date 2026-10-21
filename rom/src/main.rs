@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 use rom::net::SeeqDevice;
@@ -35,18 +36,16 @@ core::arch::global_asm!(include_str!("boot/memsize.S"));
 core::arch::global_asm!(include_str!("boot/memtest.S"));
 
 fn print_hex8(v: u8) {
-    unsafe {
-        serial_write_byte(if v >> 4 < 10 {
-            b'0' + (v >> 4)
-        } else {
-            b'A' + (v >> 4) - 10
-        });
-        serial_write_byte(if v & 0x0F < 10 {
-            b'0' + (v & 0x0F)
-        } else {
-            b'A' + (v & 0x0F) - 10
-        });
-    }
+    serial_write_byte(if v >> 4 < 10 {
+        b'0' + (v >> 4)
+    } else {
+        b'A' + (v >> 4) - 10
+    });
+    serial_write_byte(if v & 0x0F < 10 {
+        b'0' + (v & 0x0F)
+    } else {
+        b'A' + (v & 0x0F) - 10
+    });
 }
 
 fn print_dec(mut v: u8) {
@@ -65,9 +64,40 @@ fn print_dec(mut v: u8) {
 // live outside the low 512 KiB of DRAM.  The original IP22 PROM puts its
 // descriptor arrays and buffers at BSSADDR 0xA8700000 (7 MiB in); the low
 // 512 KiB has a separate alias at physical 0 and is special-cased throughout
-// the memory system.  Keep the device in .bss at 0xA8040000 instead of on the
-// stack, which starts at 0xA8030000 and would place it in that alias window.
+// the memory system.  Keep the device in .bss, not on the stack.
 static mut SEEQ: Option<SeeqDevice> = None;
+
+/// Live network/console state carried across the kernel hand-off.  The ROM
+/// and kernel are one program at different link addresses; the kernel calls
+/// `rom_console_poll` to drive this same state, rather than re-creating it.
+struct PersistentNet {
+    iface: Interface,
+    sockets: SocketSet<'static>,
+    console: Option<rom::telnet::TelnetConsole>,
+    info: rom::telnet::ConsoleInfo,
+}
+
+static mut PERSISTENT: Option<PersistentNet> = None;
+
+const SOCKET_SLOTS: usize = 12;
+
+/// Socket storage backing the shared `SocketSet`.  It must be static because
+/// the set is moved into `PERSISTENT` and used after the kernel starts.
+static mut SOCKET_STORAGE: MaybeUninit<[SocketStorage<'static>; SOCKET_SLOTS]> =
+    MaybeUninit::uninit();
+
+#[allow(static_mut_refs)]
+fn socket_storage() -> &'static mut [SocketStorage<'static>] {
+    unsafe {
+        let p =
+            core::ptr::addr_of_mut!(SOCKET_STORAGE) as *mut [SocketStorage<'static>; SOCKET_SLOTS];
+        let slots = p as *mut SocketStorage<'static>;
+        for i in 0..SOCKET_SLOTS {
+            slots.add(i).write(SocketStorage::EMPTY);
+        }
+        core::slice::from_raw_parts_mut(slots, SOCKET_SLOTS)
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn rom_main() -> ! {
@@ -123,8 +153,7 @@ pub extern "C" fn rom_main() -> ! {
 
     // One network stack for the whole boot: DHCP, NTP and the kernel fetch
     // share this interface, socket set and Seeq device.
-    let mut socket_storage = [SocketStorage::EMPTY; 8];
-    let mut socket_set = SocketSet::new(&mut socket_storage[..]);
+    let mut socket_set = SocketSet::new(socket_storage());
     let mut iface = Interface::new(
         smoltcp::iface::Config::new(HardwareAddress::Ethernet(seeq.mac_address())),
         seeq,
@@ -162,13 +191,57 @@ pub extern "C" fn rom_main() -> ! {
         let _ = iface.routes_mut().add_default_ipv4_route(gateway);
     }
 
+    // The ROM console is a telnet server on guest port 23 (iris forwards
+    // host 127.0.0.1:2323 by default).  It is created immediately after DHCP
+    // so it can be used before NTP, HTTP and the kernel hand-off.
+    let mac_array = [
+        mac_bytes[0],
+        mac_bytes[1],
+        mac_bytes[2],
+        mac_bytes[3],
+        mac_bytes[4],
+        mac_bytes[5],
+    ];
+    let mut console = match rom::telnet::TelnetConsole::new(&mut socket_set) {
+        Some(c) => {
+            serial_write_str("ROM: telnet console on port 23\r\n");
+            Some(c)
+        }
+        None => {
+            serial_write_str("ROM: telnet console init failed\r\n");
+            None
+        }
+    };
+    let mut info = rom::telnet::ConsoleInfo {
+        stage: "dhcp",
+        ip: Some(ip),
+        gateway: lease.router,
+        mac: mac_array,
+        ram_size,
+        ntp_time: None,
+    };
+    if let Some(c) = console.as_mut() {
+        serial_write_str("ROM: waiting for telnet console (type 'boot' to continue)\r\n");
+        c.wait_for_console(&mut iface, &mut socket_set, seeq, &info, 300_000_000);
+        serial_write_str("ROM: console window closed\r\n");
+    }
+
+    info.stage = "ntp";
     serial_write_str("ROM: ntp...");
     let ntp_server = lease
         .router
         .unwrap_or_else(|| Ipv4Address::new(192, 168, 0, 1));
-    let unix_time = match rom::ntp::query_ntp(&mut iface, &mut socket_set, seeq, ntp_server) {
+    let unix_time = match rom::ntp::query_ntp(
+        &mut iface,
+        &mut socket_set,
+        seeq,
+        ntp_server,
+        console.as_mut(),
+        &info,
+    ) {
         Some(t) => {
             serial_write_str(&alloc::format!("ok, unix time {}\r\n", t));
+            info.ntp_time = Some(t);
             t
         }
         None => {
@@ -178,6 +251,7 @@ pub extern "C" fn rom_main() -> ! {
     };
     let _ = unix_time;
 
+    info.stage = "http";
     serial_write_str("ROM: http get...");
     let server_ip = Ipv4Address::new(
         HTTP_SERVER_IP[0],
@@ -194,6 +268,8 @@ pub extern "C" fn rom_main() -> ! {
         HTTP_SERVER_HOST,
         "/kernel",
         None,
+        console.as_mut(),
+        &info,
     ) {
         Ok(result) => {
             serial_write_str("ok, ");
@@ -221,26 +297,47 @@ pub extern "C" fn rom_main() -> ! {
 
             // Build the memory map and BootInfo in reserved RAM above the
             // kernel's stack.  All addresses stored in BootInfo are physical.
+            // The first 11 MiB hold the kernel image, its stack, BootInfo and
+            // the ROM's live network/console state; the kernel must never
+            // allocate frames from it.
+            const RESERVED_END: u64 = 0x08B0_0000;
+            let ram_end = 0x0800_0000u64 + ram_size as u64;
+            let usable_size = ram_end.saturating_sub(RESERVED_END);
             let mem_map = MEMMAP_KSEG0 as *mut rom::boot::MemMapEntry;
             unsafe {
                 core::ptr::write_volatile(
                     mem_map,
                     rom::boot::MemMapEntry {
                         base: 0x0800_0000,
-                        size: ram_size as u64,
-                        kind: rom::boot::MEM_MAP_USABLE_RAM,
+                        size: RESERVED_END - 0x0800_0000,
+                        kind: rom::boot::MEM_MAP_RESERVED,
                         flags: 0,
                     },
                 );
+                if usable_size > 0 {
+                    core::ptr::write_volatile(
+                        mem_map.add(1),
+                        rom::boot::MemMapEntry {
+                            base: RESERVED_END,
+                            size: usable_size,
+                            kind: rom::boot::MEM_MAP_USABLE_RAM,
+                            flags: 0,
+                        },
+                    );
+                }
             }
+            let mem_map_count = if usable_size > 0 { 2 } else { 1 };
 
             let mut boot_info = rom::boot::BootInfo::default();
             boot_info.magic = rom::boot::BOOTINFO_MAGIC;
             boot_info.version_major = rom::boot::BOOTINFO_VERSION_MAJOR;
             boot_info.size = rom::boot::BOOTINFO_SIZE as u32;
             boot_info.mem_map_phys = (BOOTINFO_PHYS as u64) + 0x100;
-            boot_info.mem_map_count = 1;
+            boot_info.mem_map_count = mem_map_count;
             boot_info.mem_map_entry_size = rom::boot::MEM_MAP_ENTRY_SIZE;
+            boot_info.console_poll = rom_console_poll as *const () as u32;
+            boot_info.net_state = core::ptr::addr_of_mut!(PERSISTENT) as u32;
+            boot_info.seeq_state = core::ptr::addr_of_mut!(SEEQ) as u32;
             boot_info.kernel_phys = KERNEL_PHYS as u64;
             boot_info.kernel_size = result.body.len() as u64;
             boot_info.kernel_sha256 = digest.0;
@@ -263,6 +360,19 @@ pub extern "C" fn rom_main() -> ! {
             boot_info.checksum = rom::boot::bootinfo_checksum(&boot_info);
             unsafe {
                 core::ptr::write_volatile(BOOTINFO_KSEG0 as *mut rom::boot::BootInfo, boot_info);
+            }
+
+            // Publish the live network/console state.  The kernel calls
+            // `rom_console_poll`, which uses these same objects; nothing is
+            // re-created on the kernel side.
+            info.stage = "kernel";
+            unsafe {
+                PERSISTENT = Some(PersistentNet {
+                    iface,
+                    sockets: socket_set,
+                    console,
+                    info,
+                });
             }
 
             serial_write_str("ROM: boot info ready\r\n");
@@ -296,6 +406,29 @@ pub extern "C" fn rom_main() -> ! {
             serial_write_str("failed\r\n");
             loop {
                 core::hint::spin_loop();
+            }
+        }
+    }
+}
+
+/// Resident console/network service.  The kernel calls this from its idle
+/// loop; it drives the exact `Interface`, `SocketSet` and telnet session the
+/// ROM initialised, so the console never restarts or changes identity.
+#[no_mangle]
+pub extern "C" fn rom_console_poll(state: *mut ()) {
+    if state.is_null() {
+        return;
+    }
+    unsafe {
+        let slot = &mut *(state as *mut Option<PersistentNet>);
+        if let Some(net) = slot.as_mut() {
+            if let Some(seeq) = SEEQ.as_mut() {
+                let timestamp = rom::net::clock_now();
+                let _ = net.iface.poll(timestamp, seeq, &mut net.sockets);
+                rom::net::clock_advance(1);
+                if let Some(console) = net.console.as_mut() {
+                    console.service(&mut net.sockets, &net.info);
+                }
             }
         }
     }
