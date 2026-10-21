@@ -8,6 +8,12 @@
 # mdBook
 /book
 
+# Generated roadmap tree
+/tree/dist
+/tree/sync-report.md
+__pycache__/
+*.pyc
+
 # Build and image artefacts
 *.o
 *.elf

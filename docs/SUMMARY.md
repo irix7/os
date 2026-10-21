@@ -15,6 +15,7 @@
 
 - [Plan index](plan/README.md)
 - [Milestones](plan/milestones.md)
+- [Roadmap tree (interactive)](roadmap-tree.md)
 - [GitHub operating model](plan/github.md)
 - [Risk register](plan/risks.md)
 - [Interface specifications](plan/interfaces.md)

@@ -4,6 +4,8 @@
 **Strategy:** walking skeleton. Every milestone is a vertical slice with a demo, not a horizontal platform layer.
 **Companion:** [`../spec/architecture.md`](../spec/architecture.md), [`github.md`](github.md), [`risks.md`](risks.md).
 
+> **See it grow:** [The Tree of IRIX 7](../roadmap-tree.md) is the interactive view of this plan.
+
 ## 1. Summary
 
 | ID | Milestone | Demo | Estimate | Release |
