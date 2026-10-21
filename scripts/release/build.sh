@@ -22,17 +22,19 @@ fi
 
 echo "Building IRIX 7 $VERSION"
 
-# Kernel and ROM. The target specs live in targets/.
+# Kernel and ROM share the n32 target. The ROM additionally links against its
+# PROM/DRAM linker script.
 cargo build --release -Z build-std=core,alloc \
-  --target targets/mips3-sgi-irix7-n32.json
-cargo build --release -Z build-std=core,alloc \
-  --target targets/mips2-sgi-irix7-o32.json
+  --target targets/mips3-sgi-irix7-n32.json -p kernel
+CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+  cargo build --release -Z build-std=core,alloc \
+  --target targets/mips3-sgi-irix7-n32.json --features cross -p rom
 
 # Copy the artefacts when the workspace defines these binaries. The names are
 # part of the release contract; adjust the workspace before the first release.
 for artifact in irix7-kernel irix7-rom irix7-boot.bundle; do
   for profile in release; do
-    for target in mips3-sgi-irix7-n32 mips2-sgi-irix7-o32; do
+    for target in mips3-sgi-irix7-n32; do
       src="target/$target/$profile/$artifact"
       if [ -f "$src" ]; then
         cp "$src" "$DIST/"

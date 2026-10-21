@@ -1,14 +1,8 @@
 # IRIX 7 cargo target configuration.
 #
-# The custom MIPS/IRIX targets need an explicit entry symbol because rust-lld's
-# default entry (`__start`) does not match our `_start`. The ROM entry is `_start`
-# (set by the boot protocol / PROM loader).
-
-[target.mips2-sgi-irix7-o32]
-rustflags = [
-  "-C", "link-arg=-e",
-  "-C", "link-arg=_start",
-]
+# The custom MIPS/IRIX target needs an explicit entry symbol because rust-lld's
+# default entry (`__start`) does not match our `_start`. Both the ROM and the
+# kernel use the same n32 target and link with their own linker script.
 
 [target.mips3-sgi-irix7-n32]
 rustflags = [

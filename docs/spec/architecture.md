@@ -152,7 +152,7 @@ All governing decisions apply. The numbered, dated ADRs live in
 | 0013 | Full reimplementation, factory PROM | Clean-room reimplementation |
 | 0014 | Harness-enforced clean-room | Hybrid transcription |
 | 0015 | Layered spec, similarity screen | This document's verification |
-| 0016 | o32 ECOFF bootstrap into the n32 kernel | Boot path |
+| 0016 | Rust ROM replaces the factory PROM; n32/MIPS III from the PROM window into the n32 kernel | Boot path |
 | 0017 | Modern equivalents as references | Research method |
 | 0018 | GCC backend primary, LLVM parallel | Codegen |
 | 0019 | IRIX fork on `rust-lang/gcc` | GCC 17 trunk + libgccjit |
@@ -253,17 +253,15 @@ This is grounded in `irix7/project`, not speculation.
 |---|---|---|
 | rustc | nightly, `-Z build-std` for `core`/`alloc` | codegen proven |
 | Codegen backend | `rustc_codegen_gcc` (libgccjit from §3.1) — **primary** | ADR-0018 |
-| Parallel path | LLVM custom targets `mips2-sgi-irix7-o32` (MIPS II), `mips3-sgi-irix7-n32` (MIPS III) | codegen proven |
-| LLVM gap | "MIPS III + o32" is not buildable; o32 implies MIPS II | issue #41 resolved |
+| Parallel path | LLVM custom target `mips3-sgi-irix7-n32` (n32/MIPS III) | codegen proven |
+| ABI | ROM and kernel are both n32/MIPS III; o32 belongs to the compatibility container | — |
 
-The local target specs are `targets/mips2-sgi-irix7-o32.json` and
-`targets/mips3-sgi-irix7-n32.json` (the LLVM parallel path).
+The local target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM path).
 
-Current status (`stack.md` §5): custom Rust targets codegen for o32 and n32 —
-**proven**; the IRIX patch series applies cleanly to `rust-lang/gcc` — **proven**;
-`-Z build-std` for the targets — **blocked** on host-toolchain glue (the nix rustup
-self-contained linker); GCC-backend build — **blocked** on disk space (the host is
-99% full).
+Current status (`stack.md` §5): codegen and `-Z build-std` for n32 are **proven**;
+the ROM boots from the PROM image and runs DHCP/NTP/HTTP under iris; the IRIX patch
+series applies cleanly to `rust-lang/gcc` — **proven**; GCC-backend build — **blocked**
+on disk space (the host is 99% full).
 
 Prior art on Rust IRIX targets (issue #41 research): `danifunker/rust-irixlibstd`
 (o32/MIPS II + n32/MIPS III) and `atomchild411/rust-irix` (rustc fork, n32/MIPS IV).
@@ -274,9 +272,9 @@ Conclusion: no rustc/LLVM fork is required; a custom n32/MIPS III target spec +
 
 - `#![no_std]`, `#![no_main]`, `#[panic_handler]`, `panic = "abort"` in both profiles.
 - No unwinding on bare metal.
-- The kernel is n32/MIPS III; the o32 ECOFF bootstrap is the PROM entry path.
-- The boot ROM is a separate `no_std` artefact, built for o32/MIPS II because ARCS is
-  o32/ECOFF-only.
+- The kernel is n32/MIPS III.
+- The boot ROM is a separate `no_std` artefact, built for n32/MIPS III and executed directly
+  from the PROM socket at `0xBFC00000`; it does not rely on the factory ARCS ECOFF loader.
 - `-Z build-std` builds `core` and `alloc` for the target; `std` is not available on
   the Indy. Userspace cells use `core`/`alloc` plus the OS's own libc.
 - Host-side tooling (image builder, MCP bridge if needed, tests) may use `std`.
@@ -297,9 +295,9 @@ harness is the regression guard.
 
 | Risk | Effect | Mitigation |
 |---|---|---|
-| `-Z build-std` host glue | Cannot build `core`/`alloc` yet | Fix the nix rustup self-contained linker; or use a pinned nightly with the target |
+| Host-toolchain glue | Clean builds need `cc` and `pkg-config` | CI installs GCC; the Nix devshell provides both |
 | GCC-backend disk space | Cannot build `rustc_codegen_gcc` | Free space; build on a larger volume; use the LLVM path in the meantime |
-| MIPS III + o32 | The PROM path must be MIPS II | Keep the ROM/bootstrap o32/MIPS II; the kernel is n32/MIPS III |
+| MIPS III + o32 | Legacy o32 binaries need a MIPS II decoder | ROM and kernel are n32/MIPS III; the compatibility container owns o32 |
 | Big-endian Rust ecosystem | Some crates assume little-endian | Use explicit codecs; test on the Indy; prefer endian-neutral crates |
 
 ---
@@ -1019,7 +1017,7 @@ onto the same files.
 | Video in | Vino | Input-only, composite/S-Video, 4 KiB descriptors, two channels | Vino cell |
 | RTC/NVRAM | Dallas DS1386 | Wall clock, NVRAM, watchdog | framework + RTC cell |
 | Expansion | GIO32/GIO64 | Product ID word, no hotplug, 32-bit addressing, DMA TLB | per-card |
-| Firmware | SGI PROM/ARCS | o32/ECOFF, memory descriptor list, environment variables | boot |
+| Firmware | SGI PROM/ARCS (factory) | o32/ECOFF, memory descriptor list, environment variables; replaced by the n32 Rust ROM | boot |
 
 ### 9.4 Subsystem notes
 
@@ -1074,10 +1072,11 @@ Indy graphics boards and the Indy Video board are identified by their product ID
 full SGI product-ID table is incomplete in the available sources, so the OS matches on
 known IDs and on the ARCS device tree.
 
-**PROM/ARCS.** The PROM is o32/ECOFF-only. It provides the memory descriptor list,
-environment variables, console and disk/network loaders. The kernel boot path uses the
-PROM for the tracer bullet and as a fallback; the production path is the Rust ROM
-(§10).
+**PROM/ARCS.** The *factory* PROM is o32/ECOFF-only. It provides the memory descriptor list,
+environment variables, console and disk/network loaders. The Rust ROM replaces the factory
+firmware entirely: it is a raw n32/MIPS III image executed from the PROM socket at
+`0xBFC00000`, not an ECOFF image loaded by ARCS. The factory PROM remains a fallback and the
+source of the reset-time hardware state.
 
 ### 9.5 Interrupts and timers
 
@@ -1144,19 +1143,25 @@ The ROM is a separate `no_std` Rust artefact:
 | Property | Target |
 |---|---|
 | Size | 512 KiB–1 MiB flash/PROM image |
-| ISA | o32/MIPS II (ARCS is o32/ECOFF-only) |
+| ISA | n32/MIPS III (raw PROM image; the factory ARCS loader is not used) |
 | Network | Seeq 8003, HPC3 PBUS DMA |
-| Stack | smoltcp, IPv4 + IPv6, TCP, DHCP, DNS |
-| Application | HTTP/1.1 client (or HTTP/2 if size allows) |
+| Stack | smoltcp, IPv4 + DHCPv4 + NTP; IPv6 and DNS planned |
+| Application | HTTP/1.1 client; HTTPS/TLS planned |
 | Integrity | SHA-256 of the kernel and boot bundle |
-| Console | Serial (Z85C30) and/or framebuffer text |
+| Console | Serial (Z85C30); styled telnet ROM console on guest port 23 (truecolor/256/16, NAWS, history) |
 | Payload | Kernel + boot bundle, loaded to a kseg0 address agreed with the kernel linker script (for example `0x8804_0000`, mapping physical `0x0804_0000`; the Indy's RAM starts at physical `0x0800_0000`) |
-| Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry |
+| Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry; the live network stack and telnet console remain in place |
 
 The ROM's network driver is an exception to "all drivers are cells" (D17): it must exist
 before any cell can be loaded. It is a minimal polled/DMA driver, not the full
-network cell. The kernel reinitialises the Seeq and starts the network cell from the boot
-bundle; it does not inherit the ROM's state.
+network cell.
+
+The ROM and kernel are one program at two link addresses, not a firmware/kernel pair. The
+Seeq device, smoltcp `Interface`, `SocketSet`, clock and telnet console are initialised
+once by the ROM and stay live across the hand-off. The kernel uses those same objects in
+place; it does not reinitialise the Seeq or create a second network stack. The boot-bundle
+network cell layers policy and `/net` on top of the inherited device, and the resident
+console service is polled from the kernel idle path.
 
 The ROM's TLS story is deliberately simple: the public OS image is not secret, so the ROM
 fetches it over **HTTP** and verifies a SHA-256 digest baked into the ROM. TLS is not
@@ -1863,6 +1868,7 @@ planning aid, not a legal opinion.
 | **ext4/FAT32 as the root image** | Little-endian, feature-heavy, not designed for read-only random-access images. EROFS is the right tool. |
 | **RedoxFS as the primary native FS** | Little-endian, Redox-coupled, no fsck. It is the fallback if I7FS slips, not the first choice. |
 | **9P2000.L as the native dialect** | Linux-VFS-shaped; encodes Linux errno/stat semantics. 9P2000 is native; 9P2000.L is a compatibility front end only. |
+| **CRAM-style compressed RAM, zram/zswap, tiered memory** | The Indy has no cache-coherent memory-side compression, CXL or NUMA. Software compression costs ~0.2–0.45 ms per 4 KiB page at 75 MHz (LZ4 decode, estimated), thrashes a 16 KiB direct-mapped D-cache and adds TLB/PTE churn for a ~1.3–2× capacity gain. Compression stays in the read-only EROFS root (§11.2); see [`../research/compressed-ram.md`](../research/compressed-ram.md). |
 
 ---
 

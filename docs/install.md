@@ -49,21 +49,15 @@ cargo build
 cargo test
 ```
 
-Cross-compile the kernel and ROM for the MIPS/IRIX targets:
+Cross-compile the kernel and ROM for the n32/MIPS III target:
 
 ```sh
 cargo build -Z build-std=core,alloc -Zjson-target-spec \
-  --target targets/mips3-sgi-irix7-n32.json
-cargo build -Z build-std=core,alloc -Zjson-target-spec \
-  --target targets/mips2-sgi-irix7-o32.json
-```
+  --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
 
-The ROM bin is gated behind the `cross` feature (it is a `no_main` MIPS binary that is
-never host-tested):
-
-```sh
-cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
-  --target targets/mips2-sgi-irix7-o32.json --bin rom
+CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+  cargo build -Z build-std=core,alloc -Zjson-target-spec \
+  --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
 ```
 
 ## Running in the iris emulator
@@ -78,12 +72,11 @@ The rig scripts live in `irix7/project/scripts/rig/`. Start a private rig instan
 scripts/rig/task-rig.sh start <item>
 ```
 
-The ROM currently prints its bring-up marker (`hello from ROM`) on the serial console from
-the first instruction, initialises the Seeq Ethernet controller, reads its MAC address from
-the DS1386 NVRAM, and runs DHCPv4. The remaining M1 work — HTTP GET of the kernel and boot
-bundle, SHA-256 verification, BootInfo construction, cache flush and jump to the kernel —
-requires iris hardware validation of the Seeq DMA descriptor flag values before the DMA
-programming can be finalised.
+The ROM boots from the PROM window (`0xBFC00000`), sizes and tests DRAM stacklessly, then
+brings up the Seeq 8003, obtains a DHCP lease, queries NTP through the gateway, fetches the
+kernel over HTTP, verifies its SHA-256 and jumps to the agreed load address. The current
+hand-off target is a stub; linking the real kernel at the hand-off address, passing
+`BootInfo` in `$a0` and enabling/flushing the caches are the remaining M1/M2 work.
 
 ## Running tests
 
@@ -104,8 +97,7 @@ Cross-build check (M0 gate):
 
 ```sh
 cargo build -Z build-std=core,alloc -Zjson-target-spec \
-  --target targets/mips3-sgi-irix7-n32.json \
-  --target targets/mips2-sgi-irix7-o32.json
+  --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
 ```
 
 ## Current status

@@ -54,21 +54,21 @@ These run in parallel with every milestone and are tracked as their own epics:
 
 ## M0 — Toolchain unblocked
 
-**Goal:** make the existing toolchain reliably build the kernel for both ABIs and produce a
-reproducible `no_std` artefact.
+**Goal:** make the existing toolchain reliably build the kernel and ROM for n32/MIPS III
+and produce a reproducible `no_std` artefact.
 
-**Demo:** CI cross-compiles a `no_std` binary for `mips3-sgi-irix7-n32` and
-`mips2-sgi-irix7-o32`, and the existing tracer bullet boots on iris and prints its marker.
+**Demo:** CI cross-compiles a `no_std` binary for `mips3-sgi-irix7-n32`, and the existing
+tracer bullet boots on iris and prints its marker.
 
 **Acceptance criteria:**
 
-- [ ] `-Z build-std` works for `core`/`alloc` on both custom targets.
+- [x] `-Z build-std` works for `core`/`alloc` on the custom target.
 - [ ] `rustc_codegen_gcc` builds and produces working code for n32.
-- [ ] The LLVM parallel path still works for both targets.
-- [ ] The Nix devshell pins rustc, GCC, binutils and the target specs.
+- [x] The LLVM path works for the custom target.
+- [ ] The Nix devshell pins rustc, GCC, binutils and the target spec.
 - [ ] A clean checkout can build the tracer bullet without manual steps.
-- [ ] CI caches the toolchain and the target artefacts.
-- [ ] The disk-space blocker is resolved or worked around.
+- [x] CI caches the toolchain and the target artefacts.
+- [x] The disk-space blocker is resolved or worked around.
 - [ ] The build is reproducible (same inputs → same hashes).
 
 **Dependencies:** access to `irix7/project`, the Nix flake, the captured sysroot, iris.
@@ -83,29 +83,38 @@ reproducible `no_std` artefact.
 
 ## M1 — ROM netboot
 
-**Goal:** a `no_std` Rust ROM for o32/MIPS II that initialises the Indy, brings up the Seeq
-8003, runs smoltcp, fetches a kernel and boot bundle over HTTP, verifies SHA-256, and jumps
-to the kernel.
+**Goal:** a `no_std` n32/MIPS III Rust ROM that replaces the factory ARCS PROM, runs from
+the PROM window at `0xBFC00000`, initialises the Indy, brings up the Seeq 8003, runs
+smoltcp, fetches a kernel over HTTP, verifies SHA-256, and jumps to the kernel.
 
-**Demo:** in iris, the ROM prints a DHCP lease, fetches a test kernel and bundle from a local
-HTTP server/R2, prints the digests, and jumps to a stub that prints `hello from the kernel`.
+**Demo:** in iris, the ROM boots from the raw PROM image, prints the DHCP lease, opens a
+telnet console, prints the NTP time, fetches the kernel from a local HTTP server, verifies
+the digest, and jumps to the real n32 kernel, which prints `kernel: up`. The telnet console
+remains live after the hand-off.
 
 **Acceptance criteria:**
 
-- [ ] Serial console works from the first instruction.
-- [ ] Seeq 8003 initialises, transmits and receives; HPC3 DMA works.
-- [ ] smoltcp brings up IPv4 and IPv6; DHCP and DNS work.
-- [ ] HTTP/1.1 GET with Range support works.
-- [ ] SHA-256 verification of the kernel and bundle.
-- [ ] The ROM fits in 512 KiB–1 MiB.
+- [x] Serial console works from the first instruction.
+- [x] RAM is sized and tested stacklessly before any RAM structures are created.
+- [x] Seeq 8003 initialises, transmits and receives; HPC3 DMA works.
+- [x] smoltcp brings up IPv4 and DHCPv4; NTP works through the gateway.
+- [ ] IPv6 and DNS.
+- [x] Basic HTTP/1.1 GET works.
+- [ ] HTTP Range support and response validation.
+- [x] SHA-256 verification of the fetched kernel.
+- [x] The ROM fits in 512 KiB–1 MiB.
 - [ ] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
-- [ ] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
+- [x] Telnet ROM console opens after DHCP and stays live after the kernel starts.
+- [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
+- [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
+- [x] Caches are enabled and flushed before the handoff.
 
-**Dependencies:** M0, R2 bucket (or local HTTP server), a test kernel stub.
+**Dependencies:** M0, a local HTTP server (or R2), a kernel linked for the handoff address.
 
 **Estimate:** 4–6 weeks.
 
-**Risks:** Seeq quirks; ARCS/ECOFF; cache flush before the jump; ROM size; 10 Mbit timeouts.
+**Risks:** Seeq quirks; kernel load address and `BootInfo` layout; cache flush before the
+jump; ROM size; 10 Mbit timeouts; TLS.
 
 **Out of scope:** TLS, the full boot bundle, storage.
 

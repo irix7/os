@@ -86,25 +86,22 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "m0-cross"
-      - name: Build n32 and o32 (build-std)
+      - name: Build n32 kernel (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
-            --target targets/mips3-sgi-irix7-n32.json
-          cargo build -Z build-std=core,alloc -Zjson-target-spec \
-            --target targets/mips2-sgi-irix7-o32.json
-      - name: Build ROM bin for o32 (build-std, M1)
+            --target targets/mips3-sgi-irix7-n32.json -p kernel
+      - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
           export PATH="$RUST_LLD_DIR:$PATH"
-          # The ROM bin is gated behind the `cross` feature (it is a no_main
-          # MIPS binary that is never host-tested).
-          cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
-            --target targets/mips2-sgi-irix7-o32.json \
-            --bin rom
+          # The ROM links text at the PROM reset window and data in DRAM.
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+            cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
+            --target targets/mips3-sgi-irix7-n32.json -p rom
 
   docs:
     name: Docs

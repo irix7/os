@@ -86,7 +86,10 @@ pub struct BootInfo {
     pub ram_size: u64,           // 0xE0
     pub board_id: u32,           // 0xE8
     pub prom_version: u32,       // 0xEC
-    pub reserved: [u8; 16],      // 0xF0
+    pub console_poll: u32,       // 0xF0
+    pub net_state: u32,          // 0xF4
+    pub seeq_state: u32,         // 0xF8
+    pub reserved: [u8; 4],       // 0xFC
 } // 0x100 = 256 bytes
 
 // Compile-time layout assertions mirroring the spec's offset table.
@@ -131,7 +134,10 @@ const _: () = {
     assert!(core::mem::offset_of!(BootInfo, ram_size) == 0xE0);
     assert!(core::mem::offset_of!(BootInfo, board_id) == 0xE8);
     assert!(core::mem::offset_of!(BootInfo, prom_version) == 0xEC);
-    assert!(core::mem::offset_of!(BootInfo, reserved) == 0xF0);
+    assert!(core::mem::offset_of!(BootInfo, console_poll) == 0xF0);
+    assert!(core::mem::offset_of!(BootInfo, net_state) == 0xF4);
+    assert!(core::mem::offset_of!(BootInfo, seeq_state) == 0xF8);
+    assert!(core::mem::offset_of!(BootInfo, reserved) == 0xFC);
 };
 
 // CRC32C (Castagnoli, reflected, poly 0x1EDC6F41, init/xorout 0xFFFFFFFF).
@@ -234,6 +240,9 @@ pub fn build_bootinfo(
     info.ram_size = ram_size;
     info.board_id = board_id;
     info.prom_version = prom_version;
+    info.console_poll = 0;
+    info.net_state = 0;
+    info.seeq_state = 0;
     info.checksum = bootinfo_checksum(&info);
     info
 }
@@ -248,7 +257,10 @@ mod tests {
         assert_eq!(core::mem::offset_of!(BootInfo, magic), 0x00);
         assert_eq!(core::mem::offset_of!(BootInfo, checksum), 0x0C);
         assert_eq!(core::mem::offset_of!(BootInfo, kernel_sha256), 0x30);
-        assert_eq!(core::mem::offset_of!(BootInfo, reserved), 0xF0);
+        assert_eq!(core::mem::offset_of!(BootInfo, console_poll), 0xF0);
+        assert_eq!(core::mem::offset_of!(BootInfo, net_state), 0xF4);
+        assert_eq!(core::mem::offset_of!(BootInfo, seeq_state), 0xF8);
+        assert_eq!(core::mem::offset_of!(BootInfo, reserved), 0xFC);
     }
 
     #[test]

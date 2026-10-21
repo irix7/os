@@ -11,6 +11,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`rust-fs-research.md`](rust-fs-research.md) | Rust filesystems, the XFS v4 on-disk format, I7FS and the storage architecture. |
 | [`plan9-rust-research.md`](plan9-rust-research.md) | Plan 9's ideas, Rust 9P, 9P over WAN, capabilities, MCP and content-addressed images. |
 | [`erofs-big-endian-research.md`](erofs-big-endian-research.md) | Whether to fork EROFS to big-endian (verdict: do not). |
+| [`compressed-ram.md`](compressed-ram.md) | What Meta's CRAM actually is and whether compressed RAM fits the Indy (verdict: no). |
 | [`rust-os-design-research.md`](rust-os-design-research.md) | A broad survey of Rust OS design choices. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for

@@ -13,6 +13,7 @@ required-features = ["cross"]
 [features]
 default = []
 cross = []
+tls = ["dep:embedded-tls", "dep:embedded-io", "dep:rand_core"]
 
 [lib]
 path = "src/lib.rs"
@@ -41,3 +42,19 @@ smoltcp = { version = "0.13", default-features = false, features = [
     "socket-tcp",
     "socket-dhcpv4",
 ] }
+
+[dependencies.embedded-tls]
+version = "0.19"
+default-features = false
+optional = true
+features = ["alloc"]
+
+[dependencies.embedded-io]
+version = "0.7"
+optional = true
+default-features = false
+
+[dependencies.rand_core]
+version = "0.6"
+optional = true
+default-features = false
