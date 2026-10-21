@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! IRIX 7 kernel core — privileged framework (the unsafe TCB).
 //!
 //! This crate provides the privileged framework for the IRIX 7 kernel:

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 //! MMU/TLB management.
 //!
 //! The R4400 has a 48-entry JTLB, each entry mapping an even/odd page pair.
