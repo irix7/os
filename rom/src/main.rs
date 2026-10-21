@@ -298,7 +298,8 @@ pub extern "C" fn rom_main() -> ! {
                 if resolver.is_done() {
                     break;
                 }
-                if rom::net::clock_now() > timestamp + smoltcp::time::Duration::from_millis(15_000) {
+                if rom::net::clock_now() > timestamp + smoltcp::time::Duration::from_millis(15_000)
+                {
                     break;
                 }
             }

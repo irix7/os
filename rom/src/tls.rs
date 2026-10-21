@@ -115,10 +115,7 @@ impl Read for SocketIo {
         loop {
             // Safety: pointers valid for duration of TLS fetch; the socket
             // reference is used locally and does not escape.
-            let sock = unsafe {
-                &mut *self.socket_set
-            }
-            .get_mut::<TcpSocket>(self.socket_handle);
+            let sock = unsafe { &mut *self.socket_set }.get_mut::<TcpSocket>(self.socket_handle);
             if let Ok(n) = sock.recv_slice(buf) {
                 if n > 0 {
                     return Ok(n);
@@ -144,10 +141,7 @@ impl Write for SocketIo {
         let deadline = start + Duration::from_millis(HTTP_TIMEOUT_MS);
         let mut written = 0;
         while written < buf.len() {
-            let sock = unsafe {
-                &mut *self.socket_set
-            }
-            .get_mut::<TcpSocket>(self.socket_handle);
+            let sock = unsafe { &mut *self.socket_set }.get_mut::<TcpSocket>(self.socket_handle);
             if let Ok(n) = sock.send_slice(&buf[written..]) {
                 if n > 0 {
                     written += n;
@@ -396,10 +390,7 @@ pub fn https_get(
         }
     }
 
-    Ok(HttpsFetchResult {
-        body,
-        server_ip,
-    })
+    Ok(HttpsFetchResult { body, server_ip })
 }
 
 /// Find `\r\n\r\n` in a byte slice.
@@ -427,7 +418,9 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
             let mut value = 0usize;
             let mut any = false;
             while j < headers.len() && headers[j].is_ascii_digit() {
-                value = value.saturating_mul(10).saturating_add((headers[j] - b'0') as usize);
+                value = value
+                    .saturating_mul(10)
+                    .saturating_add((headers[j] - b'0') as usize);
                 any = true;
                 j += 1;
             }

@@ -123,12 +123,12 @@ pub fn default_dns_servers(
 ) -> alloc::vec::Vec<IpAddress> {
     let mut out = alloc::vec::Vec::new();
     for &s in lease_dns {
-        let _ = out.push(IpAddress::Ipv4(s));
+        out.push(IpAddress::Ipv4(s));
     }
     if let Some(g) = gateway {
-        let _ = out.push(IpAddress::Ipv4(g));
+        out.push(IpAddress::Ipv4(g));
     }
-    let _ = out.push(IpAddress::Ipv4(Ipv4Address::new(8, 8, 8, 8)));
-    let _ = out.push(IpAddress::Ipv4(Ipv4Address::new(1, 1, 1, 1)));
+    out.push(IpAddress::Ipv4(Ipv4Address::new(8, 8, 8, 8)));
+    out.push(IpAddress::Ipv4(Ipv4Address::new(1, 1, 1, 1)));
     out
 }
