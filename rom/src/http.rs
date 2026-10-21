@@ -77,7 +77,7 @@ pub fn http_get(
         if state == tcp::State::Closed || state == tcp::State::LastAck {
             return Err(());
         }
-        crate::net::clock_advance(1);
+        crate::net::clock_tick();
         timestamp = crate::net::clock_now();
         if timestamp > deadline {
             return Err(());
@@ -158,7 +158,7 @@ pub fn http_get(
             break;
         }
 
-        crate::net::clock_advance(1);
+        crate::net::clock_tick();
         timestamp = crate::net::clock_now();
         if timestamp > deadline {
             return Err(());

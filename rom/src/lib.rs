@@ -24,6 +24,7 @@ pub mod aes;
 pub mod allocator;
 pub mod boot;
 pub mod cache;
+pub mod gloss;
 pub mod hex;
 pub mod http;
 pub mod net;

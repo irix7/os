@@ -218,11 +218,16 @@ pub extern "C" fn rom_main() -> ! {
         gateway: lease.router,
         mac: mac_array,
         ram_size,
+        reserved_bytes: 11 * 1024 * 1024,
         ntp_time: None,
+        board: "SGI Indy (IP22)",
+        cpu: "MIPS R4400",
+        firmware: "IRIX 7 ROM",
+        dhcp: true,
     };
     if let Some(c) = console.as_mut() {
         serial_write_str("ROM: waiting for telnet console (type 'boot' to continue)\r\n");
-        c.wait_for_console(&mut iface, &mut socket_set, seeq, &info, 300_000_000);
+        c.wait_for_console(&mut iface, &mut socket_set, seeq, &info, 150_000_000);
         serial_write_str("ROM: console window closed\r\n");
     }
 
@@ -415,6 +420,7 @@ pub extern "C" fn rom_main() -> ! {
 /// loop; it drives the exact `Interface`, `SocketSet` and telnet session the
 /// ROM initialised, so the console never restarts or changes identity.
 #[no_mangle]
+#[allow(static_mut_refs)]
 pub extern "C" fn rom_console_poll(state: *mut ()) {
     if state.is_null() {
         return;
@@ -423,9 +429,11 @@ pub extern "C" fn rom_console_poll(state: *mut ()) {
         let slot = &mut *(state as *mut Option<PersistentNet>);
         if let Some(net) = slot.as_mut() {
             if let Some(seeq) = SEEQ.as_mut() {
+                // The kernel's idle loop calls this far faster than 1 kHz.
+                // Advance from CP0 Count instead of one millisecond per call.
+                rom::net::clock_tick();
                 let timestamp = rom::net::clock_now();
                 let _ = net.iface.poll(timestamp, seeq, &mut net.sockets);
-                rom::net::clock_advance(1);
                 if let Some(console) = net.console.as_mut() {
                     console.service(&mut net.sockets, &net.info);
                 }

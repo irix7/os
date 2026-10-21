@@ -332,6 +332,14 @@ impl<'a> smoltcp::phy::TxToken for SeeqTxToken<'a> {
 /// keeps timers across all three, so rewinding the time to zero per request
 /// breaks TCP retransmission and neighbour expiry.
 static mut CLOCK_MS: u64 = 0;
+static mut LAST_COUNT: u32 = 0;
+static mut CLOCK_REMAINDER: u32 = 0;
+
+/// CP0 Count frequency used by iris (and close to the R4400's /2 timer on a
+/// 66 MHz part).  A real-hardware boot can calibrate this later; for the ROM
+/// console it is accurate enough to keep uptime and network timers honest.
+const COUNT_HZ: u64 = 33_000_000;
+const COUNTS_PER_MS: u32 = (COUNT_HZ / 1000) as u32;
 
 pub fn clock_now() -> Instant {
     Instant::from_millis(unsafe { CLOCK_MS } as i64)
@@ -341,6 +349,43 @@ pub fn clock_advance(ms: u64) {
     unsafe {
         CLOCK_MS = CLOCK_MS.wrapping_add(ms);
     }
+}
+
+/// Advance the virtual clock from the CP0 Count register.  Polling loops call
+/// this instead of adding a fixed millisecond per iteration, so a fast loop
+/// does not race the wall clock.
+pub fn clock_tick() {
+    let now = count_now();
+    let delta = if unsafe { LAST_COUNT } == 0 {
+        0
+    } else {
+        now.wrapping_sub(unsafe { LAST_COUNT })
+    };
+    unsafe {
+        LAST_COUNT = now;
+    }
+    let total = unsafe { CLOCK_REMAINDER }.saturating_add(delta);
+    let ms = total / COUNTS_PER_MS;
+    unsafe {
+        CLOCK_REMAINDER = total % COUNTS_PER_MS;
+    }
+    if ms > 0 {
+        clock_advance(ms as u64);
+    }
+}
+
+#[cfg(target_arch = "mips64")]
+fn count_now() -> u32 {
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $9", out(reg) v);
+    }
+    v
+}
+
+#[cfg(not(target_arch = "mips64"))]
+fn count_now() -> u32 {
+    0
 }
 
 /// Result of a successful DHCPv4 configuration.
@@ -387,9 +432,9 @@ pub fn dhcpv4_configure(
         // Advance the interface clock by a fixed millisecond per poll.  Using
         // poll_delay() here is wrong: a zero delay would freeze the clock and
         // make the DHCP socket retransmit on every loop.
-        clock_advance(1);
+        clock_tick();
         timestamp = clock_now();
-        if timestamp.millis() - start.millis() > timeout_ms as i64 {
+        if timestamp.total_millis() - start.total_millis() > timeout_ms as i64 {
             return None;
         }
     }

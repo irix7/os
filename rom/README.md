@@ -69,9 +69,32 @@ The ROM also opens a telnet console on guest TCP port **23**. iris forwards host
 telnet 127.0.0.1 2323
 ```
 
-It prints the boot log and a `ROM>` prompt. The initial window waits for `boot` (or about
-five seconds with no client); after that the same session stays live across the kernel
-hand-off.
+It opens a styled dashboard with the IRIX 7 logo, a live status card and a `rom ❯` prompt.
+The initial window waits for `boot` (or about five seconds with no client); after that the
+same session stays live across the kernel hand-off.
+
+Useful commands:
+
+| Command | Purpose |
+|---|---|
+| `help` | command reference, lipgloss-style table |
+| `status` | stage, board, CPU, firmware, IP, MAC, RAM, NTP, uptime |
+| `net` | lease, gateway, MAC, DHCP, driver |
+| `mem` | tested/reserved/usable RAM |
+| `time`, `date` | NTP time in UTC |
+| `uptime` | ROM clock |
+| `sysinfo` | CP0 PRId, Status, Config and Count |
+| `log` | replay the boot log |
+| `history` | recent commands |
+| `banner`, `clear` | redraw or clear |
+| `color true/256/16/off` | colour profile |
+| `boot`, `exit` | continue boot or close the session |
+
+The UI is a `no_std` subset of Lip Gloss in `src/gloss.rs`: truecolor gradients, rounded
+boxes, styled tables and a colour-profile fallback. The existing Rust ports
+(`rusty-lipgloss`, `lipgloss`, `charming-lipgloss`) depend on `std`/libc, so the ROM keeps
+the useful subset rather than linking them. It also handles telnet NAWS resizing, command
+history (↑/↓), tab completion and Ctrl-C/Ctrl-L/Ctrl-U editing.
 
 ## Kernel fetch
 
@@ -98,5 +121,7 @@ default).
 - The real n32 kernel is linked at `0x88040000`, receives `BootInfo` in `$a0`, uses the
   memory map for its frame allocator, runs with caches enabled and prints `kernel: up`.
 - The telnet ROM console is created immediately after DHCP and remains live after the
-  kernel boots; the kernel polls the resident network/console service.
+  kernel boots; the kernel polls the resident network/console service. It has a styled
+  dashboard, truecolor/256/16-colour profiles, NAWS sizing, history, tab completion and
+  system/network/memory/CP0 views.
 - HTTPS/TLS is not implemented yet; the boot specification currently requires only HTTP.

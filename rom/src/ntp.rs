@@ -121,7 +121,7 @@ pub fn query_ntp(
         // Advance the interface clock by a fixed millisecond per poll.
         // poll_delay() can return zero and freeze the clock, which makes the
         // UDP retransmit logic fire on every iteration.
-        crate::net::clock_advance(1);
+        crate::net::clock_tick();
         timestamp = crate::net::clock_now();
         if timestamp - start > timeout {
             return None;

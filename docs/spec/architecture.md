@@ -1148,7 +1148,7 @@ The ROM is a separate `no_std` Rust artefact:
 | Stack | smoltcp, IPv4 + DHCPv4 + NTP; IPv6 and DNS planned |
 | Application | HTTP/1.1 client; HTTPS/TLS planned |
 | Integrity | SHA-256 of the kernel and boot bundle |
-| Console | Serial (Z85C30); telnet ROM console on guest port 23 |
+| Console | Serial (Z85C30); styled telnet ROM console on guest port 23 (truecolor/256/16, NAWS, history) |
 | Payload | Kernel + boot bundle, loaded to a kseg0 address agreed with the kernel linker script (for example `0x8804_0000`, mapping physical `0x0804_0000`; the Indy's RAM starts at physical `0x0800_0000`) |
 | Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry; the live network stack and telnet console remain in place |
 
