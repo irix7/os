@@ -18,7 +18,7 @@ use core::sync::atomic::{compiler_fence, Ordering};
 use smoltcp::iface::{Interface, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::dhcpv4;
-use smoltcp::time::{Duration, Instant};
+use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, Ipv4Address, Ipv4Cidr};
 
 /// Seeq register window, kseg1 virtual base.
@@ -99,17 +99,23 @@ fn read_nvram_mac() -> [u8; 6] {
     mac
 }
 
+/// Number of receive descriptors in the ring.  A ring lets the HPC3 move on
+/// to the next buffer while the CPU processes the previous frame; a single
+/// descriptor forces a stop/re-arm cycle and drops frames on bulk transfers.
+const RX_RING: usize = 8;
+
 /// The Seeq device as a smoltcp `Device`.
 pub struct SeeqDevice {
     mac: EthernetAddress,
     /// Transmit frame buffer (DMA-visible).
     tx_buf: [u8; 1514],
-    /// Receive DMA buffer: 2 pad + frame + status.
-    rx_buf: [u8; 1520],
+    /// Receive DMA buffers: 2 pad + frame + status each.
+    rx_bufs: [[u8; 1520]; RX_RING],
     /// Copy of the last received frame handed to smoltcp.
     rx_frame: [u8; 1514],
     tx_desc: DmaDesc,
-    rx_desc: DmaDesc,
+    rx_descs: [DmaDesc; RX_RING],
+    rx_index: usize,
 }
 
 impl SeeqDevice {
@@ -131,7 +137,7 @@ impl SeeqDevice {
         let dev = Self {
             mac: EthernetAddress::from_bytes(&mac_bytes),
             tx_buf: [0; 1514],
-            rx_buf: [0; 1520],
+            rx_bufs: [[0; 1520]; RX_RING],
             rx_frame: [0; 1514],
             tx_desc: DmaDesc {
                 addr: 0,
@@ -139,20 +145,20 @@ impl SeeqDevice {
                 next: 0,
                 pad: 0,
             },
-            rx_desc: DmaDesc {
+            rx_descs: [DmaDesc {
                 addr: 0,
                 flags: 0,
                 next: 0,
                 pad: 0,
-            },
+            }; RX_RING],
+            rx_index: 0,
         };
         Some(dev)
     }
 
     /// Activate the receive engine.  Must be called after the device has come
-    /// to rest at its final address: the descriptor's next pointer is a
-    /// physical self-reference and would be stale if taken in `new()` (the
-    /// struct moves when it is returned).
+    /// to rest at its final address: the descriptor next pointers are physical
+    /// self-references and would be stale if taken in `new()`.
     pub fn start(&mut self) {
         self.start_rx();
     }
@@ -162,30 +168,40 @@ impl SeeqDevice {
         self.mac
     }
 
-    /// (Re)arm the single receive descriptor and activate the RX engine.
+    /// Build the descriptor ring and activate the RX engine.
     fn start_rx(&mut self) {
-        // The descriptor is shared with the DMA engine, so every field is
-        // accessed through volatile operations: the compiler must not cache
-        // or constant-fold values the hardware can change.
-        let buf_phys = phys(self.rx_buf.as_ptr());
-        let desc_phys = phys(&self.rx_desc);
-        unsafe {
-            write_volatile(&mut self.rx_desc.addr, buf_phys);
-            write_volatile(&mut self.rx_desc.flags, DESC_ROWN | MAX_RPKT);
-            write_volatile(&mut self.rx_desc.next, desc_phys);
+        let mut buf_phys = [0u32; RX_RING];
+        for i in 0..RX_RING {
+            buf_phys[i] = phys(self.rx_bufs[i].as_ptr());
         }
-        hpc3_wr32(RX_ENGINE, ENET_CBP, desc_phys);
-        hpc3_wr32(RX_ENGINE, ENET_NBDP, desc_phys);
+        let desc_base = self.rx_descs.as_ptr();
+        for i in 0..RX_RING {
+            let next = phys(unsafe { desc_base.add((i + 1) % RX_RING) });
+            unsafe {
+                write_volatile(&mut self.rx_descs[i].addr, buf_phys[i]);
+                write_volatile(&mut self.rx_descs[i].flags, DESC_ROWN | MAX_RPKT);
+                write_volatile(&mut self.rx_descs[i].next, next);
+            }
+        }
+
+        let first = phys(&self.rx_descs[0]);
+        hpc3_wr32(RX_ENGINE, ENET_CBP, first);
+        hpc3_wr32(RX_ENGINE, ENET_NBDP, first);
         // Drop the channel first: CTRL writes only change ACTIVE on a 0->1
         // transition in the HPC3 model.
         hpc3_wr32(RX_ENGINE, ENET_CTRL, 0);
         hpc3_wr32(RX_ENGINE, ENET_CTRL, ENET_CTRL_ACTIVE);
     }
 
-    /// Re-arm the receive descriptor after a frame (the HPC3 cleared ROWN and
-    /// wrote the remaining byte count back into it).
-    fn rearm_rx(&mut self) {
-        self.start_rx();
+    /// Re-arm one receive descriptor after its frame has been consumed.  The
+    /// channel is already working on the next descriptor, so it must not be
+    /// stopped here.
+    fn rearm_rx(&mut self, index: usize) {
+        let buf_phys = phys(self.rx_bufs[index].as_ptr());
+        unsafe {
+            write_volatile(&mut self.rx_descs[index].addr, buf_phys);
+            write_volatile(&mut self.rx_descs[index].flags, DESC_ROWN | MAX_RPKT);
+        }
     }
 }
 
@@ -202,11 +218,11 @@ impl Device for SeeqDevice {
     }
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        // ROWN is set while the HPC3 owns the descriptor.  It clears when a
-        // frame has been written (along with the remaining byte count).  The
-        // descriptor lives in RAM shared with the DMA engine, so read it
-        // with volatile semantics.
-        let flags = unsafe { read_volatile(&self.rx_desc.flags) };
+        // Each descriptor owns one buffer.  ROWN is set while the HPC3 owns
+        // it; it clears when a frame has been written.  The descriptor lives
+        // in RAM shared with the DMA engine, so use volatile semantics.
+        let index = self.rx_index;
+        let flags = unsafe { read_volatile(&self.rx_descs[index].flags) };
         if flags & DESC_ROWN != 0 {
             return None;
         }
@@ -214,21 +230,24 @@ impl Device for SeeqDevice {
         let remaining = flags & DESC_COUNT_MASK;
         let total = MAX_RPKT.saturating_sub(remaining);
         if total < 3 {
-            self.rearm_rx();
+            self.rearm_rx(index);
+            self.rx_index = (index + 1) % RX_RING;
             return None;
         }
         let len = (total - 3) as usize;
         if !(14..=1514).contains(&len) {
-            self.rearm_rx();
+            self.rearm_rx(index);
+            self.rx_index = (index + 1) % RX_RING;
             return None;
         }
 
-        let buf = self.rx_buf.as_ptr();
+        let buf = self.rx_bufs[index].as_ptr();
         let status = unsafe { read_volatile(buf.add(2 + len)) };
         for (i, slot) in self.rx_frame.iter_mut().take(len).enumerate() {
             *slot = unsafe { read_volatile(buf.add(2 + i)) };
         }
-        self.rearm_rx();
+        self.rearm_rx(index);
+        self.rx_index = (index + 1) % RX_RING;
 
         if status & 0x20 == 0 {
             // Not a good frame (CRC/short/overflow); it has been discarded.
@@ -309,6 +328,21 @@ impl<'a> smoltcp::phy::TxToken for SeeqTxToken<'a> {
     }
 }
 
+/// Monotonic millisecond clock shared by DHCP, NTP and HTTP.  The interface
+/// keeps timers across all three, so rewinding the time to zero per request
+/// breaks TCP retransmission and neighbour expiry.
+static mut CLOCK_MS: u64 = 0;
+
+pub fn clock_now() -> Instant {
+    Instant::from_millis(unsafe { CLOCK_MS } as i64)
+}
+
+pub fn clock_advance(ms: u64) {
+    unsafe {
+        CLOCK_MS = CLOCK_MS.wrapping_add(ms);
+    }
+}
+
 /// Result of a successful DHCPv4 configuration.
 pub struct DhcpLease {
     pub address: Ipv4Cidr,
@@ -327,8 +361,8 @@ pub fn dhcpv4_configure(
     let dhcpv4_socket = dhcpv4::Socket::new();
     let dhcpv4_handle = socket_set.add(dhcpv4_socket);
 
-    let mut timestamp = Instant::from_millis(0);
-    let start = timestamp;
+    let start = clock_now();
+    let mut timestamp = start;
     let timeout_ms = 10_000u64;
 
     loop {
@@ -353,7 +387,8 @@ pub fn dhcpv4_configure(
         // Advance the interface clock by a fixed millisecond per poll.  Using
         // poll_delay() here is wrong: a zero delay would freeze the clock and
         // make the DHCP socket retransmit on every loop.
-        timestamp += Duration::from_millis(1);
+        clock_advance(1);
+        timestamp = clock_now();
         if timestamp.millis() - start.millis() > timeout_ms as i64 {
             return None;
         }

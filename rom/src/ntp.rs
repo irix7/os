@@ -14,7 +14,7 @@ use alloc::format;
 use smoltcp::iface::{Interface, SocketSet};
 use smoltcp::socket::udp::{Socket as UdpSocket, UdpMetadata};
 use smoltcp::storage::PacketBuffer;
-use smoltcp::time::{Duration, Instant};
+use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
 
 /// NTP server port.
@@ -94,8 +94,8 @@ pub fn query_ntp(
         .send_slice(&request, remote)
         .ok()?;
 
-    let mut timestamp = Instant::from_millis(0);
-    let start = timestamp;
+    let start = crate::net::clock_now();
+    let mut timestamp = start;
     let timeout = Duration::from_millis(10_000);
 
     loop {
@@ -114,7 +114,8 @@ pub fn query_ntp(
         // Advance the interface clock by a fixed millisecond per poll.
         // poll_delay() can return zero and freeze the clock, which makes the
         // UDP retransmit logic fire on every iteration.
-        timestamp += Duration::from_millis(1);
+        crate::net::clock_advance(1);
+        timestamp = crate::net::clock_now();
         if timestamp - start > timeout {
             return None;
         }

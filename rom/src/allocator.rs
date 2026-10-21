@@ -8,8 +8,9 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 
-/// Size of the bump-allocated heap (64 KiB).
-const HEAP_SIZE: usize = 64 * 1024;
+/// Size of the bump-allocated heap (2 MiB).  The HTTP client buffers the
+/// fetched kernel here, so this must cover the kernel image plus headers.
+const HEAP_SIZE: usize = 2 * 1024 * 1024;
 
 static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 static mut HEAP_PTR: usize = 0;

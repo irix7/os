@@ -135,8 +135,8 @@ The build scripts also need a host C compiler as `cc` and `pkg-config`; the Nix 
 1. The ROM cannot assume RAM exists: it sizes and tests DRAM in assembly before creating a
    stack, copying `.data` or clearing `.bss`.
 2. The low 512 KiB of DRAM is a special alias window; the ROM's data, stack and DMA buffers
-   live at 7 MiB and above, matching the original IP22 PROM (`BSSADDR 0xA8700000`,
-   `PROM_STACK 0xA8800000`).
+   live at 7 MiB and above (`.data` at `0xA8700000`, a 2 MiB heap, stack top at
+   `0xA8A00000`), matching the original IP22 PROM's BSSADDR and staying clear of the alias.
 3. The ROM runs uncached during bring-up. Cache setup and the cache-flushed handoff are part
    of the kernel entry work.
 4. `smoltcp 0.13` requires both `proto-ipv4` and `proto-ipv6` with this nightly because its

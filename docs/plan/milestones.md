@@ -104,8 +104,8 @@ prints `KERNEL STUB OK`.
 - [x] The ROM fits in 512 KiB–1 MiB.
 - [ ] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
 - [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
-- [ ] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
-- [ ] Caches are enabled and flushed before the handoff.
+- [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
+- [x] Caches are enabled and flushed before the handoff.
 
 **Dependencies:** M0, a local HTTP server (or R2), a kernel linked for the handoff address.
 

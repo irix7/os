@@ -115,9 +115,10 @@ pub unsafe fn init() {
     config |= CONFIG_K0_WRITEBACK;
     cp0_write(CP0_CONFIG, config);
 
-    // 5. Enable caches: set Status.CU0, Status.IM, Status.IE.
+    // 5. Enable kseg0 caching.  Interrupts stay disabled through the kernel
+    // hand-off; the kernel enables them when it is ready.
     let mut status = cp0_read(CP0_STATUS);
-    status |= STATUS_CU0 | STATUS_IM | STATUS_IE;
+    status |= STATUS_CU0 | STATUS_IM;
     cp0_write(CP0_STATUS, status);
 
     // 6. Final sync to ensure config takes effect.

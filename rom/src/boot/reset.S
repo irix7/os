@@ -120,10 +120,10 @@ _start:
 
     /*
      * RAM is now known good.  Build the writable world at 7 MiB, matching the
-     * original PROM (BSSADDR 0xA8700000, PROM_STACK 8 MiB).  The low 512 KiB
-     * is a special alias window and is deliberately left alone.
+     * original PROM's BSSADDR, with a 2 MiB heap and a 10 MiB stack top.  The
+     * low 512 KiB is a special alias window and is deliberately left alone.
      */
-    li      $29, 0xa8800000
+    li      $29, 0xa8a00000
 
     la      $8, __data_load
     la      $9, __data_start

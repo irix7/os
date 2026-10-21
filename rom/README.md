@@ -20,9 +20,11 @@ it is not an ECOFF image loaded by ARCS.
 | Range | Use |
 |---|---|
 | `0xBFC00000` | ROM text/rodata, executed in place |
-| `0xA8700000` | `.data`/`.bss`/heap |
-| `0xA8800000` | initial stack top (grows down) |
-| `0x88040000` | kernel load/hand-off address |
+| `0xA8700000` | `.data`/`.bss` + 2 MiB heap |
+| `0xA8A00000` | initial ROM stack top (grows down) |
+| `0x88040000` | kernel load/entry (`0x08040000` physical) |
+| `0x88200000` | kernel stack top |
+| `0x88300000` | `BootInfo` + memory map (`0x08300000` physical) |
 | `0xBFBD9830` | SCC console (`DUART1B`, `tty1`) |
 | `0xBFBD4000` | Seeq 8003 registers |
 | `0xBFB94000` / `0xBFB96000` | HPC3 ENET RX / TX DMA |
@@ -76,6 +78,6 @@ default).
 
 - Boots from the raw PROM image and tests RAM before creating any RAM structures.
 - DHCP, NTP and HTTP work on one network stack; SHA-256 matches the served image.
-- The hand-off target is currently a small stub. Linking the real n32 kernel at
-  `0x88040000`, passing `BootInfo` in `$a0`, and enabling/flushing caches are the next steps.
+- The real n32 kernel is linked at `0x88040000`, receives `BootInfo` in `$a0`, uses the
+  memory map for its frame allocator, runs with caches enabled and prints `kernel: up`.
 - HTTPS/TLS is not implemented yet; the boot specification currently requires only HTTP.

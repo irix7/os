@@ -15,6 +15,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `rom/linker.ld` and the `rom/src/boot/` reset, memory-sizing and memory-test assembly.
 - Research note on Meta CRAM and compressed RAM (`docs/research/compressed-ram.md`);
   compressed RAM is rejected for the Indy in favour of the read-only EROFS root.
+- Kernel handoff: the real n32 kernel is linked at `0x88040000`, receives a physical
+  `BootInfo` in `$a0`, uses its memory map for the frame allocator, and runs with caches
+  enabled.
 - Advanced architecture specification (`docs/spec/architecture.md`), including the D1–D31
   decision register, hybrid SAS/MMU isolation, the native capability ABI, the IRIX
   compatibility container, R2-first boot, EROFS root, X11, the native display server and the

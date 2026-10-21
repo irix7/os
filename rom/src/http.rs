@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use smoltcp::iface::{Interface, SocketSet};
 use smoltcp::socket::tcp;
 use smoltcp::socket::tcp::Socket as TcpSocket;
-use smoltcp::time::{Duration, Instant};
+use smoltcp::time::Duration;
 use smoltcp::wire::{IpAddress, Ipv4Address};
 
 const HTTP_TIMEOUT_MS: u64 = 30_000;
@@ -56,8 +56,9 @@ pub fn http_get(
         .connect(cx, (IpAddress::Ipv4(server_ip), server_port), 49152)
         .map_err(|_| ())?;
 
-    let mut timestamp = Instant::from_millis(0);
-    let deadline = timestamp + Duration::from_millis(HTTP_TIMEOUT_MS);
+    let start = crate::net::clock_now();
+    let mut timestamp = start;
+    let deadline = start + Duration::from_millis(HTTP_TIMEOUT_MS);
 
     // Wait for connection establishment.
     loop {
@@ -69,7 +70,8 @@ pub fn http_get(
         if state == tcp::State::Closed || state == tcp::State::LastAck {
             return Err(());
         }
-        timestamp += Duration::from_millis(1);
+        crate::net::clock_advance(1);
+        timestamp = crate::net::clock_now();
         if timestamp > deadline {
             return Err(());
         }
@@ -102,6 +104,7 @@ pub fn http_get(
     // the end of the body.
     let mut headers = Vec::new();
     let mut headers_done = false;
+    let mut content_length: Option<usize> = None;
     let mut body = Vec::new();
     loop {
         let _ = iface.poll(timestamp, device, socket_set);
@@ -117,6 +120,7 @@ pub fn http_get(
                     } else {
                         headers.extend_from_slice(&chunk[..n]);
                         if let Some(pos) = find_header_end(&headers) {
+                            content_length = parse_content_length(&headers[..pos]);
                             body.extend_from_slice(&headers[pos + 4..]);
                             headers.clear();
                             headers_done = true;
@@ -127,15 +131,21 @@ pub fn http_get(
             }
         }
 
+        // A Content-Length gives an exact end, independent of how the FIN is
+        // split across segments.  Without one, fall back to the closed states.
+        if let Some(expected) = content_length {
+            if body.len() >= expected {
+                break;
+            }
+        }
+
         let state = sock.state();
-        if state == tcp::State::Closed
-            || state == tcp::State::LastAck
-            || state == tcp::State::CloseWait
-        {
+        if state == tcp::State::Closed || state == tcp::State::LastAck {
             break;
         }
 
-        timestamp += Duration::from_millis(1);
+        crate::net::clock_advance(1);
+        timestamp = crate::net::clock_now();
         if timestamp > deadline {
             return Err(());
         }
@@ -143,6 +153,34 @@ pub fn http_get(
 
     socket_set.get_mut::<TcpSocket>(tcp_handle).close();
     Ok(FetchResult { body, server_ip })
+}
+
+/// Parse a `Content-Length` header from the header block.
+fn parse_content_length(headers: &[u8]) -> Option<usize> {
+    let needle = b"content-length:";
+    let mut i = 0;
+    while i + needle.len() <= headers.len() {
+        if headers[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            let mut j = i + needle.len();
+            while j < headers.len() && headers[j] == b' ' {
+                j += 1;
+            }
+            let mut value = 0usize;
+            let mut any = false;
+            while j < headers.len() && headers[j].is_ascii_digit() {
+                value = value
+                    .saturating_mul(10)
+                    .saturating_add((headers[j] - b'0') as usize);
+                any = true;
+                j += 1;
+            }
+            if any {
+                return Some(value);
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Find `\r\n\r\n` in a byte slice.

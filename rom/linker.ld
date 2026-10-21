@@ -7,12 +7,12 @@
  * test can run without overwriting the code that is doing the testing.
  *
  * Writable data lives in DRAM at 7 MiB, matching the original IP22 PROM's
- * BSSADDR 0xA8700000, and the stack top matches PROM_STACK (8 MiB).  Staying
- * well clear of the low 512 KiB matters: that window is a special alias of
- * 0x08000000..0x0807FFFF, and the original firmware never places DMA buffers
- * or its stack there.
- *   0xA870_0000 ..              .data/.bss/heap
- *   0xA880_0000                 initial stack top (grows down)
+ * BSSADDR 0xA8700000, with a 2 MiB heap.  The stack top is 10 MiB, leaving a
+ * gap above the heap.  Staying well clear of the low 512 KiB matters: that
+ * window is a special alias of 0x08000000..0x0807FFFF, and the original
+ * firmware never places DMA buffers or its stack there.
+ *   0xA870_0000 ..              .data/.bss/heap (2 MiB)
+ *   0xA8A0_0000                 initial stack top (grows down)
  * The initial contents of .data are stored in the PROM image immediately
  * after .rodata and copied to RAM by the reset stub.
  */
@@ -75,8 +75,8 @@ SECTIONS
     __bss_end = .;
   }
 
-  /* Stack top: the stack grows down from 8 MiB. */
-  __stack_top = 0xA8800000;
+  /* Stack top: the stack grows down from 10 MiB, above the 2 MiB heap. */
+  __stack_top = 0xA8A00000;
 
   /DISCARD/ : {
     *(.eh_frame)

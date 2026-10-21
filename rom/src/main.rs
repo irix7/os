@@ -18,6 +18,14 @@ const HTTP_SERVER_IP: [u8; 4] = [10, 1, 1, 3];
 const HTTP_SERVER_PORT: u16 = 18080;
 const HTTP_SERVER_HOST: &str = "10.1.1.3";
 
+/// Hand-off addresses (physical, per the boot protocol).
+const KERNEL_KSEG0: u32 = 0x8804_0000;
+const KERNEL_PHYS: u32 = 0x0804_0000;
+const BOOTINFO_KSEG0: u32 = 0x8830_0000;
+const BOOTINFO_PHYS: u32 = 0x0830_0000;
+const MEMMAP_KSEG0: u32 = 0x8830_0100;
+const KERNEL_STACK: u32 = 0x8820_0000;
+
 // Reset entry and stackless bring-up.  The R4000 starts at 0xBFC00000 with no
 // stack and no writable data.  reset.S sizes and tests DRAM using registers
 // only, and only then builds the stack/.data/.bss.  memsize.S and memtest.S
@@ -201,7 +209,7 @@ pub extern "C" fn rom_main() -> ! {
 
             // Copy the fetched image to the hand-off address.  The body is in
             // the ROM heap; the kernel expects it at 0x8804_0000.
-            let kernel_dest = 0x8804_0000 as *mut u8;
+            let kernel_dest = KERNEL_KSEG0 as *mut u8;
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     result.body.as_ptr(),
@@ -211,15 +219,32 @@ pub extern "C" fn rom_main() -> ! {
                 core::arch::asm!("sync");
             }
 
+            // Build the memory map and BootInfo in reserved RAM above the
+            // kernel's stack.  All addresses stored in BootInfo are physical.
+            let mem_map = MEMMAP_KSEG0 as *mut rom::boot::MemMapEntry;
+            unsafe {
+                core::ptr::write_volatile(
+                    mem_map,
+                    rom::boot::MemMapEntry {
+                        base: 0x0800_0000,
+                        size: ram_size as u64,
+                        kind: rom::boot::MEM_MAP_USABLE_RAM,
+                        flags: 0,
+                    },
+                );
+            }
+
             let mut boot_info = rom::boot::BootInfo::default();
             boot_info.magic = rom::boot::BOOTINFO_MAGIC;
             boot_info.version_major = rom::boot::BOOTINFO_VERSION_MAJOR;
             boot_info.size = rom::boot::BOOTINFO_SIZE as u32;
+            boot_info.mem_map_phys = (BOOTINFO_PHYS as u64) + 0x100;
+            boot_info.mem_map_count = 1;
             boot_info.mem_map_entry_size = rom::boot::MEM_MAP_ENTRY_SIZE;
-            boot_info.kernel_phys = 0x8804_0000;
+            boot_info.kernel_phys = KERNEL_PHYS as u64;
             boot_info.kernel_size = result.body.len() as u64;
             boot_info.kernel_sha256 = digest.0;
-            boot_info.bundle_phys = 0x8044_0000;
+            boot_info.bundle_phys = 0;
             boot_info.bundle_size = 0;
             boot_info.console_kind = rom::boot::CONSOLE_UART;
             boot_info.cmdline_len = 1;
@@ -236,14 +261,32 @@ pub extern "C" fn rom_main() -> ! {
                 u32::from_be_bytes([ip_octets[0], ip_octets[1], ip_octets[2], ip_octets[3]]);
             boot_info.netmask = !(0xFFFF_FFFFu32 << (32 - ip.prefix_len()));
             boot_info.checksum = rom::boot::bootinfo_checksum(&boot_info);
+            unsafe {
+                core::ptr::write_volatile(BOOTINFO_KSEG0 as *mut rom::boot::BootInfo, boot_info);
+            }
 
             serial_write_str("ROM: boot info ready\r\n");
             serial_write_str("ROM: entering kernel...\r\n");
 
-            let entry: u32 = 0x8804_0000;
-            let target: *const () = entry as *const ();
+            // The boot protocol requires caches on and interrupts off at the
+            // kernel entry.  The ROM itself runs from uncached kseg1, so it
+            // survives the cache enable.
             unsafe {
-                core::arch::asm!(".set noat\n\tjr {0}", in(reg) target);
+                rom::cache::init();
+                core::arch::asm!("sync");
+                core::arch::asm!(
+                    ".set noat",
+                    "move $sp, {sp}",
+                    "move $a0, {bi}",
+                    "move $a1, $zero",
+                    "move $a2, $zero",
+                    "move $v0, $zero",
+                    "move $ra, $zero",
+                    "jr {entry}",
+                    sp = in(reg) KERNEL_STACK,
+                    bi = in(reg) BOOTINFO_PHYS,
+                    entry = in(reg) KERNEL_KSEG0,
+                );
             }
             loop {
                 core::hint::spin_loop();

@@ -96,7 +96,9 @@ pub fn init(descs: &[MemDesc], count: usize) {
         }
     }
 
-    crate::print_str("frames: initialised from ");
+    crate::print_str("frames: initialised, ");
+    crate::print_dec(count);
+    crate::print_str(" descriptors");
     crate::println("");
 }
 
