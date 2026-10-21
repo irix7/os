@@ -97,7 +97,7 @@ fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
 /// A SHA-256 digest (32 bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct Sha256([u8; 32]);
+pub struct Sha256(pub [u8; 32]);
 
 impl Sha256 {
     /// Compute the SHA-256 digest of `data` in one shot.
