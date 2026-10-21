@@ -48,8 +48,7 @@ Every release attaches:
 ```text
 source + lockfiles
       │
-      ├─ cargo build --release --target mips3-sgi-irix7-n32
-      ├─ cargo build --release --target mips2-sgi-irix7-o32   (ROM)
+      ├─ cargo build --release --target mips3-sgi-irix7-n32   (kernel + ROM)
       ├─ build boot bundle (cells + init)
       ├─ mkfs.erofs -T -U clear root/ root.erofs
       ├─ manifest.json (versions, digests, sizes, ABI)

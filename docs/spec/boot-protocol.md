@@ -7,9 +7,10 @@
 
 ## 1. Scope
 
-This is the binary contract between the **Rust ROM** (o32/MIPS II, ARCS-loaded) and the
-**IRIX 7 kernel** (n32/MIPS III). It defines the handoff registers, the `BootInfo` structure,
-the memory map, the CPU/cache state, validation and failure behaviour.
+This is the binary contract between the **Rust ROM** (n32/MIPS III, executed directly from
+the PROM window at `0xBFC00000`) and the **IRIX 7 kernel** (n32/MIPS III). It defines the
+handoff registers, the `BootInfo` structure, the memory map, the CPU/cache state, validation
+and failure behaviour.
 
 It does not define the kernel's own boot sequence, the boot bundle format or the root image;
 those are in [`image-format.md`](image-format.md) (planned) and `architecture.md` §10.

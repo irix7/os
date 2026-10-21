@@ -4,9 +4,8 @@
 //! traps, TLB/cache maintenance, frame allocation, IRQ/timers, MMIO/DMA
 //! brokering, scheduler, capability table, and panic path.
 //!
-//! Built for `mips2-sgi-irix7-o32` (o32/MIPS II) and
-//! `mips3-sgi-irix7-n32` (n32/MIPS III) with `-Z build-std`. The kernel is a
-//! `no_main` MIPS binary that is never host-tested.
+//! Built for `mips3-sgi-irix7-n32` (n32/MIPS III) with `-Z build-std`. The
+//! kernel is a `no_main` MIPS binary that is never host-tested.
 //!
 //! The kernel occupies kseg0 (unmapped, cached) and executes in kernel mode.
 //! Legacy IRIX processes occupy kuseg in their own MMU address spaces.

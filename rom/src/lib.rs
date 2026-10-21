@@ -1,10 +1,10 @@
 //! ROM serial console driver (Z85C30 ESCC inside the IOC2).
 //!
-//! Hardware facts (see `docs/research/indy-hardware.md` §15.3):
-//! - Z85C30 ESCC base physical 0x1FBD_9830, mapped at kseg1 0xBFBD_9830.
-//! - Indirect register access: write the register number to `(reg << 2) + 3`,
-//!   then the data byte to the same address (byte in lane 3).
-//! - Ports are wired in reverse: channel A = rear-panel "Serial Port 1" = `serial0`.
+//! Hardware facts (from the original IP22 ARCS PROM source):
+//! - The PROM console is `DUART1B` = `HPC3_SERIAL1_CMD/DATA`, physical
+//!   0x1FBD_9830/0x1FBD_9834, kseg1 0xBFBD_9830/0xBFBD_9834.
+//! - In iris those are SCC channel B, exposed on TCP port 8881 (tty1, the
+//!   console).  Channel A (0xBFBD_9838/3C) is tty2 on port 8880.
 //! - PCLK = 3.672 MHz; PROM default is 9600 8N1, the safe bring-up rate.
 //!
 //! Only polled output is needed for the ROM's early console; interrupts are
@@ -14,15 +14,21 @@
 #![no_std]
 #![allow(static_mut_refs)]
 #![allow(suspicious_runtime_symbol_definitions)]
+#![allow(unused_features)]
+#![allow(unused_unsafe)]
+#![feature(asm_experimental_arch)]
 
 extern crate alloc;
 
+pub mod aes;
 pub mod allocator;
 pub mod boot;
+pub mod cache;
 pub mod hex;
 pub mod http;
 pub mod net;
-pub mod seeq;
+pub mod ntp;
+pub mod ramtest;
 pub mod sha256;
 
 use core::ptr::{read_volatile, write_volatile};
@@ -30,16 +36,26 @@ use core::ptr::{read_volatile, write_volatile};
 /// Z85C30 ESCC register window, kseg1 virtual base.
 const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
 
-/// Write a Z85C30 control register (indirect, lane 3).
+/// Channel B control port (DUART1B, the console): base+0.
+const CHAN_CTRL: usize = 0;
+
+/// Write a Z85C30 control register on channel B (indirect access through the
+/// control port: first select the register, then write its data).
 fn wr(reg: u8, data: u8) {
     unsafe {
-        write_volatile(Z85C30_BASE.add(((reg as usize) << 2) + 3), data);
+        let select = if reg < 8 { reg } else { (reg - 8) | 0x08 };
+        write_volatile(Z85C30_BASE.add(CHAN_CTRL), select); // select register
+        write_volatile(Z85C30_BASE.add(CHAN_CTRL), data); // write data via control port
     }
 }
 
-/// Read a Z85C30 control register (indirect, lane 3).
+/// Read a Z85C30 control register on channel B.
 fn rd(reg: u8) -> u8 {
-    unsafe { read_volatile(Z85C30_BASE.add(((reg as usize) << 2) + 3)) }
+    unsafe {
+        let select = if reg < 8 { reg } else { (reg - 8) | 0x08 };
+        write_volatile(Z85C30_BASE.add(CHAN_CTRL), select); // select register
+        read_volatile(Z85C30_BASE.add(CHAN_CTRL)) // read from control port
+    }
 }
 
 /// Z85C30 register numbers.
@@ -71,19 +87,20 @@ const RR0: u8 = 0; // status: bit 2 = tx buffer empty
 ///   tc = 10 gives 9562 baud, within tolerance of 9600.
 const BAUD_TC: u8 = 10;
 
-/// Initialise channel A for 9600 8N1, polled output only.
+/// Exact sequence from the original IP22prom `pon_initio` (pon/pon_io.s):
+/// hardware reset, then 9600 8N1 with both clocks from the baud-rate
+/// generator, receiver enabled, transmitter enabled last.
 pub fn serial_init() {
-    // Force a channel reset, then master interrupt enable.
-    wr(WR9, 0xB0); // channel reset (channel A)
+    wr(WR9, 0xC0); // WR9_HW_RST: reset both SCC channels
     wr(WR4, 0x44); // x16 clock, 1 stop bit, no parity
-    wr(WR11, 0x50); // txclk = BRG, rxclk = BRG
-    wr(WR12, BAUD_TC); // baud rate low byte
-    wr(WR13, 0x00); // baud rate high byte
-    wr(WR14, 0x01); // BRG source = PCLK
-    wr(WR3, 0xC1); // rx 8 bits/char, rx enable
-    wr(WR5, 0x68); // tx 8 bits/char, tx enable, DTR
-    wr(WR1, 0x00); // all interrupts off
-    wr(WR9, 0x08); // master interrupt enable (no vector includes status)
+    wr(WR3, 0xC0); // 8 bits/char, receiver disabled for now
+    wr(WR5, 0x28); // 8 bits/char, RTS+DTR, transmitter disabled
+    wr(WR11, 0x50); // Rx clock <- BRG, Tx clock <- BRG
+    wr(WR12, BAUD_TC); // BRG time constant low (9600)
+    wr(WR13, 0x00); // BRG time constant high
+    wr(WR14, 0x01); // WR14_BRG_ENBL
+    wr(WR3, 0xC1); // 8 bits/char, receiver enable
+    wr(WR5, 0x68); // 8 bits/char, Tx enable, RTS+DTR
 }
 
 /// Wait until the transmitter holding register is empty.
@@ -98,7 +115,10 @@ pub fn serial_write_byte(b: u8) {
         core::hint::spin_loop();
     }
     unsafe {
-        write_volatile(Z85C30_BASE.add(3), b); // data register at lane 3 offset 3
+        // Select WR8 (transmit data register) and write the byte through the
+        // control port; the Z85C30 resets its register pointer afterwards.
+        write_volatile(Z85C30_BASE.add(CHAN_CTRL), 0x08);
+        write_volatile(Z85C30_BASE.add(CHAN_CTRL), b);
     }
 }
 

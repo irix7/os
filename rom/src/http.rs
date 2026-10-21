@@ -2,11 +2,12 @@
 //!
 //! Performs GET requests with Range support over smoltcp TCP sockets,
 //! connecting directly to an IPv4 address (DNS resolution is a follow-up).
-//! Intended for fetching the kernel and boot bundle from an HTTP/R2 endpoint
-//! during ROM boot.
+//! The caller owns the interface, socket set and Seeq device, so the same
+//! network stack carries DHCP, NTP and the kernel fetch.
 
 use crate::net::SeeqDevice;
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -16,7 +17,6 @@ use smoltcp::socket::tcp::Socket as TcpSocket;
 use smoltcp::time::{Duration, Instant};
 use smoltcp::wire::{IpAddress, Ipv4Address};
 
-const HTTP_PORT: u16 = 80;
 const HTTP_TIMEOUT_MS: u64 = 30_000;
 
 /// Result of an HTTP fetch: the body bytes and the server IP address.
@@ -27,18 +27,22 @@ pub struct FetchResult {
 
 /// Perform an HTTP/1.1 GET request and return the body bytes.
 ///
-/// `server_ip` is the IPv4 address of the HTTP server. `range` is an optional
-/// `Range: bytes=start-end` header value.
+/// `server_ip`/`server_port` identify the server. `host` is the value for the
+/// `Host:` header (without the port); `range` is an optional `Range:` value.
 #[allow(clippy::result_unit_err)]
+#[allow(clippy::too_many_arguments)]
 pub fn http_get(
     iface: &mut Interface,
     socket_set: &mut SocketSet,
+    device: &mut SeeqDevice,
     server_ip: Ipv4Address,
+    server_port: u16,
     host: &str,
     path: &str,
     range: Option<&str>,
 ) -> Result<FetchResult, ()> {
-    // Create a TCP socket with leaked buffers (live for the duration of the fetch).
+    // Create a TCP socket with leaked buffers (live for the duration of the
+    // fetch; the bump allocator never frees).
     let rx_buf = Box::leak(Box::new(vec![0u8; 4096]));
     let tx_buf = Box::leak(Box::new(vec![0u8; 4096]));
     let rx_buffer = tcp::SocketBuffer::new(&mut rx_buf[..]);
@@ -49,15 +53,15 @@ pub fn http_get(
     let cx = iface.context();
     socket_set
         .get_mut::<TcpSocket>(tcp_handle)
-        .connect(cx, (IpAddress::Ipv4(server_ip), HTTP_PORT), 49152)
+        .connect(cx, (IpAddress::Ipv4(server_ip), server_port), 49152)
         .map_err(|_| ())?;
 
     let mut timestamp = Instant::from_millis(0);
     let deadline = timestamp + Duration::from_millis(HTTP_TIMEOUT_MS);
 
-    // Wait for connection to be established.
+    // Wait for connection establishment.
     loop {
-        let _ = iface.poll(timestamp, &mut SeeqDevice::new().unwrap(), socket_set);
+        let _ = iface.poll(timestamp, device, socket_set);
         let state = socket_set.get_mut::<TcpSocket>(tcp_handle).state();
         if state == tcp::State::Established {
             break;
@@ -65,15 +69,10 @@ pub fn http_get(
         if state == tcp::State::Closed || state == tcp::State::LastAck {
             return Err(());
         }
-        let delay = iface.poll_delay(timestamp, socket_set);
-        let next = match delay {
-            Some(d) => timestamp + d,
-            None => timestamp + Duration::from_millis(100),
-        };
-        if next > deadline {
+        timestamp += Duration::from_millis(1);
+        if timestamp > deadline {
             return Err(());
         }
-        timestamp = next;
     }
 
     // Build and send the GET request.
@@ -82,6 +81,9 @@ pub fn http_get(
     req.push_str(path);
     req.push_str(" HTTP/1.1\r\nHost: ");
     req.push_str(host);
+    if server_port != 80 {
+        req.push_str(&format!(":{}", server_port));
+    }
     req.push_str("\r\nConnection: close\r\n");
     if let Some(r) = range {
         req.push_str("Range: ");
@@ -90,86 +92,69 @@ pub fn http_get(
     }
     req.push_str("\r\n");
 
-    let req_bytes = req.as_bytes();
     socket_set
         .get_mut::<TcpSocket>(tcp_handle)
-        .send_slice(req_bytes)
+        .send_slice(req.as_bytes())
         .map_err(|_| ())?;
 
-    // Read the response headers and body.
-    let mut body = Vec::new();
+    // Read the response.  Headers are accumulated until the blank line, then
+    // the body is appended.  The request used Connection: close, so EOF marks
+    // the end of the body.
+    let mut headers = Vec::new();
     let mut headers_done = false;
-
+    let mut body = Vec::new();
     loop {
-        let _ = iface.poll(timestamp, &mut SeeqDevice::new().unwrap(), socket_set);
+        let _ = iface.poll(timestamp, device, socket_set);
         let sock = socket_set.get_mut::<TcpSocket>(tcp_handle);
 
-        if !headers_done {
-            let cap = sock.recv_capacity();
-            if cap > 0 {
-                let mut buf = [0u8; 512];
-                let cap = sock.recv_capacity();
-                let len = cap.min(buf.len());
-                let n = sock.recv_slice(&mut buf[..len]).map_err(|_| ())?;
-                if n > 0 {
-                    // Simple scan for "\r\n\r\n" header/body separator.
-                    let mut found = false;
-                    let mut i = 0;
-                    while i + 3 < n {
-                        if buf[i] == b'\r'
-                            && buf[i + 1] == b'\n'
-                            && buf[i + 2] == b'\r'
-                            && buf[i + 3] == b'\n'
-                        {
-                            found = true;
+        let mut chunk = [0u8; 512];
+        loop {
+            match sock.recv_slice(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    if headers_done {
+                        body.extend_from_slice(&chunk[..n]);
+                    } else {
+                        headers.extend_from_slice(&chunk[..n]);
+                        if let Some(pos) = find_header_end(&headers) {
+                            body.extend_from_slice(&headers[pos + 4..]);
+                            headers.clear();
                             headers_done = true;
-                            let body_start = i + 4;
-                            if body_start < n {
-                                body.extend_from_slice(&buf[body_start..n]);
-                            }
-                            break;
                         }
-                        i += 1;
-                    }
-                    if !found {
-                        // Headers span multiple reads; discard and re-poll.
-                        // (Headers are small; this is fine for the ROM.)
                     }
                 }
-            }
-        } else {
-            let cap = sock.recv_capacity();
-            if cap > 0 {
-                let mut buf = [0u8; 1024];
-                let len = cap.min(buf.len());
-                let n = sock.recv_slice(&mut buf[..len]).map_err(|_| ())?;
-                if n > 0 {
-                    body.extend_from_slice(&buf[..n]);
-                } else {
-                    break;
-                }
-            } else {
-                let state = sock.state();
-                if state == tcp::State::Closed || state == tcp::State::LastAck {
-                    break;
-                }
+                Err(_) => break,
             }
         }
 
-        let delay = iface.poll_delay(timestamp, socket_set);
-        let next = match delay {
-            Some(d) => timestamp + d,
-            None => timestamp + Duration::from_millis(100),
-        };
-        if next > deadline {
+        let state = sock.state();
+        if state == tcp::State::Closed
+            || state == tcp::State::LastAck
+            || state == tcp::State::CloseWait
+        {
+            break;
+        }
+
+        timestamp += Duration::from_millis(1);
+        if timestamp > deadline {
             return Err(());
         }
-        timestamp = next;
     }
 
     socket_set.get_mut::<TcpSocket>(tcp_handle).close();
-
     Ok(FetchResult { body, server_ip })
+}
+
+/// Find `\r\n\r\n` in a byte slice.
+fn find_header_end(buf: &[u8]) -> Option<usize> {
+    let mut i = 0;
+    while i + 3 < buf.len() {
+        if buf[i] == b'\r' && buf[i + 1] == b'\n' && buf[i + 2] == b'\r' && buf[i + 3] == b'\n' {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
