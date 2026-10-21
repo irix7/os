@@ -4,6 +4,7 @@
 //! `clock_tick` loop that carries DHCP, NTP and HTTP.  A single query slot is
 //! enough: the ROM resolves one hostname at a time, and the caller
 //! (`http_get`) waits on the resolver inside its existing poll loop.
+// SPDX-License-Identifier: 0BSD
 
 use alloc::vec::Vec;
 use core::fmt;

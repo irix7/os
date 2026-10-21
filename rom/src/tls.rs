@@ -13,6 +13,7 @@
 //!
 //! The RNG is a tiny xorshift128+ PRNG seeded from CP0 Count (good enough for
 //! bring-up nonces; a hardware RNG is a follow-up).
+// SPDX-License-Identifier: 0BSD
 
 #![cfg_attr(feature = "tls", allow(dead_code))]
 
