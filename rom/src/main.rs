@@ -9,12 +9,19 @@
 
 #![cfg_attr(not(test), no_main)]
 #![no_std]
+#![feature(asm)]
 
+use core::ffi::c_void;
 use core::panic::PanicInfo;
-use rom::boot::{build_bootinfo, BootInfo, MEM_MAP_ENTRY_SIZE, MEM_MAP_USABLE_RAM};
+use rom::boot::{BOOTINFO_MAGIC, BOOTINFO_SIZE, BOOTINFO_VERSION_MAJOR, BootInfo, CONSOLE_UART, MEM_MAP_ENTRY_SIZE, bootinfo_checksum};
+use rom::http::http_get;
 use rom::net::{dhcpv4_configure, SeeqDevice};
 use rom::sha256::Sha256;
 use rom::{serial_init, serial_write_byte, serial_write_str};
+use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
+use smoltcp::socket::tcp::Socket as TcpSocket;
+use smoltcp::time::Instant;
+use smoltcp::wire::{HardwareAddress, Ipv4Address};
 
 fn hex_nibble(n: u8) -> u8 {
     match n {
@@ -57,10 +64,10 @@ pub extern "C" fn _start() -> ! {
 
     // Run DHCPv4 to obtain an IP address.
     serial_write_str("seeq: dhcp...");
-    match dhcpv4_configure(&mut seeq) {
+    let ip = match dhcpv4_configure(&mut seeq) {
         Some(ip) => {
             serial_write_str("ok, ip ");
-            for (i, octet) in ip.address().octets().iter().enumerate() {
+            for (i, octet) in ip.addr.octets().iter().enumerate() {
                 if i > 0 {
                     serial_write_byte(b'.');
                 }
@@ -69,12 +76,89 @@ pub extern "C" fn _start() -> ! {
                 }
             }
             serial_write_str("\r\n");
+            ip
         }
-        None => serial_write_str("failed\r\n"),
+        None => {
+            serial_write_str("failed\r\n");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+    };
+
+    // HTTP GET the kernel from the server.
+    serial_write_str("rom: http get...");
+    let mut sockets = [SocketStorage::EMPTY; 4];
+    let mut socket_set = SocketSet::new(&mut sockets[..]);
+    let mut iface = Interface::new(
+        Config::new(HardwareAddress::Ethernet(seeq.mac_address())),
+        &mut seeq,
+        Instant::from_millis(0),
+    );
+
+    match http_get(
+        &mut iface,
+        &mut socket_set,
+        ip.addr,
+        "192.168.1.1",
+        "/kernel",
+        None,
+    ) {
+        Ok(result) => {
+            serial_write_str("ok, ");
+            serial_write_str(&result.body.len().to_string());
+            serial_write_str(" bytes\r\n");
+
+            // SHA-256 verify
+            let digest = Sha256::digest(&result.body);
+            serial_write_str("rom: sha256 ");
+            for b in digest.0 {
+                print_hex8(b);
+            }
+            serial_write_str("\r\n");
+
+            // Build BootInfo
+            let mut boot_info = BootInfo::default();
+            boot_info.magic = BOOTINFO_MAGIC;
+            boot_info.version_major = BOOTINFO_VERSION_MAJOR;
+            boot_info.size = BOOTINFO_SIZE as u32;
+            boot_info.mem_map_entry_size = MEM_MAP_ENTRY_SIZE;
+            boot_info.kernel_phys = 0x8004_0000;
+            boot_info.kernel_size = result.body.len() as u64;
+            boot_info.kernel_sha256 = digest.0;
+            boot_info.bundle_phys = 0x8044_0000;
+            boot_info.bundle_size = 0;
+            boot_info.console_kind = CONSOLE_UART;
+            boot_info.cmdline_len = 1;
+            boot_info.mac = *seeq.mac_address().as_bytes();
+            boot_info.ip = ip.addr;
+            boot_info.netmask = !(0xFFFF_FFFFu32 << (32 - ip.prefix_len));
+            boot_info.checksum = bootinfo_checksum(&boot_info);
+
+            serial_write_str("rom: boot info ready\r\n");
+
+            // Flush caches and jump to kernel
+            unsafe {
+                core::arch::asm!("sync");
+            }
+
+            // Jump to kernel at kseg0 address
+            unsafe {
+                core::arch::asm!("j 0x8000_0000");
+            }
+
+            loop {
+                core::hint::spin_loop();
+            }
+        }
+        Err(_) => {
+            serial_write_str("failed\r\n");
+            loop {
+                core::hint::spin_loop();
+            }
+        }
     }
 
-    // Hang: HTTP fetch, SHA-256 verification, BootInfo construction, and
-    // cache flush + jump to kernel are follow-up steps (issue #2).
     loop {
         core::hint::spin_loop();
     }
@@ -88,16 +172,10 @@ fn panic(_info: &PanicInfo) -> ! {
     }
 }
 
-/// Minimal memory operations required by smoltcp and core when compiled for a
-/// freestanding target without libc. compiler_builtins does not always emit
-/// these as linkable symbols on MIPS targets.
 use core::ptr::{read_volatile, write_volatile};
 
-use core::ffi::c_void;
-
-/// Copy `n` bytes from `src` to `dst`, handling overlap correctly.
 #[no_mangle]
-pub unsafe extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+pub unsafe extern "C" fn memcpy(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let mut dst = dst as *mut u8;
     let src = src as *const u8;
     if (dst as usize) < (src as usize) {
@@ -111,23 +189,21 @@ pub unsafe extern "C" fn memcpy(dst: *mut c_void, src: *const c_void, n: usize) 
             write_volatile(dst.add(i), read_volatile(src.add(i)));
         }
     }
-    dst as *mut c_void
+    dst
 }
 
-/// Fill `n` bytes of `dst` with `val`.
 #[no_mangle]
-pub unsafe extern "C" fn memset(dst: *mut c_void, val: i32, n: usize) -> *mut c_void {
+pub unsafe extern "C" fn memset(dst: *mut u8, val: i32, n: usize) -> *mut u8 {
     let mut dst = dst as *mut u8;
     let v = val as u8;
     for i in 0..n {
         write_volatile(dst.add(i), v);
     }
-    dst as *mut c_void
+    dst
 }
 
-/// Compare `n` bytes at `s1` and `s2`, returning `< 0`, `0`, or `> 0`.
 #[no_mangle]
-pub unsafe extern "C" fn memcmp(s1: *const c_void, s2: *const c_void, n: usize) -> i32 {
+pub unsafe extern "C" fn memcmp(s1: *const u8, s2: *const u8, n: usize) -> i32 {
     let s1 = s1 as *const u8;
     let s2 = s2 as *const u8;
     for i in 0..n {
@@ -140,9 +216,8 @@ pub unsafe extern "C" fn memcmp(s1: *const c_void, s2: *const c_void, n: usize) 
     0
 }
 
-/// Copy `n` bytes from `src` to `dst`, handling overlap correctly.
 #[no_mangle]
-pub unsafe extern "C" fn memmove(dst: *mut c_void, src: *const c_void, n: usize) -> *mut c_void {
+pub unsafe extern "C" fn memmove(dst: *mut u8, src: *const u8, n: usize) -> *mut u8 {
     let mut dst = dst as *mut u8;
     let src = src as *const u8;
     if (dst as usize) < (src as usize) {
