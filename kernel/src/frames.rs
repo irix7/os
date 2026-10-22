@@ -96,6 +96,16 @@ pub fn init(descs: &[MemDesc], count: usize) {
     }
 
     crate::print_str("frames: initialised from ");
+    if count > 0 {
+        unsafe {
+            crate::print_hex32(MEM_DESCS[0].base as u32);
+            crate::print_str(", ");
+            crate::print_hex32(MEM_DESCS[0].size as u32);
+        }
+        crate::print_str(" bytes");
+    } else {
+        crate::print_str("no descriptors");
+    }
     crate::println("");
 }
 

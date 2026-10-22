@@ -18,7 +18,11 @@
 
 pub mod allocator;
 pub mod capability;
+pub mod font;
 pub mod frames;
+pub mod gfx;
+pub mod kbd;
+pub mod menu;
 pub mod scheduler;
 pub mod tlb;
 pub mod traps;
@@ -396,6 +400,38 @@ pub extern "C" fn _start() -> ! {
     traps::init_timer();
 
     println("kernel: up");
+
+    // Bring up the display and show the boot menu.
+    gfx::init();
+    kbd::init();
+    menu::draw();
+    loop {
+        if let Some(key) = kbd::poll_key() {
+            match key {
+                kbd::Key::Up => {
+                    menu::move_selection(-1);
+                    menu::draw();
+                }
+                kbd::Key::Down => {
+                    menu::move_selection(1);
+                    menu::draw();
+                }
+                kbd::Key::Enter => break,
+                kbd::Key::Char(c) if c.is_ascii_digit() => {
+                    let n = (c - b'1') as usize;
+                    if n < menu::OPTIONS.len() {
+                        menu::select(n);
+                    }
+                    break;
+                }
+                _ => {}
+            }
+        }
+        scheduler::yield_cpu();
+    }
+    crate::print_str("kernel: booting ");
+    crate::print_str(menu::OPTIONS[menu::selected()]);
+    crate::println("");
 
     // Idle loop: poll the resident console service and the timer.
     match info {
