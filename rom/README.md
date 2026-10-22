@@ -107,18 +107,19 @@ selection, a number selects that option, and Enter boots the highlighted one.
 
 iris has to program the video mode, because the ROM stub does not: the replacement
 kernel draws through the real REX3 pipeline but the VC2 timing tables come from the
-host. Use a config with
+host. `rom/iris-rig.toml` has the settings:
 
 ```toml
 [graphics]
-board    = "newport"
-heads    = 1
+board = "newport"
+heads = 1
 resolution = "1280x1024"
 ```
 
 and run iris **without** `--headless`: headless mode turns the Newport off
 entirely, and there is then no graphics device for the kernel to draw on. In `--ci`
-mode the window is hidden but the REX3 keeps rendering to an offscreen buffer.
+mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, which
+`rex fbdump` can then write out as a PNG.
 
 ## Status
 
