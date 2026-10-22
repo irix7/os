@@ -77,12 +77,15 @@ fn write8(addr: u32, val: u8) {
 }
 
 /// Bring the keyboard up: select scancode set 1 and enable scanning.
+///
+/// The keyboard's own commands go to the data port; the command port
+/// belongs to the controller.  0xF0 asks the keyboard which scancode set
+/// it uses and the set number follows on the data port; 0xF4 enables
+/// scanning so key events are delivered.
 pub fn init() {
-    // 0xF3: set/get scancode set; the parameter follows on the data port.
-    write8(CMD, 0xF3);
+    write8(DATA, 0xF0);
     write8(DATA, 0x01);
-    // 0xF4: enable scanning.
-    write8(CMD, 0xF4);
+    write8(DATA, 0xF4);
     // Drain the acknowledgements so they are not mistaken for key presses.
     for _ in 0..4 {
         if read8(CMD) & STATUS_OUTPUT_FULL == 0 {

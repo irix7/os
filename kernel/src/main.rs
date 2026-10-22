@@ -301,8 +301,33 @@ fn read_seeq_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
 ///   $a0 = BootInfo physical address (0 when the ROM has none)
 ///   $a1 = total RAM bytes
 ///   $a2 = RAM base physical address
+/// Linker-provided bounds of the kernel's .bss section.
+extern "C" {
+    static __bss_start: u8;
+    static __bss_end: u8;
+}
+
+/// Zero the .bss section.
+///
+/// The ROM's RAM test scribbles over all of DRAM before the kernel image is
+/// copied in, so the kernel's .bss arrives full of the test pattern.  Every
+/// static that expects a zero initial value -- the console's own state, the
+/// frame allocator's tables -- has to be cleared here.
+fn clear_bss() {
+    unsafe {
+        let mut p = &__bss_start as *const u8 as *mut u32;
+        let end = &__bss_end as *const u8 as *mut u32;
+        while p < end {
+            p.write_volatile(0);
+            p = p.add(1);
+        }
+    }
+}
+
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn _start() -> ! {
+    clear_bss();
+
     // Capture the ROM handoff FIRST: init() below clobbers the argument
     // registers, so reading $a0/$a1/$a2 afterwards would pick up whatever
     // the serial driver left behind.
