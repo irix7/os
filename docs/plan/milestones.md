@@ -11,7 +11,7 @@
 | ID | Milestone | Demo | Estimate | Release |
 |---|---|---|---|---|
 | M0 | Toolchain unblocked | CI cross-compiles a `no_std` binary for n32 and o32; tracer bullet prints on iris | 2–4 weeks | — |
-| M1 | ROM netboot | ROM does DHCP, HTTP GET, SHA-256 and jumps to a stub | 4–6 weeks | — |
+| M1 | ROM netboot | ROM does DHCP, DNS, HTTP GET, SHA-256, HTTPS, jumps to kernel; styled telnet console stays live across hand-off | 4–6 weeks | — |
 | M2 | Kernel core | Timer ticks, page fault, panic screen, scheduler | 6–10 weeks | — |
 | M3 | Network + MCP + shell | Agent connects over HTTP, runs a command, reads serial, captures screen | 4–6 weeks | v0.1 |
 | M4 | SCSI + block + EROFS | `cat /etc/motd` from the R2 root image | 8–12 weeks | — |
@@ -65,8 +65,8 @@ tracer bullet boots on iris and prints its marker.
 - [x] `-Z build-std` works for `core`/`alloc` on the custom target.
 - [ ] `rustc_codegen_gcc` builds and produces working code for n32.
 - [x] The LLVM path works for the custom target.
-- [ ] The Nix devshell pins rustc, GCC, binutils and the target spec.
-- [ ] A clean checkout can build the tracer bullet without manual steps.
+- [x] The Nix devshell pins rustc, GCC, binutils and the target spec.
+- [x] A clean checkout can build the tracer bullet without manual steps.
 - [x] CI caches the toolchain and the target artefacts.
 - [x] The disk-space blocker is resolved or worked around.
 - [ ] The build is reproducible (same inputs → same hashes).
@@ -98,16 +98,22 @@ remains live after the hand-off.
 - [x] RAM is sized and tested stacklessly before any RAM structures are created.
 - [x] Seeq 8003 initialises, transmits and receives; HPC3 DMA works.
 - [x] smoltcp brings up IPv4 and DHCPv4; NTP works through the gateway.
-- [ ] IPv6 and DNS.
+- [x] IPv6 and DNS (smoltcp `DnsSocket` poll-based resolver; DHCP servers, gateway and
+      public resolvers as fallbacks).
 - [x] Basic HTTP/1.1 GET works.
 - [ ] HTTP Range support and response validation.
 - [x] SHA-256 verification of the fetched kernel.
+- [x] HTTPS/TLS 1.3 via `embedded-tls` over smoltcp TCP with `embedded-io` blocking adapter
+      and `NoVerify` certificate verification (bring-up phase).
 - [x] The ROM fits in 512 KiB–1 MiB.
-- [ ] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
+- [x] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
 - [x] Telnet ROM console opens after DHCP and stays live after the kernel starts.
 - [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
 - [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
 - [x] Caches are enabled and flushed before the handoff.
+- [x] Styled telnet UI (no_std Lip Gloss subset): truecolor/256/16-colour gradients,
+      rounded boxes, tables; NAWS sizing, command history, tab completion,
+      system/network/memory/CP0 dashboards.
 
 **Dependencies:** M0, a local HTTP server (or R2), a kernel linked for the handoff address.
 
@@ -116,7 +122,7 @@ remains live after the hand-off.
 **Risks:** Seeq quirks; kernel load address and `BootInfo` layout; cache flush before the
 jump; ROM size; 10 Mbit timeouts; TLS.
 
-**Out of scope:** TLS, the full boot bundle, storage.
+**Out of scope:** HTTP Range, the full boot bundle, storage.
 
 ---
 
@@ -125,12 +131,21 @@ jump; ROM size; 10 Mbit timeouts; TLS.
 **Goal:** the privileged framework: traps, TLB, caches, CP0 timer, frame allocator, scheduler,
 capability table, panic path and serial console.
 
+**Status:** in progress — the kernel links at `0x88040000`, consumes `BootInfo` in `$a0`,
+uses a 2-entry memory map, clears `.bss`, sets up the stack, and prints `kernel: up`.
+The telnet ROM console remains live after the hand-off via the resident console poll.
+
 **Demo:** the kernel prints the ARCS memory map, calibrates the timer, runs two kernel tasks
 with EDF and fair classes, handles a deliberate page fault, and panics cleanly with a
 register dump.
 
 **Acceptance criteria:**
 
+- [x] Kernel links at `0x88040000` and consumes `BootInfo` in `$a0`.
+- [x] Kernel memory map reserves ROM live state; usable RAM starts at `0x08B00000`.
+- [x] Kernel clears `.bss`, sets up stack, uses 2-entry memory map.
+- [x] Kernel prints `kernel: up`; serial console works after hand-off.
+- [x] Telnet ROM console remains live after kernel boots (resident console poll).
 - [ ] Exception vectors, TLB refill and `eret` work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
 - [ ] Frame allocator from the ARCS memory descriptor list; no probing.
@@ -139,12 +154,15 @@ register dump.
 - [ ] EDF and fair run queues; `is_running` debug assertion.
 - [ ] Panic screen with registers, stack trace and a serial dump.
 - [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
+- [ ] Real kernel idle path / throttle so an idle guest does not peg host CPU
+      (follow up on iris idle-CPU issue).
 
 **Dependencies:** M1.
 
 **Estimate:** 6–10 weeks.
 
-**Risks:** TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage.
+**Risks:** TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage;
+idle guest pegging host CPU (iris idle-CPU issue).
 
 **Out of scope:** drivers, userspace, filesystems.
 

@@ -7,6 +7,7 @@
 //! network stack carries DHCP, NTP and the kernel fetch.
 
 use crate::net::SeeqDevice;
+use crate::serial_write_str;
 use crate::telnet::{ConsoleInfo, TelnetConsole};
 use alloc::boxed::Box;
 use alloc::format;
@@ -45,6 +46,7 @@ pub fn http_get(
     console: Option<&mut TelnetConsole>,
     info: &ConsoleInfo,
 ) -> Result<FetchResult, ()> {
+    serial_write_str("ROM: http_get entered\r\n");
     // Create a TCP socket with leaked buffers (live for the duration of the
     // fetch; the bump allocator never frees).
     let rx_buf = Box::leak(Box::new(vec![0u8; 4096]));
@@ -55,10 +57,17 @@ pub fn http_get(
     let tcp_handle = socket_set.add(tcp_socket);
 
     let cx = iface.context();
-    socket_set
+    serial_write_str("ROM: http connecting...");
+    let res = socket_set
         .get_mut::<TcpSocket>(tcp_handle)
-        .connect(cx, (IpAddress::Ipv4(server_ip), server_port), 49152)
-        .map_err(|_| ())?;
+        .connect(cx, (IpAddress::Ipv4(server_ip), server_port), 49152);
+    match res {
+        Ok(()) => serial_write_str(" ok\r\n"),
+        Err(_) => {
+            serial_write_str(" connect failed\r\n");
+            return Err(());
+        }
+    }
 
     let start = crate::net::clock_now();
     let mut timestamp = start;
@@ -73,14 +82,17 @@ pub fn http_get(
         }
         let state = socket_set.get_mut::<TcpSocket>(tcp_handle).state();
         if state == tcp::State::Established {
+            serial_write_str("ROM: http connected\r\n");
             break;
         }
         if state == tcp::State::Closed || state == tcp::State::LastAck {
+            serial_write_str("ROM: http connection closed\r\n");
             return Err(());
         }
         crate::net::clock_tick();
         timestamp = crate::net::clock_now();
         if timestamp > deadline {
+            serial_write_str("ROM: http connect timeout\r\n");
             return Err(());
         }
     }

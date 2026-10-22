@@ -29,7 +29,7 @@ const HTTP_SERVER_HOST: &str = "10.1.1.3";
 #[cfg(feature = "tls")]
 const HTTPS_SERVER_PORT: u16 = 18443;
 #[cfg(feature = "tls")]
-const HTTPS_SERVER_HOST: &str = "10.1.1.3";
+const HTTPS_SERVER_HOST: &str = "192.168.0.1";
 
 /// Hand-off addresses (physical, per the boot protocol).
 const KERNEL_KSEG0: u32 = 0x8804_0000;
