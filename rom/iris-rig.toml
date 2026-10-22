@@ -1,0 +1,31 @@
+# iris configuration for the ROM bring-up rig.
+#
+# Run iris from a directory that has the SCSI images, e.g.:
+#
+#   cd /mnt/europa/iris
+#   ./iris --config /path/to/rom/iris-rig.toml \
+#          --prom /path/to/rom.bin \
+#          --bank0 32 --bank1 0 \
+#          --monitor-port 9998 --serial-log /tmp/serial.log
+#
+# Two settings matter here:
+#
+#   resolution  the replacement ROM does not program the VC2 video timing
+#               tables -- the real ARCS PROM did -- so the host presets the
+#               mode at start-up.  The kernel draws through the real REX3
+#               pipeline either way.
+#
+#   no --headless  headless mode turns the Newport off entirely, and there
+#               is then no graphics device for the kernel to draw on.  In
+#               --ci mode the window is hidden but the REX3 keeps rendering
+#               to an offscreen buffer.
+
+[graphics]
+board = "newport"
+heads = 1
+resolution = "1280x1024"
+
+# Empty CD-ROM tray: the emulator's default configuration points at a
+# cdrom4.iso that is not present in this checkout.
+[scsi.4]
+cdrom = true
