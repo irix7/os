@@ -43,7 +43,7 @@ jobs:
         run: |
           aws s3 cp dist/ "s3://${R2_BUCKET}/releases/${GITHUB_REF_NAME}/" --recursive
       - name: GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*
           generate_release_notes: true
