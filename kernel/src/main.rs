@@ -34,14 +34,21 @@ pub mod traps;
 
 const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
 
+/// Z85C30 indirect access: write the register number to the control port to
+/// select it, then read/write the data through the same port.  Register 8
+/// (WR8) is the transmit/receive data register.
 fn wr(reg: u8, data: u8) {
     unsafe {
-        write_volatile(Z85C30_BASE.add(((reg as usize) << 2) + 3), data);
+        write_volatile(Z85C30_BASE, reg);
+        write_volatile(Z85C30_BASE, data);
     }
 }
 
 fn rd(reg: u8) -> u8 {
-    unsafe { read_volatile(Z85C30_BASE.add(((reg as usize) << 2) + 3)) }
+    unsafe {
+        write_volatile(Z85C30_BASE, reg);
+        read_volatile(Z85C30_BASE)
+    }
 }
 
 const WR0: u8 = 0;
@@ -55,6 +62,8 @@ const WR12: u8 = 12;
 const WR13: u8 = 13;
 const WR14: u8 = 14;
 const RR0: u8 = 0;
+/// WR8: the transmit/receive data register.
+const WR0_DATA: u8 = 8;
 
 const BAUD_TC: u8 = 10;
 
@@ -80,7 +89,8 @@ pub fn write_byte(b: u8) {
         core::hint::spin_loop();
     }
     unsafe {
-        write_volatile(Z85C30_BASE.add(3), b);
+        write_volatile(Z85C30_BASE, WR0_DATA);
+        write_volatile(Z85C30_BASE, b);
     }
 }
 
@@ -158,13 +168,16 @@ fn crc32c(data: &[u8]) -> u32 {
 }
 
 /// Read a u32 from a kseg0 virtual address.
-fn read_u32(addr: u64) -> u32 {
+fn read_u32(addr: u32) -> u32 {
     unsafe { read_volatile(addr as *const u32) }
 }
 
 /// Read BootInfo from the physical address passed in $a0.
-fn read_bootinfo(phys_addr: u64) -> Option<&'static [u8; BOOTINFO_SIZE]> {
-    let kseg0_addr = phys_addr + KSEG0_OFFSET;
+///
+/// `phys_addr` is 32-bit: the n32 ABI sign-extends pointers, and a u64 held in
+/// a register pair would leave the high half undefined.
+fn read_bootinfo(phys_addr: u32) -> Option<&'static [u8; BOOTINFO_SIZE]> {
+    let kseg0_addr = phys_addr.wrapping_add(0x8000_0000);
     let ptr = kseg0_addr as *const [u8; BOOTINFO_SIZE];
     let data = unsafe { &*ptr };
 
@@ -209,7 +222,7 @@ fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
         flags: 0,
     }; 64];
 
-    let kseg0_map = map_phys + KSEG0_OFFSET;
+    let kseg0_map = (map_phys as u32).wrapping_add(0x8000_0000) as usize;
     for i in 0..count.min(64) {
         let off = (i * entry_size) as usize;
         let base = u64::from_le_bytes([
@@ -278,73 +291,102 @@ fn read_seeq_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
 }
 
 /// Kernel entry point.
+///
+/// Handoff from the ROM (all 32-bit: the n32 ABI sign-extends pointers, and
+/// a u64 in a register pair would leave the high half undefined):
+///   $a0 = BootInfo physical address (0 when the ROM has none)
+///   $a1 = total RAM bytes
+///   $a2 = RAM base physical address
 #[cfg_attr(not(test), no_mangle)]
 pub extern "C" fn _start() -> ! {
+    // Capture the ROM handoff FIRST: init() below clobbers the argument
+    // registers, so reading $a0/$a1/$a2 afterwards would pick up whatever
+    // the serial driver left behind.
+    let bootinfo_phys: u32;
+    let ram_bytes: u32;
+    let ram_base: u32;
+    unsafe {
+        core::arch::asm!(
+            "move {0}, $a0",
+            "move {1}, $a1",
+            "move {2}, $a2",
+            out(reg) bootinfo_phys,
+            out(reg) ram_bytes,
+            out(reg) ram_base,
+        );
+    }
+
     init();
 
     traps::init();
     traps::install_vectors();
     tlb::init();
 
-    // Read BootInfo from $a0 (physical address passed by the ROM).
-    let bootinfo_phys: u64;
-    unsafe { core::arch::asm!("move {0}, $a0", out(reg) bootinfo_phys); }
-
-    let info = match read_bootinfo(bootinfo_phys) {
-        Some(info) => info,
-        None => {
-            println("kernel: bad BootInfo");
-            loop { core::hint::spin_loop(); }
-        }
-    };
-
-    println("kernel: BootInfo verified");
+    let info = read_bootinfo(bootinfo_phys);
 
     // Read memory map and pass usable RAM descriptors to the frame allocator.
-    let (_first_desc, count) = read_mem_map(info);
     let mut usable_descs = [frames::MemDesc {
         base: 0,
         size: 0,
         kind: 0,
         flags: 0,
     }; 64];
-    let kseg0_map = u64::from_le_bytes([
-        info[0x10], info[0x11], info[0x12], info[0x13],
-        info[0x14], info[0x15], info[0x16], info[0x17],
-    ]) + KSEG0_OFFSET;
-    let entry_size = u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
     let mut usable_count = 0;
-    for i in 0..count.min(64) {
-        let off = (i * entry_size) as usize;
-        let kind = u32::from_le_bytes([
-            info[kseg0_map as usize + off + 16],
-            info[kseg0_map as usize + off + 17],
-            info[kseg0_map as usize + off + 18],
-            info[kseg0_map as usize + off + 19],
-        ]);
-        if kind == MEM_KIND_USABLE_RAM {
-            let base = u64::from_le_bytes([
-                info[kseg0_map as usize + off],
-                info[kseg0_map as usize + off + 1],
-                info[kseg0_map as usize + off + 2],
-                info[kseg0_map as usize + off + 3],
-                info[kseg0_map as usize + off + 4],
-                info[kseg0_map as usize + off + 5],
-                info[kseg0_map as usize + off + 6],
-                info[kseg0_map as usize + off + 7],
-            ]);
-            let size = u64::from_le_bytes([
-                info[kseg0_map as usize + off + 8],
-                info[kseg0_map as usize + off + 9],
-                info[kseg0_map as usize + off + 10],
-                info[kseg0_map as usize + off + 11],
-                info[kseg0_map as usize + off + 12],
-                info[kseg0_map as usize + off + 13],
-                info[kseg0_map as usize + off + 14],
-                info[kseg0_map as usize + off + 15],
-            ]);
-            usable_descs[usable_count] = frames::MemDesc { base, size, kind, flags: 0 };
-            usable_count += 1;
+
+    match info {
+        Some(info) => {
+            println("kernel: BootInfo verified");
+            let (_first_desc, count) = read_mem_map(info);
+            let kseg0_map = u64::from_le_bytes([
+                info[0x10], info[0x11], info[0x12], info[0x13],
+                info[0x14], info[0x15], info[0x16], info[0x17],
+            ]) + KSEG0_OFFSET;
+            let entry_size = u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
+            for i in 0..count.min(64) {
+                let off = (i * entry_size) as usize;
+                let kind = u32::from_le_bytes([
+                    info[kseg0_map as usize + off + 16],
+                    info[kseg0_map as usize + off + 17],
+                    info[kseg0_map as usize + off + 18],
+                    info[kseg0_map as usize + off + 19],
+                ]);
+                if kind == MEM_KIND_USABLE_RAM {
+                    let base = u64::from_le_bytes([
+                        info[kseg0_map as usize + off],
+                        info[kseg0_map as usize + off + 1],
+                        info[kseg0_map as usize + off + 2],
+                        info[kseg0_map as usize + off + 3],
+                        info[kseg0_map as usize + off + 4],
+                        info[kseg0_map as usize + off + 5],
+                        info[kseg0_map as usize + off + 6],
+                        info[kseg0_map as usize + off + 7],
+                    ]);
+                    let size = u64::from_le_bytes([
+                        info[kseg0_map as usize + off + 8],
+                        info[kseg0_map as usize + off + 9],
+                        info[kseg0_map as usize + off + 10],
+                        info[kseg0_map as usize + off + 11],
+                        info[kseg0_map as usize + off + 12],
+                        info[kseg0_map as usize + off + 13],
+                        info[kseg0_map as usize + off + 14],
+                        info[kseg0_map as usize + off + 15],
+                    ]);
+                    usable_descs[usable_count] = frames::MemDesc { base, size, kind, flags: 0 };
+                    usable_count += 1;
+                }
+            }
+        }
+        None => {
+            // No BootInfo: fall back to the RAM geometry the ROM passed in
+            // registers.  The console/net services are not available yet.
+            println("kernel: no BootInfo; using ROM handoff");
+            usable_descs[0] = frames::MemDesc {
+                base: ram_base as u64,
+                size: ram_bytes as u64,
+                kind: MEM_KIND_USABLE_RAM,
+                flags: 0,
+            };
+            usable_count = 1;
         }
     }
     frames::init(&usable_descs, usable_count);
@@ -356,9 +398,20 @@ pub extern "C" fn _start() -> ! {
     println("kernel: up");
 
     // Idle loop: poll the resident console service and the timer.
-    let console_poll = read_console_poll(info);
-    let net_state = read_net_state(info);
-    idle_loop(console_poll, net_state);
+    match info {
+        Some(info) => {
+            let console_poll = read_console_poll(info);
+            let net_state = read_net_state(info);
+            idle_loop(console_poll, net_state);
+        }
+        None => {
+            // No resident service to poll yet.
+            loop {
+                scheduler::yield_cpu();
+                core::hint::spin_loop();
+            }
+        }
+    }
 }
 
 /// Idle loop: drive the resident console/network service and yield on timer.

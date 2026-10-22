@@ -1,295 +1,293 @@
 /*
- * reset.S -- stackless reset path for the Indy ROM.
+ * reset.S -- Minimal SGI Indy ARCS PROM replacement (pure MIPS3 ASM).
  *
- * Execution starts at 0xBFC00000 (kseg1 alias of the PROM at physical
- * 0x1FC00000).  DRAM is not mapped yet, so this phase uses registers only:
- *   1. establish the reset CP0 state and an uncached TLB window at
- *      0x20000000 for the MC's bank-probe address;
- *   2. size and map the DRAM banks (memsize.S);
- *   3. test every byte of DRAM (memtest.S) -- nothing of ours lives there yet;
- *   4. only now create the writable world: stack, .data copy, .bss clear;
- *   5. enter Rust with RAM known good.
+ * Linked at 0xBFC00000 (kseg1 PROM window).  Boot flow:
+ *   1. CP0 init: interrupts off, BEV=1, TLB invalidated
+ *   2. Map a probe window (VA 0x20000000..0x40000000 -> physical, uncached)
+ *      so the DRAM banks can be sized and mapped
+ *   3. Size and map the DRAM banks (memsize.S), then test every byte
+ *      (memtest.S) -- still stackless, nothing of ours lives in DRAM yet
+ *   4. Initialise the DUART1B serial console (0xBFBD9830)
+ *   5. Copy the kernel payload from PROM to physical 0x08040000 via its
+ *      kseg1 alias 0xA8040000 (uncached, so the bytes are in memory before
+ *      the kernel starts executing from the cached kseg0 alias 0x88040000)
+ *   6. Jump to the kernel entry at 0x88040000
+ *
+ * Everything the machine does after step 6 lives in the kernel, including the
+ * telnet console and networking.
+ *
+ * No stack exists during this phase; all state is in registers.
  */
 
 .set noreorder
 .set mips3
 
+# I/O addresses (kseg1, uncached)
+.set DUART_BASE,        0xBFBD9830
+
+# Kernel image destinations
+.set KERNEL_PHYS_KSEG1, 0xA8040000   /* physical 0x08040000, uncached */
+.set KERNEL_ENTRY,      0x88040000   /* kseg0 cached entry point */
+.set KERNEL_STACK_TOP,  0x88200000   /* matches the kernel's __stack_top */
+
 .section .text._start, "ax", @progbits
+.align 4
+
 .globl _start
 .ent _start
 _start:
-    /* CP0: interrupts off, kernel mode, BEV on for the boot vectors. */
-    mtc0    $0, $13                  /* Cause = 0 */
-    li      $8, 0x10000000           /* CU0, IE off, KSU=0 */
-    mtc0    $8, $12                  /* Status */
-    mtc0    $0, $5                   /* PageMask = 0 */
-    nop
+    # CP0: disable interrupts, kernel mode, BEV=1 for boot vectors
+    mtc0    $zero, $13               /* Cause = 0 */
+    li      $t1, 0x10000000          /* CU0, IE=0, KSU=0, BEV=1 */
+    mtc0    $t1, $12                 /* Status */
 
-    /* Invalidate the whole TLB (48 entries on R4000). */
-    li      $8, 48
-    move    $9, $0
+    # Invalidate entire TLB (48 entries on R4000)
+    li      $t1, 48
+    move    $v0, $zero
 1:
-    mtc0    $9, $0                   /* Index */
-    mtc0    $0, $10                  /* EntryHi = 0 */
-    mtc0    $0, $2                   /* EntryLo0 = 0 */
-    mtc0    $0, $3                   /* EntryLo1 = 0 */
+    mtc0    $v0, $0                  /* Index */
+    mtc0    $zero, $10               /* EntryHi = 0 */
+    mtc0    $zero, $2                /* EntryLo0 = 0 */
+    mtc0    $zero, $3                /* EntryLo1 = 0 */
     tlbwi
-    addiu   $9, $9, 1
-    bne     $9, $8, 1b
+    addiu   $v0, $v0, 1
+    bne     $v0, $t1, 1b
     nop
 
-    /*
-     * Map VA 0x20000000..0x40000000 to the same physical range, uncached.
-     * memsize.S places each bank at physical 0x20000000 while probing it, and
-     * physical 0x20000000 is outside the kseg windows, so it needs a TLB.
-     */
-    li      $8, 0x01ffe000           /* 32MB entry (2 x 16MB pages) */
-    mtc0    $8, $5                   /* PageMask */
-    move    $9, $0
-    li      $10, 0x20000000
+    # Map VA 0x20000000..0x40000000 to the same physical range, uncached.
+    # memsize.S probes each DRAM bank at physical 0x20000000, which is
+    # outside the kseg windows and so needs a TLB entry of its own.
+    li      $t1, 0x01FFE000           /* 32MB even/odd page pair */
+    mtc0    $t1, $5                  /* PageMask */
+    move    $t1, $zero
+    li      $t2, 0x20000000
 2:
-    mtc0    $9, $0                   /* Index */
-    mtc0    $10, $10                 /* EntryHi */
-    srl     $11, $10, 6
-    ori     $11, $11, 0x17           /* PFN | uncached | D | V | G */
-    mtc0    $11, $2                  /* EntryLo0 */
-    li      $12, 0x40000
-    addu    $12, $11, $12
-    mtc0    $12, $3                  /* EntryLo1 */
+    mtc0    $t1, $0                  /* Index */
+    mtc0    $t2, $10                 /* EntryHi */
+    srl     $t3, $t2, 6
+    ori     $t3, $t3, 0x17           /* PFN | uncached | D | V | G */
+    mtc0    $t3, $2                  /* EntryLo0 */
+    li      $t4, 0x40000
+    addu    $t4, $t3, $t4
+    mtc0    $t4, $3                  /* EntryLo1 */
     tlbwi
-    addiu   $9, $9, 1
-    li      $12, 0x2000000
-    addu    $10, $10, $12
-    li      $12, 16
-    bne     $9, $12, 2b
+    addiu   $t1, $t1, 1
+    li      $t4, 0x2000000
+    addu    $t2, $t2, $t4
+    li      $t4, 16
+    bne     $t1, $t4, 2b
     nop
 
-    /* Early SCC console: DUART1B at 0xbfbd9830 (iris tty1 / port 8881). */
-    li      $8, 0xbfbd9830
-    li      $9, 0xc0                 /* WR9: hardware reset */
-    sb      $9, 0($8)
-    li      $9, 4
-    sb      $9, 0($8)
-    li      $9, 0x44                 /* WR4: x16 clock, 1 stop */
-    sb      $9, 0($8)
-    li      $9, 3
-    sb      $9, 0($8)
-    li      $9, 0xc0                 /* WR3: 8-bit Rx */
-    sb      $9, 0($8)
-    li      $9, 5
-    sb      $9, 0($8)
-    li      $9, 0x28                 /* WR5: 8-bit Tx, RTS+DTR */
-    sb      $9, 0($8)
-    li      $9, 11
-    sb      $9, 0($8)
-    li      $9, 0x50                 /* WR11: Rx/Tx clock <- BRG */
-    sb      $9, 0($8)
-    li      $9, 12
-    sb      $9, 0($8)
-    li      $9, 0x0a                 /* WR12: 9600 BRG low */
-    sb      $9, 0($8)
-    li      $9, 13
-    sb      $9, 0($8)
-    li      $9, 0x00                 /* WR13: BRG high */
-    sb      $9, 0($8)
-    li      $9, 14
-    sb      $9, 0($8)
-    li      $9, 0x01                 /* WR14: BRG enable */
-    sb      $9, 0($8)
-    li      $9, 3
-    sb      $9, 0($8)
-    li      $9, 0xc1                 /* WR3: Rx enable */
-    sb      $9, 0($8)
-    li      $9, 5
-    sb      $9, 0($8)
-    li      $9, 0x68                 /* WR5: Tx enable */
-    sb      $9, 0($8)
+    # Serial console (needed by memtest.S to report progress)
+    jal     serial_init
+    nop
+    la      $a0, msg_booting
+    jal     serial_puts
+    nop
 
-    /* Size/map DRAM (no stack), then test every byte of it (no stack). */
+    # Size and map the DRAM banks; returns total RAM bytes in $v0.
     jal     mem_size_and_map
     nop
-    move    $20, $2                  /* s4 = total RAM bytes */
+    move    $s4, $v0                  /* s4 = total RAM bytes */
 
-    li      $4, 0xa8000000           /* kseg1 alias of physical 0x08000000 */
-    move    $5, $20
+    # Test every byte of DRAM.  Still stackless: nothing of ours is in DRAM
+    # yet, so the test may scribble over the whole range.
+    li      $a0, 0xA8000000          /* kseg1 alias of physical 0x08000000 */
+    move    $a1, $s4
     jal     mem_test_all
     nop
-    li      $8, 0xa8000400
-    sw      $2, 0($8)                /* first failure (0 = pass) */
-    sw      $20, 4($8)               /* total bytes */
-
-    /*
-     * RAM is now known good.  Build the writable world at 7 MiB, matching the
-     * original PROM's BSSADDR, with a 2 MiB heap and a 10 MiB stack top.  The
-     * low 512 KiB is a special alias window and is deliberately left alone.
-     */
-    li      $29, 0xa8a00000
-
-    la      $8, __data_load
-    la      $9, __data_start
-    la      $10, __data_end
-3:
-    sltu    $11, $9, $10
-    beq     $11, $0, 4f
-    nop
-    lw      $12, 0($8)
-    sw      $12, 0($9)
-    addiu   $8, $8, 4
-    addiu   $9, $9, 4
-    b       3b
-    nop
-4:
-    la      $8, __bss_start
-    la      $9, __bss_end
-5:
-    /* Early SCC console: DUART1B at 0xbfbd9830 (iris tty1 / port 8881). */
-    li      $8, 0xbfbd9830
-    li      $9, 0xc0                 /* WR9: hardware reset */
-    sb      $9, 0($8)
-    li      $9, 4
-    sb      $9, 0($8)
-    li      $9, 0x44                 /* WR4: x16 clock, 1 stop */
-    sb      $9, 0($8)
-    li      $9, 3
-    sb      $9, 0($8)
-    li      $9, 0xc0                 /* WR3: 8-bit Rx */
-    sb      $9, 0($8)
-    li      $9, 5
-    sb      $9, 0($8)
-    li      $9, 0x28                 /* WR5: 8-bit Tx, RTS+DTR */
-    sb      $9, 0($8)
-    li      $9, 11
-    sb      $9, 0($8)
-    li      $9, 0x50                 /* WR11: Rx/Tx clock <- BRG */
-    sb      $9, 0($8)
-    li      $9, 12
-    sb      $9, 0($8)
-    li      $9, 0x0a                 /* WR12: 9600 BRG low */
-    sb      $9, 0($8)
-    li      $9, 13
-    sb      $9, 0($8)
-    li      $9, 0x00                 /* WR13: BRG high */
-    sb      $9, 0($8)
-    li      $9, 14
-    sb      $9, 0($8)
-    li      $9, 0x01                 /* WR14: BRG enable */
-    sb      $9, 0($8)
-    li      $9, 3
-    sb      $9, 0($8)
-    li      $9, 0xc1                 /* WR3: Rx enable */
-    sb      $9, 0($8)
-    li      $9, 5
-    sb      $9, 0($8)
-    li      $9, 0x68                 /* WR5: Tx enable */
-    sb      $9, 0($8)
-
-    /* ------------------------------------------------------------
-     * Exception vectors at kseg0 0x80000000 (BEV = 0)
-     * All vectors jump to resident ROM handlers at PROM addresses.
-     * ------------------------------------------------------------
-     * BEV=0 means vectors live at 0x80000000:
-     *   0x80000000  Reset       -> reset_vector
-     *   0x80000080  TLB refill  -> tlb_refill_entry
-     *   0x80000100  General     -> general_vector
-     * All entry code lives at PROM address 0xBFC00000..0xBFC00200
-     * which aliases kseg1 0x1FC00000..0x1FC00200, i.e. at the ROM's own
-     * load address.  So 'j' can reach them directly from ROM code.
-     */
-
-    /* Reset vector at 0x80000000: jump back to ROM _start */
-    li      $8, 0x80000000
-    li      $9, 0xbfc00000
-    sw      $9, 0($8)
-
-    /* TLB refill vector at 0x80000080: jump to rom_tlb_refill */
-    li      $8, 0x80000080
-    li      $9, 0xbfc00200
-    sw      $9, 0($8)
-
-    /* General vector at 0x80000100: jump to rom_general_vector */
-    li      $8, 0x80000100
-    li      $9, 0xbfc00210
-    sw      $9, 0($8)
-
-    /* Set up CP0 timer (Count/Compare): CP0 Count increments at CPU/2.
-     * Set initial Compare = Count + 1000000 for a ~30ms timer at 33MHz.
-     */
-    mfc0    $8, $9           /* Count */
-    li      $9, 1000000      /* ~30ms at 33MHz */
-    addu    $8, $8, $9
-    mtc0    $8, $11          /* Compare = Count + interval */
-    li      $9, 0x00008000   /* Status: IE=1, IM7=1 (timer int) */
-    mtc0    $9, $12          /* Status */
-
-    /* Size/map DRAM (no stack), then test every byte of it (no stack). */
-    jal     mem_size_and_map
-    nop
-    move    $20, $2                  /* s4 = total RAM bytes */
-
-    li      $4, 0xa8000000           /* kseg1 alias of physical 0x08000000 */
-    move    $5, $20
-    jal     mem_test_all
-    nop
-    li      $8, 0xa8000400
-    sw      $2, 0($8)                /* first failure (0 = pass) */
-    sw      $20, 4($8)               /* total bytes */
-
-    /*
-     * RAM is now known good.  Build the writable world at 7 MiB, matching the
-     * original PROM's BSSADDR, with a 2 MiB heap and a 10 MiB stack top.  The
-     * low 512 KiB is a special alias window and is deliberately left alone.
-     */
-    li      $29, 0xa8a00000
-
-    la      $8, __data_load
-    la      $9, __data_start
-    la      $10, __data_end
-3:
-    sltu    $11, $9, $10
-    beq     $11, $0, 4f
-    nop
-    lw      $12, 0($8)
-    sw      $12, 0($9)
-    addiu   $8, $8, 4
-    addiu   $9, $9, 4
-    b       3b
-    nop
-4:
-    la      $8, __bss_start
-    la      $9, __bss_end
-5:
-    sltu    $11, $8, $9
-    beq     $11, $0, 6f
-    nop
-    sw      $0, 0($8)
-    addiu   $8, $8, 4
-    b       5b
-    nop
-6:
-    jal     rom_main
-    nop
-7:
-    b       7b
+    bne     $v0, $zero, ram_fail
     nop
 
-/* Exception vector handlers at PROM addresses.
- * These are jumped to by kseg0 vectors at 0x80000080 (TLB refill)
- * and 0x80000100 (general exception).
- */
-. = 0xbfc00200
-/* TLB refill handler: just eret (we don't use TLB yet) */
-tlb_refill_handler:
-    eret
+    # Copy the kernel payload from PROM to physical 0x08040000 via kseg1.
+    la      $a0, rom_payload_start
+    lw      $a1, ROM_PAYLOAD_LEN
+    la      $a2, KERNEL_PHYS_KSEG1
+    jal     copy_payload
     nop
 
-. = 0xbfc00210
-/* General exception handler: timer interrupt acknowledge */
-general_handler:
-    /* Advance CP0 Compare for next timer tick */
-    mfc0    $8, $9           /* Count */
-    li      $9, 1000000      /* ~30ms at 33MHz */
-    addu    $8, $8, $9
-    mtc0    $8, $11          /* Compare = Count + interval */
-    eret
+    la      $a0, msg_done
+    jal     serial_puts
     nop
+
+    # Enter the kernel at its cached kseg0 address.
+    #   $a0 = BootInfo physical address (0: none yet)
+    #   $a1 = total RAM bytes
+    #   $a2 = RAM base physical address
+    move    $a0, $zero
+    move    $a1, $s4                 /* total RAM bytes from mem_size_and_map */
+    li      $a2, 0x08000000          /* RAM base (physical) */
+    li      $sp, KERNEL_STACK_TOP    /* kernel stack */
+    li      $t9, KERNEL_ENTRY
+    jr      $t9
+    nop
+
+ram_fail:
+    la      $a0, msg_ramfail
+    jal     serial_puts
+    nop
+1:
+    b       1b
+    nop
+
 .end _start
+
+# ------------------------------------------------------------
+# serial_init -- configure DUART1B for 9600 8N1
+# Preserves $ra in $s0 because duart_wr (called via jal) clobbers it.
+# ------------------------------------------------------------
+.ent serial_init
+serial_init:
+    move    $s0, $ra
+
+    li      $t0, 0xC0                /* WR9: hardware reset */
+    li      $t1, 9
+    jal     duart_wr
+    nop
+
+    li      $t0, 0x44                /* WR4: x16 clock, 1 stop, no parity */
+    li      $t1, 4
+    jal     duart_wr
+    nop
+
+    li      $t0, 0xC0                /* WR3: 8 bits/char, RX disabled */
+    li      $t1, 3
+    jal     duart_wr
+    nop
+
+    li      $t0, 0x28                /* WR5: 8 bits/char, TX disabled */
+    li      $t1, 5
+    jal     duart_wr
+    nop
+
+    li      $t0, 0x50                /* WR11: Rx/Tx clock <- BRG */
+    li      $t1, 11
+    jal     duart_wr
+    nop
+
+    li      $t0, 10                  /* WR12: 9600 BRG low */
+    li      $t1, 12
+    jal     duart_wr
+    nop
+
+    li      $t0, 0                  /* WR13: BRG high */
+    li      $t1, 13
+    jal     duart_wr
+    nop
+
+    li      $t0, 1                  /* WR14: BRG enable */
+    li      $t1, 14
+    jal     duart_wr
+    nop
+
+    li      $t0, 0xC1               /* WR3: Rx enable */
+    li      $t1, 3
+    jal     duart_wr
+    nop
+
+    li      $t0, 0x68               /* WR5: Tx enable */
+    li      $t1, 5
+    jal     duart_wr
+    nop
+
+    jr      $s0
+    nop
+
+.end serial_init
+
+# duart_wr -- write register $t1 with value $t0 (Z85C30 indirect access)
+.ent duart_wr
+duart_wr:
+    li      $t3, DUART_BASE
+    sb      $t1, 0($t3)             /* select register */
+    sb      $t0, 0($t3)             /* write data */
+    jr      $ra
+    nop
+
+.end duart_wr
+
+# serial_puts -- print null-terminated string in $a0
+# Preserves $ra in $s0 because serial_putc (called via jal) clobbers it.
+.ent serial_puts
+serial_puts:
+    move    $s0, $ra
+    move    $t0, $a0
+1:
+    lbu     $t1, 0($t0)
+    beqz    $t1, 2f
+    nop
+    move    $a0, $t1
+    jal     serial_putc
+    nop
+    addiu   $t0, $t0, 1
+    b       1b
+    nop
+2:
+    jr      $s0
+    nop
+
+.end serial_puts
+
+# serial_putc -- send byte in $a0
+.ent serial_putc
+serial_putc:
+    li      $t1, DUART_BASE
+1:
+    li      $t3, 0
+    sb      $t3, 0($t1)             /* select RR0 */
+    lbu     $t2, 0($t1)
+    andi    $t2, $t2, 0x04          /* TX buffer empty? */
+    beqz    $t2, 1b
+    nop
+    li      $t3, 0x08
+    sb      $t3, 0($t1)             /* select data register */
+    sb      $a0, 0($t1)
+    jr      $ra
+    nop
+
+.end serial_putc
+
+# ------------------------------------------------------------
+# copy_payload -- copy kernel payload from PROM to RAM
+#
+# Input:  $a0 = src, $a1 = len (bytes), $a2 = dst
+# ------------------------------------------------------------
+.ent copy_payload
+copy_payload:
+    move    $s0, $a0
+    move    $s1, $a2
+    move    $s2, $a1
+1:
+    beqz    $s2, 2f
+    nop
+    lbu     $t0, 0($s0)
+    sb      $t0, 0($s1)
+    addiu   $s0, $s0, 1
+    addiu   $s1, $s1, 1
+    addiu   $s2, $s2, -1
+    b       1b
+    nop
+2:
+    jr      $ra
+    nop
+
+.end copy_payload
+
+# ------------------------------------------------------------
+# Data
+# ------------------------------------------------------------
+
+msg_booting:
+    .asciz "\r\nROM: ARCS PROM replacement booting\r\n"
+
+msg_ramfail:
+    .asciz "ROM: RAM TEST FAILED\r\n"
+
+msg_done:
+    .asciz "ROM: copied kernel to 0x88040000, jumping...\r\n"
+
+# Length of the kernel payload in PROM (resolved at link time).
+.align 2
+.globl ROM_PAYLOAD_LEN
+ROM_PAYLOAD_LEN:
+    .word rom_payload_end - rom_payload_start

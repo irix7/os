@@ -14,10 +14,6 @@ required-features = ["cross"]
 [features]
 default = []
 cross = []
-tls = ["dep:embedded-tls", "dep:embedded-io", "dep:rand_core"]
-
-[lib]
-path = "src/lib.rs"
 
 [profile.dev]
 panic = "abort"
@@ -26,36 +22,3 @@ opt-level = 0
 [profile.release]
 panic = "abort"
 opt-level = 2
-
-[dependencies]
-# smoltcp: embedded TCP/IP stack (0BSD, cleared in docs/map.md) for the ROM's
-# DHCP/DNS/HTTP stack. Builds with the pinned nightly when both proto-ipv4 and
-# proto-ipv6 are enabled (otherwise the #[non_exhaustive] Address enum matches
-# are non-exhaustive); see issue #2.
-smoltcp = { version = "0.13", default-features = false, features = [
-    "medium-ethernet",
-    "proto-ipv4",
-    "proto-ipv6",
-    "proto-dns",
-    "proto-dhcpv4",
-    "socket-dns",
-    "socket-udp",
-    "socket-tcp",
-    "socket-dhcpv4",
-] }
-
-[dependencies.embedded-tls]
-version = "0.19"
-default-features = false
-optional = true
-features = ["alloc"]
-
-[dependencies.embedded-io]
-version = "0.7"
-optional = true
-default-features = false
-
-[dependencies.rand_core]
-version = "0.6"
-optional = true
-default-features = false
