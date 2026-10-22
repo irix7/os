@@ -142,6 +142,122 @@ _start:
     la      $8, __bss_start
     la      $9, __bss_end
 5:
+    /* Early SCC console: DUART1B at 0xbfbd9830 (iris tty1 / port 8881). */
+    li      $8, 0xbfbd9830
+    li      $9, 0xc0                 /* WR9: hardware reset */
+    sb      $9, 0($8)
+    li      $9, 4
+    sb      $9, 0($8)
+    li      $9, 0x44                 /* WR4: x16 clock, 1 stop */
+    sb      $9, 0($8)
+    li      $9, 3
+    sb      $9, 0($8)
+    li      $9, 0xc0                 /* WR3: 8-bit Rx */
+    sb      $9, 0($8)
+    li      $9, 5
+    sb      $9, 0($8)
+    li      $9, 0x28                 /* WR5: 8-bit Tx, RTS+DTR */
+    sb      $9, 0($8)
+    li      $9, 11
+    sb      $9, 0($8)
+    li      $9, 0x50                 /* WR11: Rx/Tx clock <- BRG */
+    sb      $9, 0($8)
+    li      $9, 12
+    sb      $9, 0($8)
+    li      $9, 0x0a                 /* WR12: 9600 BRG low */
+    sb      $9, 0($8)
+    li      $9, 13
+    sb      $9, 0($8)
+    li      $9, 0x00                 /* WR13: BRG high */
+    sb      $9, 0($8)
+    li      $9, 14
+    sb      $9, 0($8)
+    li      $9, 0x01                 /* WR14: BRG enable */
+    sb      $9, 0($8)
+    li      $9, 3
+    sb      $9, 0($8)
+    li      $9, 0xc1                 /* WR3: Rx enable */
+    sb      $9, 0($8)
+    li      $9, 5
+    sb      $9, 0($8)
+    li      $9, 0x68                 /* WR5: Tx enable */
+    sb      $9, 0($8)
+
+    /* ------------------------------------------------------------
+     * Exception vectors at kseg0 0x80000000 (BEV = 0)
+     * All vectors jump to resident ROM handlers at PROM addresses.
+     * ------------------------------------------------------------
+     * BEV=0 means vectors live at 0x80000000:
+     *   0x80000000  Reset       -> reset_vector
+     *   0x80000080  TLB refill  -> tlb_refill_entry
+     *   0x80000100  General     -> general_vector
+     * All entry code lives at PROM address 0xBFC00000..0xBFC00200
+     * which aliases kseg1 0x1FC00000..0x1FC00200, i.e. at the ROM's own
+     * load address.  So 'j' can reach them directly from ROM code.
+     */
+
+    /* Reset vector at 0x80000000: jump back to ROM _start */
+    li      $8, 0x80000000
+    li      $9, 0xbfc00000
+    sw      $9, 0($8)
+
+    /* TLB refill vector at 0x80000080: jump to rom_tlb_refill */
+    li      $8, 0x80000080
+    li      $9, 0xbfc00200
+    sw      $9, 0($8)
+
+    /* General vector at 0x80000100: jump to rom_general_vector */
+    li      $8, 0x80000100
+    li      $9, 0xbfc00210
+    sw      $9, 0($8)
+
+    /* Set up CP0 timer (Count/Compare): CP0 Count increments at CPU/2.
+     * Set initial Compare = Count + 1000000 for a ~30ms timer at 33MHz.
+     */
+    mfc0    $8, $9           /* Count */
+    li      $9, 1000000      /* ~30ms at 33MHz */
+    addu    $8, $8, $9
+    mtc0    $8, $11          /* Compare = Count + interval */
+    li      $9, 0x00008000   /* Status: IE=1, IM7=1 (timer int) */
+    mtc0    $9, $12          /* Status */
+
+    /* Size/map DRAM (no stack), then test every byte of it (no stack). */
+    jal     mem_size_and_map
+    nop
+    move    $20, $2                  /* s4 = total RAM bytes */
+
+    li      $4, 0xa8000000           /* kseg1 alias of physical 0x08000000 */
+    move    $5, $20
+    jal     mem_test_all
+    nop
+    li      $8, 0xa8000400
+    sw      $2, 0($8)                /* first failure (0 = pass) */
+    sw      $20, 4($8)               /* total bytes */
+
+    /*
+     * RAM is now known good.  Build the writable world at 7 MiB, matching the
+     * original PROM's BSSADDR, with a 2 MiB heap and a 10 MiB stack top.  The
+     * low 512 KiB is a special alias window and is deliberately left alone.
+     */
+    li      $29, 0xa8a00000
+
+    la      $8, __data_load
+    la      $9, __data_start
+    la      $10, __data_end
+3:
+    sltu    $11, $9, $10
+    beq     $11, $0, 4f
+    nop
+    lw      $12, 0($8)
+    sw      $12, 0($9)
+    addiu   $8, $8, 4
+    addiu   $9, $9, 4
+    b       3b
+    nop
+4:
+    la      $8, __bss_start
+    la      $9, __bss_end
+5:
     sltu    $11, $8, $9
     beq     $11, $0, 6f
     nop
@@ -154,5 +270,26 @@ _start:
     nop
 7:
     b       7b
+    nop
+
+/* Exception vector handlers at PROM addresses.
+ * These are jumped to by kseg0 vectors at 0x80000080 (TLB refill)
+ * and 0x80000100 (general exception).
+ */
+. = 0xbfc00200
+/* TLB refill handler: just eret (we don't use TLB yet) */
+tlb_refill_handler:
+    eret
+    nop
+
+. = 0xbfc00210
+/* General exception handler: timer interrupt acknowledge */
+general_handler:
+    /* Advance CP0 Compare for next timer tick */
+    mfc0    $8, $9           /* Count */
+    li      $9, 1000000      /* ~30ms at 33MHz */
+    addu    $8, $8, $9
+    mtc0    $8, $11          /* Compare = Count + interval */
+    eret
     nop
 .end _start

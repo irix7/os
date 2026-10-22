@@ -288,19 +288,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
 }
 
 /// Initialise traps and exception vectors.
+///
+/// The ROM already sets up CP0 Count/Compare, Status (IE=1, BEV=0), and the
+/// exception vectors at kseg0 0x80000000..0x80000100. Nothing to do here.
 pub fn init() {
-    // Disable interrupts.
-    let mut status = status_read();
-    status &= !STATUS_IE;
-    status_write(status);
-
-    // Set exception vector base to kseg0 (BEV = 0).
-    status &= !STATUS_BEV;
-    status_write(status);
-
-    // Clear all interrupt enables.
-    status &= !STATUS_IM_MASK;
-    status_write(status);
+    // ROM already configured CP0 and exception vectors; nothing to initialise.
 }
 
 /// Install exception vectors into kseg0.
