@@ -99,11 +99,13 @@ _start:
     bne     $v0, $zero, ram_fail
     nop
 
-    # Copy the kernel payload from PROM to physical 0x08040000 via kseg1.
+    # Decompress the kernel payload from PROM to physical 0x08040000 via kseg1.
     la      $a0, rom_payload_start
     lw      $a1, ROM_PAYLOAD_LEN
     la      $a2, KERNEL_PHYS_KSEG1
-    jal     copy_payload
+    jal     lz4_decompress
+    nop
+    bne     $v0, $zero, lz4_fail
     nop
 
     la      $a0, msg_done
@@ -124,6 +126,14 @@ _start:
 
 ram_fail:
     la      $a0, msg_ramfail
+    jal     serial_puts
+    nop
+1:
+    b       1b
+    nop
+
+lz4_fail:
+    la      $a0, msg_lz4fail
     jal     serial_puts
     nop
 1:
@@ -248,30 +258,143 @@ serial_putc:
 .end serial_putc
 
 # ------------------------------------------------------------
-# copy_payload -- copy kernel payload from PROM to RAM
+# lz4_decompress -- decompress an LZ4 block payload
 #
-# Input:  $a0 = src, $a1 = len (bytes), $a2 = dst
+# Payload layout: [4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]
+#
+# Input:  $a0 = src (payload), $a1 = payload length, $a2 = dst
+# Output: $v0 = 0 on success, 1 on a bad payload
+#
+# The LZ4 block itself is RFC 7857: a run of sequences, each a token byte
+# (high nibble literal length, low nibble match length minus 4), the
+# literals, a two-byte little-endian distance, and the match.  Lengths of 15
+# or more continue in extra bytes, each worth 255 until one is smaller.
+# The block ends when the uncompressed size has been produced; the last
+# sequence is literals only.
+#
+# Register use: the assembler renumbers $t0-$t3, so the temporaries live in
+# $a0-$a3, $v0 and $s5-$s7 instead.  $s4 belongs to the caller.
 # ------------------------------------------------------------
-.ent copy_payload
-copy_payload:
-    move    $s0, $a0
-    move    $s1, $a2
-    move    $s2, $a1
-1:
-    beqz    $s2, 2f
+.ent lz4_decompress
+lz4_decompress:
+    move    $s0, $a0                 # src
+    move    $s2, $a2                 # dst
+
+    # Magic, read a byte at a time so the payload need not be aligned.
+    # Big-endian: the first byte is the most significant.
+    lbu     $a0, 0($s0)
+    lbu     $a1, 1($s0)
+    lbu     $a2, 2($s0)
+    lbu     $a3, 3($s0)
+    sll     $a0, $a0, 24
+    sll     $a1, $a1, 16
+    sll     $a2, $a2, 8
+    or      $a0, $a0, $a1
+    or      $a0, $a0, $a2
+    or      $a0, $a0, $a3
+    li      $v0, 0x184D2204
+    bne     $a0, $v0, lz4_bad
     nop
-    lbu     $t0, 0($s0)
-    sb      $t0, 0($s1)
+    addiu   $s0, $s0, 4
+
+    # Uncompressed size, big-endian.
+    lbu     $a0, 0($s0)
+    lbu     $a1, 1($s0)
+    lbu     $a2, 2($s0)
+    lbu     $a3, 3($s0)
+    sll     $a0, $a0, 24
+    sll     $a1, $a1, 16
+    sll     $a2, $a2, 8
+    or      $a0, $a0, $a1
+    or      $a0, $a0, $a2
+    or      $a0, $a0, $a3
+    move    $s3, $a0                 # bytes still to produce
+    addiu   $s0, $s0, 4
+
+lz4_loop:
+    beqz    $s3, lz4_done
+    nop
+    lbu     $s5, 0($s0)             # token
     addiu   $s0, $s0, 1
-    addiu   $s1, $s1, 1
-    addiu   $s2, $s2, -1
-    b       1b
+
+    # Literal run length: the token's high nibble, 15 meaning "more follows".
+    srl     $s6, $s5, 4
+    li      $v0, 15
+    bne     $s6, $v0, lz4_lit_copy
     nop
-2:
+lz4_lit_len:
+    lbu     $a0, 0($s0)
+    addiu   $s0, $s0, 1
+    addu    $s6, $s6, $a0
+    li      $v0, 255
+    beq     $a0, $v0, lz4_lit_len
+    nop
+lz4_lit_copy:
+    beqz    $s6, lz4_lit_done
+    nop
+lz4_lit_byte:
+    lbu     $a0, 0($s0)
+    addiu   $s0, $s0, 1
+    sb      $a0, 0($s2)
+    addiu   $s2, $s2, 1
+    addiu   $s3, $s3, -1
+    addiu   $s6, $s6, -1
+    bnez    $s6, lz4_lit_byte
+    nop
+lz4_lit_done:
+    beqz    $s3, lz4_done           # the last sequence is literals only
+    nop
+
+    # Match distance: two bytes, little-endian.  It comes before the
+    # match-length extension, so it has to be read first.
+    lbu     $a0, 0($s0)
+    lbu     $a1, 1($s0)
+    addiu   $s0, $s0, 2
+    sll     $a1, $a1, 8
+    or      $a0, $a0, $a1            # $a0 = distance back
+
+    # Match length: the token's low nibble, 15 meaning "more follows".
+    andi    $s6, $s5, 0x0F
+    li      $v0, 15
+    bne     $s6, $v0, lz4_match_have
+    nop
+lz4_match_len:
+    lbu     $a1, 0($s0)
+    addiu   $s0, $s0, 1
+    addu    $s6, $s6, $a1
+    li      $v0, 255
+    beq     $a1, $v0, lz4_match_len
+    nop
+lz4_match_have:
+    addiu   $s6, $s6, 4             # total match length
+
+    # Copy the match: the source may overlap the destination, so copy a
+    # byte at a time.
+    subu    $a1, $s2, $a0            # source = dst - distance
+lz4_match_byte:
+    lbu     $a0, 0($a1)
+    sb      $a0, 0($s2)
+    addiu   $a1, $a1, 1
+    addiu   $s2, $s2, 1
+    addiu   $s3, $s3, -1
+    addiu   $s6, $s6, -1
+    bnez    $s6, lz4_match_byte
+    nop
+
+    j       lz4_loop
+    nop
+
+lz4_done:
+    li      $v0, 0
     jr      $ra
     nop
 
-.end copy_payload
+lz4_bad:
+    li      $v0, 1
+    jr      $ra
+    nop
+
+.end lz4_decompress
 
 # ------------------------------------------------------------
 # Data
@@ -284,7 +407,10 @@ msg_ramfail:
     .asciz "ROM: RAM TEST FAILED\r\n"
 
 msg_done:
-    .asciz "ROM: copied kernel to 0x88040000, jumping...\r\n"
+    .asciz "ROM: decompressed kernel to 0x88040000, jumping...\r\n"
+
+msg_lz4fail:
+    .asciz "ROM: KERNEL IMAGE DECOMPRESSION FAILED\r\n"
 
 # Length of the kernel payload in PROM (resolved at link time).
 .align 2
