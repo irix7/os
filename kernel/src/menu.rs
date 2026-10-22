@@ -81,7 +81,15 @@ fn draw_frame() {
 /// Draw the menu panel with the current selection.
 pub fn draw() {
     // Background.
-    gfx::fill_rect(0, 0, gfx::SCREEN_WIDTH - 1, gfx::SCREEN_HEIGHT - 1, BG.0, BG.1, BG.2);
+    gfx::fill_rect(
+        0,
+        0,
+        gfx::SCREEN_WIDTH - 1,
+        gfx::SCREEN_HEIGHT - 1,
+        BG.0,
+        BG.1,
+        BG.2,
+    );
 
     // Panel fill.
     gfx::fill_rect(

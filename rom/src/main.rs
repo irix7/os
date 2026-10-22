@@ -18,5 +18,7 @@ core::arch::global_asm!(include_str!("boot/payload.S"));
 
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop { core::hint::spin_loop(); }
+    loop {
+        core::hint::spin_loop();
+    }
 }

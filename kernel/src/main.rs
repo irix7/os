@@ -213,8 +213,8 @@ fn read_bootinfo(phys_addr: u32) -> Option<&'static [u8; BOOTINFO_SIZE]> {
 /// Read memory descriptors from BootInfo's mem_map.
 fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
     let map_phys = u64::from_le_bytes([
-        info[0x10], info[0x11], info[0x12], info[0x13],
-        info[0x14], info[0x15], info[0x16], info[0x17],
+        info[0x10], info[0x11], info[0x12], info[0x13], info[0x14], info[0x15], info[0x16],
+        info[0x17],
     ]);
     let count = u32::from_le_bytes([info[0x18], info[0x19], info[0x1A], info[0x1B]]) as usize;
     let entry_size = u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
@@ -262,7 +262,12 @@ fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
             info[kseg0_map as usize + off + 23],
         ]);
 
-        descs[i] = BootMemDesc { base, size, kind, flags };
+        descs[i] = BootMemDesc {
+            base,
+            size,
+            kind,
+            flags,
+        };
     }
 
     (descs[0], count.min(64))
@@ -270,17 +275,15 @@ fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
 
 /// Read console_poll function pointer from BootInfo.
 fn read_console_poll(info: &[u8; BOOTINFO_SIZE]) -> extern "C" fn(*mut ()) {
-    let addr = u32::from_le_bytes([
-        info[0xF0], info[0xF1], info[0xF2], info[0xF3],
-    ]);
+    let addr = u32::from_le_bytes([info[0xF0], info[0xF1], info[0xF2], info[0xF3]]);
     unsafe { core::mem::transmute(addr) }
 }
 
 /// Read net_state pointer from BootInfo.
 fn read_net_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
     let addr = u64::from_le_bytes([
-        info[0xF4], info[0xF5], info[0xF6], info[0xF7],
-        info[0xF8], info[0xF9], info[0xFA], info[0xFB],
+        info[0xF4], info[0xF5], info[0xF6], info[0xF7], info[0xF8], info[0xF9], info[0xFA],
+        info[0xFB],
     ]);
     addr as *mut ()
 }
@@ -288,8 +291,8 @@ fn read_net_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
 /// Read seeq_state pointer from BootInfo.
 fn read_seeq_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
     let addr = u64::from_le_bytes([
-        info[0xF8], info[0xF9], info[0xFA], info[0xFB],
-        info[0xFC], info[0xFD], info[0xFE], info[0xFF],
+        info[0xF8], info[0xF9], info[0xFA], info[0xFB], info[0xFC], info[0xFD], info[0xFE],
+        info[0xFF],
     ]);
     addr as *mut ()
 }
@@ -369,10 +372,11 @@ pub extern "C" fn _start() -> ! {
             println("kernel: BootInfo verified");
             let (_first_desc, count) = read_mem_map(info);
             let kseg0_map = u64::from_le_bytes([
-                info[0x10], info[0x11], info[0x12], info[0x13],
-                info[0x14], info[0x15], info[0x16], info[0x17],
+                info[0x10], info[0x11], info[0x12], info[0x13], info[0x14], info[0x15], info[0x16],
+                info[0x17],
             ]) + KSEG0_OFFSET;
-            let entry_size = u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
+            let entry_size =
+                u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
             for i in 0..count.min(64) {
                 let off = (i * entry_size) as usize;
                 let kind = u32::from_le_bytes([
@@ -402,7 +406,12 @@ pub extern "C" fn _start() -> ! {
                         info[kseg0_map as usize + off + 14],
                         info[kseg0_map as usize + off + 15],
                     ]);
-                    usable_descs[usable_count] = frames::MemDesc { base, size, kind, flags: 0 };
+                    usable_descs[usable_count] = frames::MemDesc {
+                        base,
+                        size,
+                        kind,
+                        flags: 0,
+                    };
                     usable_count += 1;
                 }
             }
@@ -481,7 +490,9 @@ pub extern "C" fn _start() -> ! {
 fn idle_loop(console_poll: extern "C" fn(*mut ()), net_state: *mut ()) -> ! {
     loop {
         // Drive the resident console/network service.
-        unsafe { console_poll(net_state); }
+        unsafe {
+            console_poll(net_state);
+        }
 
         // Yield to the scheduler.
         scheduler::yield_cpu();

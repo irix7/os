@@ -160,12 +160,9 @@ fn load_image(elf: &[u8]) -> Option<Vec<u8>> {
         if p_type != 1 {
             continue; // PT_LOAD only
         }
-        let offset = u32::from_be_bytes([
-            elf[base + 4],
-            elf[base + 5],
-            elf[base + 6],
-            elf[base + 7],
-        ]) as usize;
+        let offset =
+            u32::from_be_bytes([elf[base + 4], elf[base + 5], elf[base + 6], elf[base + 7]])
+                as usize;
         let paddr = u32::from_be_bytes([
             elf[base + 12],
             elf[base + 13],

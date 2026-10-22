@@ -16,9 +16,14 @@ Consequences:
 
 - The ROM is a **pure MIPS3 assembly stub**. It has no Rust in it at all. Everything it
   does is: size and map the DRAM banks, test every byte of RAM, bring up the serial
-  console, decompress the kernel image from PROM to `0x88040000`, and jump there.
+  console, LZ4-decompress the kernel image from PROM to `0x88040000`, and jump there.
 - The kernel image is embedded in the PROM image by `rom/build.rs`, which extracts the
-  kernel's loadable segments and emits them as `rom/src/boot/payload.S`.
+  kernel's loadable segments, compresses them as an LZ4 block, and emits them as
+  `rom/src/boot/payload.S`. The payload layout is
+  `[4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]`.
+- **The assembler renumbers `$t0`-`$t3`** in the ROM's assembly. Two source registers
+  that differ only in that range can end up as the same machine register, so the
+  decompressor's temporaries live in `$a0`-`$a3`, `$v0` and `$s5`-`$s7` instead.
 - The ROM hands over the RAM geometry it discovered in registers. The kernel uses it to
   size its frame allocator; there is no shared `BootInfo` structure yet, so the kernel
   falls back to the register handoff when `BootInfo` is absent.

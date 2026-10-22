@@ -14,6 +14,7 @@ pub const FONT_DESCENDER: u8 = 3;
 pub const FONT_BASELINE: u8 = 13;
 
 /// Glyph row bitmaps, indexed by `FONT_INFO[i].0`.
+#[rustfmt::skip]
 pub static FONT_DATA: [u16; 1953] = [
     0x0020, 0x0000, 0x0021, 0x1800, 0x1800, 0x0000, 0x1800, 0x1800,
     0x1800, 0x1800, 0x1800, 0x1800, 0x1800, 0x0022, 0x6C00, 0x6C00,
@@ -263,6 +264,7 @@ pub static FONT_DATA: [u16; 1953] = [
 ];
 
 /// Per-character metrics: (offset, xsize, ysize, xorig, yorig, xmove).
+#[rustfmt::skip]
 pub static FONT_INFO: [(u16, u8, u8, i8, i8, u8); 189] = [
     (0, 9, 1, 0, 0, 9),
     (1, 9, 10, 0, 0, 9),

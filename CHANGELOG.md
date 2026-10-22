@@ -12,9 +12,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   sizes and maps the DRAM banks through the memory controller, tests every byte of RAM
   stacklessly, brings up the SCC console, copies the kernel image out of PROM to
   `0x0804_0000` and jumps to it. The ROM has no Rust in it at all.
-- The kernel image is embedded in the PROM image: `rom/build.rs` extracts the kernel
-  ELF's loadable segments and emits them as `.word` directives in a generated
-  `rom/src/boot/payload.S`.
+- The kernel image is embedded in the PROM image, LZ4-compressed: `rom/build.rs`
+  extracts the kernel ELF's loadable segments, compresses them as an LZ4 block,
+  and emits them as `.word` directives in a generated `rom/src/boot/payload.S`.
+  The ROM stub decompresses them into RAM before jumping, so the PROM image is
+  16 KiB instead of 38 KiB.
 - Graphical boot menu in the kernel: the REX3 (Newport) display is programmed for
   24-bit RGB and the menu is drawn with the PROM's own IRIS 10 raster font, converted
   from the IRIX source by `kernel/tools/convert_font.py`.
@@ -80,6 +82,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Fixed
 
+- The LZ4 match-length extension was read before the match distance; the sequence
+  is distance first.
+- The big-endian size and magic fields in the compressed payload were assembled
+  with the shifts the wrong way round.
+- The ROM's PROM image is laid out by virtual address, not by concatenating the
+  sections: the linker leaves an alignment gap that would otherwise shift the
+  payload.
 - The PS/2 keyboard's commands go to the data port, not the controller command port;
   sending them to the command port left the keyboard's scanning disabled.
 - The keyboard's letter case is now right: shift gives the lower case letter and caps

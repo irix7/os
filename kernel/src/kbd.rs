@@ -42,30 +42,103 @@ pub enum Key {
 
 /// Set-1 scancode to ASCII (unshifted).
 const SET1_MAP: &[(u8, u8)] = &[
-    (0x02, b'1'), (0x03, b'2'), (0x04, b'3'), (0x05, b'4'), (0x06, b'5'),
-    (0x07, b'6'), (0x08, b'7'), (0x09, b'8'), (0x0A, b'9'), (0x0B, b'0'),
-    (0x0C, b'-'), (0x0D, b'='), (0x0E, 0), (0x0F, 0),
-    (0x10, b'q'), (0x11, b'w'), (0x12, b'e'), (0x13, b'r'), (0x14, b't'),
-    (0x15, b'y'), (0x16, b'u'), (0x17, b'i'), (0x18, b'o'), (0x19, b'p'),
-    (0x1A, b'['), (0x1B, b']'), (0x1C, 0), (0x1D, b'\\'),
-    (0x1E, b'a'), (0x1F, b's'), (0x20, b'd'), (0x21, b'f'), (0x22, b'g'),
-    (0x23, b'h'), (0x24, b'j'), (0x25, b'k'), (0x26, b'l'), (0x27, b';'),
-    (0x28, b'\''), (0x29, b'`'), (0x2A, 0), (0x2B, b'\\'),
-    (0x2C, b'z'), (0x2D, b'x'), (0x2E, b'c'), (0x2F, b'v'), (0x30, b'b'),
-    (0x31, b'n'), (0x32, b'm'), (0x33, b','), (0x34, b'.'), (0x35, b'/'),
-    (0x36, 0), (0x37, b'*'), (0x38, b'+'),
-    (0x39, b' '), (0x3A, 0), (0x3B, 0), (0x3C, 0), (0x3D, 0), (0x3E, 0),
-    (0x3F, 0), (0x40, 0), (0x41, 0), (0x42, 0), (0x43, 0), (0x44, 0),
-    (0x45, 0), (0x46, 0), (0x47, 0),
-    (0x48, 0), (0x49, 0), (0x4A, 0), (0x4B, 0), (0x4C, 0), (0x4D, 0),
-    (0x4E, 0), (0x4F, 0), (0x50, 0), (0x51, 0), (0x52, 0),
+    (0x02, b'1'),
+    (0x03, b'2'),
+    (0x04, b'3'),
+    (0x05, b'4'),
+    (0x06, b'5'),
+    (0x07, b'6'),
+    (0x08, b'7'),
+    (0x09, b'8'),
+    (0x0A, b'9'),
+    (0x0B, b'0'),
+    (0x0C, b'-'),
+    (0x0D, b'='),
+    (0x0E, 0),
+    (0x0F, 0),
+    (0x10, b'q'),
+    (0x11, b'w'),
+    (0x12, b'e'),
+    (0x13, b'r'),
+    (0x14, b't'),
+    (0x15, b'y'),
+    (0x16, b'u'),
+    (0x17, b'i'),
+    (0x18, b'o'),
+    (0x19, b'p'),
+    (0x1A, b'['),
+    (0x1B, b']'),
+    (0x1C, 0),
+    (0x1D, b'\\'),
+    (0x1E, b'a'),
+    (0x1F, b's'),
+    (0x20, b'd'),
+    (0x21, b'f'),
+    (0x22, b'g'),
+    (0x23, b'h'),
+    (0x24, b'j'),
+    (0x25, b'k'),
+    (0x26, b'l'),
+    (0x27, b';'),
+    (0x28, b'\''),
+    (0x29, b'`'),
+    (0x2A, 0),
+    (0x2B, b'\\'),
+    (0x2C, b'z'),
+    (0x2D, b'x'),
+    (0x2E, b'c'),
+    (0x2F, b'v'),
+    (0x30, b'b'),
+    (0x31, b'n'),
+    (0x32, b'm'),
+    (0x33, b','),
+    (0x34, b'.'),
+    (0x35, b'/'),
+    (0x36, 0),
+    (0x37, b'*'),
+    (0x38, b'+'),
+    (0x39, b' '),
+    (0x3A, 0),
+    (0x3B, 0),
+    (0x3C, 0),
+    (0x3D, 0),
+    (0x3E, 0),
+    (0x3F, 0),
+    (0x40, 0),
+    (0x41, 0),
+    (0x42, 0),
+    (0x43, 0),
+    (0x44, 0),
+    (0x45, 0),
+    (0x46, 0),
+    (0x47, 0),
+    (0x48, 0),
+    (0x49, 0),
+    (0x4A, 0),
+    (0x4B, 0),
+    (0x4C, 0),
+    (0x4D, 0),
+    (0x4E, 0),
+    (0x4F, 0),
+    (0x50, 0),
+    (0x51, 0),
+    (0x52, 0),
 ];
 
 /// Set-1 scancode to shifted character.
 const SET1_SHIFT_MAP: &[(u8, u8)] = &[
-    (0x02, b'!'), (0x03, b'@'), (0x04, b'#'), (0x05, b'$'), (0x06, b'%'),
-    (0x07, b'^'), (0x08, b'*'), (0x09, b'('), (0x0A, b')'), (0x0B, b'_'),
-    (0x0C, b'+'), (0x0D, b'{'),
+    (0x02, b'!'),
+    (0x03, b'@'),
+    (0x04, b'#'),
+    (0x05, b'$'),
+    (0x06, b'%'),
+    (0x07, b'^'),
+    (0x08, b'*'),
+    (0x09, b'('),
+    (0x0A, b')'),
+    (0x0B, b'_'),
+    (0x0C, b'+'),
+    (0x0D, b'{'),
 ];
 
 fn read8(addr: u32) -> u8 {
@@ -211,7 +284,9 @@ pub fn poll_key() -> Option<Key> {
         extended: false,
     };
 
-    let mods = unsafe { &mut MODS };
+    // Take a raw pointer first: a mutable reference straight to a mutable
+    // static is what the 2024 edition lint warns about.
+    let mods = unsafe { &mut *core::ptr::addr_of_mut!(MODS) };
     loop {
         if read8(CMD) & STATUS_OUTPUT_FULL == 0 {
             return None;
@@ -246,7 +321,7 @@ mod tests {
     fn shift_gives_the_shifted_character() {
         let mut mods = Mods::default();
         assert_eq!(decode(0x2A, &mut mods), None); // shift down
-        // Letters go lower case and digits pick up their shifted symbol.
+                                                   // Letters go lower case and digits pick up their shifted symbol.
         assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
         assert_eq!(decode(0x02, &mut mods), Some(Key::Char(b'!')));
         assert_eq!(decode(0xAA, &mut mods), None); // shift up

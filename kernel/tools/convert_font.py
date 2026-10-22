@@ -75,6 +75,7 @@ def main():
     out.append(f"pub const FONT_BASELINE: u8 = {BASELINE};")
     out.append("")
     out.append("/// Glyph row bitmaps, indexed by `FONT_INFO[i].0`.")
+    out.append("#[rustfmt::skip]")
     out.append(f"pub static FONT_DATA: [u16; {len(data)}] = [")
     for i in range(0, len(data), 8):
         chunk = data[i:i + 8]
@@ -82,6 +83,7 @@ def main():
     out.append("];")
     out.append("")
     out.append("/// Per-character metrics: (offset, xsize, ysize, xorig, yorig, xmove).")
+    out.append("#[rustfmt::skip]")
     out.append(f"pub static FONT_INFO: [(u16, u8, u8, i8, i8, u8); {len(info)}] = [")
     for (off, xs, ys, xo, yo, xm) in info:
         out.append(f"    ({off}, {xs}, {ys}, {xo}, {yo}, {xm}),")

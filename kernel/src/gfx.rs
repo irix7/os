@@ -226,7 +226,14 @@ pub fn draw_char(x: i32, y: i32, ch: u8, r: u32, g: u32, b: u32) -> i32 {
                     col += 1;
                 }
                 let px = x + xorig as i32;
-                fill_span(px + start as i32, px + (col - 1) as i32, base + row as i32, r, g, b);
+                fill_span(
+                    px + start as i32,
+                    px + (col - 1) as i32,
+                    base + row as i32,
+                    r,
+                    g,
+                    b,
+                );
             } else {
                 col += 1;
             }

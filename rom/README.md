@@ -17,8 +17,8 @@ provides the `no_std` panic handler; everything the ROM does is assembly.
 4. It calls `memtest.S` to test every byte of DRAM. Still stackless, still with
    nothing of its own in RAM.
 5. It initialises the SCC console (the Z85C30 in the IOC) and prints the boot banner.
-6. It copies the kernel image out of PROM to `0x0804_0000` (kseg1, uncached, so the
-   bytes are in memory before the kernel runs from the cached kseg0 alias).
+6. It LZ4-decompresses the kernel image out of PROM to `0x0804_0000` (kseg1, uncached,
+   so the bytes are in memory before the kernel runs from the cached kseg0 alias).
 7. It sets the boot flag and jumps to `0x8804_0000`.
 
 The kernel clears its own `.bss` on entry — the RAM test scribbled over all of DRAM
@@ -26,16 +26,27 @@ before the kernel image was copied in.
 
 ## The kernel image
 
-The kernel is embedded in the PROM image. `rom/build.rs`:
+The kernel is compressed into the PROM image. `rom/build.rs`:
 
 1. reads the linked kernel ELF;
 2. extracts its `PT_LOAD` segments into a flat binary laid out at their physical
    addresses;
-3. emits that binary as `.word` directives in `src/boot/payload.S` (generated; not in
+3. compresses it as an LZ4 block (RFC 7857);
+4. emits it as `.word` directives in `src/boot/payload.S` (generated; not in
    git), which the linker places in a `.payload` section after the boot code.
+
+The payload is `[4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]`.
+The stub's `lz4_decompress` reads the header, then walks the block's sequences:
+a token byte (high nibble literal length, low nibble match length minus 4), the
+literals, a two-byte little-endian distance, and the match.  Lengths of 15 or
+more continue in extra bytes worth 255 each until one is smaller.  The block ends
+when the uncompressed size has been produced; the last sequence is literals only.
 
 `ROM_PAYLOAD_LEN` is computed at link time from the section symbols, so the ROM always
 copies exactly the right number of bytes.
+
+A 35 KiB kernel becomes 13 KiB compressed, so the PROM image is 16 KiB rather than
+38 KiB.
 
 ## Memory layout
 
@@ -70,6 +81,10 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
 python3 rom/tools/make_prom.py \
   target/mips3-sgi-irix7-n32/release/rom rom.bin
 ```
+
+`rom/tools/make_prom.py` lays the sections out by *virtual* address, not by
+concatenating them: the linker leaves an alignment gap between the boot code
+and the payload, and shifting the payload by that gap would corrupt it.
 
 The raw `rom.bin` is what the PROM socket and iris `--prom` expect.
 
@@ -114,5 +129,4 @@ mode the window is hidden but the REX3 keeps rendering to an offscreen buffer.
 - The kernel brings up the REX3 and shows a graphical boot menu, and reads the
   PS/2 keyboard to drive it.
 - The ROM has no network stack and no telnet console; the kernel owns those.
-- The kernel payload is copied verbatim, not compressed. A LZ4 decompressor in the
-  ROM stub is the next step (the libdragon N64 SDK has a MIPS R4300i one to port).
+- The kernel payload is LZ4-compressed and decompressed by the ROM stub.
