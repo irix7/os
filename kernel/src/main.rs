@@ -13,7 +13,7 @@
 //! Legacy IRIX processes occupy kuseg in their own MMU address spaces.
 
 #![cfg_attr(not(test), no_main)]
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 #![feature(asm, asm_experimental_arch)]
 
 pub mod allocator;
@@ -302,6 +302,7 @@ fn read_seeq_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
 ///   $a1 = total RAM bytes
 ///   $a2 = RAM base physical address
 /// Linker-provided bounds of the kernel's .bss section.
+#[cfg(not(test))]
 extern "C" {
     static __bss_start: u8;
     static __bss_end: u8;
@@ -313,6 +314,7 @@ extern "C" {
 /// copied in, so the kernel's .bss arrives full of the test pattern.  Every
 /// static that expects a zero initial value -- the console's own state, the
 /// frame allocator's tables -- has to be cleared here.
+#[cfg(not(test))]
 fn clear_bss() {
     unsafe {
         let mut p = &__bss_start as *const u8 as *mut u32;
@@ -488,6 +490,7 @@ fn idle_loop(console_poll: extern "C" fn(*mut ()), net_state: *mut ()) -> ! {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     println("kernel panic");

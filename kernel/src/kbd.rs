@@ -96,10 +96,111 @@ pub fn init() {
 }
 
 /// Modifier state tracked between scancodes.
+#[derive(Default, Clone, Copy)]
 struct Mods {
     shift: bool,
     caps: bool,
     extended: bool,
+}
+
+/// Decode one scancode byte into a key event.
+///
+/// Returns `None` when the byte carries no key event: a break code, a
+/// modifier change, the 0xE0 prefix, or a scancode with no mapping.
+fn decode(code: u8, mods: &mut Mods) -> Option<Key> {
+    // 0xE0 introduces the extended keys (arrows, keypad navigation).
+    if code == 0xE0 {
+        mods.extended = true;
+        return None;
+    }
+
+    let make = code & 0x80 == 0;
+    let sc = code & 0x7F;
+
+    // 0xE1 pauses the keyboard; skip the rest of that sequence.
+    if sc == 0xE1 {
+        mods.extended = false;
+        return None;
+    }
+
+    let extended = mods.extended;
+    mods.extended = false;
+
+    if !make {
+        // Break codes only update the modifier state.
+        match sc {
+            0x2A | 0x36 => mods.shift = false,
+            0x3A => mods.caps = false,
+            _ => {}
+        }
+        return None;
+    }
+
+    match sc {
+        0x2A | 0x36 => {
+            mods.shift = true;
+            return None;
+        }
+        0x3A => {
+            mods.caps = true;
+            return None;
+        }
+        _ => {}
+    }
+
+    if extended {
+        // The prefix applies to exactly this scancode.  A code that is not one
+        // of the extended keys falls through to the ordinary map, so a stray
+        // 0xE0 cannot swallow the next key.
+        match sc {
+            0x48 => return Some(Key::Up),
+            0x50 => return Some(Key::Down),
+            0x4B => return Some(Key::Left),
+            0x4D => return Some(Key::Right),
+            _ => {}
+        }
+    }
+
+    // Enter and Escape have no printable mapping.
+    if sc == 0x1C {
+        return Some(Key::Enter);
+    }
+    if sc == 0x01 {
+        return Some(Key::Escape);
+    }
+    if sc == 0x0E {
+        return Some(Key::Backspace);
+    }
+
+    let shifted = mods.shift;
+    let caps = mods.caps;
+    for (s, c) in SET1_MAP.iter() {
+        if *s == sc {
+            if *c == 0 {
+                return None;
+            }
+            // The map holds lower-case letters and the unshifted symbols.
+            let mut ch = *c;
+            if shifted {
+                // Shift picks the shifted symbol for digits and punctuation.
+                if let Some((_, sym)) = SET1_SHIFT_MAP.iter().find(|(s2, _)| *s2 == sc) {
+                    ch = *sym;
+                }
+            }
+            // Letter case: shift and caps lock are exclusive, so the letters
+            // are upper case exactly when the two agree.
+            if ch.is_ascii_alphabetic() {
+                ch = if shifted == caps {
+                    ch.to_ascii_uppercase()
+                } else {
+                    ch.to_ascii_lowercase()
+                };
+            }
+            return Some(Key::Char(ch));
+        }
+    }
+    // Unmapped scancode.
+    None
 }
 
 /// Poll for one key event, if any.
@@ -110,100 +211,91 @@ pub fn poll_key() -> Option<Key> {
         extended: false,
     };
 
+    let mods = unsafe { &mut MODS };
     loop {
         if read8(CMD) & STATUS_OUTPUT_FULL == 0 {
             return None;
         }
         let code = read8(DATA);
-        let mods = unsafe { &mut MODS };
-
-        // 0xE0 introduces the extended keys (arrows, keypad navigation).
-        if code == 0xE0 {
-            mods.extended = true;
-            continue;
+        if let Some(key) = decode(code, mods) {
+            return Some(key);
         }
+    }
+}
 
-        let make = code & 0x80 == 0;
-        let sc = code & 0x7F;
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // 0xE1 pauses the keyboard; skip the rest of that sequence.
-        if sc == 0xE1 {
-            mods.extended = false;
-            continue;
-        }
+    #[test]
+    fn digits_map_to_their_ascii() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x02, &mut mods), Some(Key::Char(b'1')));
+        assert_eq!(decode(0x03, &mut mods), Some(Key::Char(b'2')));
+        assert_eq!(decode(0x0B, &mut mods), Some(Key::Char(b'0')));
+    }
 
-        let extended = mods.extended;
-        mods.extended = false;
+    #[test]
+    fn letters_are_upper_case_without_shift() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        assert_eq!(decode(0x10, &mut mods), Some(Key::Char(b'Q')));
+    }
 
-        if !make {
-            // Break codes only update the modifier state.
-            match sc {
-                0x2A | 0x36 => mods.shift = false,
-                0x3A => mods.caps = false,
-                _ => {}
-            }
-            continue;
-        }
+    #[test]
+    fn shift_gives_the_shifted_character() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x2A, &mut mods), None); // shift down
+        // Letters go lower case and digits pick up their shifted symbol.
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
+        assert_eq!(decode(0x02, &mut mods), Some(Key::Char(b'!')));
+        assert_eq!(decode(0xAA, &mut mods), None); // shift up
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+    }
 
-        match sc {
-            0x2A | 0x36 => {
-                mods.shift = true;
-                continue;
-            }
-            0x3A => {
-                mods.caps = true;
-                continue;
-            }
-            _ => {}
-        }
+    #[test]
+    fn arrows_come_through_the_e0_prefix() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0xE0, &mut mods), None);
+        assert_eq!(decode(0x48, &mut mods), Some(Key::Up));
+        assert_eq!(decode(0xE0, &mut mods), None);
+        assert_eq!(decode(0x50, &mut mods), Some(Key::Down));
+        assert_eq!(decode(0xE0, &mut mods), None);
+        assert_eq!(decode(0x4B, &mut mods), Some(Key::Left));
+        assert_eq!(decode(0xE0, &mut mods), None);
+        assert_eq!(decode(0x4D, &mut mods), Some(Key::Right));
+    }
 
-        if extended {
-            let key = match sc {
-                0x48 => Some(Key::Up),
-                0x50 => Some(Key::Down),
-                0x4B => Some(Key::Left),
-                0x4D => Some(Key::Right),
-                _ => None,
-            };
-            if key.is_some() {
-                return key;
-            }
-            continue;
-        }
+    #[test]
+    fn the_prefix_does_not_leak_into_the_next_key() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0xE0, &mut mods), None);
+        // A key that is not an extended one still comes through.
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        // And the prefix is spent.
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+    }
 
-        // Enter and Escape have no printable mapping.
-        if sc == 0x1C {
-            return Some(Key::Enter);
-        }
-        if sc == 0x01 {
-            return Some(Key::Escape);
-        }
-        if sc == 0x0E {
-            return Some(Key::Backspace);
-        }
+    #[test]
+    fn caps_lock_inverts_the_letter_case() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x3A, &mut mods), None); // caps on
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
+        assert_eq!(decode(0xBA, &mut mods), None); // caps off
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+    }
 
-        let shifted = mods.shift;
-        let caps = mods.caps;
-        for (s, c) in SET1_MAP.iter() {
-            if *s == sc {
-                if *c == 0 {
-                    return None;
-                }
-                let mut ch = *c;
-                if shifted {
-                    if let Some((_, sc2)) = SET1_SHIFT_MAP.iter().find(|(s2, _)| *s2 == sc) {
-                        ch = *sc2;
-                    }
-                }
-                if caps {
-                    ch = ch.to_ascii_lowercase();
-                } else if !shifted {
-                    ch = ch.to_ascii_uppercase();
-                }
-                return Some(Key::Char(ch));
-            }
-        }
-        // Unmapped scancode.
-        continue;
+    #[test]
+    fn enter_and_escape_are_recognised() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x1C, &mut mods), Some(Key::Enter));
+        assert_eq!(decode(0x01, &mut mods), Some(Key::Escape));
+        assert_eq!(decode(0x0E, &mut mods), Some(Key::Backspace));
+    }
+
+    #[test]
+    fn break_codes_produce_no_event() {
+        let mut mods = Mods::default();
+        assert_eq!(decode(0x9E, &mut mods), None); // A released
     }
 }
