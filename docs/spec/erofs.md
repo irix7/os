@@ -281,9 +281,11 @@ for entry in fs.read_dir(&root)? { /* ... */ }
 ```
 
 The reader keeps no cache; the caller owns the block cache.  The kernel's
-`erofs_cmd` uses `http::get_range_to` for a byte-addressed device with one cached
-4 KiB block, so the metadata block and inline data are not fetched repeatedly.
-It is reached from the telnet console:
+`erofs_cmd` probes the superblock once to learn the image size, then uses
+`http::get_range_to` with a 64 KiB read-ahead window clamped to the final block.
+The first probe is 4 KiB; the mount then reads the superblock, metadata and
+inline data from that window, and a file fetch replaces it with the clamped
+read-ahead.  It is reached from the telnet console:
 
 ```text
 erofs <host>:<port><path> [info|ls|cat] [path]
@@ -291,7 +293,7 @@ erofs <host>:<port><path> [info|ls|cat] [path]
 
 `info` prints the superblock, `ls` lists a directory, and `cat` prints a file.
 Only HTTP is supported for ranges at present; TLS remains full-body.  The next
-integration step is the multi-block LRU and 64–256 KiB read-ahead.
+integration step is a multi-block LRU and a 256 KiB read-ahead window.
 
 ## 10. Verification
 
@@ -316,8 +318,9 @@ The kernel command was verified on the iris guest against
 [`rom/tools/range-server.py`](../../rom/tools/range-server.py): `info`, `ls /`
 (eight entries including `.`, `..` and the symlink), `cat /etc/motd` and
 `cat /big.bin` (the 9000-byte file, read through two data blocks and an inline
-tail).  Each command mounts the image afresh; the range server log shows one
-`206` per 4 KiB block.
+tail).  Each command mounts the image afresh; an `info` or `ls` issues one 4 KiB
+probe range, while `cat /big.bin` issues the probe plus one clamped read-ahead
+request covering the whole 12 KiB image.
 
 ## 11. Future work
 
@@ -327,7 +330,7 @@ tail).  Each command mounts the image afresh; the range server log shows one
 - Metabox metadata.
 - Superblock CRC32C verification.
 - A block-at-a-time directory iterator.
-- A multi-block HTTP Range cache with 64–256 KiB read-ahead and a shared LRU;
+- A multi-block HTTP Range cache with a 256 KiB read-ahead and a shared LRU;
   whole-image SHA-256 verification before mount.
 - A SCSI `BlockDevice` and the block cell capability.
 - An overlay for `/tmp`, `/etc` and `/home`.

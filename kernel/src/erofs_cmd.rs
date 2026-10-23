@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Read an EROFS image over HTTP from the debug console.
 //!
-//! The image is treated as a byte-addressed block device.  A small one-block
-//! cache keeps the metadata and inline data in the first block from being
-//! fetched repeatedly; later this becomes the LRU in the block cell.
+//! The image is treated as a byte-addressed block device.  A 64 KiB read-ahead
+//! window keeps metadata, inline data and nearby file blocks local; later this
+//! becomes the shared LRU in the block cell.
 
 use core::cell::Cell;
 use core::fmt::{self, Write};
 
-use erofs::{BlockDevice, Erofs, Error, FileType};
+use erofs::{BlockDevice, Erofs, Error, FileType, Superblock, SUPER_BASE_SIZE, SUPER_OFFSET};
 use smoltcp::wire::Ipv4Address;
 
-/// HTTP range cache size.  EROFS normally uses 4 KiB blocks.
-const CACHE_SIZE: usize = 4096;
+/// HTTP range cache size.  This is the read-ahead window as well as the cache.
+const CACHE_SIZE: usize = 64 * 1024;
+/// The first fetch is only the superblock's block, before the image size is known.
+const PROBE_SIZE: usize = 4096;
 /// Console output ceiling.  The telnet transmit buffer is 16 KiB.
 const OUTPUT_SIZE: usize = 4096;
+
+/// One command at a time; the telnet poll runs this synchronously.  A static
+/// buffer avoids leaking a 64 KiB allocation from the bump heap per command.
+static mut EROFS_CACHE: [u8; CACHE_SIZE] = [0; CACHE_SIZE];
 
 /// An operation requested on the mounted image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,16 +161,26 @@ pub fn run(request: &Request) -> Output {
     };
 
     let last_http = Cell::new(None);
-    let device = HttpRangeDevice {
+    // SAFETY: the telnet poll runs one command at a time; the buffer is only
+    // borrowed for the duration of this synchronous command.
+    let cache = unsafe { &mut EROFS_CACHE[..] };
+    let mut device = HttpRangeDevice {
         ip,
         port: request.port,
         host,
         path,
-        cache: [0; CACHE_SIZE],
+        cache,
         cache_start: 0,
+        cache_len: 0,
         cache_valid: false,
+        image_size: None,
         last_http: &last_http,
     };
+
+    if let Err(error) = device.probe_image_size() {
+        out.error(error, last_http.get());
+        return out;
+    }
 
     let mut fs = match Erofs::mount(device) {
         Ok(fs) => fs,
@@ -187,6 +203,11 @@ pub fn run(request: &Request) -> Output {
                 let _ = write!(out, "erofs: mounted\n");
                 let _ = write!(out, "block size: {}\n", sb.block_size());
                 let _ = write!(out, "blocks: {}\n", sb.blocks);
+                let _ = write!(
+                    out,
+                    "image bytes: {}\n",
+                    sb.blocks.saturating_mul(u64::from(sb.block_size()))
+                );
                 let _ = write!(out, "inodes: {}\n", sb.inos);
                 let _ = write!(out, "root nid: {}\n", sb.root_nid);
                 let _ = write!(out, "meta block: {}\n", sb.meta_blkaddr);
@@ -264,35 +285,68 @@ fn type_char(file_type: FileType) -> char {
     }
 }
 
-/// A byte-addressed HTTP range block device with one cached 4 KiB block.
+/// A byte-addressed HTTP range block device with a 64 KiB read-ahead window.
 struct HttpRangeDevice<'a> {
     ip: Ipv4Address,
     port: u16,
     host: &'a str,
     path: &'a str,
-    cache: [u8; CACHE_SIZE],
+    cache: &'a mut [u8],
     cache_start: u64,
+    cache_len: usize,
     cache_valid: bool,
+    image_size: Option<u64>,
     last_http: &'a Cell<Option<&'static str>>,
 }
 
 impl HttpRangeDevice<'_> {
+    /// Read the superblock once to learn the image size, so range requests can
+    /// be clamped to the final block instead of asking for bytes past EOF.
+    fn probe_image_size(&mut self) -> erofs::Result<()> {
+        let mut raw = [0u8; SUPER_BASE_SIZE];
+        self.read_at(SUPER_OFFSET, &mut raw)?;
+        let sb = Superblock::parse(&raw)?;
+        let size = sb
+            .blocks
+            .checked_mul(u64::from(sb.block_size()))
+            .ok_or(Error::InvalidSuperblock("image size overflow"))?;
+        if size == 0 {
+            return Err(Error::InvalidSuperblock("image has no blocks"));
+        }
+        if size > u64::from(u32::MAX) {
+            return Err(Error::Unsupported("image larger than 4 GiB"));
+        }
+        self.image_size = Some(size);
+        Ok(())
+    }
+
     fn fill(&mut self, start: u64) -> erofs::Result<()> {
-        let end = start.checked_add(CACHE_SIZE as u64 - 1).ok_or(Error::Io)?;
-        let start = u32::try_from(start).map_err(|_| Error::Io)?;
-        let end = u32::try_from(end).map_err(|_| Error::Io)?;
+        let available = match self.image_size {
+            Some(size) => size.saturating_sub(start),
+            None => PROBE_SIZE as u64,
+        };
+        if available == 0 {
+            return Err(Error::OutOfBounds);
+        }
+        let want = (CACHE_SIZE as u64).min(available) as usize;
+        let end = start
+            .checked_add(want as u64 - 1)
+            .ok_or(Error::OutOfBounds)?;
+        let start32 = u32::try_from(start).map_err(|_| Error::Unsupported("image range"))?;
+        let end32 = u32::try_from(end).map_err(|_| Error::Unsupported("image range"))?;
         let result = crate::http::get_range_to(
             self.ip,
             self.port,
             self.host,
             self.path,
-            start,
-            end,
-            &mut self.cache,
+            start32,
+            end32,
+            &mut self.cache[..want],
         );
         match result {
-            Ok((_summary, CACHE_SIZE)) => {
-                self.cache_start = u64::from(start);
+            Ok((_summary, captured)) if captured == want => {
+                self.cache_start = start;
+                self.cache_len = want;
                 self.cache_valid = true;
                 Ok(())
             }
@@ -314,11 +368,15 @@ impl BlockDevice for HttpRangeDevice<'_> {
         while done < buf.len() {
             let position = offset.checked_add(done as u64).ok_or(Error::OutOfBounds)?;
             let start = position & !(CACHE_SIZE as u64 - 1);
-            if !self.cache_valid || self.cache_start != start {
+            let cached_end = self.cache_start.checked_add(self.cache_len as u64);
+            let in_cache = self.cache_valid
+                && position >= self.cache_start
+                && cached_end.is_some_and(|end| position < end);
+            if !in_cache {
                 self.fill(start)?;
             }
-            let within = (position - start) as usize;
-            let count = (CACHE_SIZE - within).min(buf.len() - done);
+            let within = (position - self.cache_start) as usize;
+            let count = (self.cache_len - within).min(buf.len() - done);
             buf[done..done + count].copy_from_slice(&self.cache[within..within + count]);
             done += count;
         }

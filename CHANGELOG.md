@@ -16,11 +16,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   tests (twelve filesystem, three codec) run against reproducible `mkfs.erofs`
   1.9.4 golden images (compact, extended and 48-bit) checked with `fsck.erofs`.
 - Telnet `erofs <host>:<port><path> [info|ls|cat] [path]` mounts an EROFS image
-  over HTTP Range and prints the superblock, a directory or a file.  A one-block
-  (4 KiB) range cache keeps metadata and inline data local; verified on the iris
-  guest with `rom/tools/range-server.py`, including an eight-entry `ls /` and the
-  9000-byte flat-inline `big.bin`.  SCSI, the full LRU/read-ahead, whole-image
-  SHA-256 and the overlay are still to come.
+  over HTTP Range and prints the superblock, a directory or a file.  It probes
+  the superblock to learn the image size, then reads with a 64 KiB read-ahead
+  window clamped to the final block, so metadata and inline data stay cached and
+  adjacent file blocks arrive together.  Verified on the iris guest with
+  `rom/tools/range-server.py`, including an eight-entry `ls /` and the 9000-byte
+  flat-inline `big.bin`.  SCSI, the shared LRU and 256 KiB read-ahead,
+  whole-image SHA-256 and the overlay are still to come.
 - HTTP/1.1 Range requests: `http ... range=start-end` sends `Range`, accepts a 206,
   verifies the body length and hashes the range; the full-GET path is unchanged. TLS
   remains full-body only.
