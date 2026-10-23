@@ -69,12 +69,12 @@ The kernel must be built first — the ROM embeds it:
 ```bash
 # 1. the kernel
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
-  cargo build --release -Z build-std=core -Zjson-target-spec \
+  cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
 
 # 2. the ROM, with the kernel embedded
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
-  cargo build --release -Z build-std=core -Zjson-target-spec \
+  cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
 
 # 3. the raw PROM image
@@ -121,6 +121,35 @@ entirely, and there is then no graphics device for the kernel to draw on. In `--
 mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, which
 `rex fbdump` can then write out as a PNG.
 
+## Kernel console
+
+The kernel owns the Seeq 8003 (HPC3 PDMA) and the smoltcp stack, so the console is
+available over the network once DHCP completes. `rom/iris-rig.toml` forwards host
+`127.0.0.1:2323` to guest port 23:
+
+```bash
+telnet 127.0.0.1 2323
+```
+
+Commands:
+
+| Command | Purpose |
+|---|---|
+| `help` | list commands |
+| `status` | stage, IP, MAC, RAM, uptime, wall clock |
+| `net` | interface addresses and link |
+| `mem` | total RAM |
+| `time` | uptime and UTC date |
+| `echo <text>` | echo the argument |
+| `ntp <ip>[:port]` | set the wall clock from NTP |
+| `http <host>:<port><path>` | fetch over HTTP |
+| `https <host>:<port><path>` | fetch over TLS 1.3 |
+| `boot` | leave the menu and continue booting |
+
+`http` and `https` print the status, body length and a streaming SHA-256 of the body,
+so a fetched image can be checked against the build host.  The clock is advanced from
+CP0 Count; the menu and idle loops execute `WAIT`, which lets iris park the vCPU.
+
 ## Status
 
 - Boots from the raw PROM image, sizes and maps DRAM, and tests every byte of it
@@ -129,5 +158,7 @@ mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, w
   prints `kernel: up`.
 - The kernel brings up the REX3 and shows a graphical boot menu, and reads the
   PS/2 keyboard to drive it.
-- The ROM has no network stack and no telnet console; the kernel owns those.
 - The kernel payload is LZ4-compressed and decompressed by the ROM stub.
+- The ROM has no network stack; the kernel owns DHCP, DNS, NTP, HTTP and HTTPS
+  (TLS 1.3), the telnet console, and the Seeq/HPC3 driver.
+- A CP0 Compare tick drives the network and console; idle loops park in `WAIT`.
