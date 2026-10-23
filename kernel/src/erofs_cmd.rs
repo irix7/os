@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Read an EROFS image over HTTP or HTTPS from the debug console.
 //!
-//! The image is treated as a byte-addressed block device.  A 64 KiB read-ahead
-//! window keeps metadata, inline data and nearby file blocks local; later this
-//! becomes the shared LRU in the block cell.
+//! The image is treated as a byte-addressed block device.  A 256 KiB
+//! read-ahead window keeps metadata, inline data and nearby file blocks local;
+//! later this becomes the shared LRU in the block cell.
 
 use core::cell::Cell;
 use core::fmt::{self, Write};
@@ -12,16 +12,13 @@ use erofs::{BlockDevice, Erofs, Error, FileType, Superblock, SUPER_BASE_SIZE, SU
 use smoltcp::wire::Ipv4Address;
 
 use crate::range::ByteRange;
+use crate::readahead::{self, CACHE_SIZE};
 
-/// HTTP range cache size.  This is the read-ahead window as well as the cache.
-const CACHE_SIZE: usize = 64 * 1024;
-/// The first fetch is only the superblock's block, before the image size is known.
-const PROBE_SIZE: usize = 4096;
 /// Console output ceiling.  The telnet transmit buffer is 16 KiB.
 const OUTPUT_SIZE: usize = 4096;
 
 /// One command at a time; the telnet poll runs this synchronously.  A static
-/// buffer avoids leaking a 64 KiB allocation from the bump heap per command.
+/// buffer avoids leaking a 256 KiB allocation from the bump heap per command.
 static mut EROFS_CACHE: [u8; CACHE_SIZE] = [0; CACHE_SIZE];
 
 /// An operation requested on the mounted image.
@@ -355,7 +352,7 @@ fn type_char(file_type: FileType) -> char {
     }
 }
 
-/// A byte-addressed HTTP/HTTPS range block device with a 64 KiB read-ahead
+/// A byte-addressed HTTP/HTTPS range block device with a 256 KiB read-ahead
 /// window.
 struct HttpRangeDevice<'a> {
     ip: Ipv4Address,
@@ -393,18 +390,12 @@ impl HttpRangeDevice<'_> {
         Ok(size)
     }
 
-    fn fill(&mut self, start: u64) -> erofs::Result<()> {
-        let available = match self.image_size {
-            Some(size) => size.saturating_sub(start),
-            None => PROBE_SIZE as u64,
-        };
-        if available == 0 {
-            return Err(Error::OutOfBounds);
-        }
-        let want = (CACHE_SIZE as u64).min(available) as usize;
-        let end = start
-            .checked_add(want as u64 - 1)
-            .ok_or(Error::OutOfBounds)?;
+    /// Fetch the window that covers `position`, replacing the current one.
+    fn fill(&mut self, position: u64) -> erofs::Result<()> {
+        let window = readahead::window(position, self.image_size).ok_or(Error::OutOfBounds)?;
+        let start = window.start;
+        let want = window.len;
+        let end = window.end();
         let start32 = u32::try_from(start).map_err(|_| Error::Unsupported("image range"))?;
         let end32 = u32::try_from(end).map_err(|_| Error::Unsupported("image range"))?;
         let range = ByteRange::new(start32, end32).ok_or(Error::OutOfBounds)?;
@@ -438,13 +429,12 @@ impl BlockDevice for HttpRangeDevice<'_> {
         let mut done = 0usize;
         while done < buf.len() {
             let position = offset.checked_add(done as u64).ok_or(Error::OutOfBounds)?;
-            let start = position & !(CACHE_SIZE as u64 - 1);
             let cached_end = self.cache_start.checked_add(self.cache_len as u64);
             let in_cache = self.cache_valid
                 && position >= self.cache_start
                 && cached_end.is_some_and(|end| position < end);
             if !in_cache {
-                self.fill(start)?;
+                self.fill(position)?;
             }
             let within = (position - self.cache_start) as usize;
             let count = (self.cache_len - within).min(buf.len() - done);
