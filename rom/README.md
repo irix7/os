@@ -121,6 +121,21 @@ entirely, and there is then no graphics device for the kernel to draw on. In `--
 mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, which
 `rex fbdump` can then write out as a PNG.
 
+## Scripted smoke test
+
+`rom/tools/smoke.py` starts iris, releases the CPU, waits for DHCP and drives the
+telnet console:
+
+```bash
+export LD_LIBRARY_PATH=/nix/store/...-libglvnd/lib:/nix/store/...-alsa-lib/lib:/nix/store/...-gcc-lib/lib
+python3 rom/tools/smoke.py \
+  --iris /path/to/iris --prom /tmp/rom.bin \
+  --cwd /mnt/europa/iris --commands "status,mem,ping 10.1.1.3"
+```
+
+It is not part of CI (it needs iris and the disk images); it is the repeatable
+version of the manual checks in this document.
+
 ## Kernel console
 
 The kernel owns the Seeq 8003 (HPC3 PDMA) and the smoltcp stack, so the console is
