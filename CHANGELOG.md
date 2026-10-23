@@ -17,6 +17,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   Moving the filesystem feature into a module keeps it out of the compressed
   PROM image; the kernel's debug `erofsdisk` command is removed in favour of
   this module.
+- MCP `block.read` tool in the `httpd` module: reads one 512-byte SCSI sector
+  through the ABI 10 `block_read` service and returns 1024 hex characters.
+  Verified against target 1 block 0: the response starts `4d436f6d` (`MComprHD`).
+  The tool lives entirely in the module; the kernel only supplies the sector
+  service.
 - Module ABI version 10 adds `block_read(target, lba, buffer)` for one 512-byte
   SCSI sector, exposed by `modules/block` via `Context::block_read`.  The OS
   consumes SDK `v0.3.0`; verified on iris with target 1: the module prints
