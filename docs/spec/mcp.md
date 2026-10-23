@@ -26,6 +26,9 @@ a loadable image; “module” is not a privilege boundary.  It implements:
 - tools `status` (the shared machine status block: IP, MAC, RAM, uptime, date), `echo`,
   `console`/`serial.write` (write a line to the guest console), `serial.read` (the kernel's
   8 KiB serial ring, from an absolute offset), `system.reset` and `system.poweroff`;
+- filesystem tools over the target 2 EROFS fixture: `fs.read`, `fs.list`, `fs.stat` and
+  `fs.readlink` read the image through ABI 10 `block_read`, a 16-block LRU and the RAM
+  overlay, and `fs.write`/`fs.remove` write and whiteout overlay entries;
 - `resources/list` and `resources/read` expose `irix7://serial`, `irix7://status`,
   `irix7://net` and `irix7://mem` as `text/plain`;
 - `GET /` as a plain status page;
@@ -108,15 +111,27 @@ tool execution failure is `isError: true`, not a JSON-RPC error.
 | `block.read` | `target`, `lba` | 1024 hex characters for one 512-byte SCSI sector |
 | `fs.read` | `path?` (default `/etc/motd`) | file content from the target 2 EROFS fixture |
 | `fs.list` | `path?` (default `/`) | newline-separated directory entries |
+| `fs.stat` | `path?` (default `/`) | JSON `type`, `size`, `mode`, `uid`, `gid`, `origin`, and `target` for a symlink |
+| `fs.readlink` | `path` | the symbolic link target |
 | `fs.write` | `path`, `data` | `ok`; writes to the RAM overlay (`/tmp` exists) |
 | `fs.remove` | `path` | `ok`; whiteouts a lower file or removes an upper file |
 | `fs.read` | `path`, `offset?`, `length?`, `encoding?` (`utf-8`/`base64`) | `data`, `encoding`, `size`, `eof` |
 | `fs.write` | `path`, `data`, `encoding?`, `mode?` (`create`/`truncate`/`append`), `permissions?` | `bytes_written` |
 | `fs.list` | `path` | `entries[]` with `name`, `type`, `size`, `mode`, `mtime` |
 | `fs.stat` | `path` | `type`, `size`, `mode`, `mtime`, `inode` |
+| `fs.readlink` | `path` | `target` |
 | `fs.remove` | `path`, `recursive?` | `ok` |
 | `fs.rename` | `from`, `to` | `ok` |
 | `fs.mkdir` | `path`, `mode?` | `ok` |
+
+`fs.stat` reports the merged view without following a final symbolic link, so `/link` is a
+`symlink` with its target rather than the file it names. `type` is `file`, `dir` or
+`symlink`; `mode` is the octal `st_mode` as a string; `origin` is `erofs` when the node
+comes from the read-only image and `overlay` when it is a RAM-upper entry. The RAM upper
+stores contents rather than a POSIX inode, so an upper entry reports its stored size, mode
+`100644` or `040755`, and owner 0:0. `fs.readlink` fails when the path is not a symlink.
+A link target longer than 512 bytes is reported as `target_truncated` by `fs.stat` and
+rejected by `fs.readlink`.
 
 `fs.read` and `fs.write` default to UTF-8; binary data uses base64. `max_output` defaults to
 1 MiB and is capped at 8 MiB; `truncated` reports the cut.

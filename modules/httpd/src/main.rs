@@ -4,7 +4,8 @@
 //! Listens on guest port 80 through the version 3 TCP services.  `GET /`
 //! returns a small status page; `POST /mcp` speaks JSON-RPC 2.0 with the MCP
 //! methods `initialize`, `tools/list` and `tools/call` (`status`, `echo`,
-//! `console`, `block.read`, `fs.read`, `fs.list`, `fs.write`, `fs.remove`).  This is the first long-running module and the
+//! `console`, `block.read`, `fs.read`, `fs.list`, `fs.stat`, `fs.readlink`,
+//! `fs.write`, `fs.remove`).  This is the first long-running module and the
 //! prototype for the control plane: the compressed PROM image does not grow.
 
 #![no_std]
@@ -77,6 +78,11 @@ const FS_TARGET: u8 = 2;
 const FS_BLOCK: usize = 4096;
 const FS_PRINT_MAX: usize = 8192;
 
+/// The longest symbolic link target a `fs.stat` or `fs.readlink` response
+/// carries.  The response buffer is shared with every other tool, so a link
+/// target is never copied in unbounded.
+const LINK_MAX: usize = 512;
+
 struct ScsiDisk {
     services: &'static Services,
     target: u8,
@@ -120,6 +126,39 @@ impl erofs::BlockDevice for CachedDisk {
 /// The read-only EROFS lower owned by the RAM overlay.
 struct LowerView {
     fs: erofs::Erofs<CachedDisk>,
+}
+
+/// Inode metadata read from the lower without following a final symlink.
+struct LowerMeta {
+    file_type: erofs::FileType,
+    size: u64,
+    mode: u16,
+    uid: u32,
+    gid: u32,
+}
+
+impl LowerView {
+    /// Look up `path` in the EROFS image without following a final symlink.
+    ///
+    /// The overlay's own lookup follows links and models only files and
+    /// directories; `fs.stat` and `fs.readlink` need the node the path names.
+    fn metadata(&mut self, path: &str) -> Option<LowerMeta> {
+        let inode = self.fs.lookup_path(path).ok()?;
+        Some(LowerMeta {
+            file_type: inode.file_type,
+            size: inode.size,
+            mode: inode.mode,
+            uid: inode.uid,
+            gid: inode.gid,
+        })
+    }
+
+    /// Read a symbolic link's target.  The caller has already established that
+    /// `path` names a link.
+    fn link_target(&mut self, path: &str) -> Option<alloc::vec::Vec<u8>> {
+        let inode = self.fs.lookup_path(path).ok()?;
+        self.fs.read_link(&inode).ok()
+    }
 }
 
 impl OverlayLower for LowerView {
@@ -235,6 +274,192 @@ fn fs_remove(path: &str) -> bool {
     }
 }
 
+/// What a path names in the merged namespace.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FsKind {
+    File,
+    Dir,
+    Symlink,
+}
+
+impl FsKind {
+    /// The `type` field of a `fs.stat` result.
+    fn name(self) -> &'static [u8] {
+        match self {
+            Self::File => b"file",
+            Self::Dir => b"dir",
+            Self::Symlink => b"symlink",
+        }
+    }
+}
+
+/// Why a `fs.stat` or `fs.readlink` request failed.
+enum FsError {
+    /// The overlay could not be mounted.
+    Mount,
+    /// The path is not a normalisable absolute path.
+    Invalid,
+    /// The path is absent from the merged namespace.
+    NotFound,
+    /// The path is not a symbolic link.
+    NotSymlink,
+    /// The lower filesystem could not answer.
+    Lower,
+    /// The link target does not fit the response budget.
+    TooLong,
+}
+
+impl FsError {
+    /// The MCP error message for this failure.
+    fn message(&self) -> &'static [u8] {
+        match self {
+            Self::Mount => b"fs mount failed",
+            Self::Invalid => b"fs path is not a valid absolute path",
+            Self::NotFound => b"fs path not found",
+            Self::NotSymlink => b"fs path is not a symlink",
+            Self::Lower => b"fs lower failed",
+            Self::TooLong => b"fs link target too long",
+        }
+    }
+}
+
+/// A node's metadata in the merged namespace.
+struct FsStat {
+    kind: FsKind,
+    /// Whether the node lives in the RAM upper rather than the EROFS lower.
+    upper: bool,
+    size: u64,
+    mode: u16,
+    uid: u32,
+    gid: u32,
+    /// A symlink target, truncated to [`LINK_MAX`] bytes.
+    target: Option<alloc::vec::Vec<u8>>,
+    /// Whether `target` is a prefix of a longer link target.
+    target_truncated: bool,
+}
+
+/// Stat a path in the merged namespace, without following a final symlink.
+#[allow(static_mut_refs)]
+fn fs_stat(path: &str) -> Result<FsStat, FsError> {
+    unsafe {
+        let overlay = OVERLAY.as_mut().ok_or(FsError::Mount)?;
+        // Normalise once so the lower sees the same path the overlay merged.
+        let path = overlay::normalise(path).map_err(|_| FsError::Invalid)?;
+        let merged = overlay.stat(&path).map_err(|error| match error {
+            overlay::Error::Lower(_) => FsError::Lower,
+            _ => FsError::NotFound,
+        })?;
+        if merged.upper {
+            // The RAM upper stores contents, not a POSIX inode: the size is the
+            // stored length and the mode is the one the overlay creates.
+            let (kind, size, mode) = match merged.kind {
+                OverlayKind::File => (
+                    FsKind::File,
+                    overlay
+                        .read_file(&path)
+                        .map(|data| data.len() as u64)
+                        .unwrap_or(0),
+                    0o100_644,
+                ),
+                OverlayKind::Directory => (FsKind::Dir, 0, 0o40_755),
+            };
+            return Ok(FsStat {
+                kind,
+                upper: true,
+                size,
+                mode,
+                uid: 0,
+                gid: 0,
+                target: None,
+                target_truncated: false,
+            });
+        }
+
+        let Some(meta) = overlay.lower_mut().metadata(&path) else {
+            return Err(FsError::NotFound);
+        };
+        let kind = match meta.file_type {
+            erofs::FileType::Directory => FsKind::Dir,
+            erofs::FileType::Symlink => FsKind::Symlink,
+            _ => FsKind::File,
+        };
+        let mut target = None;
+        let mut target_truncated = false;
+        if kind == FsKind::Symlink {
+            if let Some(bytes) = overlay.lower_mut().link_target(&path) {
+                target_truncated = bytes.len() > LINK_MAX;
+                target = Some(bytes[..bytes.len().min(LINK_MAX)].to_vec());
+            }
+        }
+        Ok(FsStat {
+            kind,
+            upper: false,
+            size: meta.size,
+            mode: meta.mode,
+            uid: meta.uid,
+            gid: meta.gid,
+            target,
+            target_truncated,
+        })
+    }
+}
+
+/// Read a symbolic link's target from the merged namespace.
+#[allow(static_mut_refs)]
+fn fs_readlink(path: &str) -> Result<alloc::vec::Vec<u8>, FsError> {
+    unsafe {
+        let overlay = OVERLAY.as_mut().ok_or(FsError::Mount)?;
+        let path = overlay::normalise(path).map_err(|_| FsError::Invalid)?;
+        let merged = overlay.stat(&path).map_err(|error| match error {
+            overlay::Error::Lower(_) => FsError::Lower,
+            _ => FsError::NotFound,
+        })?;
+        if merged.upper {
+            return Err(FsError::NotSymlink);
+        }
+        let Some(meta) = overlay.lower_mut().metadata(&path) else {
+            return Err(FsError::NotFound);
+        };
+        if meta.file_type != erofs::FileType::Symlink {
+            return Err(FsError::NotSymlink);
+        }
+        let target = overlay
+            .lower_mut()
+            .link_target(&path)
+            .ok_or(FsError::Lower)?;
+        if target.len() > LINK_MAX {
+            return Err(FsError::TooLong);
+        }
+        Ok(target)
+    }
+}
+
+/// Render a `fs.stat` result as JSON text.
+fn stat_json(stat: &FsStat, out: &mut [u8]) -> usize {
+    let mut w = Out::new(out);
+    w.push(b"{\"type\":");
+    w.json_string(stat.kind.name());
+    w.push(b",\"size\":");
+    w.u64(stat.size);
+    w.push(b",\"mode\":\"");
+    w.octal(stat.mode);
+    w.push(b"\",\"uid\":");
+    w.u64(u64::from(stat.uid));
+    w.push(b",\"gid\":");
+    w.u64(u64::from(stat.gid));
+    w.push(b",\"origin\":");
+    w.json_string(if stat.upper { b"overlay" } else { b"erofs" });
+    if let Some(target) = &stat.target {
+        w.push(b",\"target\":");
+        w.json_string(target);
+        if stat.target_truncated {
+            w.push(b",\"target_truncated\":true");
+        }
+    }
+    w.push(b"}");
+    w.len
+}
+
 static mut PHASE: u32 = ARM;
 static mut SCREEN_ROW: u32 = 0;
 static mut SCREEN_OFF: usize = 0;
@@ -254,6 +479,10 @@ static mut REQUEST: [u8; REQUEST_CAP] = [0; REQUEST_CAP];
 static mut REQ_LEN: usize = 0;
 static mut IN_CONN: bool = false;
 static mut RESPONSE: [u8; 16384] = [0; 16384];
+/// Scratch for the `fs.stat` JSON text before it is embedded in a `text`
+/// field; a link target is bounded by [`LINK_MAX`] so the buffer cannot
+/// overflow.
+static mut STAT_TEXT: [u8; 2048] = [0; 2048];
 
 /// The slot serving the current connection, and the slot armed for the next
 /// one.  Alternating the two hides the close handshake from a back-to-back
@@ -844,6 +1073,26 @@ fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
 // JSON-RPC / MCP
 // ---------------------------------------------------------------------------
 
+/// Write a JSON-RPC result carrying one `text` content item.
+fn mcp_text(w: &mut Out, id: &[u8], text: &[u8]) {
+    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    w.push(id);
+    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+    w.json_string(text);
+    w.push(b"}]}}");
+}
+
+/// Write a JSON-RPC error object.
+fn mcp_error(w: &mut Out, id: &[u8], code: &[u8], message: &[u8]) {
+    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    w.push(id);
+    w.push(b",\"error\":{\"code\":");
+    w.push(code);
+    w.push(b",\"message\":");
+    w.json_string(message);
+    w.push(b"}}");
+}
+
 fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
     let id = json_id(body);
     let mut w = Out::new(out);
@@ -864,7 +1113,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.write\",\"description\":\"Write a file to the RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}}}},{\"name\":\"fs.remove\",\"description\":\"Remove an overlay file or lower file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.stat\",\"description\":\"Stat a file, directory or symlink in the EROFS fixture and RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.readlink\",\"description\":\"Read a symbolic link target from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.write\",\"description\":\"Write a file to the RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}}}},{\"name\":\"fs.remove\",\"description\":\"Remove an overlay file or lower file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -1027,6 +1276,34 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                         w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                         w.push(id);
                         w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs mount failed\"}}");
+                    }
+                }
+                Some(b"fs.stat") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/");
+                    let path = core::str::from_utf8(path).unwrap_or("/");
+                    if !ensure_fs() {
+                        mcp_error(&mut w, id, b"-32603", FsError::Mount.message());
+                    } else {
+                        match fs_stat(path) {
+                            Ok(stat) => {
+                                let text = unsafe { &mut *core::ptr::addr_of_mut!(STAT_TEXT) };
+                                let n = stat_json(&stat, text);
+                                mcp_text(&mut w, id, &text[..n]);
+                            }
+                            Err(error) => mcp_error(&mut w, id, b"-32603", error.message()),
+                        }
+                    }
+                }
+                Some(b"fs.readlink") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/");
+                    let path = core::str::from_utf8(path).unwrap_or("/");
+                    if !ensure_fs() {
+                        mcp_error(&mut w, id, b"-32603", FsError::Mount.message());
+                    } else {
+                        match fs_readlink(path) {
+                            Ok(target) => mcp_text(&mut w, id, &target),
+                            Err(error) => mcp_error(&mut w, id, b"-32603", error.message()),
+                        }
                     }
                 }
                 Some(b"block.read") => {
@@ -1309,6 +1586,13 @@ impl<'a> Out<'a> {
         while n > 0 {
             n -= 1;
             self.byte(digits[n]);
+        }
+    }
+
+    /// Write an `st_mode` as six zero-padded octal digits.
+    fn octal(&mut self, value: u16) {
+        for shift in (0..6).rev() {
+            self.byte(b'0' + ((value >> (shift * 3)) & 0o7) as u8);
         }
     }
 

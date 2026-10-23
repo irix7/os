@@ -49,6 +49,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `httpd`, `erofs`) in release with the pinned nightly, each with its own linker script
   and `build-std` set, flattens the images with `llvm-objcopy` and fails if any exceeds
   the 2 MiB module area. It prints a stable size table and the job summary records it.
+
+- MCP `fs.stat` and `fs.readlink` tools in the `httpd` module.  `fs.stat` reports the
+  merged namespace's node type (`file`/`dir`/`symlink`), size, octal mode, ownership and a
+  symlink target from the EROFS inode, or the stored length of a RAM-upper entry, without
+  following a final symlink; `fs.readlink` returns a link target and rejects a non-symlink.
+  The target 2 fixture's `/link` reports as a 9-byte symlink with target `hello.txt`, and
+  `/etc/motd` as an 18-byte regular file with mode `100644`.  `overlay::Stat` gains
+  `upper`, so a caller can tell a RAM node from a lower node without reading it.  Both
+  responses are bounded: a link target is capped at 512 bytes, well inside the module's
+  16 KiB response buffer.
 - MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
   EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
   allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with
@@ -271,6 +281,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Fixed
 
+- The overlay now skips the `.` and `..` entries that EROFS returns from a
+  directory read, so `fs.list` lists the real children instead of failing with
+  `invalid directory entry name`.
 - The LZ4 match-length extension was read before the match distance; the sequence
   is distance first.
 - The big-endian size and magic fields in the compressed payload were assembled
