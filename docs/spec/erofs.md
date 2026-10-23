@@ -488,7 +488,7 @@ The disk filesystem path is a loadable module, not a kernel command.  The
 `/etc/motd` and prints it through the console service.  It uses the ABI 10
 `block_read` service, `block-cache`'s LRU (64 x 4 KiB, 256 KiB), its own global
 allocator over the kernel `alloc` service, and the same EROFS reader.  The flat
-module is 79,096 bytes and never enters the compressed PROM.  On iris it prints
+module is 79,160 bytes and never enters the compressed PROM.  On iris it prints
 the motd content and returns 0.  Descriptor DMA will replace the polled PIO
 sector path.
 
