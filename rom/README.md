@@ -266,6 +266,21 @@ curl -s -X POST -H 'Content-Type: application/json' \
 It is a prototype: no bearer token or SSE yet. `serial.read` returns the kernel's
 8 KiB serial ring.
 
+## MCP smoke test
+
+`rom/tools/mcp-smoke.py` checks the live control plane: `initialize`, `tools/list`,
+`status`, `shell.exec uname`, `serial.read` and `echo`. Against an already-running
+guest:
+
+```bash
+rom/tools/mcp-smoke.py --no-launch --token secret-token
+```
+
+With `--reset` it also calls `system.reset`, waits for the reboot and autoload, and
+checks the new instance. To load the module through the telnet console instead of
+NVRAM autoload, pass `--module-url` and `--module-sha256`. With `--iris` and `--prom`
+it starts and stops its own iris instance. The token must match `mcp.token`.
+
 ## Status
 
 - Boots from the raw PROM image, sizes and maps DRAM, and tests every byte of it
