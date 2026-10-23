@@ -40,6 +40,7 @@ pub mod net;
 pub mod ntp;
 pub mod nvram;
 pub mod ping;
+pub mod rtc;
 pub mod scheduler;
 pub mod sha256;
 pub mod status;
@@ -550,6 +551,22 @@ pub extern "C" fn _start() -> ! {
     kbd::init();
     net::init();
     telnet::init();
+
+    // The DS1386 keeps the time across a power cycle; seed the wall clock
+    // before any NTP query so status reports a real date.
+    match rtc::read_unix() {
+        Some(unix) => {
+            ntp::set_unix(unix);
+            let mut buf = [0u8; 20];
+            let n = ntp::format_utc(unix, &mut buf);
+            console_write("rtc: ");
+            for &b in &buf[..n] {
+                write_byte(b);
+            }
+            console_println(" UTC");
+        }
+        None => console_println("rtc: no valid time"),
+    }
 
     // Boot-time module configuration from the PROM environment.
     autoload::boot();

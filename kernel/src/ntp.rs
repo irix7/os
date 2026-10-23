@@ -42,6 +42,12 @@ pub fn now_unix() -> Option<u64> {
     Some(base + now.saturating_sub(sync) / 1000)
 }
 
+/// Set the wall clock from an already-known Unix timestamp.
+pub fn set_unix(unix: u64) {
+    WALL_SECS.store(unix, Ordering::SeqCst);
+    WALL_SYNC_MS.store(net::clock_now().total_millis() as u64, Ordering::SeqCst);
+}
+
 /// Query `ip:port` and set the wall clock.  Returns the Unix timestamp.
 pub fn query(ip: Ipv4Address, port: u16) -> Option<u64> {
     let handle = net::sockets_with(|sockets| {
@@ -104,8 +110,7 @@ pub fn query(ip: Ipv4Address, port: u16) -> Option<u64> {
                 return None;
             }
             let unix = parse_response(&packet)?;
-            WALL_SECS.store(unix, Ordering::SeqCst);
-            WALL_SYNC_MS.store(net::clock_now().total_millis() as u64, Ordering::SeqCst);
+            set_unix(unix);
             return Some(unix);
         }
 
