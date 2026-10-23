@@ -13,6 +13,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   consumes SDK `v0.3.0`; verified on iris with target 1: the module prints
   `block: magic 0x4d436f6d`.  The block read stays a kernel service, so feature
   modules do not grow the PROM.
+- `crates/overlay`: a `no_std` + `alloc` read-only-lower, RAM-upper overlay for
+  `/tmp`, `/etc` and `/home` on the EROFS root.  It merges upper files and
+  directories over a caller-supplied `Lower`, hides lower entries with whiteouts,
+  normalises absolute paths and rejects `..` above the root.  There is no
+  copy-up: a write stores a complete upper file.  Nineteen host tests cover lower
+  reads, shadowing, whiteouts, directory merge and removal, path normalisation,
+  missing and empty files.
 - `erofsdisk <target> [path]`: mount an EROFS image placed at LBA 0 of a SCSI
   target.  The disk is wrapped in the `block-cache` LRU (16 x 4 KiB), so a 4 KiB
   EROFS block becomes eight 512-byte READ(6) commands.  Verified on iris with the
