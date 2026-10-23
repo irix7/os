@@ -41,6 +41,7 @@ pub mod net;
 pub mod ntp;
 pub mod nvram;
 pub mod ping;
+pub mod range;
 pub mod rtc;
 pub mod scheduler;
 pub mod scsi;

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Read an EROFS image over HTTP from the debug console.
+//! Read an EROFS image over HTTP or HTTPS from the debug console.
 //!
 //! The image is treated as a byte-addressed block device.  A 64 KiB read-ahead
 //! window keeps metadata, inline data and nearby file blocks local; later this
@@ -10,6 +10,8 @@ use core::fmt::{self, Write};
 
 use erofs::{BlockDevice, Erofs, Error, FileType, Superblock, SUPER_BASE_SIZE, SUPER_OFFSET};
 use smoltcp::wire::Ipv4Address;
+
+use crate::range::ByteRange;
 
 /// HTTP range cache size.  This is the read-ahead window as well as the cache.
 const CACHE_SIZE: usize = 64 * 1024;
@@ -40,6 +42,8 @@ pub struct Request {
     port: u16,
     path: [u8; 96],
     path_len: usize,
+    /// Fetch the image over TLS rather than plain HTTP.
+    tls: bool,
     op: Op,
     target: [u8; 96],
     target_len: usize,
@@ -47,7 +51,8 @@ pub struct Request {
 }
 
 impl Request {
-    /// Parse `erofs <host>:<port><path> [sha256=<hex>] [info|ls|cat] [target]`.
+    /// Parse `erofs [http|https]://<host>:<port><path> [sha256=<hex>]
+    /// [info|ls|cat] [target]`.  A bare `host:port/path` is HTTP.
     pub fn parse(arg: &[u8]) -> Option<Self> {
         let text = core::str::from_utf8(arg).ok()?;
         let mut parts = text.split_whitespace();
@@ -76,10 +81,11 @@ impl Request {
         }
         let op = op.unwrap_or(Op::Info);
         let target = target.unwrap_or("/");
-        if raw_url.starts_with("https://") {
-            return None;
-        }
-        let url = raw_url.strip_prefix("http://").unwrap_or(raw_url);
+        let (tls, url) = if let Some(rest) = raw_url.strip_prefix("https://") {
+            (true, rest)
+        } else {
+            (false, raw_url.strip_prefix("http://").unwrap_or(raw_url))
+        };
         let (host, rest) = url.split_once(':')?;
         let slash = rest.find('/')?;
         let (port_text, path) = rest.split_at(slash);
@@ -105,6 +111,7 @@ impl Request {
             port,
             path: path_buf,
             path_len: path.len(),
+            tls,
             op,
             target: target_buf,
             target_len: target.len(),
@@ -185,6 +192,7 @@ pub fn run(request: &Request) -> Output {
         port: request.port,
         host,
         path,
+        tls: request.tls,
         cache,
         cache_start: 0,
         cache_len: 0,
@@ -202,7 +210,16 @@ pub fn run(request: &Request) -> Output {
     };
 
     if let Some(expected) = request.expected {
-        if let Err(text) = verify_image(ip, request.port, host, path, image_size, expected) {
+        let verified = verify_image(
+            ip,
+            request.port,
+            host,
+            path,
+            request.tls,
+            image_size,
+            expected,
+        );
+        if let Err(text) = verified {
             let _ = write!(out, "erofs: sha256: {text}\n");
             return out;
         }
@@ -304,10 +321,15 @@ fn verify_image(
     port: u16,
     host: &str,
     path: &str,
+    tls: bool,
     image_size: u64,
     expected: [u8; 32],
 ) -> Result<(), &'static str> {
-    let summary = crate::http::get(ip, port, host, path)?;
+    let summary = if tls {
+        crate::tls::get(ip, port, host, path)?
+    } else {
+        crate::http::get(ip, port, host, path)?
+    };
     if summary.status != 200 {
         return Err("image GET did not return 200");
     }
@@ -333,12 +355,15 @@ fn type_char(file_type: FileType) -> char {
     }
 }
 
-/// A byte-addressed HTTP range block device with a 64 KiB read-ahead window.
+/// A byte-addressed HTTP/HTTPS range block device with a 64 KiB read-ahead
+/// window.
 struct HttpRangeDevice<'a> {
     ip: Ipv4Address,
     port: u16,
     host: &'a str,
     path: &'a str,
+    /// Use TLS for every range request; each one is a fresh handshake.
+    tls: bool,
     cache: &'a mut [u8],
     cache_start: u64,
     cache_len: usize,
@@ -382,15 +407,13 @@ impl HttpRangeDevice<'_> {
             .ok_or(Error::OutOfBounds)?;
         let start32 = u32::try_from(start).map_err(|_| Error::Unsupported("image range"))?;
         let end32 = u32::try_from(end).map_err(|_| Error::Unsupported("image range"))?;
-        let result = crate::http::get_range_to(
-            self.ip,
-            self.port,
-            self.host,
-            self.path,
-            start32,
-            end32,
-            &mut self.cache[..want],
-        );
+        let range = ByteRange::new(start32, end32).ok_or(Error::OutOfBounds)?;
+        let cache = &mut self.cache[..want];
+        let result = if self.tls {
+            crate::tls::get_range_to(self.ip, self.port, self.host, self.path, range, cache)
+        } else {
+            crate::http::get_range_to(self.ip, self.port, self.host, self.path, range, cache)
+        };
         match result {
             Ok((_summary, captured)) if captured == want => {
                 self.cache_start = start;

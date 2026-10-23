@@ -16,6 +16,7 @@ use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer, State};
 use smoltcp::wire::Ipv4Address;
 
 use crate::net;
+use crate::range::ByteRange;
 
 const TELNET_PORT: u16 = 23;
 const LINE_LEN: usize = 256;
@@ -64,7 +65,7 @@ struct PingRequest {
     host_len: usize,
 }
 
-/// Parsed `http <ip>:<port><path>` request.
+/// Parsed `http`/`https <ip>:<port><path>` request.
 struct HttpRequest {
     host: [u8; 64],
     host_len: usize,
@@ -73,7 +74,7 @@ struct HttpRequest {
     path_len: usize,
     tls: bool,
     expected: Option<[u8; 32]>,
-    range: Option<(u32, u32)>,
+    range: Option<ByteRange>,
 }
 
 static mut CONSOLE: Option<Console> = None;
@@ -122,19 +123,12 @@ pub fn poll() {
         let expected = req.expected;
         let range = req.range;
         let result = match resolve_host(&req.host[..req.host_len]) {
-            Some(ip) => {
-                if req.tls {
-                    if range.is_some() {
-                        Err("range is HTTP-only")
-                    } else {
-                        crate::tls::get(ip, req.port, host, path)
-                    }
-                } else if let Some((start, end)) = range {
-                    crate::http::get_range(ip, req.port, host, path, start, end)
-                } else {
-                    crate::http::get(ip, req.port, host, path)
-                }
-            }
+            Some(ip) => match (req.tls, range) {
+                (true, Some(range)) => crate::tls::get_range(ip, req.port, host, path, range),
+                (true, None) => crate::tls::get(ip, req.port, host, path),
+                (false, Some(range)) => crate::http::get_range(ip, req.port, host, path, range),
+                (false, None) => crate::http::get(ip, req.port, host, path),
+            },
             None => Err("unknown host"),
         };
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
@@ -144,20 +138,16 @@ pub fn poll() {
                 let mut w = SocketWriter { sock };
                 match result {
                     Ok(summary) => {
+                        let _ = write!(w, "{}: {}", scheme, summary.status);
+                        if let Some(range) = range {
+                            let _ = write!(w, " range={}-{}", range.start(), range.end());
+                        }
                         match summary.content_length {
                             Some(expected) if expected != summary.body_len => {
-                                let _ = write!(
-                                    w,
-                                    "{}: {} {}/{} bytes\r\n",
-                                    scheme, summary.status, summary.body_len, expected
-                                );
+                                let _ = write!(w, " {}/{} bytes\r\n", summary.body_len, expected);
                             }
                             _ => {
-                                let _ = write!(
-                                    w,
-                                    "{}: {} {} bytes\r\n",
-                                    scheme, summary.status, summary.body_len
-                                );
+                                let _ = write!(w, " {} bytes\r\n", summary.body_len);
                             }
                         }
                         let hex = summary.sha256.to_hex();
@@ -470,12 +460,13 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 scsi          reset/probe the WD33C93\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
-                  \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
-                  \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
+                  \x20 http <host>:<port><path> [sha256] [range=start-end]  fetch over HTTP\r\n\
+                  \x20 https <host>:<port><path> [sha256] [range=start-end]  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
-                  \x20 erofs host:port/path [sha256=hex] [info|ls|cat] [path]  read an image over HTTP\r\n\
+                  \x20 erofs [http|https]://host:port/path [sha256=hex] [info|ls|cat] [path]\r\n\
+                  \x20               read an EROFS image over HTTP or HTTPS\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -577,7 +568,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 console.pending_http = Some(request);
             }
             None => {
-                let _ = sock.send_slice(b"usage: https <host>:<port><path> [sha256]\r\n");
+                let _ = sock
+                    .send_slice(b"usage: https <host>:<port><path> [sha256] [range=start-end]\r\n");
             }
         },
         _ if line.starts_with(b"module ") => {
@@ -608,7 +600,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 }
                 None => {
                     let _ = sock.send_slice(
-                        b"usage: erofs <host>:<port><path> [sha256=hex] [info|ls|cat] [path]\r\n",
+                        b"usage: erofs [http|https]://<host>:<port><path> [sha256=hex] \
+                          [info|ls|cat] [path]\r\n",
                     );
                 }
             }
@@ -690,7 +683,7 @@ impl core::fmt::Display for DisplayIpv4 {
     }
 }
 
-/// Parse `http <host>:<port><path> [sha256-hex]`.
+/// Parse `http|https <host>:<port><path> [sha256-hex] [range=start-end]`.
 fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
     let s = core::str::from_utf8(arg).ok()?;
     let mut parts = s.split_whitespace();
@@ -699,13 +692,10 @@ fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
     let mut range = None;
     for part in parts {
         if let Some(rest) = part.strip_prefix("range=") {
-            let (start, end) = rest.split_once('-')?;
-            let start: u32 = start.parse().ok()?;
-            let end: u32 = end.parse().ok()?;
-            if end < start {
+            if range.is_some() {
                 return None;
             }
-            range = Some((start, end));
+            range = Some(ByteRange::parse(rest)?);
         } else if expected.is_none() {
             expected = Some(parse_sha256_hex(part)?);
         } else {

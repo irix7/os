@@ -11,6 +11,7 @@ use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer, State};
 use smoltcp::wire::{IpAddress, IpEndpoint, Ipv4Address};
 
 use crate::net;
+use crate::range::{append_decimal, ByteRange};
 
 /// Socket buffers for the single in-flight fetch.
 static mut HTTP_RX_BUF: [u8; 4096] = [0; 4096];
@@ -66,20 +67,14 @@ pub fn get_range(
     port: u16,
     host: &str,
     path: &str,
-    start: u32,
-    end: u32,
+    range: ByteRange,
 ) -> Result<Summary, &'static str> {
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
     let result = (|| {
-        let (summary, _) = get_inner(ip, port, host, path, Some((start, end)), None)?;
-        if summary.status != 206 {
-            return Err("range not satisfiable");
-        }
-        if summary.body_len != (end.saturating_sub(start) + 1) as usize {
-            return Err("short range body");
-        }
+        let (summary, _) = get_inner(ip, port, host, path, Some(range), None)?;
+        verify_range(&summary, range)?;
         Ok(summary)
     })();
     FETCHING.store(false, Ordering::SeqCst);
@@ -94,22 +89,15 @@ pub fn get_range_to(
     port: u16,
     host: &str,
     path: &str,
-    start: u32,
-    end: u32,
+    range: ByteRange,
     out: &mut [u8],
 ) -> Result<(Summary, usize), &'static str> {
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
     let result = (|| {
-        let (summary, captured) = get_inner(ip, port, host, path, Some((start, end)), Some(out))?;
-        let want = (end.saturating_sub(start) + 1) as usize;
-        if summary.status != 206 {
-            return Err("range not satisfiable");
-        }
-        if summary.body_len != want {
-            return Err("short range body");
-        }
+        let (summary, captured) = get_inner(ip, port, host, path, Some(range), Some(out))?;
+        let want = verify_range(&summary, range)?;
         if captured != want {
             return Err("range buffer too small");
         }
@@ -119,12 +107,23 @@ pub fn get_range_to(
     result
 }
 
+/// Require a 206 response whose body is exactly the requested range, and
+/// return that length.  Shared with the TLS client.
+pub fn verify_range(summary: &Summary, range: ByteRange) -> Result<usize, &'static str> {
+    crate::range::check_response(
+        summary.status,
+        summary.body_len,
+        summary.content_length,
+        range,
+    )
+}
+
 fn get_inner(
     ip: Ipv4Address,
     port: u16,
     host: &str,
     path: &str,
-    range: Option<(u32, u32)>,
+    range: Option<ByteRange>,
     mut capture: Option<&mut [u8]>,
 ) -> Result<(Summary, usize), &'static str> {
     let handle = net::sockets_with(|sockets| {
@@ -180,13 +179,13 @@ fn get_inner(
     append(&mut req, &mut n, host.as_bytes())?;
     if port != 80 {
         append(&mut req, &mut n, b":")?;
-        append_decimal(&mut req, &mut n, port as u32)?;
+        append_decimal(&mut req, &mut n, port as u32).ok_or("request too long")?;
     }
-    if let Some((start, end)) = range {
-        append(&mut req, &mut n, b"\r\nRange: bytes=")?;
-        append_decimal(&mut req, &mut n, start)?;
-        append(&mut req, &mut n, b"-")?;
-        append_decimal(&mut req, &mut n, end)?;
+    if let Some(range) = range {
+        append(&mut req, &mut n, b"\r\nRange: ")?;
+        let mut value = [0u8; 40];
+        let value_len = range.write_value(&mut value).ok_or("request too long")?;
+        append(&mut req, &mut n, &value[..value_len])?;
     }
     append(&mut req, &mut n, b"\r\nConnection: close\r\n\r\n")?;
 
@@ -405,23 +404,4 @@ pub(crate) fn parse_status(headers: &[u8]) -> u16 {
     digits
         .iter()
         .fold(0u16, |acc, &b| acc * 10 + (b - b'0') as u16)
-}
-
-/// Append an unsigned decimal number.
-fn append_decimal(buf: &mut [u8], len: &mut usize, mut v: u32) -> Result<(), &'static str> {
-    let mut digits = [0u8; 10];
-    let mut n = 0;
-    if v == 0 {
-        digits[0] = b'0';
-        n = 1;
-    }
-    while v > 0 && n < digits.len() {
-        digits[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    for i in (0..n).rev() {
-        append(buf, len, &digits[i..i + 1])?;
-    }
-    Ok(())
 }
