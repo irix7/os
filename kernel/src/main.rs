@@ -27,6 +27,7 @@ pub mod cache;
 pub mod capability;
 pub mod diagnostics;
 pub mod dns;
+pub mod erofs_cmd;
 pub mod font;
 pub mod frames;
 pub mod gfx;
