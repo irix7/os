@@ -1,0 +1,324 @@
+# EROFS on-disk profile
+
+**Status:** draft
+**Version:** 0.1
+**Owner:** storage
+**Implementation:** [`crates/erofs`](../../crates/erofs)
+**Oracle:** `mkfs.erofs` 1.9.4, `fsck.erofs`, `dump.erofs`
+
+## 1. Scope
+
+This document fixes the subset of the standard EROFS format that IRIX 7 reads in
+v0.1.  The image is **standard little-endian EROFS**; the format is not forked for
+the Indy's big-endian CPU (see the byte-order research note).  The reader is a
+new `no_std` crate, not a port of `erofs-rs`.
+
+The v0.1 profile covers the core read-only path needed by the root image:
+
+- the 128-byte base superblock and its 48-bit extension fields;
+- compact and extended inodes;
+- flat plain and flat inline file data;
+- directories and symbolic links;
+- one device (the primary image).
+
+Compressed clusters, chunk-based files and metabox images are recognised and
+rejected with typed errors.  They are the next layer.
+
+## 2. Byte order
+
+Every multi-byte field is little-endian.  The reader routes all field access
+through `ByteOrder` (`LittleEndian` for EROFS, `BigEndian` for codec tests); there
+are no native-endian loads.  The magic is checked as a value, not as a byte
+pattern, so the codec can be tested with a big-endian copy of the same fields.
+
+The standard format is identified by the magic `0xE0F5E1E2` at image offset 1024.
+An image whose bytes there are not `E2 E1 F5 E0` is rejected with
+`Error::BadMagic`.
+
+## 3. Superblock
+
+The base superblock starts at **image offset 1024** and is 128 bytes.  Extended
+slots of 16 bytes follow it when `sb_extslots` is non-zero.
+
+| Field | Offset | Width | Notes |
+|---|---:|---:|---|
+| `magic` | 0 | 4 | `0xE0F5E1E2` |
+| `checksum` | 4 | 4 | CRC32C when `sb_csum` is set; not verified in v0.1 |
+| `feature_compat` | 8 | 4 | Unknown bits are safe to ignore |
+| `blkszbits` | 12 | 1 | 9..=16 accepted; 12 (4096 bytes) is the normal value |
+| `sb_extslots` | 13 | 1 | Superblock size = 128 + 16 * slots |
+| `rootnid_2b` / `blocks_hi` | 14 | 2 | Root nid, or the MSB of the block count when `rootnid_8b` is present |
+| `inos` | 16 | 8 | Total inode count |
+| `epoch` | 24 | 8 | Base for compact inode mtimes |
+| `fixed_nsec` | 32 | 4 | Fixed nanoseconds for compact inodes |
+| `blocks_lo` | 36 | 4 | Block count LSB |
+| `meta_blkaddr` | 40 | 4 | First block of the shared metadata area |
+| `xattr_blkaddr` | 44 | 4 | First block of the shared xattr area |
+| `uuid` | 48 | 16 | Volume UUID |
+| `volume_name` | 64 | 16 | NUL-padded label |
+| `feature_incompat` | 80 | 4 | Unknown bits are a hard mount failure |
+| `available_compr_algs` / `lz4_max_distance` | 84 | 2 | Compression configuration |
+| `extra_devices` | 86 | 2 | Multi-device support is rejected |
+| `devt_slotoff` | 88 | 2 | Device table offset |
+| `dirblkbits` | 90 | 1 | Directory block size shift |
+| `xattr_prefix_count` | 91 | 1 | Long xattr prefixes |
+| `xattr_prefix_start` | 92 | 4 | Long xattr prefix table |
+| `packed_nid` | 96 | 8 | Packed inode (compression/fragments) |
+| `xattr_filter_reserved` | 104 | 1 | Xattr filter |
+| `ishare_xattr_prefix_id` | 105 | 1 | Ishare xattrs |
+| `reserved` | 106 | 2 | Zero |
+| `build_time` | 108 | 4 | Seconds added to `epoch` for the build time |
+| `rootnid_8b` | 112 | 8 | 48-bit root nid, present only when needed |
+| `reserved2` | 120 | 8 | Zero |
+| `metabox_nid` | 128 | 8 | Metabox; requires an extended slot and is rejected |
+
+### 3.1 The 48-bit root nid
+
+`rootnid_8b` is not simply "read this field when the 48-bit feature is set".
+`mkfs.erofs` writes it only when the root nid does not fit in 16 bits; the same
+condition populates `blocks_hi`, which shares offset 14 with `rootnid_2b`.
+Therefore:
+
+```text
+if feature_incompat & 48BIT and rootnid_8b != 0:
+    root_nid = rootnid_8b
+    blocks   = blocks_lo | (blocks_hi << 32)
+else:
+    root_nid = rootnid_2b
+    blocks   = blocks_lo
+```
+
+The 48-bit fixture exercises exactly this case: the feature bit is set and the
+root nid (36) still fits in 16 bits, so `rootnid_8b` is zero.
+
+### 3.2 Feature policy
+
+`feature_compat` may contain unknown bits; they are ignored.  `feature_incompat`
+must be a subset of the bits defined by the current format.  The reader rejects:
+
+- unknown incompatible bits;
+- `METABOX` (the inode location changes);
+- `DEVICE_TABLE` and any non-zero `extra_devices` (only the primary device is
+  supported).
+
+Compression feature bits are accepted at mount time because an image may contain
+both uncompressed and compressed inodes, but a compressed inode is rejected when
+it is read.  The SHA-256 of the whole image is the integrity check in the boot
+path; the superblock CRC32C is optional and not verified by this crate.
+
+## 4. Inodes
+
+Node IDs are byte offsets in units of **32 bytes** from the metadata area:
+`iloc = meta_blkaddr * blocksize + nid * 32`.  An extended inode is 64 bytes and
+occupies two slots; the following inode's nid therefore advances by two.
+
+### 4.1 Compact inode (32 bytes)
+
+| Field | Offset | Width |
+|---|---:|---:|
+| `i_format` | 0 | 2 |
+| `i_xattr_icount` | 2 | 2 |
+| `i_mode` | 4 | 2 |
+| `i_nb` | 6 | 2 |
+| `i_size` | 8 | 4 |
+| `i_mtime` | 12 | 4 |
+| `i_u` | 16 | 4 |
+| `i_ino` | 20 | 4 |
+| `i_uid` | 24 | 2 |
+| `i_gid` | 26 | 2 |
+| `i_reserved` | 28 | 4 |
+
+### 4.2 Extended inode (64 bytes)
+
+| Field | Offset | Width |
+|---|---:|---:|
+| `i_format` | 0 | 2 |
+| `i_xattr_icount` | 2 | 2 |
+| `i_mode` | 4 | 2 |
+| `i_nb` | 6 | 2 |
+| `i_size` | 8 | 8 |
+| `i_u` | 16 | 4 |
+| `i_ino` | 20 | 4 |
+| `i_uid` | 24 | 4 |
+| `i_gid` | 28 | 4 |
+| `i_mtime` | 32 | 8 |
+| `i_mtime_nsec` | 40 | 4 |
+| `i_nlink` | 44 | 4 |
+| `i_reserved2` | 48 | 16 |
+
+### 4.3 Format bits
+
+`i_format` bit 0 selects the extended layout.  Bits 1..3 are the data layout:
+
+| Value | Layout | v0.1 |
+|---:|---|---|
+| 0 | flat plain | supported |
+| 1 | compressed, full indexes | rejected with `UnsupportedLayout(1)` |
+| 2 | flat inline | supported |
+| 3 | compressed, compact indexes | rejected with `UnsupportedLayout(3)` |
+| 4 | chunk-based | rejected with `UnsupportedLayout(4)` |
+
+Bit 4 has two meanings: for a non-directory compact inode it is `nlink_1`
+(`i_nb` holds the high start-block bits and the link count is one); for a
+directory it is `dot_omitted` (`i_nb` remains the link count).  Extended inodes
+always carry the link count in `i_nlink`; `i_nb` is the high start-block word.
+
+`i_u` is the start block for flat layouts, the block count for compressed
+layouts, the encoded device for special files, and the chunk format for
+chunk-based inodes.
+
+### 4.4 Inline data and xattrs
+
+Inline xattrs, when present, occupy
+`12 + 4 * (i_xattr_icount - 1)` bytes immediately after the inode.  The inline
+file tail (for layout 2) starts after the inode and any xattrs:
+
+```text
+inline_offset = meta_blkaddr * blocksize + nid * 32
+              + inode_size + xattr_size
+```
+
+The reader does not interpret xattrs, but it must skip them to find the inline
+tail.  The `extended.erofs` fixture exercises 64-byte inodes; the `root.erofs`
+fixture exercises compact inodes.
+
+## 5. File data
+
+### 5.1 Flat plain (0)
+
+The file data is at `start_blk * blocksize`, `i_size` bytes long.  A size that is
+not a block multiple is read only for the declared length.
+
+### 5.2 Flat inline (2)
+
+```text
+full = size - (size % blocksize)
+```
+
+The first `full` bytes are at `start_blk * blocksize`.  The remaining
+`size % blocksize` bytes are at `inline_offset`.  `start_blk` may be
+`0xFFFFFFFF` (`EROFS_NULL_ADDR`) when `full` is zero; the reader rejects a null
+start block only when it would actually read a full block.
+
+`read_at(inode, offset, buf)` crosses the full/tail boundary without allocating
+and checks `offset + buf.len() <= size`.  A buffered `read_file` is capped at
+64 MiB; larger files should be streamed with `read_at`.
+
+### 5.3 48-bit block addresses
+
+For flat inodes, the high 16 bits of the start block are in `i_nb` when the
+48-bit feature is on and the inode form can carry them.  The reader combines
+them; if the feature is off, the high word is ignored.
+
+## 6. Directories
+
+Directory data uses the same flat plain/inline rules.  Each directory block is a
+sequence of 12-byte entries followed by the names:
+
+| Field | Offset | Width |
+|---|---:|---:|
+| `nid` | 0 | 8 |
+| `nameoff` | 8 | 2 |
+| `file_type` | 10 | 1 |
+| `reserved` | 11 | 1 |
+
+The first entry's `nameoff` is the byte offset at which names begin; it must be
+at least 12 and a multiple of 12.  The number of entries in the block is
+`first_nameoff / 12`.  Each name runs from its `nameoff` to the next entry's
+`nameoff`, or to the end of the block for the last entry.  Names are trimmed at
+the first NUL (the writer zero-pads the last block) and are limited to 255 bytes.
+`.` and `..` are ordinary entries; `lookup_path` skips `.` and does not implement
+`..` yet.
+
+`file_type` uses the standard EROFS values: 1 regular, 2 directory, 3 character
+device, 4 block device, 5 FIFO, 6 socket, 7 symlink.  A dirent nid with bit 63
+set is a metabox inode and is rejected.
+
+The reader reads the whole directory through `read_file` for now.  The metadata
+cost is small; a future block-at-a-time iterator will avoid buffering large
+directories.
+
+## 7. Symbolic links
+
+A symlink's target is its file data (normally flat inline).  `Inode::is_symlink`
+is derived from `i_mode`; `read_link` rejects non-symlinks and otherwise returns
+the target bytes.  Path resolution does not follow symlinks automatically.
+
+## 8. Errors and limits
+
+All on-disk offsets and lengths are checked with `checked_add`/`checked_mul`.
+The reader returns:
+
+- `Io` for a device read that cannot be satisfied;
+- `Truncated` for a structure shorter than its definition;
+- `BadMagic`, `InvalidSuperblock`, `InvalidInode`, `InvalidDirectory` for
+  inconsistent fields;
+- `UnsupportedFeature`, `UnsupportedLayout`, `Unsupported` for formats outside
+  this profile;
+- `OutOfBounds`, `TooLarge`, `OutOfMemory`, `NameTooLong` for read limits.
+
+The crate contains no `unsafe` code.
+
+## 9. API
+
+`BlockDevice` is byte-addressed:
+
+```rust
+pub trait BlockDevice {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<()>;
+}
+```
+
+`&[u8]` implements it for host tests.  A SCSI disk driver or an HTTP Range
+client implements the same trait in the kernel.
+
+```rust
+let mut fs = Erofs::mount(device)?;
+let root = fs.root()?;
+let inode = fs.lookup_path("/etc/motd")?;
+let text = fs.read_file(&inode)?;
+for entry in fs.read_dir(&root)? { /* ... */ }
+```
+
+The reader keeps no cache; the caller owns the block cache.  The next integration
+step is a `BlockDevice` backed by HTTP Range with a 64–256 KiB read-ahead window
+and an LRU.
+
+## 10. Verification
+
+`cargo test -p erofs` runs 12 filesystem tests (plus 3 codec tests) against three
+golden images:
+
+- the full tree on compact inodes;
+- the same tree on extended inodes;
+- the same tree with the 48-bit feature.
+
+The tests cover the superblock, root directory, nested directories, an empty
+file, a symlink, a 9000-byte flat-inline file (including a read crossing the
+8192-byte boundary), zero-length reads at EOF, bad magic, unknown incompatibility
+bits, truncation, an invalid block size, and a compressed layout that must be
+recognised rather than misread.  The codec tests decode both byte orders.
+
+The images are generated by `crates/erofs/tests/fixtures/build.sh` with
+`mkfs.erofs 1.9.4`, checked with `fsck.erofs`, and committed so CI does not need
+the tool.  Their SHA-256 digests are recorded in the fixture README.
+
+## 11. Future work
+
+- LZ4 physical clusters, compact/full indexes and the `lz4_0padding` rules.
+- Fragments, ztailpacking and the packed inode.
+- Chunk-based files and multi-device images.
+- Metabox metadata.
+- Superblock CRC32C verification.
+- A block-at-a-time directory iterator.
+- An HTTP Range `BlockDevice` with read-ahead and an LRU cache; an overlay for
+  `/tmp`, `/etc` and `/home`.
+- An independent tree diff against `erofs-rs` and a host mount in CI.
+
+## 12. References
+
+- Linux `fs/erofs/erofs_fs.h` (MIT), the authoritative field definitions.
+- EROFS on-disk format specification, `erofs-utils` `src/ondisk/`.
+- `erofs-utils` 1.9.4: `mkfs.erofs`, `fsck.erofs`, `dump.erofs`.
+- [Architecture §11.2](architecture.md#112-root-image-erofs) and
+  [byte-order research](../research/erofs-big-endian-research.md).

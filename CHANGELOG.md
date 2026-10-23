@@ -8,6 +8,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `crates/erofs`: a `no_std` read-only EROFS reader for the M4 root image.  It
+  decodes the standard little-endian format through an explicit byte-order codec:
+  the superblock, compact and extended inodes, flat plain and flat inline data,
+  directories, symlinks and 48-bit flat block addresses.  Compressed, chunk-based
+  and metabox inodes are recognised and rejected with typed errors.  Fifteen host
+  tests (twelve filesystem, three codec) run against reproducible `mkfs.erofs`
+  1.9.4 golden images (compact, extended and 48-bit) checked with `fsck.erofs`.
 - HTTP/1.1 Range requests: `http ... range=start-end` sends `Range`, accepts a 206,
   verifies the body length and hashes the range; the full-GET path is unchanged. TLS
   remains full-body only.

@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "erofs"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only EROFS reader for IRIX 7"
