@@ -330,7 +330,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   LRU.  The window arithmetic moved to `kernel/src/readahead.rs` so the host tests
   can pin the 256 KiB size, alignment and clamping; `crates/block-cache` gains a
   test that fills all 64 slots without eviction and then checks the LRU victim.
-  The window is in `.bss`, so the raw PROM image is 512,756 bytes, under the
+  The window is in `.bss`, so the raw PROM image is 514,744 bytes, under the
   524,288-byte limit.
 
 ### Fixed
