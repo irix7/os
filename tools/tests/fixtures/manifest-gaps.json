@@ -1,0 +1,11 @@
+{
+  "schema": "irix7-native-libc-symbols",
+  "version": "0.1",
+  "status": "test fixture",
+  "entries": [
+    {"name": "c_int", "kind": "type", "class": "posix-2024", "area": "base", "v1": true},
+    {"name": "read", "kind": "function", "class": "posix-2024", "area": "files", "v1": true},
+    {"name": "statx", "kind": "function", "class": "unsupported", "area": "files", "v1": false,
+     "note": "Linux-only; the audit must not mark this referenced because of the cfg arm"}
+  ]
+}

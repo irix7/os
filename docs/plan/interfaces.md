@@ -14,7 +14,7 @@ version, not a silent edit.
 | MCP application endpoints | [`../spec/mcp-apps.md`](../spec/mcp-apps.md) | draft | infra | 0.1 | broker + local MCP app harness |
 | Driver `ctl`/`data`/`status` | [`../spec/driver-interface.md`](../spec/driver-interface.md) | draft | drivers | 1.0 | mock + iris + Indy |
 | Native capability ABI | `../spec/native-abi.md` | planned | kernel | 0.1 | unit + fuzz |
-| Native libc ABI | `../spec/native-libc.md` | planned | compat | 0.1 | POSIX subset |
+| Native libc ABI | [`../spec/native-libc.md`](../spec/native-libc.md) | draft | ABI / libc | 0.1 | `tools/std-abi-surface.py` + layout assertions + POSIX subset |
 | Boot bundle / image manifest | `../spec/image-format.md` | planned | infra | 0.1 | digest + boot |
 | 9P profile | `../spec/9p.md` | planned | network | 0.1 | interoperability |
 | Display protocol | `../spec/display-protocol.md` | planned | display | 0.1 | golden frames |
@@ -66,6 +66,8 @@ Each interface has a test suite named after it:
 - `mcp`: `initialize`, `tools/list`, `tools/call`, error paths, token rejection.
 - `driver-interface`: mock device, iris device, real device.
 - `native-abi`: capability rights, revocation, delegation, fuzz.
+- `native-libc`: the std ABI surface audit (`tools/std-abi-surface.py`), layout assertions,
+  errno and the POSIX subset smoke tests.
 - `image`: digest, manifest, boot, rollback.
 - `9p`: interoperate with a Linux/Plan 9 client.
 - `display`: golden-frame comparison.

@@ -1,0 +1,14 @@
+{
+  "schema": "irix7-native-libc-symbols",
+  "version": "0.1",
+  "status": "test fixture",
+  "entries": [
+    {"name": "AT_FDCWD", "kind": "constant", "class": "posix-2024", "area": "files", "v1": true},
+    {"name": "c_char", "kind": "type", "class": "posix-2024", "area": "base", "v1": true},
+    {"name": "c_int", "kind": "type", "class": "posix-2024", "area": "base", "v1": true},
+    {"name": "futimens", "kind": "function", "class": "posix-2024", "area": "files", "v1": true},
+    {"name": "getentropy", "kind": "function", "class": "posix-2024", "area": "random", "v1": true},
+    {"name": "openat", "kind": "function", "class": "posix-2024", "area": "files", "v1": true},
+    {"name": "read", "kind": "function", "class": "posix-2024", "area": "files", "v1": true}
+  ]
+}

@@ -76,6 +76,25 @@ jobs:
       - name: Python tests
         run: python3 -m unittest discover -s rom/tools -p 'test_*.py'
 
+  std-surface:
+    name: Std ABI surface audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned nightly + rust-src
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+          rustup toolchain install nightly-2026-10-03 --component rust-src
+          rustup default nightly-2026-10-03
+      - name: Python tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
+      - name: Audit the std ABI surface (warning mode)
+        run: python3 tools/std-abi-surface.py
+
   cross:
     name: Cross-build (M0 gate)
     runs-on: ubuntu-latest

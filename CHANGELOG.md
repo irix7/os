@@ -8,6 +8,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The draft native libc ABI contract: [`docs/spec/native-libc.md`](docs/spec/native-libc.md)
+  fixes the two-target split (native `target_os = "irix7"` vs IRIX 6.5 compat
+  `target_os = "irix"`), the POSIX.1-2024 base profile, the selected XSI subset and the
+  documented extension list, and the n32 ABI obligations for symbols, types, layouts,
+  `errno`, TLS, startup, capability entry, cancellation, `fork` and loading.  The
+  machine-readable surface is [`docs/spec/native-libc-symbols.json`](docs/spec/native-libc-symbols.json)
+  (642 entries, 526 promised for v1), and
+  [`tools/std-abi-surface.py`](tools/std-abi-surface.py) audits the `libc::` names Rust
+  `std` actually references.  The tool is warning-only in CI until the profile is accepted;
+  it is a name-level audit, not an ABI checker.
 - The native libc API baseline is now POSIX.1-2024 (SUSv5 core) plus a documented XSI
   subset, not the IRIX 6.5 libc surface.  The IRIX 6.5 compatibility container keeps its
   legacy ABI; the native profile, ABI obligations and Rust `std` consequences are in
