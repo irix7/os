@@ -162,8 +162,9 @@ All governing decisions apply. The numbered, dated ADRs live in
 ### 2.2 New decisions (advanced architecture)
 
 These are the decisions reached in the architecture grilling of 2026-10-20. They
-should be recorded as ADR-0021 onward, or folded into a single "advanced architecture"
-ADR set. The decision register is normative for this spec.
+should be recorded as ADR-0022 onward (ADR-0021 records the native Rust std decision),
+or folded into a single "advanced architecture" ADR set. The decision register is
+normative for this spec.
 
 #### Identity and product
 
@@ -258,7 +259,10 @@ This is grounded in `irix7/project`, not speculation.
 | Parallel path | LLVM custom target `mips3-sgi-irix7-n32` (n32/MIPS III) | codegen proven |
 | ABI | ROM and kernel are both n32/MIPS III; o32 belongs to the compatibility container | — |
 
-The local target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM path).
+The local kernel/module target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM
+path).  The hosted native target is `targets/mips3-sgi-irix7-native-n32.json`
+(`target_os = "irix7"`, Unix family); it is for the POSIX-2024 libc and Rust `std`, and
+is not used by the kernel.
 
 Current status (`stack.md` §5): codegen and `-Z build-std` for n32 are **proven**;
 the ROM boots from the PROM image and runs DHCP/NTP/HTTP under iris; the IRIX patch
@@ -1853,8 +1857,8 @@ planning aid, not a legal opinion.
 ### 15.5 Documentation
 
 - ADR-0001–0020 live in `irix7/project/docs/adr/`.
-- The new decisions D1–D31 should become ADR-0021 onward (or a single "advanced
-  architecture" ADR set).
+- The new decisions D1–D31 should become ADR-0022 onward (or a single "advanced
+  architecture" ADR set); ADR-0021 is the native Rust std decision.
 - This spec is the normative architecture for the advanced phase; `docs/map.md` is the
   project map.
 - The research reports are preserved in `docs/research/` for traceability.
