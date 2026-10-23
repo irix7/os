@@ -25,6 +25,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   mount on a length or digest mismatch; verified with the correct fixture digest
   and an all-zero digest.  SCSI, the shared LRU and 256 KiB read-ahead, and the
   overlay are still to come.
+- `scsi` console command: resets the HPC3 SCSI channel and the WD33C93 through
+  the external register window, then reads the reset CSR, microcode revision
+  and own SCSI ID.  Verified on iris (`csr 0x01`, own ID `0x2f`); selection,
+  INQUIRY and block reads are the next step.
 - HTTP/1.1 Range requests: `http ... range=start-end` sends `Range`, accepts a 206,
   verifies the body length and hashes the range; the full-GET path is unchanged. TLS
   remains full-body only.
