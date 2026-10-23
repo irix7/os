@@ -5,12 +5,6 @@
 //! Allocation is from currently unused memory with reference-counted frame
 //! metadata (Inv. 1).
 
-#![no_std]
-
-use core::ptr::{read_volatile, write_volatile};
-
-use crate::print_hex8;
-
 /// Physical memory descriptor from the ARCS memory descriptor list.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]

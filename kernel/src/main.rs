@@ -527,8 +527,7 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {
-            // SAFETY: ROM-provided routine, resident in PROM.
-            unsafe { poll(core::ptr::null_mut()) };
+            poll(core::ptr::null_mut());
         }
 
         // Drive the network stack and telnet console.
@@ -552,6 +551,7 @@ fn reboot() -> ! {
     traps::status_write(status & !1);
     unsafe {
         core::arch::asm!(
+            ".set noat",
             "jr {0}",
             "nop",
             in(reg) 0xBFC0_0000u32,

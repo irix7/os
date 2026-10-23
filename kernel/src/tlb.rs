@@ -10,15 +10,7 @@
 //!   kseg1   0xA000_0000–0xBFFF_FFFF  Early boot, uncached MMIO
 //!   kseg2   0xC000_0000–0xFFFF_FFFF  Mapped kernel windows (optional)
 
-#![no_std]
-
-use crate::print_hex8;
-use core::ptr::{read_volatile, write_volatile};
-
-use crate::traps::{
-    entryhi_read, entryhi_write, entrylo0_read, entrylo0_write, entrylo1_read, entrylo1_write,
-    index_read, index_write, pagemask_read, pagemask_write,
-};
+use crate::traps::{entryhi_write, entrylo0_write, entrylo1_write, index_write, pagemask_write};
 
 const C0_PAGEMASK: u32 = 5;
 const C0_WIRED: u32 = 6;

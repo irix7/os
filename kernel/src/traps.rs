@@ -15,8 +15,6 @@
 //!   $k0   $k1   $gp   $sp   $s8   $ra   $hi   $lo
 //!   Cause   BadVAddr   Status   PC   CP0  ...
 
-#![no_std]
-
 use crate::print_hex8;
 
 /// CP0 register selectors.
@@ -103,7 +101,7 @@ pub struct TrapFrame {
 pub fn status_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $12", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $12", out(reg) v);
     }
     v
 }
@@ -111,7 +109,7 @@ pub fn status_read() -> u32 {
 /// Write CP0 Status.
 pub fn status_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $12", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $12", in(reg) val);
     }
 }
 
@@ -119,7 +117,7 @@ pub fn status_write(val: u32) {
 pub fn cause_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $13", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $13", out(reg) v);
     }
     v
 }
@@ -127,7 +125,7 @@ pub fn cause_read() -> u32 {
 /// Write CP0 Cause.
 pub fn cause_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $13", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $13", in(reg) val);
     }
 }
 
@@ -135,7 +133,7 @@ pub fn cause_write(val: u32) {
 pub fn epc_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $14", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $14", out(reg) v);
     }
     v
 }
@@ -143,7 +141,7 @@ pub fn epc_read() -> u32 {
 /// Write CP0 EPC.
 pub fn epc_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $14", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $14", in(reg) val);
     }
 }
 
@@ -151,7 +149,7 @@ pub fn epc_write(val: u32) {
 pub fn count_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $9", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $9", out(reg) v);
     }
     v
 }
@@ -159,7 +157,7 @@ pub fn count_read() -> u32 {
 /// Write CP0 Count.
 pub fn count_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $9", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $9", in(reg) val);
     }
 }
 
@@ -167,7 +165,7 @@ pub fn count_write(val: u32) {
 pub fn compare_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $11", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $11", out(reg) v);
     }
     v
 }
@@ -175,7 +173,7 @@ pub fn compare_read() -> u32 {
 /// Write CP0 Compare.
 pub fn compare_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $11", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $11", in(reg) val);
     }
 }
 
@@ -183,7 +181,7 @@ pub fn compare_write(val: u32) {
 pub fn entryhi_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $10", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $10", out(reg) v);
     }
     v
 }
@@ -191,7 +189,7 @@ pub fn entryhi_read() -> u32 {
 /// Write CP0 EntryHi.
 pub fn entryhi_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $10", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $10", in(reg) val);
     }
 }
 
@@ -199,7 +197,7 @@ pub fn entryhi_write(val: u32) {
 pub fn pagemask_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $5", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $5", out(reg) v);
     }
     v
 }
@@ -207,7 +205,7 @@ pub fn pagemask_read() -> u32 {
 /// Write CP0 PageMask.
 pub fn pagemask_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $5", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $5", in(reg) val);
     }
 }
 
@@ -215,7 +213,7 @@ pub fn pagemask_write(val: u32) {
 pub fn index_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $0", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $0", out(reg) v);
     }
     v
 }
@@ -223,7 +221,7 @@ pub fn index_read() -> u32 {
 /// Write CP0 Index.
 pub fn index_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $0", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $0", in(reg) val);
     }
 }
 
@@ -231,7 +229,7 @@ pub fn index_write(val: u32) {
 pub fn entrylo0_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $2", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $2", out(reg) v);
     }
     v
 }
@@ -239,7 +237,7 @@ pub fn entrylo0_read() -> u32 {
 /// Write CP0 EntryLo0.
 pub fn entrylo0_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $2", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $2", in(reg) val);
     }
 }
 
@@ -247,7 +245,7 @@ pub fn entrylo0_write(val: u32) {
 pub fn entrylo1_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $3", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $3", out(reg) v);
     }
     v
 }
@@ -255,7 +253,7 @@ pub fn entrylo1_read() -> u32 {
 /// Write CP0 EntryLo1.
 pub fn entrylo1_write(val: u32) {
     unsafe {
-        core::arch::asm!("mtc0 {0}, $3", in(reg) val);
+        core::arch::asm!(".set noat", "mtc0 {0}, $3", in(reg) val);
     }
 }
 
@@ -263,7 +261,7 @@ pub fn entrylo1_write(val: u32) {
 pub fn badvaddr_read() -> u32 {
     let v: u32;
     unsafe {
-        core::arch::asm!("mfc0 {0}, $8", out(reg) v);
+        core::arch::asm!(".set noat", "mfc0 {0}, $8", out(reg) v);
     }
     v
 }

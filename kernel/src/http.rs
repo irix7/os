@@ -128,7 +128,7 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
     let mut content_length: Option<usize> = None;
     let mut total_rx = 0usize;
     let mut hasher = crate::sha256::Hasher::new();
-    let mut last_state = State::Closed;
+    let mut last_state;
 
     let recv_deadline = net::clock_now().total_millis() + 10_000;
     loop {
