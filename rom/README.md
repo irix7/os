@@ -224,7 +224,14 @@ The HTTP module is reachable through the rig's host port 8088:
 
 ```bash
 curl -s http://127.0.0.1:8088/
+curl -s -X POST -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' \
+  http://127.0.0.1:8088/mcp
 ```
+
+`POST /mcp` speaks JSON-RPC 2.0: `initialize`, `ping`, `tools/list` and
+`tools/call` (`status`, `echo`, `console`). It is a prototype: no bearer
+token or SSE yet.
 
 ## Status
 

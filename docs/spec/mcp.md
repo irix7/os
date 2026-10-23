@@ -15,6 +15,22 @@ protected by a bearer token and a hardware watchdog.
 This spec defines the transport, authentication, methods, tool schemas, error model and
 security posture. It does not define the agent's policy or the client implementation.
 
+## 1.1 Current prototype
+
+`modules/httpd` is loaded over HTTPS into the module area and is the first slice of the
+control plane. It implements:
+
+- `POST /mcp` with JSON-RPC 2.0 `initialize` (echoing the client's `protocolVersion`,
+  default `2026-07-28`), `ping`, `tools/list` and `tools/call`;
+- tools `status` (guest uptime), `echo` and `console` (write a line to the guest console);
+- `GET /` as a plain status page;
+- guest port 80, forwarded to host `8088` by the iris rig.
+
+It does **not** yet implement bearer-token authentication, sessions, SSE, resources,
+`serial.*`, `screen.capture`, `system.*`, or the dotted tool names. It is a prototype of
+the transport and tool loop, not a conforming server; the rest of this document is the
+target.
+
 ## 2. Transport
 
 - **MCP 2026-07-28**, JSON-RPC 2.0.

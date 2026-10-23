@@ -312,9 +312,17 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
     let mut w = Out::new(out);
     match json_string(body, b"\"method\"") {
         Some(b"initialize") => {
+            let version = json_string(body, b"\"protocolVersion\"").unwrap_or(b"2026-07-28");
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"irix7-mcp\",\"version\":\"0.1.0\"}}}");
+            w.push(b",\"result\":{\"protocolVersion\":");
+            w.json_string(version);
+            w.push(b",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"irix7-mcp\",\"version\":\"0.1.0\"}}}");
+        }
+        Some(b"ping") | Some(b"notifications/initialized") => {
+            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+            w.push(id);
+            w.push(b",\"result\":{}}");
         }
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");

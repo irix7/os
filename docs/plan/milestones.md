@@ -174,6 +174,11 @@ control plane is how everything else gets built.
 **Demo:** an agent connects to the Indy over Streamable HTTP with a bearer token, runs
 `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.
 
+**Prototype:** `modules/httpd` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
+`initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
+`echo` and `console` tools. The iris rig forwards host 8088 to the module's guest port 80.
+It has no bearer token, SSE, shell or screen/serial tools yet.
+
 **Acceptance criteria:**
 
 - [ ] Network cell owns the Seeq, exposes `/net`, and survives a reset.

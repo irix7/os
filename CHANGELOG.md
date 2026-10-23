@@ -54,6 +54,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   the kernel, so the RAM test cannot leave stale lines in the kernel's text or data.
 - The kernel inherits the serial console the ROM configured instead of resetting the SCC;
   the reset raced with the ROM's final characters and intermittently stuck the transmitter.
+- The httpd module serves a prototype MCP control plane at `POST /mcp`: JSON-RPC
+  `initialize` (version negotiation), `ping`, `tools/list` and `tools/call` with `status`,
+  `echo` and `console`. `GET /` remains a plain status page.
 - Boot-menu status line with the live address, and a diagnostics action that prints CPU,
   RAM and network state.
 - `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the

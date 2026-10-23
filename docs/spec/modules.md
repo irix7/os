@@ -127,8 +127,9 @@ table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for f
 and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
 
 `modules/httpd` is the TCP reference. It listens on guest port 80, answers one request per
-connection with a status page, and alternates its two TCP slots so a back-to-back client
-does not hit the close handshake. The iris rig forwards host `8088` to guest `80`; after
+connection, and alternates its two TCP slots so a back-to-back client does not hit the
+close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
+JSON-RPC methods (see [`mcp.md`](mcp.md)). The iris rig forwards host `8088` to guest `80`; after
 loading the module:
 
 ```bash

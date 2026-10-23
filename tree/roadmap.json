@@ -220,7 +220,7 @@
       "id": "m3",
       "kind": "milestone",
       "branch": "control",
-      "status": "planned",
+      "status": "active",
       "code": "M3",
       "title": "Control plane",
       "fullTitle": "Network + MCP + shell",
@@ -228,8 +228,9 @@
         1500,
         1600
       ],
-      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built.",
+      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built. Prototype: the httpd module serves MCP initialize/ping/tools/list/tools/call over the module TCP services.",
       "demo": "An agent connects to the Indy over Streamable HTTP with a bearer token, runs `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.",
+      "note": "A prototype MCP server runs as modules/httpd on guest port 80 (host 8088): initialize, ping, tools/list and tools/call with status, echo and console. Bearer auth, SSE, shell and screen/serial tools remain.",
       "criteria": [
         "Network cell owns the Seeq, exposes `/net`, and survives a reset.",
         "MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.",
