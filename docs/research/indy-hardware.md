@@ -804,7 +804,7 @@ Channel A registers; **channel B is the same layout at +0xB0**:
 
 A descriptor is a **single 32-bit word**:
 
-```
+```text
 bit 31      STOP
 bit 30      JUMP
 bits 29:0   physical address of a 4 KB page (bits 11:0 must be zero)
@@ -863,7 +863,7 @@ The conversion is done with shifts and adds (no interpolation from 4:2:2 to 4:4:
 pair is simply repeated for the second Y), with an error below ±0.6 LSB and clamping to
 0…255. Equations as specified: [S12 §4.5]
 
-```
+```text
 R = 1.596027·(V'−128) + 1.164384·(Y'−16)
 B = 2.017232·(U'−128) + 1.164384·(Y'−16)
 G = 1.164384·(Y'−16) − 0.8129676·(V'−128) − 0.3917623·(U'−128)
@@ -1154,7 +1154,7 @@ useful for cross-checking a kernel’s own probing.
 
 ### 14.1 The three-level interrupt tree
 
-```
+```text
 CPU IP2 ── HPC3 (istat0/istat1, 10 sources)
 CPU IP3 ── local1 (panel, HPC DMA done, AC fail, Vino, GIO2)
 CPU IP4 ── 8254 timer 0        (broken, see below)
