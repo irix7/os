@@ -11,6 +11,7 @@ version, not a silent edit.
 |---|---|---|---|---|---|
 | ROM ↔ kernel boot handoff | [`../spec/boot-protocol.md`](../spec/boot-protocol.md) | draft | boot | 1.0 | iris + Indy |
 | MCP control plane | [`../spec/mcp.md`](../spec/mcp.md) | draft | infra | 1.0 | MCP conformance + agent loop |
+| MCP application endpoints | [`../spec/mcp-apps.md`](../spec/mcp-apps.md) | draft | infra | 0.1 | broker + local MCP app harness |
 | Driver `ctl`/`data`/`status` | [`../spec/driver-interface.md`](../spec/driver-interface.md) | draft | drivers | 1.0 | mock + iris + Indy |
 | Native capability ABI | `../spec/native-abi.md` | planned | kernel | 0.1 | unit + fuzz |
 | Native libc ABI | `../spec/native-libc.md` | planned | compat | 0.1 | POSIX subset |
