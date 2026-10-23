@@ -214,6 +214,7 @@ ADR set. The decision register is normative for this spec.
 | D29 | **Userspace graphics server owns the blitter; userspace audio server owns HAL2** | One owner per device; capability-multiplexed |
 | D30 | **In-OS MCP server: full root, bearer token, no audit, hardware watchdog** | The development harness; the user accepted the risk |
 | D31 | **Plan 9 ideas only where they serve IRIX**: `ctl`/`data`/`status`, `/net`, optional 9P; no per-process namespaces by default | Selective, not a clone |
+| D32 | **Native libc API baseline is POSIX.1-2024 (SUSv5), not the IRIX 6.5 ABI** | Rust std and new applications need a modern, documented Unix surface; the compatibility container keeps IRIX 6.5 exactly |
 
 ### 2.3 Decision principles
 
@@ -275,8 +276,9 @@ Conclusion: no rustc/LLVM fork is required; a custom n32/MIPS III target spec +
 - The kernel is n32/MIPS III.
 - The boot ROM is a separate `no_std` artefact, built for n32/MIPS III and executed directly
   from the PROM socket at `0xBFC00000`; it does not rely on the factory ARCS ECOFF loader.
-- `-Z build-std` builds `core` and `alloc` for the target; `std` is not available on
-  the Indy. Userspace cells use `core`/`alloc` plus the OS's own libc.
+- `-Z build-std` builds `core` and `alloc` for the kernel target today.  A hosted
+  native target is planned for the POSIX.1-2024 libc and Rust `std`; the kernel and
+  loadable modules remain `no_std` and must not link it.
 - Host-side tooling (image builder, MCP bridge if needed, tests) may use `std`.
 
 ### 3.4 Testing and the rig
@@ -535,9 +537,16 @@ compatibility with Unix-shaped code and for the IRIX container.
 
 ### 5.5 Unix-shaped libc
 
-The native libc is a separate library from the IRIX libc. It presents the familiar
-surface — `open`, `close`, `read`, `write`, `lseek`, `mmap`, `fork`, `execve`, `wait`,
-`signal`, `socket`, `ioctl` — and implements it with capability invocations.
+The native libc is a separate library from the IRIX libc. Its normative API baseline is
+**POSIX.1-2024** (the core of Single UNIX Specification, Version 5 (2024)), plus a
+documented XSI subset; the profile and ABI obligations are in [`posix.md`](posix.md).
+The IRIX 6.5 compatibility libc is a different source contract and keeps the IRIX ABI
+unchanged.  POSIX defines the source API, not the n32 binary layout, symbol versions,
+TLS model or syscall numbers; IRIX 7 owns and versions those.
+
+The native libc presents the familiar surface — `openat`, `close`, `read`, `write`,
+`lseek`, `mmap`, `fork`, `posix_spawn`, `execve`, `wait`, `signal`, `socket`, `ioctl` —
+and implements it with capability invocations.
 
 - `open` resolves a path in the process's namespace and returns a `File` capability
   wrapped as an fd.
