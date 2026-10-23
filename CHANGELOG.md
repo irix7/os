@@ -18,6 +18,20 @@ All notable changes to IRIX 7 are recorded here. The format follows
   the server's code and message.  `--reset` re-checks `block.read` and
   `fs.read` through the autoloaded module.  Eleven standard-library tests
   drive the script against a fake MCP server.
+
+- SCSI READ(6) data phases now use the HPC3 descriptor DMA engine.  The kernel
+  allocates a physically contiguous bounce buffer and a descriptor frame,
+  builds a bounded chain of page-sized descriptors with a zero-length `EOX`
+  terminator, programs `ndptr`/`bcd`/`ctrl` for a big-endian device-to-memory
+  transfer, sets the WD33C93 to burst DMA, and cleans or invalidates the cache
+  around the buffer.  Bounded waits, a residual-count check and an explicit
+  stop (`FLUSH`, then `ctrl = 0`) keep the channel from being left active;
+  setup and transfer failures abort the command and retry the read through the
+  existing polled PIO path, which remains for oversized reads and machines
+  without working SCSI DMA.  `crates/hpc3` carries the host-tested descriptor
+  layout and chain builder (seven tests).  The direction bit convention is
+  documented in `docs/research/indy-hardware.md` §5.4.1; the DMA path is not
+  guest-verified.
 - HTTPS byte ranges on the telnet console: `https <host>:<port><path> range=start-end`
   sends one `Range: bytes=start-end` request through the kernel TLS 1.3 client,
   requires a `206` response whose body is exactly the requested length (a

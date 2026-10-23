@@ -397,6 +397,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hpc3"
+version = "0.1.0"
+
+[[package]]
 name = "httpd-module"
 version = "0.1.0"
 dependencies = [
@@ -422,6 +426,7 @@ dependencies = [
  "embedded-io",
  "embedded-tls",
  "erofs",
+ "hpc3",
  "module-abi",
  "rand_core",
  "smoltcp",
