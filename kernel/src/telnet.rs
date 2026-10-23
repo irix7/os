@@ -474,7 +474,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
-                  \x20 erofs host:port/path [info|ls|cat] [path]  read an image over HTTP\r\n\
+                  \x20 erofs host:port/path [sha256=hex] [info|ls|cat] [path]  read an image over HTTP\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -553,8 +553,9 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                     console.pending_erofs = Some(request);
                 }
                 None => {
-                    let _ = sock
-                        .send_slice(b"usage: erofs <host>:<port><path> [info|ls|cat] [path]\r\n");
+                    let _ = sock.send_slice(
+                        b"usage: erofs <host>:<port><path> [sha256=hex] [info|ls|cat] [path]\r\n",
+                    );
                 }
             }
         }
@@ -681,7 +682,7 @@ fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
 }
 
 /// Parse a 64-digit hex SHA-256 digest.
-fn parse_sha256_hex(s: &str) -> Option<[u8; 32]> {
+pub(crate) fn parse_sha256_hex(s: &str) -> Option<[u8; 32]> {
     let bytes = s.as_bytes();
     if bytes.len() != 64 {
         return None;

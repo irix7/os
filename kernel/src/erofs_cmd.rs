@@ -43,24 +43,39 @@ pub struct Request {
     op: Op,
     target: [u8; 96],
     target_len: usize,
+    expected: Option<[u8; 32]>,
 }
 
 impl Request {
-    /// Parse `erofs <host>:<port><path> [info|ls|cat] [target]`.
+    /// Parse `erofs <host>:<port><path> [sha256=<hex>] [info|ls|cat] [target]`.
     pub fn parse(arg: &[u8]) -> Option<Self> {
         let text = core::str::from_utf8(arg).ok()?;
         let mut parts = text.split_whitespace();
         let raw_url = parts.next()?;
-        let op = match parts.next().unwrap_or("info") {
-            "info" => Op::Info,
-            "ls" => Op::Ls,
-            "cat" => Op::Cat,
-            _ => return None,
-        };
-        let target = parts.next().unwrap_or("/");
-        if parts.next().is_some() {
-            return None;
+        let mut op = None;
+        let mut target = None;
+        let mut expected = None;
+        for part in parts {
+            if let Some(hex) = part.strip_prefix("sha256=") {
+                if expected.is_some() {
+                    return None;
+                }
+                expected = Some(crate::telnet::parse_sha256_hex(hex)?);
+            } else if op.is_none() {
+                op = Some(match part {
+                    "info" => Op::Info,
+                    "ls" => Op::Ls,
+                    "cat" => Op::Cat,
+                    _ => return None,
+                });
+            } else if target.is_none() {
+                target = Some(part);
+            } else {
+                return None;
+            }
         }
+        let op = op.unwrap_or(Op::Info);
+        let target = target.unwrap_or("/");
         if raw_url.starts_with("https://") {
             return None;
         }
@@ -93,6 +108,7 @@ impl Request {
             op,
             target: target_buf,
             target_len: target.len(),
+            expected,
         })
     }
 }
@@ -177,9 +193,20 @@ pub fn run(request: &Request) -> Output {
         last_http: &last_http,
     };
 
-    if let Err(error) = device.probe_image_size() {
-        out.error(error, last_http.get());
-        return out;
+    let image_size = match device.probe_image_size() {
+        Ok(size) => size,
+        Err(error) => {
+            out.error(error, last_http.get());
+            return out;
+        }
+    };
+
+    if let Some(expected) = request.expected {
+        if let Err(text) = verify_image(ip, request.port, host, path, image_size, expected) {
+            let _ = write!(out, "erofs: sha256: {text}\n");
+            return out;
+        }
+        let _ = write!(out, "erofs: sha256 ok\n");
     }
 
     let mut fs = match Erofs::mount(device) {
@@ -272,6 +299,27 @@ pub fn run(request: &Request) -> Output {
     out
 }
 
+fn verify_image(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    image_size: u64,
+    expected: [u8; 32],
+) -> Result<(), &'static str> {
+    let summary = crate::http::get(ip, port, host, path)?;
+    if summary.status != 200 {
+        return Err("image GET did not return 200");
+    }
+    if summary.body_len as u64 != image_size {
+        return Err("image size does not match the superblock");
+    }
+    if !summary.sha256.eq_digest(&crate::sha256::Sha256(expected)) {
+        return Err("digest mismatch");
+    }
+    Ok(())
+}
+
 fn type_char(file_type: FileType) -> char {
     match file_type {
         FileType::Directory => 'd',
@@ -302,7 +350,7 @@ struct HttpRangeDevice<'a> {
 impl HttpRangeDevice<'_> {
     /// Read the superblock once to learn the image size, so range requests can
     /// be clamped to the final block instead of asking for bytes past EOF.
-    fn probe_image_size(&mut self) -> erofs::Result<()> {
+    fn probe_image_size(&mut self) -> erofs::Result<u64> {
         let mut raw = [0u8; SUPER_BASE_SIZE];
         self.read_at(SUPER_OFFSET, &mut raw)?;
         let sb = Superblock::parse(&raw)?;
@@ -317,7 +365,7 @@ impl HttpRangeDevice<'_> {
             return Err(Error::Unsupported("image larger than 4 GiB"));
         }
         self.image_size = Some(size);
-        Ok(())
+        Ok(size)
     }
 
     fn fill(&mut self, start: u64) -> erofs::Result<()> {

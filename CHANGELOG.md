@@ -21,8 +21,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   window clamped to the final block, so metadata and inline data stay cached and
   adjacent file blocks arrive together.  Verified on the iris guest with
   `rom/tools/range-server.py`, including an eight-entry `ls /` and the 9000-byte
-  flat-inline `big.bin`.  SCSI, the shared LRU and 256 KiB read-ahead,
-  whole-image SHA-256 and the overlay are still to come.
+  flat-inline `big.bin`.  `sha256=<hex>` performs a full GET and aborts before
+  mount on a length or digest mismatch; verified with the correct fixture digest
+  and an all-zero digest.  SCSI, the shared LRU and 256 KiB read-ahead, and the
+  overlay are still to come.
 - HTTP/1.1 Range requests: `http ... range=start-end` sends `Range`, accepts a 206,
   verifies the body length and hashes the range; the full-GET path is unchanged. TLS
   remains full-body only.

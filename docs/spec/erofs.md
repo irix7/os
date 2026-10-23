@@ -288,10 +288,14 @@ inline data from that window, and a file fetch replaces it with the clamped
 read-ahead.  It is reached from the telnet console:
 
 ```text
-erofs <host>:<port><path> [info|ls|cat] [path]
+erofs <host>:<port><path> [sha256=hex] [info|ls|cat] [path]
 ```
 
 `info` prints the superblock, `ls` lists a directory, and `cat` prints a file.
+With `sha256=`, the command first performs a full GET, checks the status, the
+length against the superblock's block count, and the whole-image SHA-256; a
+mismatch aborts before mount.  The verification GET currently transfers the
+image a second time; hashing while filling the range cache is future work.
 Only HTTP is supported for ranges at present; TLS remains full-body.  The next
 integration step is a multi-block LRU and a 256 KiB read-ahead window.
 
@@ -320,7 +324,9 @@ The kernel command was verified on the iris guest against
 `cat /big.bin` (the 9000-byte file, read through two data blocks and an inline
 tail).  Each command mounts the image afresh; an `info` or `ls` issues one 4 KiB
 probe range, while `cat /big.bin` issues the probe plus one clamped read-ahead
-request covering the whole 12 KiB image.
+request covering the whole 12 KiB image.  A correct `sha256=` prints
+`erofs: sha256 ok`; an all-zero digest prints `erofs: sha256: digest mismatch`
+and does not mount.
 
 ## 11. Future work
 
@@ -330,8 +336,9 @@ request covering the whole 12 KiB image.
 - Metabox metadata.
 - Superblock CRC32C verification.
 - A block-at-a-time directory iterator.
-- A multi-block HTTP Range cache with a 256 KiB read-ahead and a shared LRU;
-  whole-image SHA-256 verification before mount.
+- A multi-block HTTP Range cache with a 256 KiB read-ahead and a shared LRU.
+- Hash the image while filling that cache, instead of a second full GET, and
+  take the expected digest from the boot environment.
 - A SCSI `BlockDevice` and the block cell capability.
 - An overlay for `/tmp`, `/etc` and `/home`.
 - An independent tree diff against `erofs-rs` and a host mount in CI.
