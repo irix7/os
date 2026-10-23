@@ -12,6 +12,7 @@
 - [Loadable kernel modules](spec/modules.md)
 - [MCP control plane](spec/mcp.md)
 - [Native POSIX API baseline](spec/posix.md)
+- [Native libc ABI](spec/native-libc.md)
 - [Driver interface](spec/driver-interface.md)
 
 ## Plan

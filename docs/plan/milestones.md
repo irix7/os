@@ -20,6 +20,7 @@
 | M7 | X11 | `xterm` and `twm` under a display lease | 12–20 weeks | v0.4 |
 | M8 | XFS read-only | `ls` an IRIX 6.5 disk | 8–12 weeks | v0.5 |
 | M9 | Native cell + capability ABI | A Rust cell opens a file and prints | 8–12 weeks | v0.6 |
+| M9.5 | Native Rust `std` | A native cell uses `std::fs`, `std::thread`, `std::process` and `std::net` | 8–12 weeks | — |
 | M10 | Real-Indy release | A real Indy boots from R2, runs MCP/X11/XFS, updates | 8–12 weeks | v1.0 |
 
 **Rough total:** 76–118 person-weeks (1.5–2.3 years for one full-time person, sequential). Parallel work on X11, XFS and the native ABI can compress the calendar; the critical path is M0 → M1 → M2 → M3 → M4 → M5 → M7 → M10.
@@ -389,6 +390,42 @@ prints `hello from a cell`; `fork`/`exec` on a small cell works.
 
 ---
 
+## M9.5 — Native Rust `std`
+
+**Goal:** make the real Rust standard library usable by native IRIX 7 cells and
+applications, on the POSIX.1-2024 native libc from M9.
+
+**Demo:** a native cell opens and reads a file with `std::fs`, spawns and joins a thread
+with `std::thread`, runs a child with `std::process::Command`, connects with
+`std::net::TcpStream`, and measures with `std::time::Instant` on iris.
+
+**Acceptance criteria:**
+
+- [ ] The native libc v0 and the POSIX.1-2024 profile are implemented and layout-tested.
+- [ ] A hosted n32 target (`os = "irix7"`, Unix family) builds `std` with `-Zbuild-std=std`;
+      it is not `restricted_std`.
+- [ ] `std::fs`, `std::thread`, `std::sync`, `std::process`, `std::net`, `std::env`,
+      `std::time`, TLS and the `std::os::unix` traits work in a cell.
+- [ ] `catch_unwind` catches a panic at the cell boundary (or the phase-1 abort path is
+      documented and tested).
+- [ ] The kernel, ROM and loadable-module dependency graphs contain no `std`.
+- [ ] The IRIX 6.5 compatibility `std`, if built, is a separate target and is not the
+      native ABI.
+- [ ] The GCC-backend gate is resolved: `std` builds and runs under
+      `rustc_codegen_gcc` on n32, or ADR-0018 is amended for userland.
+
+**Dependencies:** M9, the native libc spec, the std research.
+
+**Estimate:** 8–12 weeks.
+
+**Risks:** the GCC backend; native libc surface; TLS/unwind on MIPS III; `fork`/threads;
+POSIX-2024 option gaps.
+
+**Out of scope:** IRIX 6.5 compatibility `std`, upstream target promotion, `dlopen`/shared
+loading, full XSI certification.
+
+---
+
 ## M10 — Real-Indy release
 
 **Goal:** boot, run and update IRIX 7 on a real Indy from R2.
@@ -426,7 +463,7 @@ M0 → M1 → M2 → M3 → M4 → M5 → M7 → M10
                  │         │
                  ├→ M6 ────┘
                  ├→ M8
-                 └→ M9
+                 └→ M9 → M9.5
 ```
 
 - **M7 (X11)** is the longest single item; start the X11 server design during M5.

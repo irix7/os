@@ -72,6 +72,9 @@ and a Unix family for `std`; the compatibility target must stay distinct.  The e
 triple and `target_os` spelling are an ABI decision for the std research and the native
 libc work, not something to guess here.
 
+The draft binary contract that pins those n32 choices — symbols, layouts, `errno`, TLS,
+startup, capability entry and the extension list — is [`native-libc.md`](native-libc.md).
+
 ## 5. API profile
 
 The profile is versioned and machine-readable.  Each entry records:
