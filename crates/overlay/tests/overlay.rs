@@ -94,6 +94,20 @@ fn reads_a_lower_file() {
     assert!(!fs.is_dir("/etc/motd").unwrap());
     assert_eq!(fs.stat("/etc/motd").unwrap().kind, EntryKind::File);
     assert_eq!(fs.stat("/etc").unwrap().kind, EntryKind::Directory);
+    assert!(!fs.stat("/etc/motd").unwrap().upper);
+    assert!(!fs.stat("/etc").unwrap().upper);
+}
+
+#[test]
+fn stat_reports_upper_nodes() {
+    let mut fs = overlay(MemoryLower::new().file("/etc/motd", b"lower"));
+    fs.create_dir("/tmp").unwrap();
+    fs.write_file("/tmp/motd", b"upper").unwrap();
+
+    assert!(fs.stat("/tmp").unwrap().upper);
+    assert!(fs.stat("/tmp/motd").unwrap().upper);
+    assert!(!fs.stat("/").unwrap().upper);
+    assert!(!fs.stat("/etc/motd").unwrap().upper);
 }
 
 #[test]

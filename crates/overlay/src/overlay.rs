@@ -14,6 +14,11 @@ use crate::{Error, Result};
 pub struct Stat {
     /// Whether the path is a file or a directory.
     pub kind: EntryKind,
+    /// Whether the merged node is stored in the RAM upper tree.
+    ///
+    /// A false value means the node comes from the read-only lower, so a
+    /// caller may read the lower's own inode metadata for it.
+    pub upper: bool,
 }
 
 /// A read-only-lower, in-memory-upper overlay.
@@ -182,11 +187,12 @@ impl<L: Lower> Overlay<L> {
         Ok(self.lookup_kind(&path)? == Some(EntryKind::File))
     }
 
-    /// Look up a path's kind.
+    /// Look up a path's kind and whether it lives in the upper tree.
     pub fn stat(&mut self, path: &str) -> Result<Stat> {
         let path = normalise(path)?;
         let kind = self.lookup_kind(&path)?.ok_or(Error::NotFound)?;
-        Ok(Stat { kind })
+        let upper = self.files.contains_key(&path) || self.dirs.contains(&path);
+        Ok(Stat { kind, upper })
     }
 
     /// List the direct child names of a directory, sorted.

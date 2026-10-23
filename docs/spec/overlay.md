@@ -96,6 +96,11 @@ names are not shadowed by an upper file or directory and not hidden by a
 whiteout at the child path.  The result is sorted by name, so callers see a
 deterministic order independent of the lower's listing order.
 
+`stat` reports the merged node's kind and whether it is an upper node
+(`Stat::upper`).  A caller that needs inode metadata — mode, ownership, size or a
+symbolic link target — asks its own lower for a node that is not upper; the
+overlay itself stays metadata-free.
+
 ## 6. Copy-up
 
 There is no copy-up.  The lower is read-only, so the overlay never needs to
