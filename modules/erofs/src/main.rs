@@ -18,8 +18,14 @@ use core::fmt::{self, Write};
 use core::ptr::{self, null_mut};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use block_cache::Lru;
 use module_abi::{ModuleVtable, Services};
+use overlay::{
+    DirEntry as OverlayDirEntry, EntryKind as OverlayKind, Lower as OverlayLower, Overlay,
+};
 
 /// The EROFS fixture lives on this SCSI target, at LBA 0.
 const TARGET: u8 = 2;
@@ -180,6 +186,52 @@ impl Failure {
     }
 }
 
+/// The lower EROFS tree handed to the RAM overlay.
+struct LowerView<'a> {
+    fs: &'a mut erofs::Erofs<CachedDisk>,
+}
+
+impl OverlayLower for LowerView<'_> {
+    fn read_file(&mut self, path: &str) -> overlay::Result<Option<Vec<u8>>> {
+        match self.fs.lookup_path_follow(path) {
+            Ok(inode) if !inode.is_dir() => self
+                .fs
+                .read_file(&inode)
+                .map(Some)
+                .map_err(|_| overlay::Error::Lower("erofs read")),
+            Ok(_) => Ok(None),
+            Err(erofs::Error::NotFound | erofs::Error::NotDirectory) => Ok(None),
+            Err(_) => Err(overlay::Error::Lower("erofs lookup")),
+        }
+    }
+
+    fn read_dir(&mut self, path: &str) -> overlay::Result<Option<Vec<OverlayDirEntry>>> {
+        let inode = match self.fs.lookup_path_follow(path) {
+            Ok(inode) if inode.is_dir() => inode,
+            Ok(_) => return Ok(None),
+            Err(erofs::Error::NotFound | erofs::Error::NotDirectory) => return Ok(None),
+            Err(_) => return Err(overlay::Error::Lower("erofs lookup")),
+        };
+        let entries = self
+            .fs
+            .read_dir(&inode)
+            .map_err(|_| overlay::Error::Lower("erofs readdir"))?;
+        Ok(Some(
+            entries
+                .into_iter()
+                .map(|entry| OverlayDirEntry {
+                    name: String::from_utf8_lossy(&entry.name).into_owned(),
+                    kind: if entry.file_type == erofs::FileType::Directory {
+                        OverlayKind::Directory
+                    } else {
+                        OverlayKind::File
+                    },
+                })
+                .collect(),
+        ))
+    }
+}
+
 /// Mount the fixture and print the file.
 fn run(services: &Services) -> Result<(), Failure> {
     let disk = Disk {
@@ -212,6 +264,27 @@ fn run(services: &Services) -> Result<(), Failure> {
         (services.write)(TRUNCATED.as_ptr(), TRUNCATED.len());
     } else if !data.ends_with(b"\n") {
         (services.write)(b"\n".as_ptr(), 1);
+    }
+
+    // Exercise the M4 RAM overlay over the read-only EROFS lower.
+    let mut overlay = Overlay::new(LowerView { fs: &mut fs });
+    if overlay.create_dir("/tmp").is_ok() && overlay.write_file("/tmp/motd", b"RAM upper\n").is_ok()
+    {
+        if let Ok(data) = overlay.read_file("/tmp/motd") {
+            line = Line::new();
+            let _ = writeln!(line, "overlay: /tmp/motd ({} bytes)", data.len());
+            line.write_to(services);
+            (services.write)(data.as_ptr(), data.len());
+        }
+        if overlay.remove_file("/tmp/motd").is_ok()
+            && matches!(
+                overlay.read_file("/tmp/motd"),
+                Err(overlay::Error::NotFound)
+            )
+        {
+            const WHITEOUT: &[u8] = b"overlay: whiteout ok\n";
+            (services.write)(WHITEOUT.as_ptr(), WHITEOUT.len());
+        }
     }
     Ok(())
 }
@@ -318,4 +391,28 @@ pub unsafe extern "C" fn memcmp(
         i += 1;
     }
     0
+}
+
+/// # Safety
+/// `dst` must be valid for writes of `n` bytes and `src` for reads of `n`
+/// bytes; the regions may overlap.
+#[no_mangle]
+pub unsafe extern "C" fn memmove(
+    dst: *mut core::ffi::c_void,
+    src: *const core::ffi::c_void,
+    n: usize,
+) -> *mut core::ffi::c_void {
+    let d = dst as *mut u8;
+    let s = src as *const u8;
+    if (d as usize) < (s as usize) {
+        return unsafe { memcpy(dst, src, n) };
+    }
+    let mut i = n;
+    while i > 0 {
+        i -= 1;
+        unsafe {
+            *d.add(i) = *s.add(i);
+        }
+    }
+    dst
 }

@@ -301,6 +301,7 @@ dependencies = [
  "block-cache",
  "erofs",
  "module-abi",
+ "overlay",
 ]
 
 [[package]]

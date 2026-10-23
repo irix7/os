@@ -26,8 +26,9 @@ HOST="$(rustc -vV | sed -n 's/^host: //p')"
 
 `llvm-objcopy -O binary` produces the flat image the loader expects: text at
 `0x8840_0000`, no ELF header, and `.bss` omitted (the loader zeroes the module
-area before the download).  Check the result stays under the 2 MiB module area
-before serving it.
+area before the download).  The current image is 64,088 bytes with SHA-256
+`2d2ef246d80787c0c5dea2aa97a39bed7b4c58e4c6e57257ab14558ad95df386`; check the
+result stays under the 2 MiB module area before serving it.
 
 ## Load
 
@@ -42,8 +43,11 @@ Expected output on a machine with the fixture disk attached:
 ```text
 erofs: start
 erofs: mounted target 2 (block size 4096)
-erofs: /etc/motd (19 bytes)
+erofs: /etc/motd (18 bytes)
 Welcome to IRIX 7
+overlay: /tmp/motd (10 bytes)
+RAM upper
+overlay: whiteout ok
 erofs: done
 module: returned 0
 ```
