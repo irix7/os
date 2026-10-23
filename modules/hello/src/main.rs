@@ -7,8 +7,6 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-
 /// Must match `kernel::module::Services` (version 1).
 #[repr(C)]
 pub struct Services {
@@ -17,8 +15,12 @@ pub struct Services {
     pub clock_ms: extern "C" fn() -> u64,
 }
 
+/// Module entry.
+///
+/// # Safety
+/// `services` must point to a valid service table supplied by the kernel.
 #[no_mangle]
-pub extern "C" fn _start(services: *const Services) -> i32 {
+pub unsafe extern "C" fn _start(services: *const Services) -> i32 {
     let Some(services) = (unsafe { services.as_ref() }) else {
         return 1;
     };
@@ -35,7 +37,7 @@ pub extern "C" fn _start(services: *const Services) -> i32 {
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
         core::hint::spin_loop();
     }

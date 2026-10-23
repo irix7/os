@@ -31,7 +31,7 @@ pub struct Services {
 }
 
 /// A module entry point.
-pub type Entry = extern "C" fn(*const Services) -> i32;
+pub type Entry = unsafe extern "C" fn(*const Services) -> i32;
 
 static SERVICES: Services = Services {
     version: 1,
