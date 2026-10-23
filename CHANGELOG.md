@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `erofsdisk <target> [path]`: mount an EROFS image placed at LBA 0 of a SCSI
+  target.  The disk is wrapped in the `block-cache` LRU (16 x 4 KiB), so a 4 KiB
+  EROFS block becomes eight 512-byte READ(6) commands.  Verified on iris with the
+  compact fixture on SCSI ID 2, reading `/etc/motd` from the disk.
 - `crates/block-cache`: a `no_std` + `alloc` LRU block cache over a
   byte-addressed `ReadAt` device, with hit/miss counters and no unsafe.  Seven
   host tests cover hits, eviction, cross-block reads, zero-length reads,
