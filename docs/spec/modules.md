@@ -163,7 +163,7 @@ JSON-RPC methods (see [`mcp.md`](mcp.md)), including resources for the serial ri
 network and memory. Its tools include `serial.read` (console ring
 services), `serial.write`, `system.reset`, `system.poweroff`, `status` (the same
 IP/MAC/RAM/uptime/date text as the telnet console), `shell.exec` with `net`, `mem` and
-`time`, and `screen.capture` (which returns the BMP endpoint).  The system tools defer
+`time`, and `screen.capture` (a 320×200 1-bit PNG thumbnail and the full BMP endpoint).  The system tools defer
 the action by five idle ticks so the JSON-RPC response is queued first. The iris rig forwards host `8088` to guest `80`; after
 loading the module:
 

@@ -239,8 +239,9 @@ wrong digest prints `autoload: ...` and leaves the machine at the menu.
 ### Screen capture
 
 `GET /screen.bmp` streams the 1280×1024 24-bit BMP from the kernel's CPU shadow of the
-REX3 output. It is about 3.75 MiB and takes roughly 25 s at 10 Mbit; the MCP
-`screen.capture` tool returns the same URL.
+REX3 output. It is about 3.75 MiB and takes roughly 25 s at 10 Mbit. The MCP
+`screen.capture` tool returns a 320×200 1-bit PNG thumbnail inline (via `image/png`) and
+the full BMP URL.
 
 ### Testing the MCP endpoint
 

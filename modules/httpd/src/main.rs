@@ -41,10 +41,20 @@ static mut SCREEN_ROW: u32 = 0;
 static mut SCREEN_OFF: usize = 0;
 static mut SCREEN_STREAMING: bool = false;
 static mut SCREEN_BUF: [u8; SCREEN_ROW_BYTES] = [0; SCREEN_ROW_BYTES];
+
+const THUMB_W: usize = 320;
+const THUMB_H: usize = 200;
+const THUMB_ROW: usize = THUMB_W / 8; // 40 bytes
+const RAW_LEN: usize = THUMB_H * (THUMB_ROW + 1); // filter byte + row
+const IDAT_LEN: usize = 2 + 5 + RAW_LEN + 4;
+static mut THUMB_RAW: [u8; RAW_LEN] = [0; RAW_LEN];
+static mut THUMB_IDAT: [u8; IDAT_LEN] = [0; IDAT_LEN];
+static mut THUMB_PNG: [u8; 8400] = [0; 8400];
+static mut THUMB_B64: [u8; 12000] = [0; 12000];
 static mut REQUEST: [u8; REQUEST_CAP] = [0; REQUEST_CAP];
 static mut REQ_LEN: usize = 0;
 static mut IN_CONN: bool = false;
-static mut RESPONSE: [u8; 4096] = [0; 4096];
+static mut RESPONSE: [u8; 16384] = [0; 16384];
 
 /// The slot serving the current connection, and the slot armed for the next
 /// one.  Alternating the two hides the close handshake from a back-to-back
@@ -446,6 +456,136 @@ fn send_unauthorized(services: &Services, slot: u32) {
     );
 }
 
+fn thumbnail(services: &Services) -> usize {
+    let raw = unsafe { &mut *core::ptr::addr_of_mut!(THUMB_RAW) };
+    let stride = THUMB_ROW + 1;
+    for oy in 0..THUMB_H {
+        let src = unsafe { &mut *core::ptr::addr_of_mut!(SCREEN_BUF) };
+        let offset = (oy as u32) * 4 * SCREEN_ROW_BYTES as u32;
+        let n = unsafe { (services.screen_read)(offset, src.as_mut_ptr(), src.len()) };
+        if n != SCREEN_ROW_BYTES as isize {
+            return 0;
+        }
+        raw[oy * stride] = 0; // PNG filter: none
+        for ox in 0..THUMB_W {
+            let i = ox * 4 * 3;
+            let b = src[i] as u32;
+            let g = src[i + 1] as u32;
+            let r = src[i + 2] as u32;
+            if (r * 3 + g * 6 + b) / 10 > 40 {
+                raw[oy * stride + 1 + ox / 8] |= 0x80 >> (ox % 8);
+            }
+        }
+    }
+
+    let raw = unsafe { &*core::ptr::addr_of!(THUMB_RAW) };
+    let idat = unsafe { &mut *core::ptr::addr_of_mut!(THUMB_IDAT) };
+    idat[0] = 0x78;
+    idat[1] = 0x01;
+    idat[2] = 0x01; // final stored deflate block
+    let len = RAW_LEN as u16;
+    idat[3..5].copy_from_slice(&len.to_le_bytes());
+    idat[5..7].copy_from_slice(&(!len).to_le_bytes());
+    idat[7..7 + RAW_LEN].copy_from_slice(raw);
+    let adler = adler32(raw);
+    idat[7 + RAW_LEN..11 + RAW_LEN].copy_from_slice(&adler.to_be_bytes());
+
+    let mut png = Png::new(unsafe { &mut *core::ptr::addr_of_mut!(THUMB_PNG) });
+    png.push(b"\x89PNG\r\n\x1a\n");
+    let mut ihdr = [0u8; 13];
+    ihdr[0..4].copy_from_slice(&(THUMB_W as u32).to_be_bytes());
+    ihdr[4..8].copy_from_slice(&(THUMB_H as u32).to_be_bytes());
+    ihdr[8] = 1; // bit depth
+    ihdr[9] = 0; // greyscale
+    png.chunk(b"IHDR", &ihdr);
+    png.chunk(b"IDAT", &idat[..IDAT_LEN]);
+    png.chunk(b"IEND", b"");
+    let n = png.len;
+    b64_encode(&png.buf[..n], unsafe {
+        &mut *core::ptr::addr_of_mut!(THUMB_B64)
+    })
+}
+
+struct Png<'a> {
+    buf: &'a mut [u8],
+    len: usize,
+}
+
+impl<'a> Png<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, len: 0 }
+    }
+
+    fn push(&mut self, data: &[u8]) {
+        let n = (self.buf.len() - self.len).min(data.len());
+        self.buf[self.len..self.len + n].copy_from_slice(&data[..n]);
+        self.len += n;
+    }
+
+    fn u32(&mut self, value: u32) {
+        self.push(&value.to_be_bytes());
+    }
+
+    fn chunk(&mut self, kind: &[u8; 4], data: &[u8]) {
+        self.u32(data.len() as u32);
+        self.push(kind);
+        self.push(data);
+        self.u32(crc32(kind, data));
+    }
+}
+
+fn crc32(a: &[u8], b: &[u8]) -> u32 {
+    let mut crc = 0xffff_ffffu32;
+    for &byte in a.iter().chain(b) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0xedb8_8320
+            } else {
+                crc >> 1
+            };
+        }
+    }
+    !crc
+}
+
+fn adler32(data: &[u8]) -> u32 {
+    let mut a = 1u32;
+    let mut b = 0u32;
+    for &byte in data {
+        a = (a + u32::from(byte)) % 65521;
+        b = (b + a) % 65521;
+    }
+    (b << 16) | a
+}
+
+fn b64_encode(src: &[u8], dst: &mut [u8]) -> usize {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = 0;
+    for chunk in src.chunks(3) {
+        if out + 4 > dst.len() {
+            break;
+        }
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        dst[out] = TABLE[(b0 >> 2) as usize];
+        dst[out + 1] = TABLE[(((b0 & 3) << 4) | (b1 >> 4)) as usize];
+        dst[out + 2] = if chunk.len() > 1 {
+            TABLE[(((b1 & 0xf) << 2) | (b2 >> 6)) as usize]
+        } else {
+            b'='
+        };
+        dst[out + 3] = if chunk.len() > 2 {
+            TABLE[(b2 & 0x3f) as usize]
+        } else {
+            b'='
+        };
+        out += 4;
+    }
+    out
+}
+
 fn screen_start(services: &Services, slot: u32) {
     let mut header = [0u8; 160];
     let mut w = Out::new(&mut header);
@@ -521,7 +661,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture the framebuffer as BMP\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -617,12 +757,20 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
                 }
                 Some(b"screen.capture") => {
-                    let text = b"GET http://127.0.0.1:8088/screen.bmp (1280x1024 BMP, about 25 s)";
-                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
-                    w.push(id);
-                    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
-                    w.json_string(text);
-                    w.push(b"}]}}");
+                    let n = thumbnail(services);
+                    if n == 0 {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"screen read failed\"}}");
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"GET http://127.0.0.1:8088/screen.bmp for the full 1280x1024 BMP\"},{\"type\":\"image\",\"data\":\"");
+                        let b64 = unsafe { &*core::ptr::addr_of!(THUMB_B64) };
+                        w.push(&b64[..n]);
+                        w.push(b"\",\"mimeType\":\"image/png\"}");
+                        w.push(b"]}}");
+                    }
                 }
                 Some(b"shell.exec") => {
                     let command = json_string(body, b"\"command\"").unwrap_or(b"");

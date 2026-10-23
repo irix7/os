@@ -179,7 +179,7 @@ const MODULE_TCP_SLOTS: usize = 2;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
 static mut MODULE_TCP_RX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
-static mut MODULE_TCP_TX: [[u8; 4096]; MODULE_TCP_SLOTS] = [[0; 4096]; MODULE_TCP_SLOTS];
+static mut MODULE_TCP_TX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
 
 fn module_handle(slot: u32) -> Option<SocketHandle> {
     let slot = slot as usize;
