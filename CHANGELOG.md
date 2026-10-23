@@ -67,6 +67,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - MCP bearer authentication: the module reads `mcp.token` from the NVRAM environment
   (ABI version 7 service `config_get`); `POST /mcp` then requires
   `Authorization: Bearer <token>` and returns 401 with `WWW-Authenticate` otherwise.
+- `rom/tools/mcp-smoke.py`: starts the rig (or attaches with `--no-launch`), checks the
+  MCP initialize/tools/status/shell/serial/echo surface, and with `--reset` verifies the
+  reset → autoload → MCP loop.
 - The module ABI is a shared crate (`modules/abi`) linked by the kernel and every module,
   with compile-time offset assertions for the n32 target.  This corrected the documented
   layout: `clock_ms` is a 4-byte function pointer, so `alloc` starts at 0x0C and the table

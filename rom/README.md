@@ -234,6 +234,20 @@ mcp.token=<shared secret>          (optional; requires Authorization: Bearer)
 On the next boot the serial log shows `autoload: fetching module`, the module prints
 `mcp: listening on port 80`, and the MCP endpoint is live without telnet. A missing or
 wrong digest prints `autoload: ...` and leaves the machine at the menu.
+
+### Testing the MCP endpoint
+
+`rom/tools/mcp-smoke.py` drives the JSON-RPC surface and checks `initialize`,
+`tools/list`, `status`, `shell.exec uname`, `serial.read` and `echo`:
+
+```bash
+rom/tools/mcp-smoke.py --iris /path/to/iris --prom /tmp/rom.bin   --cwd /path/to/iris --token secret-token
+```
+
+`--no-launch` tests an already-running guest. `--reset` calls `system.reset`, waits
+for the reboot and autoload, then checks `status` again. The token must match the
+guest's `mcp.token`. Without autoload, pass `--module-url` and `--module-sha256` so the
+script loads the image through the telnet console first.
 The loader zeroes the module area before the download, so a module's `.bss`
 starts at zero; it flushes the data cache and invalidates the instruction cache
 before the entry call.
