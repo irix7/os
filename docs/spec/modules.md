@@ -89,6 +89,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x3C | `status` | `intptr_t (*)(uint8_t *ptr, size_t len)` — the shared machine status block |
 | 0x40 | `config_get` | `intptr_t (*)(const uint8_t *name, size_t name_len, uint8_t *out, size_t out_len)` — PROM environment value, or -1 |
 | 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
+| 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
 
 The struct lives in `modules/abi` (crate `module-abi`).  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
@@ -158,7 +159,8 @@ connection, and alternates its two TCP slots so a back-to-back client does not h
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
 JSON-RPC methods (see [`mcp.md`](mcp.md)). Its tools include `serial.read` (console ring
 services), `serial.write`, `system.reset`, `system.poweroff` and `status` (the same IP/MAC/RAM/uptime/date
-text as the telnet console), plus `shell.exec` for a small command set.  The system tools defer
+text as the telnet console), plus `shell.exec` with `net`, `mem` and `time` using the shared
+`info` service.  The system tools defer
 the action by five idle ticks so the JSON-RPC response is queued first. The iris rig forwards host `8088` to guest `80`; after
 loading the module:
 

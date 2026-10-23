@@ -61,6 +61,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
 - The DS1386 real-time clock is read at boot and seeds the wall clock (the two BCD year
   digits count from 1940), so `status` reports the correct date before any NTP query.
+- ABI version 8 adds one `info` service (status/net/mem/time), shared by the telnet
+  console and the MCP `shell.exec` command.
 - `rom/tools/mcp-smoke.py` checks the live MCP endpoint (`initialize`, `tools/list`,
   `status`, `shell.exec`, `serial.read`, `echo`) and can prove the reset/autoload loop.
 - The MCP module gains `shell.exec` with `echo`, `uname`, `uptime`, `status`, `help`,
