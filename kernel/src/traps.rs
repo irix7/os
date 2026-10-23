@@ -177,6 +177,24 @@ pub fn compare_write(val: u32) {
     }
 }
 
+/// Read CP0 PRId (processor identifier).
+pub fn prid_read() -> u32 {
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $15", out(reg) v);
+    }
+    v
+}
+
+/// Read CP0 Config (cache and endianness configuration).
+pub fn config_read() -> u32 {
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $16", out(reg) v);
+    }
+    v
+}
+
 /// Read CP0 EntryHi.
 pub fn entryhi_read() -> u32 {
     let v: u32;

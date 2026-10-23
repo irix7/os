@@ -60,6 +60,7 @@ struct HttpRequest {
     path: [u8; 96],
     path_len: usize,
     tls: bool,
+    expected: Option<[u8; 32]>,
 }
 
 static mut CONSOLE: Option<Console> = None;
@@ -102,6 +103,7 @@ pub fn poll() {
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
         let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
         let scheme = if req.tls { "https" } else { "http" };
+        let expected = req.expected;
         let result = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
                 if req.tls {
@@ -138,6 +140,13 @@ pub fn poll() {
                         let hex = summary.sha256.to_hex();
                         if let Ok(text) = core::str::from_utf8(&hex) {
                             let _ = write!(w, "sha256: {}\r\n", text);
+                        }
+                        if let Some(want) = expected {
+                            if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) {
+                                let _ = w.write_str("verify: ok\r\n");
+                            } else {
+                                let _ = w.write_str("verify: MISMATCH\r\n");
+                            }
                         }
                     }
                     Err(err) => {
@@ -333,8 +342,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 mem           RAM accounting\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
-                  \x20 http <host>:<port><path>  fetch over HTTP\r\n\
-                  \x20 https <host>:<port><path>  fetch over HTTPS (TLS 1.3)\r\n\
+                  \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
+                  \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
@@ -504,10 +513,19 @@ impl core::fmt::Display for DisplayIpv4 {
     }
 }
 
-/// Parse `http <ip>:<port><path>`.
+/// Parse `http <host>:<port><path> [sha256-hex]`.
 fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
     let s = core::str::from_utf8(arg).ok()?;
-    let (host, rest) = s.split_once(':')?;
+    let mut parts = s.split_whitespace();
+    let url = parts.next()?;
+    let expected = match parts.next() {
+        Some(hex) => Some(parse_sha256_hex(hex)?),
+        None => None,
+    };
+    if parts.next().is_some() {
+        return None;
+    }
+    let (host, rest) = url.split_once(':')?;
     let slash = rest.find('/')?;
     let (port_str, path) = rest.split_at(slash);
     let port: u16 = port_str.parse().ok()?;
@@ -525,7 +543,30 @@ fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
         path: buf,
         path_len: path.len(),
         tls,
+        expected,
     })
+}
+
+/// Parse a 64-digit hex SHA-256 digest.
+fn parse_sha256_hex(s: &str) -> Option<[u8; 32]> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = (hex_digit(bytes[i * 2])? << 4) | hex_digit(bytes[i * 2 + 1])?;
+    }
+    Some(out)
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
 }
 
 /// Parse a dotted-decimal IPv4 address.

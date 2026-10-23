@@ -23,6 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod capability;
+pub mod diagnostics;
 pub mod dns;
 pub mod font;
 pub mod frames;
@@ -481,6 +482,7 @@ pub extern "C" fn _start() -> ! {
     telnet::init();
     menu::draw();
     loop {
+        let mut action: Option<usize> = None;
         if let Some(key) = kbd::poll_key() {
             match key {
                 kbd::Key::Up => {
@@ -491,13 +493,13 @@ pub extern "C" fn _start() -> ! {
                     menu::move_selection(1);
                     menu::draw();
                 }
-                kbd::Key::Enter => break,
+                kbd::Key::Enter => action = Some(menu::selected()),
                 kbd::Key::Char(c) if c.is_ascii_digit() => {
                     let n = (c - b'1') as usize;
                     if n < menu::OPTIONS.len() {
                         menu::select(n);
+                        action = Some(n);
                     }
-                    break;
                 }
                 _ => {}
             }
@@ -508,6 +510,15 @@ pub extern "C" fn _start() -> ! {
             reboot();
         }
         if telnet::boot_requested() {
+            break;
+        }
+        if let Some(index) = action {
+            if index == 3 {
+                // "Run diagnostics": print the inventory and return to the menu.
+                diagnostics::run();
+                menu::draw();
+                continue;
+            }
             break;
         }
         idle::wait();
