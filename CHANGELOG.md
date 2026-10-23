@@ -8,6 +8,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- Module ABI version 10 adds `block_read(target, lba, buffer)` for one 512-byte
+  SCSI sector, exposed by `modules/block` via `Context::block_read`.  The OS
+  consumes SDK `v0.3.0`; verified on iris with target 1: the module prints
+  `block: magic 0x4d436f6d`.  The block read stays a kernel service, so feature
+  modules do not grow the PROM.
 - `erofsdisk <target> [path]`: mount an EROFS image placed at LBA 0 of a SCSI
   target.  The disk is wrapped in the `block-cache` LRU (16 x 4 KiB), so a 4 KiB
   EROFS block becomes eight 512-byte READ(6) commands.  Verified on iris with the
