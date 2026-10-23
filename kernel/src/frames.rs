@@ -199,6 +199,27 @@ pub fn total_ram() -> u64 {
     }
 }
 
+/// Number of free 4 KiB frames in the usable descriptors.
+pub fn free_frames() -> usize {
+    unsafe {
+        let mut free = 0;
+        for i in 0..MEM_DESC_COUNT {
+            let desc = MEM_DESCS[i];
+            if desc.kind != MEM_KIND_USABLE_RAM {
+                continue;
+            }
+            let start_frame = (desc.base / 4096) as usize;
+            let end_frame = ((desc.base + desc.size) / 4096) as usize;
+            for f in start_frame..end_frame.min(MAX_FRAMES) {
+                if FRAME_META[f].ref_count == 0 {
+                    free += 1;
+                }
+            }
+        }
+        free
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

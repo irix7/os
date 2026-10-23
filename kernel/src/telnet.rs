@@ -406,7 +406,14 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
         b"mem" => {
             let mut w = SocketWriter { sock };
             let total = crate::frames::total_ram();
-            let _ = write!(w, "total: {} MiB\r\n", total / (1024 * 1024));
+            let free = crate::frames::free_frames();
+            let _ = write!(
+                w,
+                "total: {} MiB\r\nfree: {} MiB ({} frames)\r\n",
+                total / (1024 * 1024),
+                (free * 4096) / (1024 * 1024),
+                free
+            );
         }
         b"time" => {
             let mut w = SocketWriter { sock };

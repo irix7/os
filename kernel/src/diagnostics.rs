@@ -17,6 +17,9 @@ pub fn run() {
     print_str("    total: ");
     print_dec((frames::total_ram() / (1024 * 1024)) as u32);
     println(" MiB");
+    print_str("    free: ");
+    print_dec(((frames::free_frames() * 4096) / (1024 * 1024)) as u32);
+    println(" MiB");
     println("    reserved below 0x08B00000: exception vector, ROM state, kernel, stack");
     println("  network:");
     let mac = net::mac_address();
