@@ -477,6 +477,9 @@ pub extern "C" fn _start() -> ! {
         }
         net::poll();
         telnet::poll();
+        if telnet::boot_requested() {
+            break;
+        }
         scheduler::yield_cpu();
     }
     console_write("kernel: booting ");

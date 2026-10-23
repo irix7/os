@@ -29,3 +29,12 @@ resolution = "1280x1024"
 # cdrom4.iso that is not present in this checkout.
 [scsi.4]
 cdrom = true
+
+# The kernel's telnet console listens on guest port 23.  Forward it to the
+# host loopback so `telnet 127.0.0.1 2323` reaches the machine.
+[[port_forward]]
+proto      = "tcp"
+host_port  = 2323
+guest_port = 23
+bind       = "localhost"
+

@@ -548,6 +548,12 @@ pub fn ip_addr() -> Option<Ipv4Address> {
     unsafe { STACK.as_ref().and_then(|s| s.ip) }
 }
 
+/// Run `f` with the live socket set.  Returns `None` before [`init`].
+pub fn sockets_with<R>(f: impl FnOnce(&mut SocketSet<'static>) -> R) -> Option<R> {
+    // SAFETY: single-threaded kernel; the stack is set once by init().
+    unsafe { STACK.as_mut().map(|s| f(&mut s.sockets)) }
+}
+
 /// The Seeq station address.
 pub fn mac_address() -> [u8; 6] {
     unsafe {
