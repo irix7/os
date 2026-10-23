@@ -86,6 +86,39 @@ pub fn get_range(
     result
 }
 
+/// Fetch an inclusive byte range into `out` and verify a 206 response with the
+/// requested length.  The whole body is hashed; `out` must be at least as long
+/// as the requested range or the call fails after consuming the response.
+pub fn get_range_to(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    start: u32,
+    end: u32,
+    out: &mut [u8],
+) -> Result<(Summary, usize), &'static str> {
+    if FETCHING.swap(true, Ordering::SeqCst) {
+        return Err("a fetch is already running");
+    }
+    let result = (|| {
+        let (summary, captured) = get_inner(ip, port, host, path, Some((start, end)), Some(out))?;
+        let want = (end.saturating_sub(start) + 1) as usize;
+        if summary.status != 206 {
+            return Err("range not satisfiable");
+        }
+        if summary.body_len != want {
+            return Err("short range body");
+        }
+        if captured != want {
+            return Err("range buffer too small");
+        }
+        Ok((summary, captured))
+    })();
+    FETCHING.store(false, Ordering::SeqCst);
+    result
+}
+
 fn get_inner(
     ip: Ipv4Address,
     port: u16,

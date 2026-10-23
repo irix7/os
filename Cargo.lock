@@ -397,6 +397,7 @@ version = "0.1.0"
 dependencies = [
  "embedded-io",
  "embedded-tls",
+ "erofs",
  "module-abi",
  "rand_core",
  "smoltcp",

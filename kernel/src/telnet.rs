@@ -47,6 +47,8 @@ struct Console {
     pending_ping: Option<PingRequest>,
     /// A deferred module fetch and run.
     pending_module: Option<HttpRequest>,
+    /// A deferred EROFS image read over HTTP.
+    pending_erofs: Option<crate::erofs_cmd::Request>,
 }
 
 /// Parsed `ntp <host>[:port]` request.
@@ -102,6 +104,7 @@ pub fn init() {
                 pending_ntp: None,
                 pending_ping: None,
                 pending_module: None,
+                pending_erofs: None,
             });
         }
     }
@@ -174,6 +177,22 @@ pub fn poll() {
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
+            });
+        }
+    }
+
+    // Run a deferred EROFS image read.  It performs several HTTP range
+    // fetches, so it must own the interface outside the console borrow.
+    let erofs_request =
+        unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_erofs.take());
+    if let Some(request) = erofs_request {
+        let output = crate::erofs_cmd::run(&request);
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let _ = sock.send_slice(output.as_bytes());
+                let _ = sock.send_slice(b"kernel> ");
             });
         }
     }
@@ -455,6 +474,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
+                  \x20 erofs host:port/path [info|ls|cat] [path]  read an image over HTTP\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -523,6 +543,18 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 }
                 None => {
                     let _ = sock.send_slice(b"usage: module [https://]host:port/path <sha256>\r\n");
+                }
+            }
+        }
+        _ if line.starts_with(b"erofs ") => {
+            match crate::erofs_cmd::Request::parse(trim(&line[6..])) {
+                Some(request) => {
+                    let _ = sock.send_slice(b"erofs: mounting\r\n");
+                    console.pending_erofs = Some(request);
+                }
+                None => {
+                    let _ = sock
+                        .send_slice(b"usage: erofs <host>:<port><path> [info|ls|cat] [path]\r\n");
                 }
             }
         }
