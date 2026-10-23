@@ -467,6 +467,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 status        kernel and network state\r\n\
                   \x20 net           interface addresses\r\n\
                   \x20 mem           RAM accounting\r\n\
+                  \x20 scsi          reset/probe the WD33C93\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
                   \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
@@ -493,6 +494,22 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let mut buf = [0u8; 256];
             let n = crate::status::mem(&mut buf);
             let _ = sock.send_slice(&buf[..n]);
+        }
+        b"scsi" => {
+            let mut writer = SocketWriter { sock };
+            match crate::scsi::probe() {
+                Ok(probe) => {
+                    let _ = write!(
+                        writer,
+                        "scsi: WD33C93 rev 0x{:02x} csr 0x{:02x} asr 0x{:02x}->0x{:02x} \
+                         id 0x{:02x}\r\n",
+                        probe.revision, probe.csr, probe.asr_before, probe.asr_after, probe.own_id
+                    );
+                }
+                Err(error) => {
+                    let _ = write!(writer, "scsi: {error}\r\n");
+                }
+            }
         }
         b"time" => {
             let mut buf = [0u8; 128];
