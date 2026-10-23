@@ -61,7 +61,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 7 {
+    if services.version < 8 {
         return &ERROR_VTABLE;
     }
     let mut token = [0u8; 64];
@@ -493,6 +493,15 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
     w.len
 }
 
+fn info_block<'a>(services: &Services, kind: u32, buf: &'a mut [u8; 512]) -> &'a [u8] {
+    let n = unsafe { (services.info)(kind, buf.as_mut_ptr(), buf.len()) };
+    if n > 0 {
+        &buf[..n as usize]
+    } else {
+        b"info failed"
+    }
+}
+
 fn shell_exec(services: &Services, command: &[u8], w: &mut Out, id: &[u8]) {
     let mut parts = command.splitn(2, |&b| b == b' ');
     let cmd = parts.next().unwrap_or(b"");
@@ -519,7 +528,10 @@ fn shell_exec(services: &Services, command: &[u8], w: &mut Out, id: &[u8]) {
                 b"status failed"
             }
         }
-        b"help" => b"commands: echo, uname, uptime, status, help, reboot, poweroff",
+        b"net" => info_block(services, 1, &mut buf),
+        b"mem" => info_block(services, 2, &mut buf),
+        b"time" => info_block(services, 3, &mut buf),
+        b"help" => b"commands: echo, uname, uptime, status, net, mem, help, reboot, poweroff",
         b"reboot" => {
             unsafe {
                 ACTION = 1;

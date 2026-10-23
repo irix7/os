@@ -62,6 +62,68 @@ impl<'a> Buf<'a> {
     }
 }
 
+/// Network summary.
+pub fn net(dst: &mut [u8]) -> usize {
+    let mut w = Buf::new(dst);
+    w.str("ip: ");
+    match net::ip_addr() {
+        Some(ip) => w.ipv4(ip),
+        None => w.str("none"),
+    }
+    w.str("\r\nmac: ");
+    let mac = net::mac_address();
+    for (i, byte) in mac.iter().enumerate() {
+        if i > 0 {
+            w.push(b":");
+        }
+        w.hex8(*byte);
+    }
+    w.str("\r\nlink: Seeq 8003 via HPC3 PDMA\r\n");
+    w.len
+}
+
+/// Frame allocator summary.
+pub fn mem(dst: &mut [u8]) -> usize {
+    let total = frames::total_ram();
+    let free = frames::free_frames();
+    let mut w = Buf::new(dst);
+    w.str("total: ");
+    w.u32((total / (1024 * 1024)) as u32);
+    w.str(" MiB\r\nfree: ");
+    w.u32(((free as u64 * 4096) / (1024 * 1024)) as u32);
+    w.str(" MiB (");
+    w.u32(free as u32);
+    w.str(" frames)\r\n");
+    w.len
+}
+
+/// Uptime and wall-clock summary.
+pub fn time(dst: &mut [u8]) -> usize {
+    let ms = net::clock_now().total_millis();
+    let mut w = Buf::new(dst);
+    w.str("uptime: ");
+    w.u32((ms / 1000) as u32);
+    w.push(b".");
+    let frac = (ms % 1000) as u32;
+    w.push(&[
+        b'0' + (frac / 100) as u8,
+        b'0' + ((frac / 10) % 10) as u8,
+        b'0' + (frac % 10) as u8,
+    ]);
+    w.str("s\r\ndate: ");
+    match ntp::now_unix() {
+        Some(unix) => {
+            let mut buf = [0u8; 20];
+            let n = ntp::format_utc(unix, &mut buf);
+            w.push(&buf[..n]);
+            w.str(" UTC");
+        }
+        None => w.str("unsynchronised"),
+    }
+    w.str("\r\n");
+    w.len
+}
+
 /// Format the status block into `dst`; returns the byte count.
 pub fn text(dst: &mut [u8]) -> usize {
     let mut w = Buf::new(dst);

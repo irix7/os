@@ -72,6 +72,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `rom/tools/mcp-smoke.py`: starts the rig (or attaches with `--no-launch`), checks the
   MCP initialize/tools/status/shell/serial/echo surface, and with `--reset` verifies the
   reset → autoload → MCP loop.
+- ABI version 8 adds the `info(kind)` service (status, net, mem, time); `shell.exec`
+  exposes `net`, `mem` and `time` alongside the existing commands.
 - The module ABI is a shared crate (`modules/abi`) linked by the kernel and every module,
   with compile-time offset assertions for the n32 target.  This corrected the documented
   layout: `clock_ms` is a 4-byte function pointer, so `alloc` starts at 0x0C and the table

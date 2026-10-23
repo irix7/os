@@ -457,45 +457,19 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let _ = sock.send_slice(&buf[..n]);
         }
         b"net" => {
-            let mut w = SocketWriter { sock };
-            match net::ip_addr() {
-                Some(ip) => {
-                    let _ = write!(w, "ip: {}\r\n", DisplayIpv4(ip));
-                }
-                None => {
-                    let _ = w.write_str("ip: none\r\n");
-                }
-            }
-            let mac = net::mac_address();
-            let _ = write!(
-                w,
-                "mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\r\n",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-            );
-            let _ = w.write_str("link: Seeq 8003 via HPC3 PDMA\r\n");
+            let mut buf = [0u8; 256];
+            let n = crate::status::net(&mut buf);
+            let _ = sock.send_slice(&buf[..n]);
         }
         b"mem" => {
-            let mut w = SocketWriter { sock };
-            let total = crate::frames::total_ram();
-            let free = crate::frames::free_frames();
-            let _ = write!(
-                w,
-                "total: {} MiB\r\nfree: {} MiB ({} frames)\r\n",
-                total / (1024 * 1024),
-                (free * 4096) / (1024 * 1024),
-                free
-            );
+            let mut buf = [0u8; 256];
+            let n = crate::status::mem(&mut buf);
+            let _ = sock.send_slice(&buf[..n]);
         }
         b"time" => {
-            let mut w = SocketWriter { sock };
-            let ms = net::clock_now().total_millis();
-            let _ = write!(w, "uptime: {}.{:03}s\r\n", ms / 1000, ms % 1000);
-            if let Some(unix) = crate::ntp::now_unix() {
-                let mut buf = [0u8; 20];
-                let n = crate::ntp::format_utc(unix, &mut buf);
-                let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
-                let _ = write!(w, "date: {} UTC\r\n", text);
-            }
+            let mut buf = [0u8; 128];
+            let n = crate::status::time(&mut buf);
+            let _ = sock.send_slice(&buf[..n]);
         }
         b"boot" => {
             let _ = sock.send_slice(b"booting\r\n");

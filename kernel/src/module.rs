@@ -38,6 +38,7 @@ static SERVICES: Services = Services {
     poweroff: service_poweroff,
     status: service_status,
     config_get: service_config_get,
+    info: service_info,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -302,6 +303,21 @@ extern "C" fn service_reset() {
 
 extern "C" fn service_poweroff() {
     crate::poweroff();
+}
+
+unsafe extern "C" fn service_info(kind: u32, ptr: *mut u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    let n = match kind {
+        0 => crate::status::text(buf),
+        1 => crate::status::net(buf),
+        2 => crate::status::mem(buf),
+        3 => crate::status::time(buf),
+        _ => return -1,
+    };
+    n as isize
 }
 
 unsafe extern "C" fn service_config_get(
