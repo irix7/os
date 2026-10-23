@@ -59,6 +59,7 @@ inside the 512 KiB PROM window but with little headroom.
 | `0x08200000` | kernel stack top (`0x88200000` kseg0) |
 | `0x08400000` | module load area, 2 MiB (`0x88400000` kseg0) |
 | `0x08600000` | Seeq device DMA descriptors and buffers (`0xA8600000` kseg1, uncached) |
+| `0x08700000` | framebuffer shadow, 1280×1024 BGR (`0x88700000` kseg0, CPU-only) |
 | `0x08B00000` | first frame allocator page |
 | `0x08000000` | DRAM base (`LOMEM_BASE`); physical `0x00000000` is an alias for it |
 
@@ -235,6 +236,12 @@ On the next boot the serial log shows `autoload: fetching module`, the module pr
 `mcp: listening on port 80`, and the MCP endpoint is live without telnet. A missing or
 wrong digest prints `autoload: ...` and leaves the machine at the menu.
 
+### Screen capture
+
+`GET /screen.bmp` streams the 1280×1024 24-bit BMP from the kernel's CPU shadow of the
+REX3 output. It is about 3.75 MiB and takes roughly 25 s at 10 Mbit; the MCP
+`screen.capture` tool returns the same URL.
+
 ### Testing the MCP endpoint
 
 `rom/tools/mcp-smoke.py` drives the JSON-RPC surface and checks `initialize`,
@@ -263,7 +270,7 @@ curl -s -X POST -H 'Content-Type: application/json' \
 
 `POST /mcp` speaks JSON-RPC 2.0: `initialize`, `ping`, `tools/list` and
 `tools/call` (`status`, `echo`, `console`, `serial.read`, `system.reset`, `system.poweroff`, `shell.exec`;
-the shell accepts `net`, `mem` and `time`).
+the shell accepts `net`, `mem` and `time`; `screen.capture` returns the BMP endpoint).
 `shell.exec` accepts `echo`, `uname`, `uptime`, `status`, `net`, `mem`, `time`, `help`,
 `reboot` and `poweroff`.
 It is a prototype: no bearer token or SSE yet. `serial.read` returns the kernel's

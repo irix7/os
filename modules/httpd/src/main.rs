@@ -17,6 +17,12 @@ const ARM: u32 = 0;
 const WAIT_REQUEST: u32 = 1;
 const WAIT_CLOSE: u32 = 2;
 const CLOSING: u32 = 3;
+const SEND_SCREEN: u32 = 4;
+
+const SCREEN_W: u32 = 1280;
+const SCREEN_H: u32 = 1024;
+const SCREEN_ROW_BYTES: usize = SCREEN_W as usize * 3;
+const SCREEN_DATA: u32 = SCREEN_W * SCREEN_H * 3;
 
 const PORT: u16 = 80;
 const REQUEST_CAP: usize = 2048;
@@ -31,6 +37,10 @@ static ERROR_VTABLE: ModuleVtable = ModuleVtable {
 };
 
 static mut PHASE: u32 = ARM;
+static mut SCREEN_ROW: u32 = 0;
+static mut SCREEN_OFF: usize = 0;
+static mut SCREEN_STREAMING: bool = false;
+static mut SCREEN_BUF: [u8; SCREEN_ROW_BYTES] = [0; SCREEN_ROW_BYTES];
 static mut REQUEST: [u8; REQUEST_CAP] = [0; REQUEST_CAP];
 static mut REQ_LEN: usize = 0;
 static mut IN_CONN: bool = false;
@@ -61,7 +71,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 8 {
+    if services.version < 9 {
         return &ERROR_VTABLE;
     }
     let mut token = [0u8; 64];
@@ -161,17 +171,24 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 let used = unsafe { REQ_LEN };
                 if used > 0 && request_complete(&request[..used]) {
                     handle_request(services, slot);
-                    // Arm the other slot before the client closes, so the
-                    // next connection lands on a listening socket.
-                    let next = unsafe { NEXT };
-                    if (services.tcp_listen)(next, PORT) == 0 {
+                    if unsafe { SCREEN_STREAMING } {
                         unsafe {
-                            NEXT_ARMED = true;
+                            IN_CONN = false;
+                            PHASE = SEND_SCREEN;
                         }
-                    }
-                    unsafe {
-                        IN_CONN = false;
-                        PHASE = WAIT_CLOSE;
+                    } else {
+                        // Arm the other slot before the client closes, so the
+                        // next connection lands on a listening socket.
+                        let next = unsafe { NEXT };
+                        if (services.tcp_listen)(next, PORT) == 0 {
+                            unsafe {
+                                NEXT_ARMED = true;
+                            }
+                        }
+                        unsafe {
+                            IN_CONN = false;
+                            PHASE = WAIT_CLOSE;
+                        }
                     }
                 }
             } else if state == 3 {
@@ -182,6 +199,71 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
             } else if state == 0 {
                 unsafe {
                     PHASE = ARM;
+                }
+            }
+        }
+        SEND_SCREEN => {
+            let slot = unsafe { CURRENT };
+            let row = unsafe { SCREEN_ROW };
+            if row >= SCREEN_H {
+                (services.tcp_close)(slot);
+                unsafe {
+                    SCREEN_STREAMING = false;
+                }
+                let next = unsafe { NEXT };
+                if (services.tcp_listen)(next, PORT) == 0 {
+                    unsafe {
+                        NEXT_ARMED = true;
+                    }
+                }
+                unsafe {
+                    PHASE = WAIT_CLOSE;
+                }
+            } else {
+                let off = unsafe { SCREEN_OFF };
+                if off == 0 {
+                    let shadow_row = SCREEN_H - 1 - row;
+                    let buf = unsafe { &mut *core::ptr::addr_of_mut!(SCREEN_BUF) };
+                    let n = unsafe {
+                        (services.screen_read)(
+                            shadow_row * SCREEN_ROW_BYTES as u32,
+                            buf.as_mut_ptr(),
+                            buf.len(),
+                        )
+                    };
+                    if n != SCREEN_ROW_BYTES as isize {
+                        (services.tcp_abort)(slot);
+                        unsafe {
+                            SCREEN_STREAMING = false;
+                            PHASE = ARM;
+                        }
+                    }
+                }
+                let off = unsafe { SCREEN_OFF };
+                if off < SCREEN_ROW_BYTES {
+                    let buf = unsafe { &*core::ptr::addr_of!(SCREEN_BUF) };
+                    let n = unsafe {
+                        (services.tcp_send)(slot, buf.as_ptr().add(off), SCREEN_ROW_BYTES - off)
+                    };
+                    if n > 0 {
+                        let next = off + n as usize;
+                        if next >= SCREEN_ROW_BYTES {
+                            unsafe {
+                                SCREEN_ROW += 1;
+                                SCREEN_OFF = 0;
+                            }
+                        } else {
+                            unsafe {
+                                SCREEN_OFF = next;
+                            }
+                        }
+                    } else if n < 0 {
+                        (services.tcp_abort)(slot);
+                        unsafe {
+                            SCREEN_STREAMING = false;
+                            PHASE = ARM;
+                        }
+                    }
                 }
             }
         }
@@ -287,6 +369,10 @@ fn handle_request(services: &Services, slot: u32) {
         send_unauthorized(services, slot);
         return;
     }
+    if !is_post && path == b"/screen.bmp" {
+        screen_start(services, slot);
+        return;
+    }
 
     let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
     let (content_type, n) = if is_post && path.starts_with(b"/mcp") {
@@ -360,6 +446,44 @@ fn send_unauthorized(services: &Services, slot: u32) {
     );
 }
 
+fn screen_start(services: &Services, slot: u32) {
+    let mut header = [0u8; 160];
+    let mut w = Out::new(&mut header);
+    w.push(b"HTTP/1.0 200 OK\r\nContent-Type: image/bmp\r\nContent-Length: ");
+    w.u64(u64::from(SCREEN_DATA) + 54);
+    w.push(b"\r\nConnection: close\r\n\r\n");
+    let n = w.len;
+
+    let mut bmp = [0u8; 54];
+    bmp[0] = b'B';
+    bmp[1] = b'M';
+    le32(&mut bmp[2..6], 54 + SCREEN_DATA);
+    le32(&mut bmp[10..14], 54);
+    le32(&mut bmp[14..18], 40);
+    le32(&mut bmp[18..22], SCREEN_W);
+    le32(&mut bmp[22..26], SCREEN_H);
+    le16(&mut bmp[26..28], 1);
+    le16(&mut bmp[28..30], 24);
+    le32(&mut bmp[34..38], SCREEN_DATA);
+    le32(&mut bmp[38..42], 2835);
+
+    send_all(services, slot, &header[..n]);
+    send_all(services, slot, &bmp);
+    unsafe {
+        SCREEN_ROW = 0;
+        SCREEN_OFF = 0;
+        SCREEN_STREAMING = true;
+    }
+}
+
+fn le32(dst: &mut [u8], value: u32) {
+    dst[..4].copy_from_slice(&value.to_le_bytes());
+}
+
+fn le16(dst: &mut [u8], value: u16) {
+    dst[..2].copy_from_slice(&value.to_le_bytes());
+}
+
 fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
     let mut header = [0u8; 160];
     let mut w = Out::new(&mut header);
@@ -397,7 +521,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture the framebuffer as BMP\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -491,6 +615,14 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
+                }
+                Some(b"screen.capture") => {
+                    let text = b"GET http://127.0.0.1:8088/screen.bmp (1280x1024 BMP, about 25 s)";
+                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                    w.push(id);
+                    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                    w.json_string(text);
+                    w.push(b"}]}}");
                 }
                 Some(b"shell.exec") => {
                     let command = json_string(body, b"\"command\"").unwrap_or(b"");

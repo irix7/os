@@ -63,6 +63,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   digits count from 1940), so `status` reports the correct date before any NTP query.
 - MCP resources: `resources/list`/`resources/read` expose `irix7://serial`, `status`,
   `net` and `mem` as text, so an agent can read the guest log without a tool call.
+- A CPU shadow of the REX3 framebuffer (BGR, 1280×1024, kseg0 `0x88700000`) is kept in
+  step by the drawing primitives. ABI version 9 exposes `screen_read`, and the httpd
+  module streams the shadow as a 24-bit BMP at `GET /screen.bmp`; MCP `screen.capture`
+  returns the URL.
 - ABI version 8 adds one `info` service (status/net/mem/time), shared by the telnet
   console and the MCP `shell.exec` command.
 - `rom/tools/mcp-smoke.py` checks the live MCP endpoint (`initialize`, `tools/list`,

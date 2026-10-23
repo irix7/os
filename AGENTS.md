@@ -85,3 +85,6 @@ Consequences:
 - Code written into RAM and executed (modules) needs a data-cache writeback and an
   instruction-cache invalidate before the call. A compiler fence is not enough on real
   hardware.
+- The CPU framebuffer shadow lives at kseg0 `0x8870_0000` (physical `0x0870_0000`,
+  3.75 MiB). It is CPU-only and part of the reserved low window; never hand it to the
+  frame allocator.

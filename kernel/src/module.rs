@@ -39,6 +39,7 @@ static SERVICES: Services = Services {
     status: service_status,
     config_get: service_config_get,
     info: service_info,
+    screen_read: service_screen_read,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -178,7 +179,7 @@ const MODULE_TCP_SLOTS: usize = 2;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
 static mut MODULE_TCP_RX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
-static mut MODULE_TCP_TX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
+static mut MODULE_TCP_TX: [[u8; 4096]; MODULE_TCP_SLOTS] = [[0; 4096]; MODULE_TCP_SLOTS];
 
 fn module_handle(slot: u32) -> Option<SocketHandle> {
     let slot = slot as usize;
@@ -303,6 +304,14 @@ extern "C" fn service_reset() {
 
 extern "C" fn service_poweroff() {
     crate::poweroff();
+}
+
+unsafe extern "C" fn service_screen_read(offset: u32, ptr: *mut u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    crate::gfx::shadow_read(offset as usize, buf) as isize
 }
 
 unsafe extern "C" fn service_info(kind: u32, ptr: *mut u8, len: usize) -> isize {
