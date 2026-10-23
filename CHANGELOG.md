@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The native libc API baseline is now POSIX.1-2024 (SUSv5 core) plus a documented XSI
+  subset, not the IRIX 6.5 libc surface.  The IRIX 6.5 compatibility container keeps its
+  legacy ABI; the native profile, ABI obligations and Rust `std` consequences are in
+  [`docs/spec/posix.md`](docs/spec/posix.md).
 - `crates/irix-elf`: the first M5 dependency, a `no_std` parser and load-plan
   view for IRIX o32 and n32 ELF images.  It decodes the ELF32 big-endian MIPS
   file header, all 32-byte program headers, the MIPS ABI in `e_flags`, the

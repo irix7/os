@@ -43,6 +43,9 @@ The estimates are planning ranges, not commitments. They exclude holidays, hardw
 These run in parallel with every milestone and are tracked as their own epics:
 
 - **Clean-room and provenance** — harness, similarity screen, DCO, access control for `irix6`.
+- **Native POSIX and Rust std** — POSIX.1-2024 profile, native libc ABI and the hosted
+  Rust `std`; see [`../spec/posix.md`](../spec/posix.md).  This is downstream of the
+  native process model, not a replacement for the IRIX 6.5 compatibility contract.
 - **CI and automation** — cross-compile, emulator boot, smoke harness, hardware-in-the-loop, releases.
 - **Documentation** — user, admin, install, troubleshooting; interface specs; ADRs.
 - **Security** — threat model, MCP modes, supply chain, vulnerability disclosure.

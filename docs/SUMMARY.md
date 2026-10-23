@@ -11,6 +11,7 @@
 - [IRIX ELF loader contract](spec/elf.md)
 - [Loadable kernel modules](spec/modules.md)
 - [MCP control plane](spec/mcp.md)
+- [Native POSIX API baseline](spec/posix.md)
 - [Driver interface](spec/driver-interface.md)
 
 ## Plan
