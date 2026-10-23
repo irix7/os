@@ -268,6 +268,8 @@ fn run(services: &Services) -> Result<(), Failure> {
 
     // Exercise the M4 RAM overlay over the read-only EROFS lower.
     let mut overlay = Overlay::new(LowerView { fs: &mut fs });
+    let _ = overlay.create_dir("/etc");
+    let _ = overlay.create_dir("/home");
     if overlay.create_dir("/tmp").is_ok() && overlay.write_file("/tmp/motd", b"RAM upper\n").is_ok()
     {
         if let Ok(data) = overlay.read_file("/tmp/motd") {

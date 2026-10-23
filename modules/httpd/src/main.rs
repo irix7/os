@@ -228,7 +228,13 @@ fn ensure_fs() -> bool {
             };
             if let Ok(fs) = erofs::Erofs::mount(CachedDisk { cache }) {
                 let mut overlay = Overlay::new(LowerView { fs });
-                let _ = overlay.create_dir("/tmp");
+                // The writable roots promised by the M4 milestone.  `/etc`
+                // already exists in the EROFS lower; creating it here makes the
+                // upper namespace explicit and lets later writes descend into
+                // it.  `/home` is normally absent from the read-only image.
+                for path in ["/tmp", "/etc", "/home"] {
+                    let _ = overlay.create_dir(path);
+                }
                 OVERLAY = Some(overlay);
             }
         }

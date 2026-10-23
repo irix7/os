@@ -9,6 +9,9 @@
 
 This document fixes the contract for the read-only-lower, RAM-upper overlay that
 will provide writable `/tmp`, `/etc` and `/home` mounts on the M4 EROFS root.
+The loadable `httpd` and `erofs` images create all three directories in the RAM
+upper at mount; `/etc` also exists in the read-only lower, so its lower entries
+remain visible until an upper entry shadows one.
 
 The overlay is **in memory only**.  Upper files, upper directories and whiteouts
 live in `BTreeMap`/`BTreeSet` structures owned by the `Overlay`, and they are
