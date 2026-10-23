@@ -6,9 +6,8 @@
 **Related:** [`posix.md`](posix.md) (API baseline), [`architecture.md`](architecture.md) §5 (native ABI and
 process model) and §6 (compatibility container), [`elf.md`](elf.md) (ELF loader contract),
 [`driver-interface.md`](driver-interface.md) (`ctl`/`data`/`status` and `posix_devctl`),
-[`modules.md`](modules.md) (kernel modules are `no_std`), and the std research
-report ([PR #99](https://github.com/irix7/os/pull/99); it lands as
-`docs/research/rust-std-irix7.md`).
+[`modules.md`](modules.md) (kernel modules are `no_std`), and the
+[`std` research report](../research/rust-std-irix7.md).
 
 **Machine-readable manifest:** [`native-libc-symbols.json`](native-libc-symbols.json).
 **Audit tool:** [`../../tools/std-abi-surface.py`](../../tools/std-abi-surface.py).
@@ -730,10 +729,8 @@ specification (report §3.3, §9.4).  It never defines the native ABI.
 ## 10. References
 
 - [`posix.md`](posix.md) — the adopted POSIX.1-2024 baseline, profile and ABI obligations.
-- [`docs/research/rust-std-irix7.md`](https://github.com/irix7/os/pull/99) — the std research
-  report (evidence, target matrix, §5.1/§5.3 surface, §9.2 first-PR plan).  The report is
-  PR #99; the path is where it lands.  If the PR has not merged when this document lands,
-  read it from the PR.
+- [`../research/rust-std-irix7.md`](../research/rust-std-irix7.md) — the std research report
+  (evidence, target matrix, §5.1/§5.3 surface, §9.2 first-PR plan).
 - [`architecture.md`](architecture.md) §2 (D2, D3, D4, D11, D32), §5 (native ABI) and §6
   (compatibility container).
 - [`elf.md`](elf.md) — the IRIX ELF loader contract (compat container; not the native loader).

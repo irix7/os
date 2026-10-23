@@ -130,7 +130,7 @@ only configuration. ISDN is explicitly out of scope.
 
 ## 2. Governing decisions
 
-### 2.1 Existing ADRs (0001–0020)
+### 2.1 Existing ADRs (0001–0021)
 
 All governing decisions apply. The numbered, dated ADRs live in
 `github.com/irix7/project/docs/adr/`.
@@ -157,6 +157,7 @@ All governing decisions apply. The numbered, dated ADRs live in
 | 0018 | GCC backend primary, LLVM parallel | Codegen |
 | 0019 | IRIX fork on `rust-lang/gcc` | GCC 17 trunk + libgccjit |
 | 0020 | Rebuild ladder | Recompile vs reconstruct |
+| 0021 | Native Rust std is load-bearing; its libc baseline is POSIX.1-2024 | Target/product split and std plan |
 
 ### 2.2 New decisions (advanced architecture)
 
