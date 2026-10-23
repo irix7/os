@@ -4,16 +4,17 @@
 
 Starts iris (unless --no-launch), waits for the MCP endpoint, and checks the
 JSON-RPC surface: initialize, tools/list, status, shell.exec, serial.read,
-echo, block.read and the EROFS fs.read/fs.list/fs.write/fs.remove tools.  With
---reset it also proves the autoload loop: system.reset, wait for the reboot,
-then initialize, status and the module tools again.
+echo, block.read and the EROFS fs.read, fs.list, fs.stat, fs.readlink, fs.write
+and fs.remove tools.  With --reset it also proves the autoload loop: system.reset,
+wait for the reboot, then initialize, status and the module tools again.
 
 The guest needs SCSI target 1 (the IRIX disk, normally scsi1.raw from the rig
-configuration).  The fs.* checks need the EROFS fixture at SCSI target 2, LBA 0.
-When this script launches iris, pass --erofs-image PATH (or the raw --scsi2
-PATH) so it attaches the fixture; the checked-in image is
-crates/erofs/tests/fixtures/root.erofs.  With --no-launch the caller must
-already have attached target 2, or pass --skip-fs.
+configuration); pass --skip-block for a diskless guest with no target 1.  The
+fs.* checks need the EROFS fixture at SCSI target 2, LBA 0.  When this script
+launches iris, pass --erofs-image PATH (or the raw --scsi2 PATH) so it attaches
+the fixture; the checked-in image is crates/erofs/tests/fixtures/root.erofs.
+With --no-launch the caller must already have attached target 2, or pass
+--skip-fs.
 
 The module must autoload from NVRAM (mcp.url/mcp.sha256), or be given
 --module-url/--module-sha256 so the script can load it through the telnet
@@ -30,6 +31,12 @@ That attaches the EROFS fixture at SCSI ID 2 and runs the whole surface.
 Against an already-running guest whose target 2 is attached:
 
     rom/tools/mcp-smoke.py --no-launch --token secret-token
+
+Against a diskless guest with neither SCSI target, the module surface is still
+checked:
+
+    rom/tools/mcp-smoke.py --no-launch --skip-block --skip-fs \
+        --token secret-token
 
 --reset needs NVRAM autoload: a module loaded only through --module-url does not
 come back after the reset.  Paths given to --erofs-image and --scsi2 are
@@ -323,6 +330,54 @@ def read_must_fail(url, token, path):
     raise SmokeError(f"fs.read {path} unexpectedly returned {text[:80]!r}")
 
 
+def parse_stat(text, path):
+    """Parse the JSON object the module returns in the fs.stat text field."""
+    try:
+        stat = json.loads(text)
+    except ValueError:
+        raise ProtocolError(
+            f"fs.stat {path}: text is not JSON: {text[:120]!r}"
+        ) from None
+    if not isinstance(stat, dict):
+        raise ProtocolError(f"fs.stat {path}: result is not a JSON object")
+    return stat
+
+
+def expect_stat(url, token, path, **expected):
+    """Check a fs.stat result without depending on JSON member order."""
+    stat = parse_stat(call_tool(url, token, "fs.stat", {"path": path}), path)
+    for field, want in expected.items():
+        got = stat.get(field)
+        require(
+            got == want,
+            f"fs.stat {path}: {field} is {got!r}, expected {want!r} "
+            f"(full result {stat!r})",
+        )
+    return stat
+
+
+def readlink_must_fail(url, token, path, reason):
+    """Check that fs.readlink returns a JSON-RPC error naming the reason."""
+    try:
+        text = call_tool(url, token, "fs.readlink", {"path": path})
+    except ToolError as error:
+        raise SmokeError(
+            f"fs.readlink {path}: expected a JSON-RPC error, got a tool error: "
+            f"{error}"
+        ) from None
+    except RpcError as error:
+        if error.code is None:
+            # A transport or HTTP failure is not evidence about the path.
+            raise
+        require(
+            reason in error.message.lower(),
+            f"fs.readlink {path}: JSON-RPC error {error.code} does not mention "
+            f"{reason!r}: {error.message}",
+        )
+        return error.message
+    raise SmokeError(f"fs.readlink {path} unexpectedly returned {text[:80]!r}")
+
+
 def iris_command(args, scsi2):
     """Build the iris argv (and serial log path) for one smoke run."""
     log = os.path.abspath(args.serial_log)
@@ -429,6 +484,8 @@ def run(args, scsi2, fs_checks):
             "block.read",
             "fs.read",
             "fs.list",
+            "fs.stat",
+            "fs.readlink",
             "fs.write",
             "fs.remove",
         )
@@ -450,23 +507,65 @@ def run(args, scsi2, fs_checks):
         print("PASS: initialize, tools/list, status, uname, serial.read, echo")
         print(status.strip())
 
-        sector = call_tool(url, args.token, "block.read", {"target": 1, "lba": 0})
-        require(
-            sector.startswith(SECTOR_MAGIC),
-            f"block.read target 1 lba 0 returned {sector[:16]!r}, "
-            f"expected MComprHD ({SECTOR_MAGIC})",
-        )
-        require(
-            len(sector) == 1024
-            and all(ch in "0123456789abcdef" for ch in sector),
-            f"block.read returned {len(sector)} characters, expected 1024 hex",
-        )
-        print(f"PASS: block.read target 1 lba 0 starts {SECTOR_MAGIC} (MComprHD)")
+        if not args.skip_block:
+            sector = call_tool(
+                url, args.token, "block.read", {"target": 1, "lba": 0}
+            )
+            require(
+                sector.startswith(SECTOR_MAGIC),
+                f"block.read target 1 lba 0 returned {sector[:16]!r}, "
+                f"expected MComprHD ({SECTOR_MAGIC})",
+            )
+            require(
+                len(sector) == 1024
+                and all(ch in "0123456789abcdef" for ch in sector),
+                f"block.read returned {len(sector)} characters, expected 1024 hex",
+            )
+            print(
+                f"PASS: block.read target 1 lba 0 starts {SECTOR_MAGIC} (MComprHD)"
+            )
+        else:
+            print("SKIP: block.read checks (--skip-block)")
 
         if fs_checks:
             motd = call_tool(url, args.token, "fs.read", {"path": "/etc/motd"})
             require(MOTD in motd, f"fs.read /etc/motd returned {motd!r}")
             print("PASS: fs.read /etc/motd")
+
+            expect_stat(url, args.token, "/", type="dir", origin="erofs")
+            print("PASS: fs.stat / is a dir from erofs")
+
+            expect_stat(
+                url,
+                args.token,
+                "/link",
+                type="symlink",
+                target="hello.txt",
+                origin="erofs",
+            )
+            print("PASS: fs.stat /link is a symlink to hello.txt")
+
+            expect_stat(
+                url,
+                args.token,
+                "/etc/motd",
+                type="file",
+                size=18,
+                mode="100644",
+                origin="erofs",
+            )
+            print("PASS: fs.stat /etc/motd is an 18-byte file with mode 100644")
+
+            target = call_tool(url, args.token, "fs.readlink", {"path": "/link"})
+            require(
+                target == "hello.txt", f"fs.readlink /link returned {target!r}"
+            )
+            print("PASS: fs.readlink /link -> hello.txt")
+
+            message = readlink_must_fail(
+                url, args.token, "/etc/motd", "symlink"
+            )
+            print(f"PASS: fs.readlink /etc/motd rejected: {message}")
 
             listing = call_tool(url, args.token, "fs.list", {"path": "/"})
             entries = {
@@ -489,6 +588,16 @@ def run(args, scsi2, fs_checks):
                 written.strip() == "ok",
                 f"fs.write {SMOKE_PATH} returned {written!r}, expected 'ok'",
             )
+            expect_stat(
+                url,
+                args.token,
+                SMOKE_PATH,
+                type="file",
+                size=len(SMOKE_DATA),
+                mode="100644",
+                origin="overlay",
+            )
+            print(f"PASS: fs.stat {SMOKE_PATH} is from overlay")
             content = call_tool(url, args.token, "fs.read", {"path": SMOKE_PATH})
             require(
                 content == SMOKE_DATA,
@@ -547,19 +656,31 @@ def run(args, scsi2, fs_checks):
                 time.sleep(1)
             require("stage: kernel" in status, f"bad post-reset status:\n{status}")
 
-            sector = call_tool(
-                url, args.token, "block.read", {"target": 1, "lba": 0}
-            )
-            require(
-                sector.startswith(SECTOR_MAGIC),
-                "block.read failed after reset: the module did not autoload",
-            )
+            if not args.skip_block:
+                sector = call_tool(
+                    url, args.token, "block.read", {"target": 1, "lba": 0}
+                )
+                require(
+                    sector.startswith(SECTOR_MAGIC),
+                    "block.read failed after reset: the module did not autoload",
+                )
+            else:
+                print("SKIP: block.read after reset (--skip-block)")
             if fs_checks:
                 motd = call_tool(url, args.token, "fs.read", {"path": "/etc/motd"})
                 require(
                     MOTD in motd,
                     f"fs.read /etc/motd failed after reset: {motd!r}",
                 )
+                expect_stat(url, args.token, "/", type="dir", origin="erofs")
+                target = call_tool(
+                    url, args.token, "fs.readlink", {"path": "/link"}
+                )
+                require(
+                    target == "hello.txt",
+                    f"fs.readlink /link failed after reset: {target!r}",
+                )
+                print("PASS: fs.stat/fs.readlink after reset")
             print("PASS: system.reset -> autoload -> MCP and module tools")
         return 0
     finally:
@@ -595,6 +716,11 @@ def main():
         "--scsi2",
         metavar="PATH",
         help="raw image for SCSI ID 2 (instead of --erofs-image)",
+    )
+    parser.add_argument(
+        "--skip-block",
+        action="store_true",
+        help="skip the block.read checks (guest has no SCSI disk at target 1)",
     )
     parser.add_argument(
         "--skip-fs",

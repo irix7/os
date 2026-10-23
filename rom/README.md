@@ -274,10 +274,14 @@ It is a prototype: no bearer token or SSE yet. `serial.read` returns the kernel'
 
 `rom/tools/mcp-smoke.py` checks the live control plane: `initialize`, `tools/list`,
 `status`, `shell.exec uname`, `serial.read`, `echo`, `block.read` on target 1, and
-the EROFS `fs.read`, `fs.list`, `fs.write` and `fs.remove` tools.  It reads
-`/etc/motd`, lists `/` (which must include `etc` and `link`), then writes
-`/tmp/mcp-smoke`, reads it back, removes it, confirms the read now fails and that
-`/etc/motd` still comes from the read-only lower image.
+the EROFS `fs.read`, `fs.list`, `fs.stat`, `fs.readlink`, `fs.write` and
+`fs.remove` tools.  It reads `/etc/motd`, lists `/` (which must include `etc` and
+`link`), and checks the fixture's metadata: `/` is a directory from `erofs`,
+`/link` is a symlink to `hello.txt` (and `fs.readlink /link` returns that
+target), `/etc/motd` is an 18-byte file with mode `100644`, and `fs.readlink /etc/motd`
+fails as not a symlink.  The overlay round trip writes
+`/tmp/mcp-smoke`, stats it as `overlay`, reads it back, removes it, confirms the
+read now fails and that `/etc/motd` still comes from the read-only lower image.
 
 Against an already-running guest whose SCSI target 2 holds the fixture:
 
@@ -299,12 +303,22 @@ rom/tools/mcp-smoke.py --iris /mnt/europa/iris/target/release/iris \
 directory, not `--cwd`.  The guest also needs SCSI target 1 (`scsi1.raw`) for
 `block.read`; the rig configuration supplies it.  When the script launches iris
 without either option it skips the `fs.*` checks; `--skip-fs` skips them for an
-already-running guest that has no target 2.
+already-running guest that has no target 2.  `--skip-block` skips the
+`block.read` checks (before and after a reset) for a diskless guest with no
+target 1; when the script launches iris, give `--config` a rig configuration
+that does not attach `scsi1.raw`.
 
-With `--reset` it also calls `system.reset`, waits for the reboot and autoload, and
-checks `status`, `block.read` and `fs.read` on the new instance; that path needs
-NVRAM autoload.  To load the module through the telnet console instead, pass
-`--module-url` and `--module-sha256`.  The token must match `mcp.token`.
+A diskless guest therefore needs only the module and its network path:
+
+```bash
+rom/tools/mcp-smoke.py --no-launch --skip-block --skip-fs --token secret-token
+```
+
+With `--reset` it also calls `system.reset`, waits for the reboot and autoload,
+and checks `status`, `block.read` (unless `--skip-block`) and the filesystem
+tools on the new instance; that path needs NVRAM autoload.  To load the module
+through the telnet console instead, pass `--module-url` and `--module-sha256`.
+The token must match `mcp.token`.
 
 The script's own logic runs without a guest against a fake MCP endpoint:
 

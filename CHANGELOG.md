@@ -8,16 +8,23 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
-- `rom/tools/mcp-smoke.py` now exercises the module tools and the autoload
-  loop: `block.read` target 1 LBA 0 (the `4d436f6d`/`MComprHD` volume header),
-  `fs.read /etc/motd`, `fs.list /` (which must include `etc` and `link`), a
-  `fs.write`/`fs.read`/`fs.remove` round trip on `/tmp/mcp-smoke`, and a
-  lower-image read after the overlay change.  `--erofs-image`/`--scsi2` attach
-  the fixture at SCSI ID 2 when the script launches iris, `--skip-fs` covers
-  guests without one, and HTTP/JSON-RPC failures now name the failing tool with
-  the server's code and message.  `--reset` re-checks `block.read` and
-  `fs.read` through the autoloaded module.  Eleven standard-library tests
-  drive the script against a fake MCP server.
+- `rom/tools/mcp-smoke.py` now exercises the module tools, the filesystem
+  metadata and the autoload loop: `block.read` target 1 LBA 0 (the
+  `4d436f6d`/`MComprHD` volume header), `fs.read /etc/motd`, `fs.list /`
+  (which must include `etc` and `link`), `fs.stat` for `/` (a directory from
+  `erofs`), `/link` (a symlink to `hello.txt`) and `/etc/motd` (an 18-byte
+  file with mode `100644`), `fs.readlink /link` and the not-a-symlink error
+  for `fs.readlink /etc/motd`, and a `fs.write`/`fs.stat`/`fs.read`/
+  `fs.remove` round trip on `/tmp/mcp-smoke` that checks the `overlay` origin,
+  plus a lower-image read after the overlay change.  `--erofs-image`/`--scsi2`
+  attach the fixture at SCSI ID 2 when the script launches iris, `--skip-fs`
+  covers guests without one, and the new `--skip-block` covers a diskless
+  guest with no SCSI target 1; `--skip-block --skip-fs` checks initialization,
+  `tools/list`, `status`, `uname`, `serial.read` and `echo` without any SCSI
+  disk.  HTTP/JSON-RPC failures name the failing tool with the server's code
+  and message.  `--reset` re-checks the block and filesystem tools (skipping
+  whichever checks are disabled) through the autoloaded module.  Sixteen
+  standard-library tests drive the script against a fake MCP server.
 
 - SCSI READ(6) data phases now use the HPC3 descriptor DMA engine.  The kernel
   allocates a physically contiguous bounce buffer and a descriptor frame,
