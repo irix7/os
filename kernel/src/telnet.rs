@@ -37,6 +37,16 @@ struct Console {
     iac: u8,
     /// The previous byte was CR, so a following LF must not run the line twice.
     last_cr: bool,
+    /// A deferred HTTP fetch, run outside the socket-set borrow.
+    pending_http: Option<HttpRequest>,
+}
+
+/// Parsed `http <ip>:<port><path>` request.
+struct HttpRequest {
+    ip: Ipv4Address,
+    port: u16,
+    path: [u8; 96],
+    path_len: usize,
 }
 
 static mut CONSOLE: Option<Console> = None;
@@ -63,6 +73,7 @@ pub fn init() {
                 connected: false,
                 iac: 0,
                 last_cr: false,
+                pending_http: None,
             });
         }
     }
@@ -70,6 +81,43 @@ pub fn init() {
 
 /// Service the listener and session.  Call after `net::poll()`.
 pub fn poll() {
+    // Run any deferred HTTP fetch first: it needs the interface and the
+    // socket set to itself, so it must not run inside `service`'s borrow.
+    let request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_http.take());
+    if let Some(req) = request {
+        let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
+        let result = crate::http::get(req.ip, req.port, path);
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let mut w = SocketWriter { sock };
+                match result {
+                    Ok(summary) => match summary.content_length {
+                        Some(expected) if expected != summary.body_len => {
+                            let _ = write!(
+                                w,
+                                "http: {} {}/{} bytes\r\n",
+                                summary.status, summary.body_len, expected
+                            );
+                        }
+                        _ => {
+                            let _ = write!(
+                                w,
+                                "http: {} {} bytes\r\n",
+                                summary.status, summary.body_len
+                            );
+                        }
+                    },
+                    Err(err) => {
+                        let _ = write!(w, "http: {}\r\n", err);
+                    }
+                }
+                let _ = w.sock.send_slice(b"kernel> ");
+            });
+        }
+    }
+
     // SAFETY: single-threaded kernel; the console is set once by init().
     let console = unsafe { CONSOLE.as_mut() };
     let Some(console) = console else { return };
@@ -220,6 +268,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 mem           RAM accounting\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
+                  \x20 http <ip>:<port><path>  fetch over HTTP\r\n\
                   \x20 boot          continue booting\r\n",
             );
         }
@@ -280,6 +329,15 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let _ = sock.send_slice(b"booting\r\n");
             BOOT_REQUESTED.store(true, Ordering::SeqCst);
         }
+        _ if line.starts_with(b"http ") => match parse_http(trim(&line[5..])) {
+            Some(request) => {
+                let _ = sock.send_slice(b"http: fetching\r\n");
+                console.pending_http = Some(request);
+            }
+            None => {
+                let _ = sock.send_slice(b"usage: http <ip>:<port><path>\r\n");
+            }
+        },
         _ if line.starts_with(b"echo ") => {
             let _ = sock.send_slice(&line[5..]);
             let _ = sock.send_slice(b"\r\n");
@@ -337,4 +395,42 @@ impl core::fmt::Display for DisplayIpv4 {
         let o = self.0.octets();
         write!(f, "{}.{}.{}.{}", o[0], o[1], o[2], o[3])
     }
+}
+
+/// Parse `http <ip>:<port><path>`.
+fn parse_http(arg: &[u8]) -> Option<HttpRequest> {
+    let s = core::str::from_utf8(arg).ok()?;
+    let (host, rest) = s.split_once(':')?;
+    let slash = rest.find('/')?;
+    let (port_str, path) = rest.split_at(slash);
+    let port: u16 = port_str.parse().ok()?;
+    let ip = parse_ipv4(host)?;
+    if path.is_empty() || path.len() > 96 {
+        return None;
+    }
+    let mut buf = [0u8; 96];
+    buf[..path.len()].copy_from_slice(path.as_bytes());
+    Some(HttpRequest {
+        ip,
+        port,
+        path: buf,
+        path_len: path.len(),
+    })
+}
+
+/// Parse a dotted-decimal IPv4 address.
+fn parse_ipv4(s: &str) -> Option<Ipv4Address> {
+    let mut octets = [0u8; 4];
+    let mut n = 0;
+    for part in s.split('.') {
+        if n == 4 {
+            return None;
+        }
+        octets[n] = part.parse().ok()?;
+        n += 1;
+    }
+    if n != 4 {
+        return None;
+    }
+    Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
 }

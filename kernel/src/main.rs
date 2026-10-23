@@ -24,6 +24,7 @@ pub mod capability;
 pub mod font;
 pub mod frames;
 pub mod gfx;
+pub mod http;
 pub mod kbd;
 pub mod menu;
 pub mod net;
