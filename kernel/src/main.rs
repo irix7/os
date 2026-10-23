@@ -44,6 +44,7 @@ pub mod ping;
 pub mod rtc;
 pub mod scheduler;
 pub mod scsi;
+pub mod scsi_disk;
 pub mod sha256;
 pub mod status;
 pub mod telnet;

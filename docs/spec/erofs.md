@@ -323,7 +323,19 @@ length against the superblock's block count, and the whole-image SHA-256; a
 mismatch aborts before mount.  The verification GET currently transfers the
 image a second time; hashing while filling the range cache is future work.
 Only HTTP is supported for ranges at present; TLS remains full-body.  The next
-integration step is a multi-block LRU and a 256 KiB read-ahead window.
+integration step is a 256 KiB read-ahead window.
+
+The kernel also reaches EROFS through the SCSI disk:
+
+```text
+erofsdisk <target> [path]
+```
+
+The image starts at LBA 0 of the selected target.  `ScsiDisk` reads 512-byte
+sectors through READ(6), `block-cache`'s LRU (16 x 4 KiB) coalesces them into
+filesystem blocks, and the same EROFS reader mounts the image.  On iris, a
+compact fixture attached to SCSI ID 2 reads `/etc/motd` correctly.  Descriptor
+DMA will replace the polled PIO sector path.
 
 ## 10. Verification
 
