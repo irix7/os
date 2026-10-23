@@ -94,16 +94,10 @@ const WR0_DATA: u8 = 8;
 const BAUD_TC: u8 = 10;
 
 pub fn init() {
-    wr(WR9, 0xB0);
-    wr(WR4, 0x44);
-    wr(WR11, 0x50);
-    wr(WR12, BAUD_TC);
-    wr(WR13, 0x00);
-    wr(WR14, 0x01);
-    wr(WR3, 0xC1);
-    wr(WR5, 0x68);
-    wr(WR1, 0x00);
-    wr(WR9, 0x08);
+    // The ROM brought the Z85C30 up at 9600 8N1 before it decompressed the
+    // kernel; the kernel inherits that state.  Do not reset the SCC here: a
+    // reset races with the ROM's final characters and can leave the
+    // transmitter ready bit stuck (observed intermittently under iris).
 }
 
 fn tx_ready() -> bool {

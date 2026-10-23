@@ -112,6 +112,12 @@ _start:
     jal     serial_puts
     nop
 
+    # The kernel was written through the uncached alias, but the RAM test may
+    # have left stale lines in the data and instruction caches.  Start the
+    # kernel with cold caches so its .data and text are read from memory.
+    jal     cache_flush_all
+    nop
+
     # Enter the kernel at its cached kseg0 address.
     #   $a0 = BootInfo physical address (0: none yet)
     #   $a1 = total RAM bytes
@@ -122,6 +128,35 @@ _start:
     li      $sp, KERNEL_STACK_TOP    /* kernel stack */
     li      $t9, KERNEL_ENTRY
     jr      $t9
+    nop
+
+/*
+ * cache_flush_all -- write back and invalidate the whole L1 data cache and
+ * invalidate the whole L1 instruction cache.
+ *
+ * The R4400 has 16 KiB caches with 16-byte lines.  Index operations select a
+ * line from the address bits, so walking 0x80000000..0x80004000 covers every
+ * set (and both ways when the way bit is part of the index).
+ *
+ * Clobbers $8 and $9.
+ */
+cache_flush_all:
+    li      $8, 0x80000000
+    li      $9, 0x80004000
+1:
+    cache   0x08, 0($8)             /* Index Writeback Invalidate (D) */
+    addu    $8, $8, 16
+    blt     $8, $9, 1b
+    nop
+    li      $8, 0x80000000
+    li      $9, 0x80004000
+2:
+    cache   0x00, 0($8)             /* Index Invalidate (I) */
+    addu    $8, $8, 16
+    blt     $8, $9, 2b
+    nop
+    sync
+    jr      $ra
     nop
 
 ram_fail:
