@@ -452,7 +452,7 @@ per-process current directory.
 
 The reader keeps no cache; the caller owns the block cache.  The kernel's
 `erofs_cmd` probes the superblock once to learn the image size, then uses
-`http::get_range_to` or `tls::get_range_to` with a 64 KiB read-ahead window
+`http::get_range_to` or `tls::get_range_to` with a 256 KiB read-ahead window
 clamped to the final block.  The first probe is 4 KiB; the mount then reads the
 superblock, metadata and inline data from that window, and a file fetch replaces
 it with the clamped read-ahead.  It is reached from the telnet console:
@@ -481,15 +481,14 @@ about 29 KiB of heap per range.  The digest check is a single full-body GET
 with the TLS client's 30-second response deadline, so it is practical for
 fixture-sized images; a large image over HTTPS needs the streaming digest
 first.  Reusing the TLS record buffers across range requests and a persistent
-session are the follow-ups; neither changes the on-disk path.  The next
-integration step is a 256 KiB read-ahead window.
+session are the follow-ups; neither changes the on-disk path.
 
 The disk filesystem path is a loadable module, not a kernel command.  The
 `modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
 `/etc/motd` and prints it through the console service.  It uses the ABI 10
-`block_read` service, `block-cache`'s LRU (16 x 4 KiB), its own global
+`block_read` service, `block-cache`'s LRU (64 x 4 KiB, 256 KiB), its own global
 allocator over the kernel `alloc` service, and the same EROFS reader.  The flat
-module is 25,736 bytes and never enters the compressed PROM.  On iris it prints
+module is 79,160 bytes and never enters the compressed PROM.  On iris it prints
 the motd content and returns 0.  Descriptor DMA will replace the polled PIO
 sector path.
 
@@ -542,7 +541,10 @@ tail).  Each command mounts the image afresh; an `info` or `ls` issues one 4 KiB
 probe range, while `cat /big.bin` issues the probe plus one clamped read-ahead
 request covering the whole 12 KiB image.  A correct `sha256=` prints
 `erofs: sha256 ok`; an all-zero digest prints `erofs: sha256: digest mismatch`
-and does not mount.
+and does not mount.  The window is 256 KiB, not the fixture's 12 KiB: against a
+1.25 MiB test image, `cat /big.bin` issues five full 256 KiB ranges and a 4 KiB
+tail, and the serial diagnostic reports each as `body=00040000` with a matching
+`206` `Content-Length`.
 
 ### 10.1 HTTPS range check
 
@@ -572,7 +574,8 @@ USERTrust/Sectigo, so the kernel rejects it until another root is embedded.
 - Metabox metadata.
 - Superblock CRC32C verification.
 - A block-at-a-time directory iterator.
-- A multi-block HTTP Range cache with a 256 KiB read-ahead and a shared LRU.
+- One shared LRU in the block cell, so the kernel console and the modules stop
+  keeping separate 256 KiB caches.
 - Reuse the TLS record buffers across HTTPS range requests and keep the session
   open, so a TLS mount costs one handshake rather than one per range.
 - Hash the image while filling that cache, instead of a second full GET, and

@@ -65,6 +65,83 @@ fn hits_keep_the_lru_order() {
     assert_eq!(cache.device().reads, 4);
 }
 
+/// A 4 KiB-per-block device where every byte of block `n` holds `n`, so a
+/// cache slot can be checked against the block it claims to hold.
+struct Blocks {
+    blocks: u64,
+    reads: u64,
+}
+
+impl ReadAt for Blocks {
+    type Error = ();
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), ()> {
+        let block = offset / 4096;
+        if block >= self.blocks || !offset.is_multiple_of(4096) || buf.len() > 4096 {
+            return Err(());
+        }
+        for byte in buf.iter_mut() {
+            *byte = block as u8;
+        }
+        self.reads += 1;
+        Ok(())
+    }
+}
+
+#[test]
+fn a_256_kib_cache_holds_sixty_four_4_kib_blocks() {
+    const BLOCKS: u64 = 64;
+    const BLOCK_SIZE: usize = 4096;
+
+    // The device is one block larger than the cache, so the final read has to
+    // evict something.
+    let mut cache = Lru::<_, 64>::new(
+        Blocks {
+            blocks: BLOCKS + 1,
+            reads: 0,
+        },
+        BLOCK_SIZE,
+    )
+    .expect("cache");
+
+    assert_eq!(cache.capacity(), BLOCKS as usize);
+    assert_eq!(cache.block_size(), BLOCK_SIZE);
+    assert_eq!(cache.capacity() * cache.block_size(), 256 * 1024);
+
+    // Fill every slot: nothing is evicted while the cache is exactly full, so
+    // each block is one device read.
+    let mut out = [0u8; 1];
+    for index in 0..BLOCKS {
+        cache.read_at(index * BLOCK_SIZE as u64, &mut out).unwrap();
+        assert_eq!(out[0], index as u8);
+    }
+    assert_eq!(cache.misses(), BLOCKS);
+    assert_eq!(cache.device().reads, BLOCKS);
+
+    // A second pass is all hits: the whole 256 KiB window stayed resident.
+    for index in 0..BLOCKS {
+        cache.read_at(index * BLOCK_SIZE as u64, &mut out).unwrap();
+        assert_eq!(out[0], index as u8);
+    }
+    assert_eq!(cache.hits(), BLOCKS);
+    assert_eq!(cache.misses(), BLOCKS);
+
+    // One more block evicts only the least recently used slot, which is block
+    // 0 after the pass above re-used blocks 0..63 in order.
+    cache.read_at(BLOCKS * BLOCK_SIZE as u64, &mut out).unwrap();
+    assert_eq!(out[0], BLOCKS as u8);
+    assert_eq!(cache.misses(), BLOCKS + 1);
+
+    // Block 1 was next in line, so it is still resident; block 0 was the
+    // victim and has to come back from the device.
+    cache.read_at(BLOCK_SIZE as u64, &mut out).unwrap();
+    assert_eq!(out[0], 1);
+    assert_eq!(cache.misses(), BLOCKS + 1, "block 1 stayed");
+    cache.read_at(0, &mut out).unwrap();
+    assert_eq!(out[0], 0);
+    assert_eq!(cache.misses(), BLOCKS + 2, "block 0 was evicted");
+}
+
 #[test]
 fn reads_cross_block_boundaries() {
     let mut cache = Lru::<_, 2>::new(Counting::new(32), 8).expect("cache");

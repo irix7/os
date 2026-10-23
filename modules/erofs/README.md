@@ -26,8 +26,8 @@ HOST="$(rustc -vV | sed -n 's/^host: //p')"
 
 `llvm-objcopy -O binary` produces the flat image the loader expects: text at
 `0x8840_0000`, no ELF header, and `.bss` omitted (the loader zeroes the module
-area before the download).  The current image is 64,088 bytes with SHA-256
-`2d2ef246d80787c0c5dea2aa97a39bed7b4c58e4c6e57257ab14558ad95df386`; check the
+area before the download).  The current image is 79,160 bytes with SHA-256
+`c144d25e801befee8888f5b99506fe2ddf4550ca5cb211f9596e28bf30774c31`; check the
 result stays under the 2 MiB module area before serving it.
 
 ## Load
