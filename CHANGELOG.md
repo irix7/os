@@ -281,6 +281,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Fixed
 
+- The overlay now skips the `.` and `..` entries that EROFS returns from a
+  directory read, so `fs.list` lists the real children instead of failing with
+  `invalid directory entry name`.
 - The LZ4 match-length extension was read before the match distance; the sequence
   is distance first.
 - The big-endian size and magic fields in the compressed payload were assembled

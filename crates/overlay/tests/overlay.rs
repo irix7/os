@@ -10,6 +10,7 @@ use overlay::{normalise, DirEntry, EntryKind, Error, Lower, Overlay};
 struct MemoryLower {
     files: BTreeMap<String, Vec<u8>>,
     dirs: BTreeSet<String>,
+    dots: bool,
 }
 
 impl MemoryLower {
@@ -27,6 +28,11 @@ impl MemoryLower {
             current.push_str(part);
             self.dirs.insert(current.clone());
         }
+        self
+    }
+
+    fn with_dots(mut self) -> Self {
+        self.dots = true;
         self
     }
 
@@ -77,6 +83,16 @@ impl Lower for MemoryLower {
                 }
             }
         }
+        if self.dots {
+            entries.push(DirEntry {
+                name: String::from("."),
+                kind: EntryKind::Directory,
+            });
+            entries.push(DirEntry {
+                name: String::from(".."),
+                kind: EntryKind::Directory,
+            });
+        }
         Ok(Some(entries))
     }
 }
@@ -108,6 +124,13 @@ fn stat_reports_upper_nodes() {
     assert!(fs.stat("/tmp/motd").unwrap().upper);
     assert!(!fs.stat("/").unwrap().upper);
     assert!(!fs.stat("/etc/motd").unwrap().upper);
+}
+
+#[test]
+fn lower_dot_entries_are_ignored() {
+    let mut fs = overlay(MemoryLower::new().file("/etc/motd", b"welcome").with_dots());
+    assert_eq!(fs.list("/").unwrap(), ["etc"]);
+    assert_eq!(fs.list("/etc").unwrap(), ["motd"]);
 }
 
 #[test]

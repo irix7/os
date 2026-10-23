@@ -224,6 +224,12 @@ impl<L: Lower> Overlay<L> {
         self.collect_upper(&path, &mut entries)?;
         if let Some(lower) = self.lower.read_dir(&path)? {
             for entry in lower {
+                // EROFS (like most on-disk formats) stores `.` and `..` as
+                // real directory entries.  They are not children of the
+                // directory and must not appear in the merged listing.
+                if entry.name == "." || entry.name == ".." {
+                    continue;
+                }
                 if !is_name(&entry.name) {
                     return Err(Error::Lower("invalid directory entry name"));
                 }
