@@ -74,20 +74,24 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x00 | `version` | 7 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
-| 0x10 | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
-| 0x14 | `poll` | `void (*)(void)` — drive the shared network stack once |
-| 0x18 | `tcp_listen` | `int32_t (*)(uint32_t slot, uint16_t port)` — listen; 0 or -1 |
-| 0x1C | `tcp_state` | `uint32_t (*)(uint32_t slot)` — 0 closed, 1 listening, 2 established, 3 closing |
-| 0x20 | `tcp_recv` | `intptr_t (*)(uint32_t slot, uint8_t *ptr, size_t len)` — bytes, 0 for none, -1 for no socket |
-| 0x24 | `tcp_send` | `intptr_t (*)(uint32_t slot, const uint8_t *ptr, size_t len)` — bytes accepted, -1 for no socket |
-| 0x28 | `tcp_close` | `void (*)(uint32_t slot)` — send FIN |
-| 0x2C | `tcp_abort` | `void (*)(uint32_t slot)` — send RST and release the slot |
-| 0x30 | `console_read` | `intptr_t (*)(uint64_t offset, uint8_t *ptr, size_t len)` — serial ring, oldest byte clamped |
-| 0x34 | `console_total` | `uint64_t (*)(void)` — bytes ever written to the serial console |
-| 0x38 | `reset` | `void (*)(void)` — restart from the PROM entry; does not return |
-| 0x3C | `poweroff` | `void (*)(void)` — halt the machine; does not return |
-| 0x40 | `status` | `intptr_t (*)(uint8_t *ptr, size_t len)` — the shared machine status block |
-| 0x44 | `config_get` | `intptr_t (*)(const uint8_t *name, size_t name_len, uint8_t *out, size_t out_len)` — PROM environment value, or -1 |
+| 0x0C | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
+| 0x10 | `poll` | `void (*)(void)` — drive the shared network stack once |
+| 0x14 | `tcp_listen` | `int32_t (*)(uint32_t slot, uint16_t port)` — listen; 0 or -1 |
+| 0x18 | `tcp_state` | `uint32_t (*)(uint32_t slot)` — 0 closed, 1 listening, 2 established, 3 closing |
+| 0x1C | `tcp_recv` | `intptr_t (*)(uint32_t slot, uint8_t *ptr, size_t len)` — bytes, 0 for none, -1 for no socket |
+| 0x20 | `tcp_send` | `intptr_t (*)(uint32_t slot, const uint8_t *ptr, size_t len)` — bytes accepted, -1 for no socket |
+| 0x24 | `tcp_close` | `void (*)(uint32_t slot)` — send FIN |
+| 0x28 | `tcp_abort` | `void (*)(uint32_t slot)` — send RST and release the slot |
+| 0x2C | `console_read` | `intptr_t (*)(uint64_t offset, uint8_t *ptr, size_t len)` — serial ring, oldest byte clamped |
+| 0x30 | `console_total` | `uint64_t (*)(void)` — bytes ever written to the serial console |
+| 0x34 | `reset` | `void (*)(void)` — restart from the PROM entry; does not return |
+| 0x38 | `poweroff` | `void (*)(void)` — halt the machine; does not return |
+| 0x3C | `status` | `intptr_t (*)(uint8_t *ptr, size_t len)` — the shared machine status block |
+| 0x40 | `config_get` | `intptr_t (*)(const uint8_t *name, size_t name_len, uint8_t *out, size_t out_len)` — PROM environment value, or -1 |
+
+The struct lives in `modules/abi` (crate `module-abi`).  The kernel and every module
+link that one crate, and compile-time assertions pin these offsets for the n32 target;
+the table is 0x44 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.

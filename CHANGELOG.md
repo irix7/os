@@ -67,6 +67,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - MCP bearer authentication: the module reads `mcp.token` from the NVRAM environment
   (ABI version 7 service `config_get`); `POST /mcp` then requires
   `Authorization: Bearer <token>` and returns 401 with `WWW-Authenticate` otherwise.
+- The module ABI is a shared crate (`modules/abi`) linked by the kernel and every module,
+  with compile-time offset assertions for the n32 target.  This corrected the documented
+  layout: `clock_ms` is a 4-byte function pointer, so `alloc` starts at 0x0C and the table
+  is 0x44 bytes.
 - Boot-time module autoload: the kernel reads `mcp.url` and `mcp.sha256` from the DS1386
   PROM environment, fetches the module over HTTPS (explicit `http://` for the rig), verifies
   the digest and runs it before the boot menu. The control plane therefore survives a

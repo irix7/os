@@ -10,33 +10,7 @@
 #![no_std]
 #![no_main]
 
-/// Must match `kernel::module::Services` (version 3).
-#[repr(C)]
-pub struct Services {
-    pub version: u32,
-    pub write: extern "C" fn(*const u8, usize),
-    pub clock_ms: extern "C" fn() -> u64,
-    pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
-    pub poll: extern "C" fn(),
-    pub tcp_listen: unsafe extern "C" fn(u32, u16) -> i32,
-    pub tcp_state: extern "C" fn(u32) -> u32,
-    pub tcp_recv: unsafe extern "C" fn(u32, *mut u8, usize) -> isize,
-    pub tcp_send: unsafe extern "C" fn(u32, *const u8, usize) -> isize,
-    pub tcp_close: extern "C" fn(u32),
-    pub tcp_abort: extern "C" fn(u32),
-    pub console_read: unsafe extern "C" fn(u64, *mut u8, usize) -> isize,
-    pub console_total: extern "C" fn() -> u64,
-    pub reset: extern "C" fn(),
-    pub poweroff: extern "C" fn(),
-    pub status: unsafe extern "C" fn(*mut u8, usize) -> isize,
-    pub config_get: unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> isize,
-}
-
-#[repr(C)]
-pub struct ModuleVtable {
-    pub status: i32,
-    pub tick: Option<unsafe extern "C" fn(*const Services) -> i32>,
-}
+use module_abi::{ModuleVtable, Services};
 
 /// Listening phase.
 const ARM: u32 = 0;

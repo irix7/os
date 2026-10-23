@@ -177,8 +177,9 @@ CP0 Count; the menu and idle loops execute `WAIT`, which lets iris park the vCPU
 The compressed PROM image is a bootstrap, not the place for every feature. Code
 that is not needed to boot can be a **module**: a flat image linked at
 `0x88400000` (in the reserved low window, above the kernel stack), downloaded
-into RAM, SHA-256 checked, and called through a versioned C service table
-(`Services` in `kernel/src/module.rs`).
+into RAM, SHA-256 checked, and called through a versioned C service table.
+The table's layout is the shared `module-abi` crate in `modules/abi`, linked by
+the kernel and every module.
 
 TLS stays in the core: it is the transport that makes module downloads
 trustworthy. `module` uses HTTPS unless the argument starts with `http://`, and

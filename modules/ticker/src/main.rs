@@ -9,21 +9,7 @@
 #![no_std]
 #![no_main]
 
-/// Prefix of `kernel::module::Services` (version 3).
-#[repr(C)]
-pub struct Services {
-    pub version: u32,
-    pub write: extern "C" fn(*const u8, usize),
-    pub clock_ms: extern "C" fn() -> u64,
-    pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
-    pub poll: extern "C" fn(),
-}
-
-#[repr(C)]
-pub struct ModuleVtable {
-    pub status: i32,
-    pub tick: Option<unsafe extern "C" fn(*const Services) -> i32>,
-}
+use module_abi::{ModuleVtable, Services};
 
 static VTABLE: ModuleVtable = ModuleVtable {
     status: 0,
