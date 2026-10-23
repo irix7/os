@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- Link to the separate [IRIX 7 module SDK](https://github.com/irix7/os-sdk), which pins
+  the `module-abi` crate and packages the module template, target/linker and build tool.
+
 - Raw PROM boot path: a **MIPS III assembly** ROM executes directly from `0xBFC00000`,
   sizes and maps the DRAM banks through the memory controller, tests every byte of RAM
   stacklessly, brings up the SCC console, copies the kernel image out of PROM to

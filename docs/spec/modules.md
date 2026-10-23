@@ -137,7 +137,19 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
 - Exceptions inside a module use the kernel's trap path. The current trap handler prints
   the cause and halts, which is the expected failure mode for a bad module.
 
-## 6. Reference modules
+## 6. Developer SDK
+
+The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packages the
+developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
+macros, the n32 target and flat linker, a copyable template, a hello example and
+`tools/irix7-module.py` (build, flatten, hash). It pins the `module-abi` crate from this
+repository at a known revision; the ABI in `modules/abi` remains the source of truth.
+
+A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
+HTTPS, digest-checked and called through this table. The SDK changes none of the contract
+below.
+
+## 7. Reference modules
 
 `modules/hello` is the one-shot reference: a small flat image that prints one line through
 the service table and returns a vtable with status 0. Build it with its own linker script
@@ -187,7 +199,7 @@ ticker: tick
 ticker: tick
 ```
 
-## 7. Planned services
+## 8. Planned services
 
 - TCP listen/accept/send/recv/state/close over the shared interface, so a module can serve
   a protocol without linking smoltcp.
@@ -196,7 +208,7 @@ ticker: tick
 
 These are additive to the version 2 table.
 
-## 8. Non-goals
+## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
 - Multiple concurrent modules or dependency resolution.
