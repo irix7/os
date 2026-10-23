@@ -961,7 +961,7 @@ The 8 KB is shared between the PROM environment and the MAC address:
 
 | Offset | Contents |
 |---|---|
-| 0x000–0x3FF | PROM environment variables (see §13.3) |
+| 0x010–0x3FF | PROM environment variables (see §13.3); the RTC registers occupy 0x000–0x00F |
 | 0x4E8 | Ethernet MAC address, 6 bytes |
 | 0x4EE–0x7FF | PROM scratch / diagnostic results |
 | 0x800–0x1FFF | free for the OS |

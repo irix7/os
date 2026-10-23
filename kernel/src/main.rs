@@ -22,6 +22,7 @@ use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
+pub mod autoload;
 pub mod cache;
 pub mod capability;
 pub mod diagnostics;
@@ -37,6 +38,7 @@ pub mod menu;
 pub mod module;
 pub mod net;
 pub mod ntp;
+pub mod nvram;
 pub mod ping;
 pub mod scheduler;
 pub mod sha256;
@@ -547,6 +549,10 @@ pub extern "C" fn _start() -> ! {
     kbd::init();
     net::init();
     telnet::init();
+
+    // Boot-time module configuration from the PROM environment.
+    autoload::boot();
+
     menu::draw();
     loop {
         let mut action: Option<usize> = None;

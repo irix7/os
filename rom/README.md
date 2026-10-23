@@ -216,6 +216,22 @@ module: returned 0
 ```
 
 Without the scheme the command uses HTTPS, which is the normal module path.
+
+### Boot autoload
+
+The kernel reads `mcp.url` and `mcp.sha256` from the DS1386 PROM environment after DHCP
+and DNS, before the menu. The environment starts at register offset `0x10` (the RTC
+registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane. For the iris
+rig, stop the emulator and write both strings into `nvram.bin` at offset `0x10`:
+
+```text
+mcp.url=http://10.1.1.3:18080/httpd.module
+mcp.sha256=<64 hex digits of httpd.module>
+```
+
+On the next boot the serial log shows `autoload: fetching module`, the module prints
+`mcp: listening on port 80`, and the MCP endpoint is live without telnet. A missing or
+wrong digest prints `autoload: ...` and leaves the machine at the menu.
 The loader zeroes the module area before the download, so a module's `.bss`
 starts at zero; it flushes the data cache and invalidates the instruction cache
 before the entry call.

@@ -59,6 +59,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`. `GET /` remains a
   plain status page. The kernel keeps an 8 KiB serial ring (ABI version 4 services
   `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
+- Boot-time module autoload: the kernel reads `mcp.url` and `mcp.sha256` from the DS1386
+  PROM environment, fetches the module over HTTPS (explicit `http://` for the rig), verifies
+  the digest and runs it before the boot menu. The control plane therefore survives a
+  reset without a telnet step.
 - A shared machine-status formatter now backs both the telnet `status` command and the MCP
   `status` tool (ABI version 6 service `status`): IP, MAC, RAM, uptime and date from one
   place.

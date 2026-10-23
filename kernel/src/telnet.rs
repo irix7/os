@@ -727,7 +727,7 @@ fn parse_ping(arg: &[u8]) -> Option<PingRequest> {
 }
 
 /// Resolve a host name or dotted-decimal address.
-fn resolve_host(host: &[u8]) -> Option<Ipv4Address> {
+pub(crate) fn resolve_host(host: &[u8]) -> Option<Ipv4Address> {
     let name = core::str::from_utf8(host).ok()?;
     if let Some(ip) = parse_ipv4(name) {
         return Some(ip);

@@ -178,7 +178,8 @@ control plane is how everything else gets built.
 `initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
 `echo`, `console`, `serial.read`, `system.reset`, `system.poweroff` and `status`
 (IP/MAC/RAM/uptime/date) tools. The iris rig forwards host 8088 to the module's guest port 80.
-It has no bearer token, SSE, shell or screen/serial tools yet.
+It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes back after
+`system.reset`. It has no bearer token, SSE, shell or screen tools yet.
 
 **Acceptance criteria:**
 

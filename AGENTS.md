@@ -68,6 +68,9 @@ Consequences:
   A module may return a tick callback and use the table's TCP slots; long-running
   features (servers, the MCP control plane) belong in modules, not in the core.
 - The module area is inside the reserved low window. Never hand it to the frame allocator.
+- Boot autoload is configured in the DS1386 environment: `mcp.url` and `mcp.sha256` at
+  register offset `0x10` (one byte per 32-bit word in the low lane). A failed fetch or
+  digest leaves the machine at the menu and runs nothing.
 
 ## Cache coherency
 

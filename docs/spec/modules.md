@@ -29,6 +29,22 @@ module command uses HTTPS by default.
 The body is downloaded, not buffered elsewhere, so a module is limited only by the module
 area (2 MiB) and the network.
 
+## 2.1 Boot autoload
+
+A machine that reboots must bring the control plane back without a human at the console.
+The DS1386 PROM environment supplies two variables:
+
+| Name | Value |
+|---|---|
+| `mcp.url` | `https://host[:port]/path` (an explicit `http://` is only for the local rig) |
+| `mcp.sha256` | 64 hex digits, the digest of the module image |
+
+After DHCP and DNS are up, and before the boot menu is drawn, the kernel reads both,
+zeroes the module area, fetches the image, verifies the digest and calls the entry. A
+failure prints `autoload: ...` and leaves the machine at the menu; it never runs an
+unverified image. The environment lives in the DS1386 register array at offset `0x10`
+(the RTC registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane.
+
 ## 3. Address space
 
 | Property | Value |

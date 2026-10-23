@@ -228,7 +228,7 @@
         1500,
         1600
       ],
-      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built. Prototype: the httpd module serves MCP initialize/ping/tools/list/tools/call over the module TCP services, with status, echo, console, serial.read, system.reset and system.poweroff tools (status shares the telnet formatter).",
+      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built. Prototype: the httpd module serves MCP initialize/ping/tools/list/tools/call over the module TCP services, with status, echo, console, serial.read, system.reset and system.poweroff tools (status shares the telnet formatter); autoloaded from NVRAM mcp.url/mcp.sha256.",
       "demo": "An agent connects to the Indy over Streamable HTTP with a bearer token, runs `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.",
       "note": "A prototype MCP server runs as modules/httpd on guest port 80 (host 8088): initialize, ping, tools/list and tools/call with status, echo, console, serial.read, system.reset and system.poweroff. Bearer auth, SSE, shell and screen/serial tools remain.",
       "criteria": [

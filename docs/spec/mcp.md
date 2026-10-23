@@ -28,7 +28,9 @@ control plane. It implements:
 - `GET /` as a plain status page;
 - guest port 80, forwarded to host `8088` by the iris rig.
 
-It does **not** yet implement bearer-token authentication, sessions, SSE, resources,
+The module is loaded automatically at boot when the NVRAM environment carries
+`mcp.url` and `mcp.sha256`; the control plane therefore survives `system.reset` without a
+telnet step.  It does **not** yet implement bearer-token authentication, sessions, SSE, resources,
 `screen.capture`, `system.*`, or the dotted tool names.  The serial ring starts at the
 kernel entry, so the ROM's own banner is not included. It is a prototype of
 the transport and tool loop, not a conforming server; the rest of this document is the
