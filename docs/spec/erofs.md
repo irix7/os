@@ -331,9 +331,12 @@ ECC Root CA 2022 (`kernel/src/ca/`), with the hostname checked; a host whose
 chain ends elsewhere is rejected, and there is no fallback to HTTP.  Each range
 is a fresh TLS 1.3 handshake because the client does not keep a session, and
 the per-fetch record buffers still come from the bump heap, so a TLS mount costs
-about 29 KiB of heap per range.  Reusing the TLS record buffers across range
-requests and a persistent session are the follow-ups; neither changes the
-on-disk path.  The next integration step is a 256 KiB read-ahead window.
+about 29 KiB of heap per range.  The digest check is a single full-body GET
+with the TLS client's 30-second response deadline, so it is practical for
+fixture-sized images; a large image over HTTPS needs the streaming digest
+first.  Reusing the TLS record buffers across range requests and a persistent
+session are the follow-ups; neither changes the on-disk path.  The next
+integration step is a 256 KiB read-ahead window.
 
 The disk filesystem path is a loadable module, not a kernel command.  The
 `modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
@@ -411,7 +414,9 @@ USERTrust/Sectigo, so the kernel rejects it until another root is embedded.
 - Reuse the TLS record buffers across HTTPS range requests and keep the session
   open, so a TLS mount costs one handshake rather than one per range.
 - Hash the image while filling that cache, instead of a second full GET, and
-  take the expected digest from the boot environment.
+  take the expected digest from the boot environment.  This also removes the
+  full-body GET's single response deadline, which currently caps an HTTPS
+  image at roughly what fits in 30 seconds of transfer.
 - A SCSI `BlockDevice` and the block cell capability.
 - An overlay for `/tmp`, `/etc` and `/home`.
 - An independent tree diff against `erofs-rs` and a host mount in CI.
