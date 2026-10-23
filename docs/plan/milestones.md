@@ -189,6 +189,8 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
       `screen.capture`, `system.reset`, `system.poweroff`.
 - [x] Bearer token authentication; no TLS in v1; binds to the LAN interface.
 - [ ] Shell: `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot`, `poweroff`.
+      Prototype: `echo`, `uname`, `help`, `reboot` and `poweroff` work through `shell.exec`;
+      `ls`, `cat` and `ps` wait for the filesystem and process work.
 - [ ] `system.reset` is guarded by the watchdog and returns after the reboot.
 - [ ] The agent loop is documented and reproducible.
 

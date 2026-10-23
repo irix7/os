@@ -153,7 +153,7 @@ connection, and alternates its two TCP slots so a back-to-back client does not h
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
 JSON-RPC methods (see [`mcp.md`](mcp.md)). Its tools include `serial.read` (console ring
 services), `serial.write`, `system.reset`, `system.poweroff` and `status` (the same IP/MAC/RAM/uptime/date
-text as the telnet console).  The system tools defer
+text as the telnet console), plus `shell.exec` for a small command set.  The system tools defer
 the action by five idle ticks so the JSON-RPC response is queued first. The iris rig forwards host `8088` to guest `80`; after
 loading the module:
 

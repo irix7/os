@@ -61,6 +61,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
 - The DS1386 real-time clock is read at boot and seeds the wall clock (the two BCD year
   digits count from 1940), so `status` reports the correct date before any NTP query.
+- The MCP module gains `shell.exec` with `echo`, `uname`, `uptime`, `status`, `help`,
+  `reboot` and `poweroff`; `ls`, `cat` and `ps` report that they need the future filesystem
+  and process work.
 - MCP bearer authentication: the module reads `mcp.token` from the NVRAM environment
   (ABI version 7 service `config_get`); `POST /mcp` then requires
   `Authorization: Bearer <token>` and returns 401 with `WWW-Authenticate` otherwise.

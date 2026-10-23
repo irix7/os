@@ -423,7 +423,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}}]}}");
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");
@@ -478,6 +478,10 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
                 }
+                Some(b"shell.exec") => {
+                    let command = json_string(body, b"\"command\"").unwrap_or(b"");
+                    shell_exec(services, command, &mut w, id);
+                }
                 Some(b"serial.read") => {
                     let total = (services.console_total)();
                     let offset =
@@ -513,6 +517,57 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         }
     }
     w.len
+}
+
+fn shell_exec(services: &Services, command: &[u8], w: &mut Out, id: &[u8]) {
+    let mut parts = command.splitn(2, |&b| b == b' ');
+    let cmd = parts.next().unwrap_or(b"");
+    let mut arg = parts.next().unwrap_or(b"");
+    while let Some((&b' ', rest)) = arg.split_first() {
+        arg = rest;
+    }
+
+    let mut buf = [0u8; 512];
+    let text: &[u8] = match cmd {
+        b"uname" => b"IRIX 7 indy mips n32",
+        b"echo" => arg,
+        b"uptime" => {
+            let mut n = copy(&mut buf, b"uptime: ");
+            n += write_u64(&mut buf[n..], (services.clock_ms)() / 1000);
+            n += copy(&mut buf[n..], b" s");
+            &buf[..n]
+        }
+        b"status" => {
+            let n = unsafe { (services.status)(buf.as_mut_ptr(), buf.len()) };
+            if n > 0 {
+                &buf[..n as usize]
+            } else {
+                b"status failed"
+            }
+        }
+        b"help" => b"commands: echo, uname, uptime, status, help, reboot, poweroff",
+        b"reboot" => {
+            unsafe {
+                ACTION = 1;
+                COUNTDOWN = 5;
+            }
+            b"resetting"
+        }
+        b"poweroff" => {
+            unsafe {
+                ACTION = 2;
+                COUNTDOWN = 5;
+            }
+            b"powering off"
+        }
+        _ => b"unknown command",
+    };
+
+    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+    w.push(id);
+    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+    w.json_string(text);
+    w.push(b"}]}}");
 }
 
 fn json_id(body: &[u8]) -> &[u8] {
@@ -658,6 +713,30 @@ impl<'a> Out<'a> {
         }
         self.byte(b'"');
     }
+}
+
+fn copy(dst: &mut [u8], src: &[u8]) -> usize {
+    let n = dst.len().min(src.len());
+    dst[..n].copy_from_slice(&src[..n]);
+    n
+}
+
+fn write_u64(dst: &mut [u8], mut value: u64) -> usize {
+    let mut digits = [0u8; 20];
+    let mut n = 0;
+    loop {
+        digits[n] = b'0' + (value % 10) as u8;
+        value /= 10;
+        n += 1;
+        if value == 0 {
+            break;
+        }
+    }
+    let count = n.min(dst.len());
+    for i in 0..count {
+        dst[i] = digits[n - 1 - i];
+    }
+    count
 }
 
 fn send_all(services: &Services, slot: u32, data: &[u8]) {

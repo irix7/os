@@ -247,7 +247,7 @@ curl -s -X POST -H 'Content-Type: application/json' \
 ```
 
 `POST /mcp` speaks JSON-RPC 2.0: `initialize`, `ping`, `tools/list` and
-`tools/call` (`status`, `echo`, `console`, `serial.read`, `system.reset`, `system.poweroff`).
+`tools/call` (`status`, `echo`, `console`, `serial.read`, `system.reset`, `system.poweroff`, `shell.exec`).
 It is a prototype: no bearer token or SSE yet. `serial.read` returns the kernel's
 8 KiB serial ring.
 
