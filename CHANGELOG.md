@@ -8,6 +8,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `modules/erofs`: a loadable module that mounts the EROFS fixture on SCSI
+  target 2 at LBA 0, reads `/etc/motd` and prints it through the console
+  service.  It links `crates/erofs` and `crates/block-cache` by path, reads
+  512-byte sectors through the ABI version 10 `block_read` service, and
+  supplies its own global allocator over the `alloc` service.  Moving the
+  filesystem feature into a module keeps it out of the compressed PROM image,
+  which sits at 517,872 of 524,288 bytes.
 - Module ABI version 10 adds `block_read(target, lba, buffer)` for one 512-byte
   SCSI sector, exposed by `modules/block` via `Context::block_read`.  The OS
   consumes SDK `v0.3.0`; verified on iris with target 1: the module prints

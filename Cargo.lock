@@ -295,6 +295,15 @@ name = "erofs"
 version = "0.1.0"
 
 [[package]]
+name = "erofs-module"
+version = "0.1.0"
+dependencies = [
+ "block-cache",
+ "erofs",
+ "module-abi",
+]
+
+[[package]]
 name = "ff"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "crates/overlay", "rom", "kernel", "modules/hello", "modules/ticker", "modules/httpd", "modules/block"]
+members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "crates/overlay", "rom", "kernel", "modules/hello", "modules/ticker", "modules/httpd", "modules/block", "modules/erofs"]
 
 [workspace.dependencies]
 module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.3.0", package = "module-abi" }

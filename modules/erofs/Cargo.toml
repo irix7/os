@@ -1,0 +1,22 @@
+[package]
+license = "GPL-3.0-only"
+name = "erofs-module"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "erofs-module"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[dependencies]
+module-abi.workspace = true
+erofs = { path = "../../crates/erofs" }
+block-cache = { path = "../../crates/block-cache" }
