@@ -486,20 +486,10 @@ pub extern "C" fn _start() -> ! {
     console_println(menu::OPTIONS[menu::selected()]);
 
     // Idle loop: poll the resident console service, network, and telnet.
-    match info {
-        Some(info) => {
-            let console_poll = read_console_poll(info);
-            idle_loop(console_poll);
-        }
-        None => {
-            // No BootInfo: fall back to the RAM geometry the ROM passed in
-            // registers.  The console/net services are not available yet.
-            loop {
-                scheduler::yield_cpu();
-                core::hint::spin_loop();
-            }
-        }
-    }
+    // Both the BootInfo path and the register-handoff path keep the console
+    // and network alive; only the resident poll routine is conditional.
+    let console_poll = info.and_then(|info| read_console_poll(info));
+    idle_loop(console_poll);
 }
 
 /// Idle loop: poll the resident console service, network, and telnet.
