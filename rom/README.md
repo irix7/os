@@ -138,13 +138,14 @@ Commands:
 | `help` | list commands |
 | `status` | stage, IP, MAC, RAM, uptime, wall clock |
 | `net` | interface addresses and link |
-| `mem` | total RAM |
+| `mem` | total and free RAM |
 | `time` | uptime and UTC date |
 | `echo <text>` | echo the argument |
 | `ntp <ip>[:port]` | set the wall clock from NTP |
-| `http <host>:<port><path>` | fetch over HTTP |
-| `https <host>:<port><path>` | fetch over TLS 1.3 |
+| `http <host>:<port><path> [sha256]` | fetch over HTTP, optionally verify |
+| `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify |
 | `boot` | leave the menu and continue booting |
+| `reboot` | restart from the PROM |
 
 `http` and `https` print the status, body length and a streaming SHA-256 of the body,
 so a fetched image can be checked against the build host.  The clock is advanced from
