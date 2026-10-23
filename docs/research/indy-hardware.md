@@ -37,7 +37,7 @@ where the two machines differ the IOC2 specification has a dedicated section [S3
 
 ## 1. System overview and physical address map
 
-```
+```text
 0x0000_0000  KUSEG (user, TLB mapped)
 0x0800_0000  main memory, segment 0           (up to 256 MB, wraps at 0x1800_0000)
 0x2000_0000  main memory, segment 1           (up to 128 MB)
@@ -278,7 +278,7 @@ receive), `FLSH` (0x8, flush on receive), `ACT` (0x10, start), `LD` (0x20, load 
 
 **Descriptor format** (8 bytes, 64-bit aligned recommended):
 
-```
+```c
 u32 pbuf;      /* physical buffer address */
 u32 cntinfo;   /* byte count in bits 13:0 plus flags */
 u32 pnext;     /* physical address of next descriptor, 0 terminates */
@@ -643,7 +643,7 @@ Key registers (word offsets from base):
 | 0x0008 | `SMASK0..4` | 5×24-bit span masks (write enables per byte) |
 | 0x001C | `COLORVRAM` | fast-clear colour injected during block fills |
 | 0x0100 | `DCDR` | DCB data register — all VC2/XMAP9/RAMDAC traffic goes through here |
-| 0x0104 | `DCDR` address/command |
+| 0x0104 | `DCDR` address/command | DCB address register |
 | 0x0110 | `CIDMATCH` | 24-bit pixel compare value for conditional writes |
 | 0x0114 | `CIDMASK` | compare mask |
 | 0x0118 | `HOSTRW` | host read/write window into VRAM |
