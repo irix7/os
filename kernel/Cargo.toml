@@ -25,8 +25,9 @@ cross = []
 
 [dependencies]
 embedded-io = { version = "0.7", default-features = false }
-embedded-tls = { version = "0.19", default-features = false, features = ["alloc"] }
+embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384"] }
 rand_core = { version = "0.6", default-features = false }
+x509-cert = { version = "0.2", default-features = false }
 smoltcp = { version = "0.13", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",

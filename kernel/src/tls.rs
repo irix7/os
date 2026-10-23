@@ -6,9 +6,12 @@
 //! polled, not async: the blocking I/O adapter polls the shared interface
 //! until the socket can make progress.
 //!
-//! Certificate verification is deliberately permissive (`NoVerify`) during
-//! bring-up; a baked-in root store is the follow-up once the kernel has a
-//! filesystem to carry one.  The RNG is xorshift128+ seeded from CP0 Count.
+//! Certificate chains are verified with the `rustpki` verifier against the
+//! SSL.com TLS ECC Root CA 2022 (see `ca/`).  Servers that append a
+//! cross-signed copy of their root are handled by trimming that entry.  The
+//! verifier clock comes from NTP; before a sync the validity dates are not
+//! checked, but the chain signatures and hostname still are.  The RNG is
+//! xorshift128+ seeded from CP0 Count.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -16,13 +19,18 @@ use core::fmt;
 
 use embedded_io::{ErrorType, Read, Write};
 use embedded_tls::blocking::{
-    Aes128GcmSha256, CryptoProvider, NoVerify, TlsConfig, TlsConnection, TlsContext, TlsVerifier,
+    Aes128GcmSha256, CryptoProvider, TlsConfig, TlsConnection, TlsContext, TlsVerifier,
 };
-use embedded_tls::TlsError;
+use embedded_tls::pki::CertVerifier;
+use embedded_tls::{
+    Certificate, CertificateEntryRef, CertificateRef, TlsCipherSuite, TlsClock, TlsError,
+};
 use rand_core::{CryptoRng, CryptoRngCore, Error as RngError, RngCore};
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer, State};
 use smoltcp::wire::{IpAddress, Ipv4Address};
+use x509_cert::der::Decode;
+use x509_cert::Certificate as X509Certificate;
 
 use crate::http::Summary;
 use crate::net;
@@ -181,13 +189,16 @@ impl RngCore for SimpleRng {
 
 impl CryptoRng for SimpleRng {}
 
-/// Crypto provider: xorshift RNG and permissive verification.
-struct TlsProvider {
+/// Crypto provider: xorshift RNG and an X.509 verifier.
+struct TlsProvider<V> {
     rng: SimpleRng,
-    verifier: NoVerify,
+    verifier: V,
 }
 
-impl CryptoProvider for TlsProvider {
+impl<V> CryptoProvider for TlsProvider<V>
+where
+    V: TlsVerifier<Aes128GcmSha256>,
+{
     type CipherSuite = Aes128GcmSha256;
     type Signature = alloc::vec::Vec<u8>;
 
@@ -197,6 +208,110 @@ impl CryptoProvider for TlsProvider {
 
     fn verifier(&mut self) -> Result<&mut impl TlsVerifier<Self::CipherSuite>, TlsError> {
         Ok(&mut self.verifier)
+    }
+}
+
+/// TLS clock backed by the NTP-synchronised wall clock.
+struct WallClock;
+
+impl TlsClock for WallClock {
+    fn now() -> Option<u64> {
+        crate::ntp::now_unix()
+    }
+}
+
+/// The CA root used to verify server chains.
+const CA_ROOT: &[u8] = include_bytes!("ca/sslcom-ecc-root.der");
+
+/// Maximum server certificate size the verifier buffers.
+const CERT_SIZE: usize = 8192;
+
+/// Drop a trailing root certificate that the server appended as a
+/// cross-signed copy: its subject is the issuer of the previous entry, so the
+/// chain already terminates at our embedded root of the same name.
+fn trim_cross_signed_root(cert: &mut CertificateRef) {
+    if cert.entries.len() < 3 {
+        return;
+    }
+    let Some(CertificateEntryRef::X509(last_der)) = cert.entries.last() else {
+        return;
+    };
+    let Some(CertificateEntryRef::X509(prev_der)) = cert.entries.get(cert.entries.len() - 2) else {
+        return;
+    };
+    let Ok(last) = X509Certificate::from_der(last_der) else {
+        return;
+    };
+    let Ok(prev) = X509Certificate::from_der(prev_der) else {
+        return;
+    };
+    if last.tbs_certificate.subject == prev.tbs_certificate.issuer {
+        cert.entries.pop();
+    }
+}
+
+/// Verifier that trims a cross-signed root before handing the chain to the
+/// rustpki verifier, then delegates signature checks to that verifier.
+struct PathVerifier {
+    host: [u8; 64],
+    host_len: usize,
+    chosen: Option<CertVerifier<'static, Aes128GcmSha256, WallClock, CERT_SIZE>>,
+}
+
+impl PathVerifier {
+    fn new() -> Self {
+        Self {
+            host: [0; 64],
+            host_len: 0,
+            chosen: None,
+        }
+    }
+}
+
+impl TlsVerifier<Aes128GcmSha256> for PathVerifier {
+    fn set_hostname_verification(&mut self, hostname: &str) -> Result<(), TlsError> {
+        if hostname.len() > self.host.len() {
+            return Err(TlsError::InsufficientSpace);
+        }
+        self.host[..hostname.len()].copy_from_slice(hostname.as_bytes());
+        self.host_len = hostname.len();
+        Ok(())
+    }
+
+    fn verify_certificate(
+        &mut self,
+        transcript: &<Aes128GcmSha256 as TlsCipherSuite>::Hash,
+        cert: CertificateRef,
+    ) -> Result<(), TlsError> {
+        let host = core::str::from_utf8(&self.host[..self.host_len]).unwrap_or("");
+
+        let host = core::str::from_utf8(&self.host[..self.host_len]).unwrap_or("");
+        let mut cert = cert;
+        trim_cross_signed_root(&mut cert);
+
+        let mut verifier =
+            CertVerifier::<Aes128GcmSha256, WallClock, CERT_SIZE>::new(Certificate::X509(CA_ROOT));
+        verifier.set_hostname_verification(host)?;
+        match verifier.verify_certificate(transcript, cert) {
+            Ok(()) => {
+                self.chosen = Some(verifier);
+                Ok(())
+            }
+            Err(err) => {
+                crate::println("tls: chain rejected");
+                Err(err)
+            }
+        }
+    }
+
+    fn verify_signature(
+        &mut self,
+        verify: embedded_tls::CertificateVerifyRef,
+    ) -> Result<(), TlsError> {
+        match self.chosen.as_mut() {
+            Some(verifier) => verifier.verify_signature(verify),
+            None => Err(TlsError::InvalidCertificate),
+        }
     }
 }
 
@@ -253,7 +368,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     let seed = crate::traps::count_read() as u64;
     let mut provider = TlsProvider {
         rng: SimpleRng::new(seed),
-        verifier: NoVerify,
+        verifier: PathVerifier::new(),
     };
     let config = TlsConfig::new()
         .with_server_name(host)
