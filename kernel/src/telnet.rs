@@ -71,6 +71,7 @@ struct HttpRequest {
     path_len: usize,
     tls: bool,
     expected: Option<[u8; 32]>,
+    range: Option<(u32, u32)>,
 }
 
 static mut CONSOLE: Option<Console> = None;
@@ -116,10 +117,17 @@ pub fn poll() {
         let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
         let scheme = if req.tls { "https" } else { "http" };
         let expected = req.expected;
+        let range = req.range;
         let result = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
                 if req.tls {
-                    crate::tls::get(ip, req.port, host, path)
+                    if range.is_some() {
+                        Err("range is HTTP-only")
+                    } else {
+                        crate::tls::get(ip, req.port, host, path)
+                    }
+                } else if let Some((start, end)) = range {
+                    crate::http::get_range(ip, req.port, host, path, start, end)
                 } else {
                     crate::http::get(ip, req.port, host, path)
                 }
@@ -485,7 +493,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 console.pending_http = Some(request);
             }
             None => {
-                let _ = sock.send_slice(b"usage: http <host>:<port><path>\r\n");
+                let _ = sock
+                    .send_slice(b"usage: http <host>:<port><path> [sha256] [range=start-end]\r\n");
             }
         },
         _ if line.starts_with(b"https ") => match parse_http(trim(&line[6..]), true) {
@@ -494,7 +503,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 console.pending_http = Some(request);
             }
             None => {
-                let _ = sock.send_slice(b"usage: https <host>:<port><path>\r\n");
+                let _ = sock.send_slice(b"usage: https <host>:<port><path> [sha256]\r\n");
             }
         },
         _ if line.starts_with(b"module ") => {
@@ -599,12 +608,22 @@ fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
     let s = core::str::from_utf8(arg).ok()?;
     let mut parts = s.split_whitespace();
     let url = parts.next()?;
-    let expected = match parts.next() {
-        Some(hex) => Some(parse_sha256_hex(hex)?),
-        None => None,
-    };
-    if parts.next().is_some() {
-        return None;
+    let mut expected = None;
+    let mut range = None;
+    for part in parts {
+        if let Some(rest) = part.strip_prefix("range=") {
+            let (start, end) = rest.split_once('-')?;
+            let start: u32 = start.parse().ok()?;
+            let end: u32 = end.parse().ok()?;
+            if end < start {
+                return None;
+            }
+            range = Some((start, end));
+        } else if expected.is_none() {
+            expected = Some(parse_sha256_hex(part)?);
+        } else {
+            return None;
+        }
     }
     let (host, rest) = url.split_once(':')?;
     let slash = rest.find('/')?;
@@ -625,6 +644,7 @@ fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
         path_len: path.len(),
         tls,
         expected,
+        range,
     })
 }
 
