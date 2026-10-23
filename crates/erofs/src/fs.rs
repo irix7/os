@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::cmp::min;
 
 use crate::codec::{u16_at, u64_at, LittleEndian};
+#[cfg(feature = "lz4")]
 use crate::compress::CompressedInfo;
 use crate::error::{Error, Result};
 use crate::inode::{DataLayout, FileType, Inode, EROFS_NULL_ADDR, INODE_SLOT_SIZE};
@@ -169,13 +170,32 @@ impl<D: BlockDevice> Erofs<D> {
                 Ok(())
             }
             DataLayout::CompressedFull | DataLayout::CompressedCompact => {
-                self.read_compressed(inode, offset, buf)
+                self.read_compressed_dispatch(inode, offset, buf)
             }
+            other => Err(Error::UnsupportedLayout(other.raw_bits())),
             other => Err(Error::UnsupportedLayout(other.raw_bits())),
         }
     }
 
+    fn read_compressed_dispatch(
+        &mut self,
+        inode: &Inode,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        #[cfg(feature = "lz4")]
+        {
+            self.read_compressed(inode, offset, buf)
+        }
+        #[cfg(not(feature = "lz4"))]
+        {
+            let _ = (offset, buf);
+            Err(Error::UnsupportedLayout(inode.layout.raw_bits()))
+        }
+    }
+
     /// Read the compression map header for an inode.
+    #[cfg(feature = "lz4")]
     fn compression_info(&mut self, inode: &Inode) -> Result<CompressedInfo> {
         let map_header = inode
             .inline_offset
@@ -192,6 +212,7 @@ impl<D: BlockDevice> Erofs<D> {
     ///
     /// A read that crosses a pcluster boundary decodes each pcluster again
     /// only when the range requires it; there is no decompression cache.
+    #[cfg(feature = "lz4")]
     fn read_compressed(&mut self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<()> {
         let info = self.compression_info(inode)?;
         let zero_padding = self.sb.has_zero_padding();

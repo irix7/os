@@ -341,6 +341,11 @@ extent's logical data (at most the extent length):
   data than the current extent asks for is still read correctly.
 
 The LZ4 decoder is written in the crate with no unsafe code and no dependency.
+It is behind the default `lz4` feature.  The kernel's HTTP EROFS command depends
+on the crate with `default-features = false` to stay inside the 512 KiB PROM
+window; it rejects compressed inodes with `UnsupportedLayout`.  The loadable
+`modules/erofs` and `modules/httpd` images enable `lz4` and decode the
+compressed fixtures.
 It validates every input read, every match offset and every output bound; a
 malformed stream returns `InvalidCompressedData`.
 

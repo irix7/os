@@ -72,7 +72,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   never returned as file data.  Twenty-two new tests (11 integration, 11 LZ4
   and zero-padding unit tests) run against three new reproducible
   `mkfs.erofs -zlz4` fixtures (compact indexes, full/legacy indexes and 16 KiB
-  big pclusters); the three uncompressed fixtures are unchanged.
+  big pclusters); the three uncompressed fixtures are unchanged.  The `lz4`
+  feature is on by default; the kernel's HTTP EROFS command disables it because
+  the compressed image is already at the PROM budget, while the loadable
+  `erofs` and `httpd` modules enable it.  Compressed inodes reached through the
+  kernel HTTP command return `UnsupportedLayout` rather than being misread.
 - MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
   EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
   allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with
