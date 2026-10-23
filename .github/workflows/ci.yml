@@ -60,7 +60,7 @@ jobs:
       - name: cargo test
         run: |
           if [ -f Cargo.toml ]; then
-            cargo test -p kernel-test -p boot-protocol-tests -p erofs
+            cargo test -p kernel-test -p boot-protocol-tests -p erofs -p block-cache
           else
             echo "No Rust workspace yet; skipping."
           fi
