@@ -164,8 +164,8 @@ Commands:
 | `ntp <host>[:port]` | set the wall clock from NTP |
 | `ping <host>` | ICMP echo (three requests) |
 | `module [https://]<host>:<port><path> <sha256>` | fetch, verify and run a RAM module |
-| `http <host>:<port><path> [sha256]` | fetch over HTTP, optionally verify |
-| `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify |
+| `http <host>:<port><path> [sha256] [range=start-end]` | fetch over HTTP, optionally verify or range |
+| `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify (no range) |
 | `boot` | leave the menu and continue booting |
 | `reboot` | restart from the PROM |
 

@@ -105,7 +105,7 @@ digest matching the host.
 - [x] The image fits in the 512 KiB PROM window (about 476 KiB).
 - [x] The handoff is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md);
       `BootInfo` is optional and the current ROM passes registers.
-- [ ] HTTP Range support.
+- [x] HTTP Range support (HTTP/1.1 `Range`, 206 validation).
 
 **Note:** the design changed during M1. The ROM started as a Rust netboot client; it is now
 an assembly stub that embeds the kernel, and the network stack and console live in the kernel.

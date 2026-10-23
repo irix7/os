@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- HTTP/1.1 Range requests: `http ... range=start-end` sends `Range`, accepts a 206,
+  verifies the body length and hashes the range; the full-GET path is unchanged. TLS
+  remains full-body only.
 - Link to the separate [IRIX 7 module SDK](https://github.com/irix7/os-sdk), which pins
   the `module-abi` crate and packages the module template, target/linker and build tool.
 

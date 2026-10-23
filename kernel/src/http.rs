@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Minimal HTTP/1.0 client over the shared smoltcp stack.
+//! Minimal HTTP/1.1 client over the shared smoltcp stack.
 //!
 //! One fetch at a time.  The body is not buffered: the client parses the
 //! status line and counts body bytes, which is enough for a console command
@@ -36,7 +36,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
-    let result = get_inner(ip, port, host, path, None).map(|(summary, _)| summary);
+    let result = get_inner(ip, port, host, path, None, None).map(|(summary, _)| summary);
     FETCHING.store(false, Ordering::SeqCst);
     result
 }
@@ -54,7 +54,34 @@ pub fn get_to(
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
-    let result = get_inner(ip, port, host, path, Some(out));
+    let result = get_inner(ip, port, host, path, None, Some(out));
+    FETCHING.store(false, Ordering::SeqCst);
+    result
+}
+
+/// Fetch an inclusive byte range and verify a 206 response with the requested
+/// length.  Returns the summary; the body is hashed but not buffered.
+pub fn get_range(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    start: u32,
+    end: u32,
+) -> Result<Summary, &'static str> {
+    if FETCHING.swap(true, Ordering::SeqCst) {
+        return Err("a fetch is already running");
+    }
+    let result = (|| {
+        let (summary, _) = get_inner(ip, port, host, path, Some((start, end)), None)?;
+        if summary.status != 206 {
+            return Err("range not satisfiable");
+        }
+        if summary.body_len != (end.saturating_sub(start) + 1) as usize {
+            return Err("short range body");
+        }
+        Ok(summary)
+    })();
     FETCHING.store(false, Ordering::SeqCst);
     result
 }
@@ -64,6 +91,7 @@ fn get_inner(
     port: u16,
     host: &str,
     path: &str,
+    range: Option<(u32, u32)>,
     mut capture: Option<&mut [u8]>,
 ) -> Result<(Summary, usize), &'static str> {
     let handle = net::sockets_with(|sockets| {
@@ -115,11 +143,17 @@ fn get_inner(
     let mut n = 0;
     append(&mut req, &mut n, b"GET ")?;
     append(&mut req, &mut n, path.as_bytes())?;
-    append(&mut req, &mut n, b" HTTP/1.0\r\nHost: ")?;
+    append(&mut req, &mut n, b" HTTP/1.1\r\nHost: ")?;
     append(&mut req, &mut n, host.as_bytes())?;
     if port != 80 {
         append(&mut req, &mut n, b":")?;
         append_decimal(&mut req, &mut n, port as u32)?;
+    }
+    if let Some((start, end)) = range {
+        append(&mut req, &mut n, b"\r\nRange: bytes=")?;
+        append_decimal(&mut req, &mut n, start)?;
+        append(&mut req, &mut n, b"-")?;
+        append_decimal(&mut req, &mut n, end)?;
     }
     append(&mut req, &mut n, b"\r\nConnection: close\r\n\r\n")?;
 
