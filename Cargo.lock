@@ -418,6 +418,7 @@ checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 [[package]]
 name = "module-abi"
 version = "0.1.0"
+source = "git+https://github.com/irix7/os-sdk?tag=v0.2.1#2d4dad1ac2583ea03e0bd168b546717984b893b4"
 
 [[package]]
 name = "num-conv"

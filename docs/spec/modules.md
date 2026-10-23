@@ -142,8 +142,8 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
 The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packages the
 developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
 macros, the n32 target and flat linker, a copyable template, a hello example and
-`tools/irix7-module.py` (build, flatten, hash). It pins the `module-abi` crate from this
-repository at a known revision; the ABI in `modules/abi` remains the source of truth.
+`tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
+`v0.2.1` tag, so the contract has one source of truth.
 
 A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
 HTTPS, digest-checked and called through this table. The SDK changes none of the contract
