@@ -105,6 +105,8 @@ tool execution failure is `isError: true`, not a JSON-RPC error.
 |---|---|---|
 | `shell.exec` | `command`, `args?`, `cwd?`, `env?`, `stdin?`, `timeout_ms?`, `max_output?` | `exit_code`, `stdout`, `stderr`, `duration_ms`, `truncated` |
 | `block.read` | `target`, `lba` | 1024 hex characters for one 512-byte SCSI sector |
+| `fs.read` | `path?` (default `/etc/motd`) | file content from the target 2 EROFS fixture |
+| `fs.list` | `path?` (default `/`) | newline-separated directory entries |
 | `fs.read` | `path`, `offset?`, `length?`, `encoding?` (`utf-8`/`base64`) | `data`, `encoding`, `size`, `eof` |
 | `fs.write` | `path`, `data`, `encoding?`, `mode?` (`create`/`truncate`/`append`), `permissions?` | `bytes_written` |
 | `fs.list` | `path` | `entries[]` with `name`, `type`, `size`, `mode`, `mtime` |

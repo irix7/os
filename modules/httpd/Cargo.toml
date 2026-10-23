@@ -18,3 +18,5 @@ opt-level = 2
 
 [dependencies]
 module-abi.workspace = true
+erofs = { path = "../../crates/erofs" }
+block-cache = { path = "../../crates/block-cache" }

@@ -4,12 +4,20 @@
 //! Listens on guest port 80 through the version 3 TCP services.  `GET /`
 //! returns a small status page; `POST /mcp` speaks JSON-RPC 2.0 with the MCP
 //! methods `initialize`, `tools/list` and `tools/call` (`status`, `echo`,
-//! `console`, `block.read`).  This is the first long-running module and the
+//! `console`, `block.read`, `fs.read`, `fs.list`).  This is the first long-running module and the
 //! prototype for the control plane: the compressed PROM image does not grow.
 
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::ptr::{self, null_mut};
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+use alloc::string::String;
+use block_cache::Lru;
 use module_abi::{ModuleVtable, Services};
 
 /// Listening phase.
@@ -35,6 +43,135 @@ static ERROR_VTABLE: ModuleVtable = ModuleVtable {
     status: 1,
     tick: None,
 };
+
+/// The service table, published before the first filesystem allocation.
+static SERVICES: AtomicPtr<Services> = AtomicPtr::new(ptr::null_mut());
+
+/// An allocator over the kernel heap service; the heap never frees.
+struct ModuleAllocator;
+
+unsafe impl GlobalAlloc for ModuleAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let table = SERVICES.load(Ordering::Acquire);
+        if table.is_null() {
+            return null_mut();
+        }
+        // SAFETY: the table came from `_start` and stays valid for the module.
+        let allocate = unsafe { (*table).alloc };
+        unsafe { allocate(layout.size(), layout.align()) }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // The kernel heap is a bump allocator; memory is reclaimed by reboot.
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: ModuleAllocator = ModuleAllocator;
+
+/// The EROFS fixture on SCSI target 2, LBA 0.
+const FS_TARGET: u8 = 2;
+const FS_BLOCK: usize = 4096;
+const FS_PRINT_MAX: usize = 8192;
+
+struct ScsiDisk {
+    services: &'static Services,
+    target: u8,
+}
+
+impl block_cache::ReadAt for ScsiDisk {
+    type Error = erofs::Error;
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), Self::Error> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let position = offset.checked_add(done as u64).ok_or(erofs::Error::Io)?;
+            let lba = u32::try_from(position / 512).map_err(|_| erofs::Error::Io)?;
+            let within = (position % 512) as usize;
+            let mut sector = [0u8; 512];
+            let result =
+                unsafe { (self.services.block_read)(self.target, lba, sector.as_mut_ptr()) };
+            if result != 0 {
+                return Err(erofs::Error::Io);
+            }
+            let count = (512 - within).min(buf.len() - done);
+            buf[done..done + count].copy_from_slice(&sector[within..within + count]);
+            done += count;
+        }
+        Ok(())
+    }
+}
+
+struct CachedDisk {
+    cache: Lru<ScsiDisk, 16>,
+}
+
+impl erofs::BlockDevice for CachedDisk {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> erofs::Result<()> {
+        self.cache
+            .read_at(offset, buf)
+            .map_err(|_| erofs::Error::Io)
+    }
+}
+
+/// Mounted lazily on the first `fs.*` tool call.  The server is single-threaded.
+static mut FS: Option<erofs::Erofs<CachedDisk>> = None;
+
+#[allow(static_mut_refs)]
+fn ensure_fs() -> bool {
+    unsafe {
+        if FS.is_none() {
+            let services = SERVICES.load(Ordering::Acquire);
+            let Some(services) = services.as_ref() else {
+                return false;
+            };
+            let Some(cache) = Lru::new(
+                ScsiDisk {
+                    services,
+                    target: FS_TARGET,
+                },
+                FS_BLOCK,
+            )
+            .ok() else {
+                return false;
+            };
+            if let Ok(fs) = erofs::Erofs::mount(CachedDisk { cache }) {
+                FS = Some(fs);
+            }
+        }
+        FS.is_some()
+    }
+}
+
+#[allow(static_mut_refs)]
+fn fs_read(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    unsafe {
+        let fs = FS.as_mut()?;
+        let inode = fs.lookup_path_follow(path).ok()?;
+        if inode.is_dir() {
+            return None;
+        }
+        fs.read_file(&inode).ok()
+    }
+}
+
+#[allow(static_mut_refs)]
+fn fs_list(path: &str) -> Option<String> {
+    unsafe {
+        let fs = FS.as_mut()?;
+        let inode = fs.lookup_path_follow(path).ok()?;
+        if !inode.is_dir() {
+            return None;
+        }
+        let entries = fs.read_dir(&inode).ok()?;
+        let mut out = String::new();
+        for entry in entries {
+            out.push_str(&String::from_utf8_lossy(&entry.name));
+            out.push('\n');
+        }
+        Some(out)
+    }
+}
 
 static mut PHASE: u32 = ARM;
 static mut SCREEN_ROW: u32 = 0;
@@ -81,9 +218,13 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 9 {
+    if services.version < 10 {
         return &ERROR_VTABLE;
     }
+    SERVICES.store(
+        services as *const Services as *mut Services,
+        Ordering::Release,
+    );
     let mut token = [0u8; 64];
     let n = unsafe {
         (services.config_get)(
@@ -661,7 +802,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -755,6 +896,49 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
+                }
+                Some(b"fs.read") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/etc/motd");
+                    let path = core::str::from_utf8(path).unwrap_or("/etc/motd");
+                    if ensure_fs() {
+                        if let Some(data) = fs_read(path) {
+                            let shown = data.len().min(FS_PRINT_MAX);
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                            w.json_string(&data[..shown]);
+                            w.push(b"}]}}");
+                        } else {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs read failed\"}}");
+                        }
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs mount failed\"}}");
+                    }
+                }
+                Some(b"fs.list") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/");
+                    let path = core::str::from_utf8(path).unwrap_or("/");
+                    if ensure_fs() {
+                        if let Some(list) = fs_list(path) {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                            w.json_string(list.as_bytes());
+                            w.push(b"}]}}");
+                        } else {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs list failed\"}}");
+                        }
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs mount failed\"}}");
+                    }
                 }
                 Some(b"block.read") => {
                     let target = json_u64(body, b"\"target\"").unwrap_or(1) as u8;
