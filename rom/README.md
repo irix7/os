@@ -185,12 +185,14 @@ trustworthy. `module` uses HTTPS unless the argument starts with `http://`, and
 the image is only executed after its digest matches. Any new feature should be a
 module, not a larger PROM image.
 
-Modules use ABI version 2: the entry returns a `ModuleVtable` with a status and
+Modules use ABI version 3: the entry returns a `ModuleVtable` with a status and
 an optional `tick` callback, which the kernel calls from the idle loop at most
-every 10 ms. The service table adds `alloc` (the kernel heap, never freed) and
-`poll` (drive the network stack). `modules/hello` is the one-shot reference;
-`modules/ticker` is the long-running reference: it allocates 32 bytes, then
-prints `ticker: tick` once a second for five seconds before unregistering.
+every 10 ms. The service table adds `alloc` (the kernel heap, never freed),
+`poll` (drive the network stack), and two TCP slots with listen/state/recv/send/
+close/abort. `modules/hello` is the one-shot reference; `modules/ticker` is the
+periodic reference; `modules/httpd` is the TCP reference: it listens on guest
+port 80, answers one request per connection with its uptime, and alternates its
+two slots so back-to-back clients do not hit the close handshake.
 
 Build a module and serve the flat image (swap `hello` for `ticker` for the
 periodic example):
@@ -217,6 +219,12 @@ Without the scheme the command uses HTTPS, which is the normal module path.
 The loader zeroes the module area before the download, so a module's `.bss`
 starts at zero; it flushes the data cache and invalidates the instruction cache
 before the entry call.
+
+The HTTP module is reachable through the rig's host port 8088:
+
+```bash
+curl -s http://127.0.0.1:8088/
+```
 
 ## Status
 

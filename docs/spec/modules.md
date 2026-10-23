@@ -51,18 +51,37 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 2:
+`Services` is `#[repr(C)]` and versioned. Version 3:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 2 |
+| 0x00 | `version` | 3 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x10 | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
 | 0x14 | `poll` | `void (*)(void)` — drive the shared network stack once |
+| 0x18 | `tcp_listen` | `int32_t (*)(uint32_t slot, uint16_t port)` — listen; 0 or -1 |
+| 0x1C | `tcp_state` | `uint32_t (*)(uint32_t slot)` — 0 closed, 1 listening, 2 established, 3 closing |
+| 0x20 | `tcp_recv` | `intptr_t (*)(uint32_t slot, uint8_t *ptr, size_t len)` — bytes, 0 for none, -1 for no socket |
+| 0x24 | `tcp_send` | `intptr_t (*)(uint32_t slot, const uint8_t *ptr, size_t len)` — bytes accepted, -1 for no socket |
+| 0x28 | `tcp_close` | `void (*)(uint32_t slot)` — send FIN |
+| 0x2C | `tcp_abort` | `void (*)(uint32_t slot)` — send RST and release the slot |
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.
+
+### TCP slots
+
+There are two slots (0 and 1), each with a 2 KiB receive and transmit buffer in the core.
+`tcp_listen` closes and replaces any socket already in the slot. `tcp_recv` returns 0 when
+the connection is open but no data is queued, and -1 when the slot has no socket. `tcp_send`
+may accept fewer bytes than requested; loop until the whole response is sent. `tcp_close`
+sends a FIN; once the socket reaches the closed state the module can call `tcp_listen`
+again.
+
+A server can arm the second slot while the first connection is closing. smoltcp permits
+two listening sockets on the same port, and the httpd module uses that to avoid a re-arm
+gap between back-to-back clients.
 
 The entry returns a pointer to a vtable, or null for "initialised, no callback":
 
@@ -106,6 +125,18 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
 `modules/ticker` is the long-running reference: it allocates 32 bytes through the service
 table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for five seconds
 and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
+
+`modules/httpd` is the TCP reference. It listens on guest port 80, answers one request per
+connection with a status page, and alternates its two TCP slots so a back-to-back client
+does not hit the close handshake. The iris rig forwards host `8088` to guest `80`; after
+loading the module:
+
+```bash
+curl -s http://127.0.0.1:8088/
+```
+
+prints the module's uptime. Build it by swapping `hello` for `httpd` in the commands above;
+it links the same flat image.
 
 Serve a module and load it:
 

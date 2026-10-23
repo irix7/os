@@ -65,6 +65,8 @@ Consequences:
   compressed image.
 - A module is a flat image linked at `0x88400000`, fetched over HTTPS into RAM, SHA-256
   checked, and called through the versioned C service table in `kernel/src/module.rs`.
+  A module may return a tick callback and use the table's TCP slots; long-running
+  features (servers, the MCP control plane) belong in modules, not in the core.
 - The module area is inside the reserved low window. Never hand it to the frame allocator.
 
 ## Cache coherency

@@ -51,6 +51,13 @@ static ERROR_VTABLE: ModuleVtable = ModuleVtable {
 static mut PHASE: u32 = ARM;
 static mut REQUEST: [u8; 1024] = [0; 1024];
 
+/// The slot serving the current connection, and the slot armed for the next
+/// one.  Alternating the two hides the close handshake from a back-to-back
+/// client.
+static mut CURRENT: u32 = 0;
+static mut NEXT: u32 = 1;
+static mut NEXT_ARMED: bool = false;
+
 /// Module entry.
 ///
 /// # Safety
@@ -75,30 +82,40 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
 
     match unsafe { PHASE } {
         ARM => {
-            if (services.tcp_listen)(0, PORT) == 0 {
+            let slot = unsafe { CURRENT };
+            if (services.tcp_listen)(slot, PORT) == 0 {
                 unsafe {
                     PHASE = WAIT_REQUEST;
                 }
             }
         }
         WAIT_REQUEST => {
-            let state = (services.tcp_state)(0);
+            let slot = unsafe { CURRENT };
+            let state = (services.tcp_state)(slot);
             if state == 2 {
                 let request = unsafe { &mut *core::ptr::addr_of_mut!(REQUEST) };
-                let n = (services.tcp_recv)(0, request.as_mut_ptr(), request.len());
+                let n = (services.tcp_recv)(slot, request.as_mut_ptr(), request.len());
                 if n > 0 {
-                    send_response(services);
+                    send_response(services, slot);
+                    // Arm the other slot before the client closes, so the
+                    // next connection lands on a listening socket.
+                    let next = unsafe { NEXT };
+                    if (services.tcp_listen)(next, PORT) == 0 {
+                        unsafe {
+                            NEXT_ARMED = true;
+                        }
+                    }
                     unsafe {
                         PHASE = WAIT_CLOSE;
                     }
                 } else if n < 0 {
-                    (services.tcp_abort)(0);
+                    (services.tcp_abort)(slot);
                     unsafe {
                         PHASE = ARM;
                     }
                 }
             } else if state == 3 {
-                (services.tcp_close)(0);
+                (services.tcp_close)(slot);
                 unsafe {
                     PHASE = CLOSING;
                 }
@@ -108,23 +125,27 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
             }
         }
-        WAIT_CLOSE => match (services.tcp_state)(0) {
-            3 => {
-                (services.tcp_close)(0);
-                unsafe {
-                    PHASE = CLOSING;
+        WAIT_CLOSE => {
+            let slot = unsafe { CURRENT };
+            match (services.tcp_state)(slot) {
+                3 => {
+                    (services.tcp_close)(slot);
+                    unsafe {
+                        PHASE = CLOSING;
+                    }
                 }
+                0 => unsafe {
+                    finish_close();
+                },
+                _ => {}
             }
-            0 => unsafe {
-                PHASE = ARM;
-            },
-            _ => {}
-        },
+        }
         CLOSING => {
-            if (services.tcp_state)(0) == 0 {
-                (services.tcp_abort)(0);
+            let slot = unsafe { CURRENT };
+            if (services.tcp_state)(slot) == 0 {
+                (services.tcp_abort)(slot);
                 unsafe {
-                    PHASE = ARM;
+                    finish_close();
                 }
             }
         }
@@ -135,7 +156,25 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
     0
 }
 
-fn send_response(services: &Services) {
+/// Move to the pre-armed listener, or re-arm the current slot if the second
+/// listener could not be created.
+unsafe fn finish_close() {
+    if unsafe { NEXT_ARMED } {
+        let old = unsafe { CURRENT };
+        unsafe {
+            CURRENT = NEXT;
+            NEXT = old;
+            NEXT_ARMED = false;
+            PHASE = WAIT_REQUEST;
+        }
+    } else {
+        unsafe {
+            PHASE = ARM;
+        }
+    }
+}
+
+fn send_response(services: &Services, slot: u32) {
     let mut body = [0u8; 96];
     let mut n = 0;
     n += copy(&mut body[n..], b"IRIX 7 module HTTP server\nuptime: ");
@@ -148,17 +187,18 @@ fn send_response(services: &Services) {
 
     send_all(
         services,
+        slot,
         b"HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nConnection: close\r\nContent-Length: ",
     );
-    send_all(services, &length[..len]);
-    send_all(services, b"\r\n\r\n");
-    send_all(services, body);
+    send_all(services, slot, &length[..len]);
+    send_all(services, slot, b"\r\n\r\n");
+    send_all(services, slot, body);
 }
 
-fn send_all(services: &Services, data: &[u8]) {
+fn send_all(services: &Services, slot: u32, data: &[u8]) {
     let mut offset = 0;
     while offset < data.len() {
-        let n = unsafe { (services.tcp_send)(0, data[offset..].as_ptr(), data.len() - offset) };
+        let n = unsafe { (services.tcp_send)(slot, data[offset..].as_ptr(), data.len() - offset) };
         if n <= 0 {
             return;
         }
