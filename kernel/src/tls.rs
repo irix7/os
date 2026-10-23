@@ -301,6 +301,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     let mut content_length: Option<usize> = None;
     let mut body_len = 0usize;
     let mut total_rx = 0usize;
+    let mut hasher = crate::sha256::Hasher::new();
     let mut scratch = [0u8; 2048];
 
     let deadline = net::clock_now().total_millis() + TIMEOUT_MS;
@@ -325,6 +326,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
         total_rx += n;
         if headers_done {
             body_len += n;
+            hasher.update(&scratch[..n]);
         } else {
             let take = n.min(headers.len() - header_len);
             headers[header_len..header_len + take].copy_from_slice(&scratch[..take]);
@@ -334,6 +336,9 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
                 content_length = crate::http::parse_content_length(&headers[..header_len]);
                 headers_done = true;
                 body_len = total_rx.saturating_sub(pos + 4);
+                let batch_start = total_rx - n;
+                let body_off = (pos + 4).saturating_sub(batch_start).min(n);
+                hasher.update(&scratch[body_off..n]);
             } else if header_len == headers.len() {
                 remove_socket(handle);
                 return Err("response headers too large");
@@ -358,6 +363,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
         status,
         body_len,
         content_length,
+        sha256: hasher.finalize(),
     })
 }
 

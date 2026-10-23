@@ -35,6 +35,7 @@ pub mod menu;
 pub mod net;
 pub mod ntp;
 pub mod scheduler;
+pub mod sha256;
 pub mod telnet;
 pub mod tlb;
 pub mod tls;

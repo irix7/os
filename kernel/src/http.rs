@@ -27,6 +27,8 @@ pub struct Summary {
     pub body_len: usize,
     /// `Content-Length` from the response headers, when present.
     pub content_length: Option<usize>,
+    /// SHA-256 of the body bytes.
+    pub sha256: crate::sha256::Sha256,
 }
 
 /// Fetch `path` from `ip:port` and return the status and body length.
@@ -125,6 +127,7 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
     let mut body_len = 0usize;
     let mut content_length: Option<usize> = None;
     let mut total_rx = 0usize;
+    let mut hasher = crate::sha256::Hasher::new();
     let mut last_state = State::Closed;
 
     let recv_deadline = net::clock_now().total_millis() + 10_000;
@@ -156,6 +159,7 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
             let data = &chunk[..n];
             if headers_done {
                 body_len += n;
+                hasher.update(data);
             } else {
                 let take = n.min(headers.len() - header_len);
                 headers[header_len..header_len + take].copy_from_slice(&data[..take]);
@@ -170,6 +174,9 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
                     // the part of this batch that did not fit the header
                     // buffer.
                     body_len = total_rx.saturating_sub(pos + 4);
+                    let batch_start = total_rx - n;
+                    let body_off = (pos + 4).saturating_sub(batch_start).min(n);
+                    hasher.update(&data[body_off..]);
                 } else if header_len == headers.len() {
                     cleanup(handle);
                     return Err("response headers too large");
@@ -209,6 +216,7 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
         status,
         body_len,
         content_length,
+        sha256: hasher.finalize(),
     })
 }
 

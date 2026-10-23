@@ -116,22 +116,28 @@ pub fn poll() {
                 let sock = sockets.get_mut::<TcpSocket>(handle);
                 let mut w = SocketWriter { sock };
                 match result {
-                    Ok(summary) => match summary.content_length {
-                        Some(expected) if expected != summary.body_len => {
-                            let _ = write!(
-                                w,
-                                "{}: {} {}/{} bytes\r\n",
-                                scheme, summary.status, summary.body_len, expected
-                            );
+                    Ok(summary) => {
+                        match summary.content_length {
+                            Some(expected) if expected != summary.body_len => {
+                                let _ = write!(
+                                    w,
+                                    "{}: {} {}/{} bytes\r\n",
+                                    scheme, summary.status, summary.body_len, expected
+                                );
+                            }
+                            _ => {
+                                let _ = write!(
+                                    w,
+                                    "{}: {} {} bytes\r\n",
+                                    scheme, summary.status, summary.body_len
+                                );
+                            }
                         }
-                        _ => {
-                            let _ = write!(
-                                w,
-                                "{}: {} {} bytes\r\n",
-                                scheme, summary.status, summary.body_len
-                            );
+                        let hex = summary.sha256.to_hex();
+                        if let Ok(text) = core::str::from_utf8(&hex) {
+                            let _ = write!(w, "sha256: {}\r\n", text);
                         }
-                    },
+                    }
                     Err(err) => {
                         let _ = write!(w, "{}: {}\r\n", scheme, err);
                     }
