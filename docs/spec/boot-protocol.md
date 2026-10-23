@@ -1,37 +1,42 @@
 # IRIX 7 — Boot Protocol (ROM ↔ Kernel)
 
-**Status:** draft
+**Status:** draft (the current assembly ROM does not emit `BootInfo`)
 **Version:** 1.0
 **Owner:** boot
 **Related:** [`architecture.md`](architecture.md) §10, [`../plan/milestones.md`](../plan/milestones.md) M1–M2.
 
 ## 1. Scope
 
-This is the binary contract between the **Rust ROM** (n32/MIPS III, executed directly from
+This is the binary contract between the **ROM** (MIPS III assembly, executed directly from
 the PROM window at `0xBFC00000`) and the **IRIX 7 kernel** (n32/MIPS III). It defines the
 handoff registers, the `BootInfo` structure, the memory map, the CPU/cache state, validation
 and failure behaviour.
 
+The ROM is a stub, not a full firmware: it brings the machine up, copies the kernel image
+into RAM and jumps to it. Everything the machine does afterwards — including the telnet
+console and the network stack — is the kernel's.
+
 It does not define the kernel's own boot sequence, the boot bundle format or the root image;
 those are in [`image-format.md`](image-format.md) (planned) and `architecture.md` §10.
+Loadable modules are specified in [`modules.md`](modules.md).
 
 ## 2. Handoff
 
 The ROM:
 
-1. initialises the CPU, caches, memory controller (read-only), serial/framebuffer and Seeq;
-2. fetches the kernel and boot bundle over HTTP;
-3. verifies their SHA-256 digests;
-4. loads them at the agreed physical addresses;
-5. builds a `BootInfo` and a memory map in reserved RAM;
-6. flushes the D-cache, invalidates the I-cache and executes `sync`;
-7. jumps to the kernel entry with the registers below.
+1. initialises the CPU and invalidates the TLB;
+2. maps a probe window so the DRAM banks can be sized, then programs the memory
+   controller to map them at `LOMEM_BASE` (`0x0800_0000`);
+3. tests every byte of DRAM, still with no stack and no RAM-resident state of its own;
+4. initialises the serial console (the Z85C30 in the IOC);
+5. copies the kernel image out of PROM to `0x8804_0000`;
+6. writes the boot flag and jumps to the kernel entry with the registers below.
 
 | Register | Value |
 |---|---|
-| `$a0` | Physical address of `BootInfo` (the kernel converts to kseg0 by adding `0x8000_0000`) |
-| `$a1` | 0 |
-| `$a2` | 0 |
+| `$a0` | Physical address of `BootInfo`; 0 when the ROM has none (the kernel then falls back to the register handoff) |
+| `$a1` | Total RAM bytes the ROM found |
+| `$a2` | Physical base address of RAM (`0x0800_0000`) |
 | `$sp` | Valid stack in RAM, 16-byte aligned, at least 64 KiB |
 | `$ra` | 0 |
 | `$v0` | 0 |
@@ -49,6 +54,10 @@ CPU state at entry:
 | FPU | Disabled (`Status.CU1 = 0`) |
 | Watchdog | Disarmed |
 | PC | Kernel `_start` |
+
+The current ROM passes `$a0 = 0` (no `BootInfo`), `$a1` = RAM bytes, `$a2` = RAM base and
+`$sp` = the kernel stack top. The kernel falls back to that geometry, reserves
+`0x0800_0000..0x08B0_0000` and starts the frame allocator at `0x08B0_0000`.
 
 The kernel may re-enable or reconfigure anything after it has validated the handoff. It must
 not call ARCS after it takes over the TLB and caches; anything it needs from ARCS must be
@@ -110,12 +119,14 @@ region and records their physical addresses.
 
 ### 3.1 Resident console service
 
-The ROM and kernel are one program at two link addresses. The ROM initialises the Seeq
-device, `Interface`, `SocketSet`, clock and telnet console once. `net_state` and
-`seeq_state` point at that live state and `console_poll` points at a resident routine that
-drives it; the kernel calls the routine from its idle path with `net_state`. The kernel must not re-create the network
-stack or console, and the memory map must reserve the RAM holding the shared state. The
-telnet console therefore remains available while the kernel is running.
+The telnet console is the kernel's own: the ROM is a stub that brings the machine up and
+hands over, so there is no ROM-resident console to poll. `console_poll` is 0 and the kernel
+does not call it.
+
+The ROM and the kernel are still one program at two link addresses, and the rule that the
+kernel must not re-create state the ROM initialised still holds — it simply has nothing to
+inherit yet. When the ROM grows a network stack, `net_state` and `seeq_state` will point at
+that live state and the kernel will drive it from its idle path.
 
 ### 3.2 Flags
 
@@ -199,19 +210,22 @@ The ROM's own failure behaviour is:
 
 | Failure | Behaviour |
 |---|---|
-| No link / no DHCP | Retry with backoff; then fall back to a static address from NVRAM |
-| DNS failure | Retry; then try the configured IP |
-| HTTP 404/5xx | Retry; then fall back to the PROM/local image |
-| Digest mismatch | Refuse to jump; print expected/actual; fall back |
-| Timeout | Retry; then fall back |
-| Kernel returns | Halt with a diagnostic; the watchdog resets if armed |
+| No DRAM found | Print `ROM: RAM TEST FAILED` on the serial console and halt |
+| RAM test mismatch | Print the failing address and halt |
+| Kernel image will not decompress | Print a diagnostic and halt |
+
+The ROM does not fetch anything: the kernel image is embedded in the PROM image, so
+there is no link to lose and no digest to check. The failure modes that used to belong
+here — no DHCP, DNS failure, HTTP errors — move to the kernel once it owns the network.
 
 ## 8. Test plan
 
+- [x] iris: ROM → kernel → serial marker, with the RAM test reporting the whole machine.
+- [x] iris: ROM → kernel → graphical boot menu on the REX3 display.
+- [x] The PS/2 scancode decoder is unit-tested on the host (`kernel/tests/kbd.rs`).
 - [ ] `BootInfo` size/offset assertions in o32 and n32.
 - [ ] CRC32C known-answer tests.
 - [ ] A stub kernel validates a synthetic `BootInfo` and prints the memory map.
-- [ ] iris: ROM → stub kernel → serial marker.
 - [ ] iris: ROM → real kernel → M2 demo.
 - [ ] Real Indy: same, with the PROM as the fallback.
 - [ ] Corrupt magic, version, checksum, map count and overlapping regions are rejected.

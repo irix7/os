@@ -5,12 +5,6 @@
 //! Allocation is from currently unused memory with reference-counted frame
 //! metadata (Inv. 1).
 
-#![no_std]
-
-use core::ptr::{read_volatile, write_volatile};
-
-use crate::print_hex8;
-
 /// Physical memory descriptor from the ARCS memory descriptor list.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -96,6 +90,16 @@ pub fn init(descs: &[MemDesc], count: usize) {
     }
 
     crate::print_str("frames: initialised from ");
+    if count > 0 {
+        unsafe {
+            crate::print_hex32(MEM_DESCS[0].base as u32);
+            crate::print_str(", ");
+            crate::print_hex32(MEM_DESCS[0].size as u32);
+        }
+        crate::print_str(" bytes");
+    } else {
+        crate::print_str("no descriptors");
+    }
     crate::println("");
 }
 
@@ -192,6 +196,27 @@ pub fn total_ram() -> u64 {
             }
         }
         total
+    }
+}
+
+/// Number of free 4 KiB frames in the usable descriptors.
+pub fn free_frames() -> usize {
+    unsafe {
+        let mut free = 0;
+        for i in 0..MEM_DESC_COUNT {
+            let desc = MEM_DESCS[i];
+            if desc.kind != MEM_KIND_USABLE_RAM {
+                continue;
+            }
+            let start_frame = (desc.base / 4096) as usize;
+            let end_frame = ((desc.base + desc.size) / 4096) as usize;
+            for f in start_frame..end_frame.min(MAX_FRAMES) {
+                if FRAME_META[f].ref_count == 0 {
+                    free += 1;
+                }
+            }
+        }
+        free
     }
 }
 

@@ -15,6 +15,32 @@ protected by a bearer token and a hardware watchdog.
 This spec defines the transport, authentication, methods, tool schemas, error model and
 security posture. It does not define the agent's policy or the client implementation.
 
+## 1.1 Current prototype
+
+`modules/httpd` is loaded over HTTPS into the module area and is the first slice of the
+control plane. It implements:
+
+- `POST /mcp` with JSON-RPC 2.0 `initialize` (echoing the client's `protocolVersion`,
+  default `2026-07-28`), `ping`, `tools/list` and `tools/call`;
+- tools `status` (the shared machine status block: IP, MAC, RAM, uptime, date), `echo`,
+  `console`/`serial.write` (write a line to the guest console), `serial.read` (the kernel's
+  8 KiB serial ring, from an absolute offset), `system.reset` and `system.poweroff`;
+- `resources/list` and `resources/read` expose `irix7://serial`, `irix7://status`,
+  `irix7://net` and `irix7://mem` as `text/plain`;
+- `GET /` as a plain status page;
+- guest port 80, forwarded to host `8088` by the iris rig.
+
+The module is loaded automatically at boot when the NVRAM environment carries
+`mcp.url` and `mcp.sha256`; the control plane therefore survives `system.reset` without a
+telnet step.  When `mcp.token` is present in the NVRAM environment, `POST /mcp` requires
+`Authorization: Bearer <token>` and returns HTTP 401 with `WWW-Authenticate: Bearer`
+otherwise. `GET /` stays open as the human status page. `shell.exec` accepts `echo`, `uname`, `uptime`, `status`, `net`, `mem`, `time`, `help`,
+`reboot` and `poweroff`; `ls`, `cat` and `ps` wait for the filesystem and process work. It does **not**
+yet implement sessions, SSE, `screen.capture` or the dotted tool names.  The serial ring starts at the
+kernel entry, so the ROM's own banner is not included. It is a prototype of
+the transport and tool loop, not a conforming server; the rest of this document is the
+target.
+
 ## 2. Transport
 
 - **MCP 2026-07-28**, JSON-RPC 2.0.

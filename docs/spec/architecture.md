@@ -1138,40 +1138,40 @@ There are three boot paths, in order of preference:
 
 ### 10.2 Phase 1: the Rust ROM
 
-The ROM is a separate `no_std` Rust artefact:
+The ROM is a pure MIPS III assembly stub; the kernel owns everything after the jump:
 
-| Property | Target |
+| Property | Current |
 |---|---|
-| Size | 512 KiB–1 MiB flash/PROM image |
+| Size | about 476 KiB PROM image (inside the 512 KiB window) |
 | ISA | n32/MIPS III (raw PROM image; the factory ARCS loader is not used) |
-| Network | Seeq 8003, HPC3 PBUS DMA |
-| Stack | smoltcp, IPv4 + DHCPv4 + NTP; IPv6 and DNS planned |
-| Application | HTTP/1.1 client; HTTPS/TLS planned |
-| Integrity | SHA-256 of the kernel and boot bundle |
-| Console | Serial (Z85C30); styled telnet ROM console on guest port 23 (truecolor/256/16, NAWS, history) |
-| Payload | Kernel + boot bundle, loaded to a kseg0 address agreed with the kernel linker script (for example `0x8804_0000`, mapping physical `0x0804_0000`; the Indy's RAM starts at physical `0x0800_0000`) |
-| Handoff | Flush caches, set `$a0`–`$a2` boot arguments, jump to the kernel entry; the live network stack and telnet console remain in place |
+| Network | kernel: Seeq 8003, HPC3 PDMA |
+| Stack | kernel: smoltcp, IPv4 + DHCPv4 (with renewals), DNS, NTP, ICMP |
+| Application | kernel: HTTP/1.1 and HTTPS/TLS 1.3 with verified chains |
+| Integrity | SHA-256 of fetched bodies; modules are gated on their digest |
+| Console | serial (Z85C30) and a plain-text telnet console on guest port 23 |
+| Payload | LZ4-compressed kernel, decompressed to `0x8804_0000` (physical `0x0804_0000`) |
+| Handoff | `$a0` = 0 (no BootInfo), `$a1` = RAM bytes, `$a2` = RAM base, `$sp` = kernel stack; the kernel initialises the network, console and clock once |
+| Modules | flat images linked at `0x8840_0000`, fetched over HTTPS into RAM, digest-checked and called through a C service table |
 
-The ROM's network driver is an exception to "all drivers are cells" (D17): it must exist
-before any cell can be loaded. It is a minimal polled/DMA driver, not the full
+The kernel's network driver is an exception to "all drivers are cells" (D17): it must exist
+before any cell can be loaded. It is a minimal polled/DMA driver in the kernel, not the full
 network cell.
 
 The ROM and kernel are one program at two link addresses, not a firmware/kernel pair. The
-Seeq device, smoltcp `Interface`, `SocketSet`, clock and telnet console are initialised
-once by the ROM and stay live across the hand-off. The kernel uses those same objects in
-place; it does not reinitialise the Seeq or create a second network stack. The boot-bundle
-network cell layers policy and `/net` on top of the inherited device, and the resident
-console service is polled from the kernel idle path.
+ROM is a serial-only assembly stub: it sizes and tests DRAM, decompresses the kernel and
+jumps. The kernel initialises the Seeq device, smoltcp `Interface`, `SocketSet`, clock and
+telnet console once, in place, and keeps them live. There is no second network stack and no
+ROM-owned network state to inherit.
 
-The ROM's TLS story is deliberately simple: the public OS image is not secret, so the ROM
-fetches it over **HTTP** and verifies a SHA-256 digest baked into the ROM. TLS is not
-required for integrity, and the dead RTC makes certificate expiry unreliable. If a future
-deployment needs confidentiality, the ROM can gain a pinned TLS stack; that is not v1.
+TLS is deliberately in the kernel: it is the transport that makes module downloads
+trustworthy. The core verifies chains against an embedded SSL.com TLS ECC Root CA 2022,
+fetches modules over HTTPS, and gates execution on their SHA-256. The ROM itself has no
+network stack.
 
 ### 10.3 The boot bundle
 
-The ROM fetches a **boot bundle** alongside the kernel. The bundle is an initramfs-like
-container (a small EROFS image or a simple archive) containing:
+A future **boot bundle** (fetched by the kernel over HTTPS, not by the ROM) is an
+initramfs-like container (a small EROFS image or a simple archive) containing:
 
 - the **network cell** (Seeq driver + smoltcp + `/net`);
 - the **block cell** (SCSI + block device + RAM/disk cache);

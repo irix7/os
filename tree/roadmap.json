@@ -3,7 +3,7 @@
     "title": "The Tree of IRIX 7",
     "short": "IRIX 7",
     "version": "2026.10",
-    "updated": "21 October 2026",
+    "updated": "23 October 2026",
     "repo": "https://github.com/irix7/os",
     "docs": "https://irix7.github.io/os/",
     "description": "A living, interactive map of the IRIX 7 operating system roadmap.",
@@ -159,7 +159,7 @@
       "id": "m1",
       "kind": "milestone",
       "branch": "foundation",
-      "status": "active",
+      "status": "done",
       "code": "M1",
       "title": "ROM netboot",
       "fullTitle": "ROM netboot",
@@ -167,21 +167,23 @@
         1500,
         2060
       ],
-      "summary": "A no_std Rust ROM that wakes the Indy, brings up the Seeq network, fetches a kernel over HTTP and verifies it before the jump.",
-      "demo": "In iris, the ROM prints a DHCP lease, fetches a kernel and bundle from a local server, prints the digests, and jumps to a stub that prints `hello from the kernel`.",
+      "summary": "An assembly PROM stub that sizes and tests DRAM, decompresses the n32 kernel to 0x8804_0000 and jumps; the kernel owns Seeq networking, DHCP/DNS/NTP, HTTP/HTTPS, the telnet console and HTTPS-loaded modules.",
+      "demo": "In iris the PROM prints the banner, tests 32 MiB, decompresses the kernel and prints `kernel: up`; DHCP/DNS complete, the telnet console answers and survives reboot, and `https example.com:443/` verifies the chain and body digest.",
       "criteria": [
         "Serial console works from the first instruction.",
-        "Seeq 8003 initialises, transmits and receives; HPC3 DMA works.",
-        "smoltcp brings up IPv4 and IPv6; DHCP and DNS work.",
-        "HTTP/1.1 GET with Range support works.",
-        "SHA-256 verification of the kernel and bundle.",
-        "The ROM fits in 512 KiB–1 MiB.",
-        "Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.",
-        "The handoff structure is documented in boot-protocol.md."
+        "RAM is sized and tested stacklessly before any RAM structures exist.",
+        "The kernel is decompressed from PROM and entered at 0x8804_0000.",
+        "Seeq 8003 + HPC3 PDMA; DHCPv4 with renewals; DNS; NTP; ICMP.",
+        "HTTP/1.1 and HTTPS/TLS 1.3 with certificate-chain verification.",
+        "SHA-256 over fetched bodies; modules are gated on their digest.",
+        "Telnet console survives boot and reconnect.",
+        "Modules are fetched over HTTPS into RAM and executed in place.",
+        "The image fits in the 512 KiB PROM window (about 476 KiB).",
+        "The handoff is documented; BootInfo is optional and the current ROM passes registers."
       ],
-      "deps": "M0, R2 (or a local HTTP server), a test kernel stub.",
+      "deps": "M0, iris (or an Indy), a local HTTP server for modules.",
       "estimate": "4–6 weeks",
-      "risks": "Seeq DMA descriptor flags; ARCS/ECOFF; cache flush before the jump; ROM size; 10 Mbit timeouts.",
+      "risks": "PROM window size; Seeq DMA cache coherency; 80C03 register semantics; 10 Mbit timeouts.",
       "docs": "../plan/milestones.html#m1--rom-netboot"
     },
     {
@@ -212,13 +214,13 @@
       "estimate": "6–10 weeks",
       "risks": "TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage.",
       "docs": "../plan/milestones.html#m2--kernel-core",
-      "note": "The framework cross-builds; it has not yet booted on iris."
+      "note": "The framework boots on iris: frames, scheduler and the CP0 timer/WAIT idle path are live. Remaining: 8254 calibration, page-fault handling, a register-dump panic screen, and the driver interface."
     },
     {
       "id": "m3",
       "kind": "milestone",
       "branch": "control",
-      "status": "planned",
+      "status": "active",
       "code": "M3",
       "title": "Control plane",
       "fullTitle": "Network + MCP + shell",
@@ -226,8 +228,9 @@
         1500,
         1600
       ],
-      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built.",
+      "summary": "The development harness: a de-privileged network cell, an MCP server and a shell. The control plane is how everything else gets built. Prototype: the httpd module serves MCP initialize/ping/tools/list/tools/call over the module TCP services, with status, echo, console, serial.read, system.reset, system.poweroff and shell.exec tools (status shares the telnet formatter); autoloaded from NVRAM mcp.url/mcp.sha256, with an optional mcp.token bearer check.",
       "demo": "An agent connects to the Indy over Streamable HTTP with a bearer token, runs `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.",
+      "note": "A prototype MCP server runs as modules/httpd on guest port 80 (host 8088): initialize, ping, tools/list and tools/call with status, echo, console, serial.read, system.reset and system.poweroff. Bearer auth, SSE, shell and screen/serial tools remain.",
       "criteria": [
         "Network cell owns the Seeq, exposes `/net`, and survives a reset.",
         "MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.",

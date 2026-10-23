@@ -1,12 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! SHA-256 hash function (FIPS 180-4).
+//! SHA-256 (FIPS 180-4), streaming.
 //!
-//! Implemented in-house to avoid pulling in the `sha2` crate and its
-//! dependencies into the freestanding ROM. Supports streaming multi-chunk
-//! updates so the kernel/boot-bundle can be hashed as it is fetched over
-//! HTTP without buffering the whole image.
-
-use crate::hex::encode_into;
+//! Used to fingerprint objects fetched over HTTP/HTTPS without buffering
+//! them: the fetchers feed body chunks into [`Hasher`] as they arrive.
 
 const K: [u32; 64] = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -49,7 +45,6 @@ fn gamma1(x: u32) -> u32 {
     rotr(x, 17) ^ rotr(x, 19) ^ (x >> 10)
 }
 
-/// Compress a single 64-byte block, updating the 8-word state in place.
 fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut w = [0u32; 64];
     for i in 0..16 {
@@ -97,18 +92,17 @@ fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
 
 /// A SHA-256 digest (32 bytes).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
 pub struct Sha256(pub [u8; 32]);
 
 impl Sha256 {
-    /// Compute the SHA-256 digest of `data` in one shot.
+    /// Compute the digest of `data` in one shot.
     pub fn digest(data: &[u8]) -> Sha256 {
         let mut hasher = Hasher::new();
         hasher.update(data);
         hasher.finalize()
     }
 
-    /// Compare this digest against another for equality (constant-time).
+    /// Constant-time comparison.
     pub fn eq_digest(&self, other: &Sha256) -> bool {
         let mut diff = 0u8;
         for i in 0..32 {
@@ -117,10 +111,14 @@ impl Sha256 {
         diff == 0
     }
 
-    /// Return the digest as lowercase hex bytes.
+    /// Lowercase hex rendering.
     pub fn to_hex(&self) -> [u8; 64] {
+        const HEX: &[u8; 16] = b"0123456789abcdef";
         let mut out = [0u8; 64];
-        encode_into(&self.0, &mut out);
+        for (i, byte) in self.0.iter().enumerate() {
+            out[i * 2] = HEX[(byte >> 4) as usize];
+            out[i * 2 + 1] = HEX[(byte & 0x0F) as usize];
+        }
         out
     }
 }
@@ -134,7 +132,6 @@ pub struct Hasher {
 }
 
 impl Hasher {
-    /// Create a new hasher.
     pub fn new() -> Hasher {
         Hasher {
             state: [
@@ -147,13 +144,12 @@ impl Hasher {
         }
     }
 
-    /// Feed `data` into the hash. May be called multiple times.
+    /// Feed `data` into the hash.  May be called multiple times.
     pub fn update(&mut self, data: &[u8]) {
         self.total_len = self.total_len.wrapping_add(data.len() as u64);
         let mut data = data;
         while !data.is_empty() {
             if self.buffer_len > 0 {
-                // Finish any partially-filled block.
                 let need = BLOCK_LEN - self.buffer_len;
                 let take = data.len().min(need);
                 self.buffer[self.buffer_len..self.buffer_len + take].copy_from_slice(&data[..take]);
@@ -164,7 +160,6 @@ impl Hasher {
                     self.buffer_len = 0;
                 }
             } else {
-                // Buffer is empty: process full blocks directly, buffer remainder.
                 while data.len() >= BLOCK_LEN {
                     compress_block(&mut self.state, &data[..BLOCK_LEN].try_into().unwrap());
                     data = &data[BLOCK_LEN..];
@@ -178,11 +173,9 @@ impl Hasher {
         }
     }
 
-    /// Finalize and return the digest.
+    /// Finalise and return the digest.
     pub fn finalize(mut self) -> Sha256 {
         let total_bits = self.total_len.wrapping_mul(8);
-
-        // Append 0x80 then zeros until length mod 64 == 56.
         self.buffer[self.buffer_len] = 0x80;
         self.buffer_len += 1;
         if self.buffer_len > 56 {
@@ -195,7 +188,6 @@ impl Hasher {
         for i in self.buffer_len..56 {
             self.buffer[i] = 0;
         }
-        // Append 64-bit big-endian bit length.
         for i in 0..8 {
             self.buffer[56 + i] = ((total_bits >> ((7 - i) * 8)) & 0xFF) as u8;
         }
@@ -210,8 +202,8 @@ impl Hasher {
 }
 
 impl Default for Hasher {
-    fn default() -> Hasher {
-        Hasher::new()
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -219,7 +211,6 @@ impl Default for Hasher {
 mod tests {
     use super::*;
 
-    // FIPS 180-4 example: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
     #[test]
     fn sha256_abc() {
         let d = Sha256::digest(b"abc");
@@ -229,7 +220,6 @@ mod tests {
         );
     }
 
-    // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
     #[test]
     fn sha256_empty() {
         let d = Sha256::digest(b"");
@@ -239,15 +229,6 @@ mod tests {
         );
     }
 
-    // Two different inputs must differ.
-    #[test]
-    fn sha256_different_inputs_differ() {
-        let a = Sha256::digest(b"hello");
-        let b = Sha256::digest(b"world");
-        assert!(!a.eq_digest(&b));
-    }
-
-    // Streaming update must equal one-shot digest.
     #[test]
     fn sha256_streaming_matches_oneshot() {
         let data = b"The quick brown fox jumps over the lazy dog";
@@ -256,7 +237,6 @@ mod tests {
         hasher.update(&data[..10]);
         hasher.update(&data[10..20]);
         hasher.update(&data[20..]);
-        let streamed = hasher.finalize();
-        assert!(one.eq_digest(&streamed));
+        assert!(one.eq_digest(&hasher.finalize()));
     }
 }

@@ -37,7 +37,7 @@ where the two machines differ the IOC2 specification has a dedicated section [S3
 
 ## 1. System overview and physical address map
 
-```
+```text
 0x0000_0000  KUSEG (user, TLB mapped)
 0x0800_0000  main memory, segment 0           (up to 256 MB, wraps at 0x1800_0000)
 0x2000_0000  main memory, segment 1           (up to 128 MB)
@@ -278,7 +278,7 @@ receive), `FLSH` (0x8, flush on receive), `ACT` (0x10, start), `LD` (0x20, load 
 
 **Descriptor format** (8 bytes, 64-bit aligned recommended):
 
-```
+```c
 u32 pbuf;      /* physical buffer address */
 u32 cntinfo;   /* byte count in bits 13:0 plus flags */
 u32 pnext;     /* physical address of next descriptor, 0 terminates */
@@ -643,7 +643,7 @@ Key registers (word offsets from base):
 | 0x0008 | `SMASK0..4` | 5×24-bit span masks (write enables per byte) |
 | 0x001C | `COLORVRAM` | fast-clear colour injected during block fills |
 | 0x0100 | `DCDR` | DCB data register — all VC2/XMAP9/RAMDAC traffic goes through here |
-| 0x0104 | `DCDR` address/command |
+| 0x0104 | `DCDR` address/command | DCB address register |
 | 0x0110 | `CIDMATCH` | 24-bit pixel compare value for conditional writes |
 | 0x0114 | `CIDMASK` | compare mask |
 | 0x0118 | `HOSTRW` | host read/write window into VRAM |
@@ -804,7 +804,7 @@ Channel A registers; **channel B is the same layout at +0xB0**:
 
 A descriptor is a **single 32-bit word**:
 
-```
+```text
 bit 31      STOP
 bit 30      JUMP
 bits 29:0   physical address of a 4 KB page (bits 11:0 must be zero)
@@ -863,7 +863,7 @@ The conversion is done with shifts and adds (no interpolation from 4:2:2 to 4:4:
 pair is simply repeated for the second Y), with an error below ±0.6 LSB and clamping to
 0…255. Equations as specified: [S12 §4.5]
 
-```
+```text
 R = 1.596027·(V'−128) + 1.164384·(Y'−16)
 B = 2.017232·(U'−128) + 1.164384·(Y'−16)
 G = 1.164384·(Y'−16) − 0.8129676·(V'−128) − 0.3917623·(U'−128)
@@ -961,7 +961,7 @@ The 8 KB is shared between the PROM environment and the MAC address:
 
 | Offset | Contents |
 |---|---|
-| 0x000–0x3FF | PROM environment variables (see §13.3) |
+| 0x010–0x3FF | PROM environment variables (see §13.3); the RTC registers occupy 0x000–0x00F |
 | 0x4E8 | Ethernet MAC address, 6 bytes |
 | 0x4EE–0x7FF | PROM scratch / diagnostic results |
 | 0x800–0x1FFF | free for the OS |
@@ -1154,7 +1154,7 @@ useful for cross-checking a kernel’s own probing.
 
 ### 14.1 The three-level interrupt tree
 
-```
+```text
 CPU IP2 ── HPC3 (istat0/istat1, 10 sources)
 CPU IP3 ── local1 (panel, HPC DMA done, AC fail, Vino, GIO2)
 CPU IP4 ── 8254 timer 0        (broken, see below)

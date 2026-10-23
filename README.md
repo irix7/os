@@ -34,9 +34,17 @@ D1–D31 are in `docs/spec/architecture.md` §2.2.
 
 ## Status
 
-Empty. Transcribing IRIX into this Rust-native system is planned work,
-orchestrated by `irix7/harness`, following the stock rebuild and the
-modernised fork in `irix7/project`.
+Bootable on iris. A MIPS III assembly PROM replacement sizes and tests DRAM, serial-boots,
+decompresses the n32 kernel into RAM and jumps to it. The kernel owns the machine: Seeq 8003
+networking, DHCP/DNS, NTP, ICMP, HTTP and HTTPS (TLS 1.3 with certificate verification), a
+telnet console on port 23, a wall clock seeded from the DS1386 RTC, a CP0-timer idle path, and a loader for modules fetched over
+HTTPS into RAM. The graphical boot menu and diagnostics run on the REX3. A loadable
+module serves an MCP control plane (JSON-RPC `initialize`, `ping`, `tools/list`,
+`tools/call`) at `POST /mcp`, with `status`, `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`
+tools.
+
+The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
+tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).
 
 ## Licence
 

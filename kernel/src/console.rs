@@ -12,7 +12,6 @@
 //! Polled output only; interrupts are left disabled. This is the early
 //! bring-up console used before the console cell starts.
 
-#![no_std]
 
 use core::ptr::{read_volatile, write_volatile};
 

@@ -72,11 +72,12 @@ The rig scripts live in `irix7/project/scripts/rig/`. Start a private rig instan
 scripts/rig/task-rig.sh start <item>
 ```
 
-The ROM boots from the PROM window (`0xBFC00000`), sizes and tests DRAM stacklessly, then
-brings up the Seeq 8003, obtains a DHCP lease, queries NTP through the gateway, fetches the
-kernel over HTTP, verifies its SHA-256 and jumps to the agreed load address. The current
-hand-off target is a stub; linking the real kernel at the hand-off address, passing
-`BootInfo` in `$a0` and enabling/flushing the caches are the remaining M1/M2 work.
+The ROM boots from the PROM window (`0xBFC00000`), sizes and tests DRAM stacklessly, brings
+up the serial console, LZ4-decompresses the embedded kernel to `0x8804_0000` and jumps to
+it. The ROM passes the RAM geometry in registers; there is no `BootInfo` structure. The
+kernel then owns the machine: Seeq/HPC3 networking, DHCP with renewals, DNS, NTP, ICMP,
+HTTP/HTTPS (TLS 1.3 with certificate verification), the telnet console, the REX3 menu and
+diagnostics, and the module loader.
 
 ## Running tests
 
@@ -104,23 +105,29 @@ cargo build -Z build-std=core,alloc -Zjson-target-spec \
 
 | Milestone | Status |
 |-----------|--------|
-| M0 — Toolchain unblocked | Complete (PRs #31, #32) |
-| M1 — ROM netboot | In progress (PRs #36, #37, #39, #41) |
+| M0 — Toolchain unblocked | Complete |
+| M1 — ROM netboot | Complete (superseded: the ROM is an assembly stub and the kernel owns networking) |
+| M2 — Kernel core | In progress |
 
-M1 completed:
+Working on iris:
 
-- Serial console works from the first instruction
-- Seeq 8003 initialises and reads its MAC address from NVRAM
-- smoltcp TCP/IP stack builds and cross-compiles
-- DHCPv4 client obtains an IP address
-- HTTP/1.1 GET client with Range support builds
+- The assembly ROM sizes and tests all DRAM stacklessly, then decompresses and jumps to the
+  n32 kernel at `0x8804_0000`.
+- The kernel prints `kernel: up`; the REX3 shows the boot menu and the PS/2 keyboard drives
+  it; "Run diagnostics" prints CPU, RAM and network state.
+- Seeq 8003 over HPC3 PDMA, DHCP (with renewal), DNS, NTP wall clock, ICMP ping.
+- HTTP/1.1 and HTTPS/TLS 1.3 with a verified chain and SHA-256 digests.
+- Telnet console on guest port 23 with `status`, `net`, `mem`, `time`, `echo`, `ntp`, `ping`,
+  `http`, `https`, `module`, `boot` and `reboot`.
+- CP0 Compare timer and `WAIT` idle loop; the vCPU parks when idle.
+- Modules are flat images fetched over HTTPS into RAM, SHA-256 checked, and called through
+  a versioned C service table.
 
-M1 remaining (blocked on iris hardware validation of Seeq DMA descriptor flag values):
+M2 remaining:
 
-- HTTP GET execution over smoltcp TCP
-- SHA-256 verification of the fetched kernel and boot bundle
-- BootInfo construction and cache flush
-- Jump to the kernel entry point
+- calibrate CP0 Count against the 8254 reference;
+- page-fault handling and a real panic screen with a register dump;
+- grow the scheduler/capability framework into the user-object model.
 
 ## Contributing
 

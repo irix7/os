@@ -15,8 +15,6 @@
 //!   $k0   $k1   $gp   $sp   $s8   $ra   $hi   $lo
 //!   Cause   BadVAddr   Status   PC   CP0  ...
 
-#![no_std]
-
 use crate::print_hex8;
 
 /// CP0 register selectors.
@@ -99,93 +97,191 @@ pub struct TrapFrame {
     pub status: u32,
 }
 
-/// Software status register state.
-static mut STATUS: u32 = 0;
-
 /// Read CP0 Status.
 pub fn status_read() -> u32 {
-    unsafe { STATUS }
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $12", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 Status.
 pub fn status_write(val: u32) {
     unsafe {
-        STATUS = val;
+        core::arch::asm!(".set noat", "mtc0 {0}, $12", in(reg) val);
     }
 }
 
 /// Read CP0 Cause.
 pub fn cause_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $13", out(reg) v);
+    }
+    v
+}
+
+/// Write CP0 Cause.
+pub fn cause_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $13", in(reg) val);
+    }
 }
 
 /// Read CP0 EPC.
 pub fn epc_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $14", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 EPC.
-pub fn epc_write(_val: u32) {}
+pub fn epc_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $14", in(reg) val);
+    }
+}
 
 /// Read CP0 Count.
 pub fn count_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $9", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 Count.
-pub fn count_write(_val: u32) {}
+pub fn count_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $9", in(reg) val);
+    }
+}
 
 /// Read CP0 Compare.
 pub fn compare_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $11", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 Compare.
-pub fn compare_write(_val: u32) {}
+pub fn compare_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $11", in(reg) val);
+    }
+}
+
+/// Read CP0 PRId (processor identifier).
+pub fn prid_read() -> u32 {
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $15", out(reg) v);
+    }
+    v
+}
+
+/// Read CP0 Config (cache and endianness configuration).
+pub fn config_read() -> u32 {
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $16", out(reg) v);
+    }
+    v
+}
 
 /// Read CP0 EntryHi.
 pub fn entryhi_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $10", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 EntryHi.
-pub fn entryhi_write(_val: u32) {}
+pub fn entryhi_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $10", in(reg) val);
+    }
+}
 
 /// Read CP0 PageMask.
 pub fn pagemask_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $5", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 PageMask.
-pub fn pagemask_write(_val: u32) {}
+pub fn pagemask_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $5", in(reg) val);
+    }
+}
 
 /// Read CP0 Index.
 pub fn index_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $0", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 Index.
-pub fn index_write(_val: u32) {}
+pub fn index_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $0", in(reg) val);
+    }
+}
 
 /// Read CP0 EntryLo0.
 pub fn entrylo0_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $2", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 EntryLo0.
-pub fn entrylo0_write(_val: u32) {}
+pub fn entrylo0_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $2", in(reg) val);
+    }
+}
 
 /// Read CP0 EntryLo1.
 pub fn entrylo1_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $3", out(reg) v);
+    }
+    v
 }
 
 /// Write CP0 EntryLo1.
-pub fn entrylo1_write(_val: u32) {}
+pub fn entrylo1_write(val: u32) {
+    unsafe {
+        core::arch::asm!(".set noat", "mtc0 {0}, $3", in(reg) val);
+    }
+}
 
 /// Read CP0 BadVAddr.
 pub fn badvaddr_read() -> u32 {
-    0
+    let v: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $8", out(reg) v);
+    }
+    v
 }
 
 /// Trap the current exception into the trap frame.
@@ -250,19 +346,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
 }
 
 /// Initialise traps and exception vectors.
+///
+/// The ROM already sets up CP0 Count/Compare, Status (IE=1, BEV=0), and the
+/// exception vectors at kseg0 0x80000000..0x80000100. Nothing to do here.
 pub fn init() {
-    // Disable interrupts.
-    let mut status = status_read();
-    status &= !STATUS_IE;
-    status_write(status);
-
-    // Set exception vector base to kseg0 (BEV = 0).
-    status &= !STATUS_BEV;
-    status_write(status);
-
-    // Clear all interrupt enables.
-    status &= !STATUS_IM_MASK;
-    status_write(status);
+    // ROM already configured CP0 and exception vectors; nothing to initialise.
 }
 
 /// Install exception vectors into kseg0.

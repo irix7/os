@@ -8,13 +8,7 @@
  *
  * Writable data lives in DRAM at 7 MiB, matching the original IP22 PROM's
  * BSSADDR 0xA8700000, with a 2 MiB heap.  The stack top is 10 MiB, leaving a
- * gap above the heap.  Staying well clear of the low 512 KiB matters: that
- * window is a special alias of 0x08000000..0x0807FFFF, and the original
- * firmware never places DMA buffers or its stack there.
- *   0xA870_0000 ..              .data/.bss/heap (2 MiB)
- *   0xA8A0_0000                 initial stack top (grows down)
- * The initial contents of .data are stored in the PROM image immediately
- * after .rodata and copied to RAM by the reset stub.
+ * gap above the heap.
  */
 
 OUTPUT_FORMAT("elf32-ntradbigmips")   /* n32 */
@@ -37,6 +31,12 @@ SECTIONS
   .rodata : {
     *(.rodata)
     *(.rodata.*)
+  }
+
+  /* ── Kernel payload: flat binary copied to RAM by the ROM ───────────── */
+  . = ALIGN(4);
+  .payload : {
+    *(.payload)
   }
 
   /* ── MIPS ELF required sections ─────────────────────────────────────── */

@@ -11,7 +11,7 @@
 | ID | Milestone | Demo | Estimate | Release |
 |---|---|---|---|---|
 | M0 | Toolchain unblocked | CI cross-compiles a `no_std` binary for n32 and o32; tracer bullet prints on iris | 2–4 weeks | — |
-| M1 | ROM netboot | ROM does DHCP, HTTP GET, SHA-256 and jumps to a stub | 4–6 weeks | — |
+| M1 | ROM netboot | Assembly ROM tests DRAM, decompresses the n32 kernel and jumps; kernel does DHCP/DNS/NTP/HTTP/HTTPS, console and modules | 4–6 weeks | — |
 | M2 | Kernel core | Timer ticks, page fault, panic screen, scheduler | 6–10 weeks | — |
 | M3 | Network + MCP + shell | Agent connects over HTTP, runs a command, reads serial, captures screen | 4–6 weeks | v0.1 |
 | M4 | SCSI + block + EROFS | `cat /etc/motd` from the R2 root image | 8–12 weeks | — |
@@ -65,8 +65,8 @@ tracer bullet boots on iris and prints its marker.
 - [x] `-Z build-std` works for `core`/`alloc` on the custom target.
 - [ ] `rustc_codegen_gcc` builds and produces working code for n32.
 - [x] The LLVM path works for the custom target.
-- [ ] The Nix devshell pins rustc, GCC, binutils and the target spec.
-- [ ] A clean checkout can build the tracer bullet without manual steps.
+- [x] The Nix devshell pins rustc, GCC, binutils and the target spec.
+- [x] A clean checkout can build the tracer bullet without manual steps.
 - [x] CI caches the toolchain and the target artefacts.
 - [x] The disk-space blocker is resolved or worked around.
 - [ ] The build is reproducible (same inputs → same hashes).
@@ -83,40 +83,43 @@ tracer bullet boots on iris and prints its marker.
 
 ## M1 — ROM netboot
 
-**Goal:** a `no_std` n32/MIPS III Rust ROM that replaces the factory ARCS PROM, runs from
-the PROM window at `0xBFC00000`, initialises the Indy, brings up the Seeq 8003, runs
-smoltcp, fetches a kernel over HTTP, verifies SHA-256, and jumps to the kernel.
+**Goal (as delivered):** a MIPS III assembly PROM replacement that sizes and tests DRAM,
+brings up the serial console, LZ4-decompresses the n32 kernel to `0x8804_0000` and jumps to
+it. Networking, the console and the clock are initialised once in the kernel.
 
-**Demo:** in iris, the ROM boots from the raw PROM image, prints the DHCP lease, opens a
-telnet console, prints the NTP time, fetches the kernel from a local HTTP server, verifies
-the digest, and jumps to the real n32 kernel, which prints `kernel: up`. The telnet console
-remains live after the hand-off.
+**Demo:** in iris the raw PROM image prints the boot banner, tests 32 MiB of RAM, decompresses
+the kernel and prints `kernel: up`; DHCP and DNS complete; the telnet console answers and
+survives `reboot`. `https example.com:443/` verifies the certificate chain and reports a body
+digest matching the host.
 
 **Acceptance criteria:**
 
 - [x] Serial console works from the first instruction.
-- [x] RAM is sized and tested stacklessly before any RAM structures are created.
-- [x] Seeq 8003 initialises, transmits and receives; HPC3 DMA works.
-- [x] smoltcp brings up IPv4 and DHCPv4; NTP works through the gateway.
-- [ ] IPv6 and DNS.
-- [x] Basic HTTP/1.1 GET works.
-- [ ] HTTP Range support and response validation.
-- [x] SHA-256 verification of the fetched kernel.
-- [x] The ROM fits in 512 KiB–1 MiB.
-- [ ] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
-- [x] Telnet ROM console opens after DHCP and stays live after the kernel starts.
-- [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
-- [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
-- [x] Caches are enabled and flushed before the handoff.
+- [x] RAM is sized and tested stacklessly before any RAM structures exist.
+- [x] The kernel is decompressed from PROM and entered at `0x8804_0000`.
+- [x] Seeq 8003 + HPC3 PDMA; DHCPv4 with renewals; DNS; NTP; ICMP.
+- [x] HTTP/1.1 and HTTPS/TLS 1.3 with certificate-chain verification.
+- [x] SHA-256 over fetched bodies, and a digest gate for modules.
+- [x] Telnet console with its command set, surviving boot and reconnect.
+- [x] Loadable modules fetched over HTTPS into RAM.
+- [x] The image fits in the 512 KiB PROM window (about 476 KiB).
+- [x] The handoff is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md);
+      `BootInfo` is optional and the current ROM passes registers.
+- [ ] HTTP Range support.
 
-**Dependencies:** M0, a local HTTP server (or R2), a kernel linked for the handoff address.
+**Note:** the design changed during M1. The ROM started as a Rust netboot client; it is now
+an assembly stub that embeds the kernel, and the network stack and console live in the kernel.
+Because the PROM window is the binding constraint, new features are modules downloaded over
+HTTPS rather than growth of the compressed image.
+
+**Dependencies:** M0, iris (or an Indy), a local HTTP server for modules.
 
 **Estimate:** 4–6 weeks.
 
 **Risks:** Seeq quirks; kernel load address and `BootInfo` layout; cache flush before the
 jump; ROM size; 10 Mbit timeouts; TLS.
 
-**Out of scope:** TLS, the full boot bundle, storage.
+**Out of scope:** HTTP Range, the full boot bundle, storage.
 
 ---
 
@@ -125,12 +128,21 @@ jump; ROM size; 10 Mbit timeouts; TLS.
 **Goal:** the privileged framework: traps, TLB, caches, CP0 timer, frame allocator, scheduler,
 capability table, panic path and serial console.
 
+**Status:** in progress — the kernel links at `0x88040000`, consumes `BootInfo` in `$a0`,
+uses a 2-entry memory map, clears `.bss`, sets up the stack, and prints `kernel: up`.
+The telnet ROM console remains live after the hand-off via the resident console poll.
+
 **Demo:** the kernel prints the ARCS memory map, calibrates the timer, runs two kernel tasks
 with EDF and fair classes, handles a deliberate page fault, and panics cleanly with a
 register dump.
 
 **Acceptance criteria:**
 
+- [x] Kernel links at `0x88040000` and consumes `BootInfo` in `$a0`.
+- [x] Kernel memory map reserves ROM live state; usable RAM starts at `0x08B00000`.
+- [x] Kernel clears `.bss`, sets up stack, uses 2-entry memory map.
+- [x] Kernel prints `kernel: up`; serial console works after hand-off.
+- [x] Telnet ROM console remains live after kernel boots (resident console poll).
 - [ ] Exception vectors, TLB refill and `eret` work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
 - [ ] Frame allocator from the ARCS memory descriptor list; no probing.
@@ -139,12 +151,15 @@ register dump.
 - [ ] EDF and fair run queues; `is_running` debug assertion.
 - [ ] Panic screen with registers, stack trace and a serial dump.
 - [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
+- [ ] Real kernel idle path / throttle so an idle guest does not peg host CPU
+      (follow up on iris idle-CPU issue).
 
 **Dependencies:** M1.
 
 **Estimate:** 6–10 weeks.
 
-**Risks:** TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage.
+**Risks:** TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage;
+idle guest pegging host CPU (iris idle-CPU issue).
 
 **Out of scope:** drivers, userspace, filesystems.
 
@@ -159,14 +174,23 @@ control plane is how everything else gets built.
 **Demo:** an agent connects to the Indy over Streamable HTTP with a bearer token, runs
 `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.
 
+**Prototype:** `modules/httpd` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
+`initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
+`echo`, `console`, `serial.read`, `system.reset`, `system.poweroff` and `status`
+(IP/MAC/RAM/uptime/date) tools. The iris rig forwards host 8088 to the module's guest port 80.
+It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes back after
+`system.reset`. It has no bearer token, SSE, shell or screen tools yet.
+
 **Acceptance criteria:**
 
 - [ ] Network cell owns the Seeq, exposes `/net`, and survives a reset.
 - [ ] MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.
 - [ ] Tools: `shell.exec`, `fs.read`, `fs.write`, `fs.list`, `serial.read`, `serial.write`,
       `screen.capture`, `system.reset`, `system.poweroff`.
-- [ ] Bearer token authentication; no TLS in v1; binds to the LAN interface.
+- [x] Bearer token authentication; no TLS in v1; binds to the LAN interface.
 - [ ] Shell: `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot`, `poweroff`.
+      Prototype: `echo`, `uname`, `help`, `reboot` and `poweroff` work through `shell.exec`;
+      `ls`, `cat` and `ps` wait for the filesystem and process work.
 - [ ] `system.reset` is guarded by the watchdog and returns after the reboot.
 - [ ] The agent loop is documented and reproducible.
 

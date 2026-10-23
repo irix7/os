@@ -8,12 +8,6 @@
 //! One run queue per CPU. The Indy is uniprocessor.
 //! No admission control in v1.
 
-#![no_std]
-
-use core::cell::Cell;
-
-use crate::print_hex8;
-
 /// Scheduling class.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SchedClass {

@@ -13,6 +13,7 @@ ENTRY(_start)
 
 SECTIONS
 {
+  /* Main kernel image at kseg0 0x88040000 */
   . = 0x88040000;
 
   .text : {

@@ -7,10 +7,6 @@
 //!
 //! Rights: read, write, execute, map, dma, invoke, transfer, dup, revoke, manage.
 
-#![no_std]
-
-use core::ptr::{read_volatile, write_volatile};
-
 /// Capability rights bitmap.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Rights(pub u32);
