@@ -8,6 +8,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `crates/block-cache`: a `no_std` + `alloc` LRU block cache over a
+  byte-addressed `ReadAt` device, with hit/miss counters and no unsafe.  Seven
+  host tests cover hits, eviction, cross-block reads, zero-length reads,
+  configuration errors and device-error propagation; the block cell will use it
+  with the SCSI driver or a larger HTTP block source.
 - `crates/erofs`: a `no_std` read-only EROFS reader for the M4 root image.  It
   decodes the standard little-endian format through an explicit byte-order codec:
   the superblock, compact and extended inodes, flat plain and flat inline data,
