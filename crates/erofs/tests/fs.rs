@@ -11,6 +11,36 @@ fn mount() -> Erofs<&'static [u8]> {
     Erofs::mount(IMAGE).expect("mount fixture")
 }
 
+/// Copy the golden image with `/link` re-pointed at `target`.
+///
+/// The fixture stores the link as a compact inline symlink without xattrs, so
+/// rewriting the size and the inline bytes keeps the metadata layout intact.
+/// `target` must fit in the space the original target occupied.
+fn image_with_link_target(target: &[u8]) -> Vec<u8> {
+    let mut image = IMAGE.to_vec();
+    let link = {
+        let mut fs = Erofs::mount(image.as_slice()).expect("mount fixture");
+        let root = fs.root().expect("root inode");
+        fs.lookup(&root, b"link")
+            .expect("lookup link")
+            .expect("link exists")
+    };
+    assert!(link.is_symlink(), "fixture link must be a symlink");
+    assert_eq!(link.inode_size, 32, "fixture link must be compact");
+    assert_eq!(link.xattr_size, 0, "fixture link must have no xattrs");
+    assert!(
+        target.len() <= link.size as usize,
+        "target must fit the original"
+    );
+
+    let inode = usize::try_from(link.inline_offset - u64::from(link.inode_size))
+        .expect("inode offset fits in memory");
+    image[inode + 8..inode + 12].copy_from_slice(&(target.len() as u32).to_le_bytes());
+    let inline = usize::try_from(link.inline_offset).expect("inline offset fits in memory");
+    image[inline..inline + target.len()].copy_from_slice(target);
+    image
+}
+
 fn check_tree(fs: &mut Erofs<&'static [u8]>) {
     assert_eq!(
         fs.read_file_path("/etc/motd").expect("motd"),
@@ -25,6 +55,10 @@ fn check_tree(fs: &mut Erofs<&'static [u8]>) {
     for (offset, byte) in big.iter().enumerate() {
         assert_eq!(*byte, (offset as u32 * 7) as u8);
     }
+    assert_eq!(
+        fs.read_file_path("/link").expect("symlink to hello"),
+        b"hello, erofs\n"
+    );
 }
 
 fn names(entries: &[DirEntry]) -> Vec<&[u8]> {
@@ -164,7 +198,73 @@ fn symlink_and_rejections() {
     ));
     assert!(matches!(
         fs.lookup_path("/link/.."),
-        Err(Error::Unsupported(_))
+        Err(Error::NotDirectory)
+    ));
+}
+
+#[test]
+fn symlinks_are_followed() {
+    let mut fs = mount();
+    let hello = fs.lookup_path("/hello.txt").expect("hello");
+    let followed = fs.lookup_path_follow("/link").expect("follow link");
+    assert!(followed.is_regular());
+    assert_eq!(followed.nid, hello.nid);
+
+    // The no-follow resolver still returns the link itself.
+    assert!(fs.lookup_path("/link").expect("link").is_symlink());
+
+    assert_eq!(
+        fs.read_file_path("/link").expect("cat link"),
+        b"hello, erofs\n"
+    );
+}
+
+#[test]
+fn dot_and_dotdot_resolve_from_the_root() {
+    let mut fs = mount();
+    let hello = fs.lookup_path("/hello.txt").expect("hello");
+    for path in [
+        "/etc/../hello.txt",
+        "/etc/./../hello.txt",
+        "etc/../hello.txt",
+        "/dir/../../hello.txt",
+        "/./hello.txt",
+    ] {
+        let inode = fs.lookup_path_follow(path).expect(path);
+        assert_eq!(inode.nid, hello.nid, "{path}");
+    }
+    assert_eq!(
+        fs.read_file_path("/etc/../hello.txt").expect("dotdot"),
+        b"hello, erofs\n"
+    );
+
+    let root = fs.root().expect("root").nid;
+    assert_eq!(fs.lookup_path("/..").expect("/..").nid, root);
+    assert_eq!(fs.lookup_path_follow("/..").expect("/..").nid, root);
+}
+
+#[test]
+fn absolute_symlink_targets_start_at_the_root() {
+    let image = image_with_link_target(b"/empty");
+    let mut fs = Erofs::mount(image.as_slice()).expect("mount patched image");
+    let followed = fs.lookup_path_follow("/link").expect("follow link");
+    assert!(followed.is_regular());
+    assert_eq!(followed.nid, fs.lookup_path("/empty").expect("empty").nid);
+    assert_eq!(fs.read_file_path("/link").expect("cat link"), b"");
+}
+
+#[test]
+fn symlink_loops_are_bounded() {
+    let image = image_with_link_target(b"link");
+    let mut fs = Erofs::mount(image.as_slice()).expect("mount patched image");
+    assert!(fs.lookup_path("/link").expect("link").is_symlink());
+    assert!(matches!(
+        fs.lookup_path_follow("/link"),
+        Err(Error::SymlinkLoop)
+    ));
+    assert!(matches!(
+        fs.read_file_path("/link"),
+        Err(Error::SymlinkLoop)
     ));
 }
 

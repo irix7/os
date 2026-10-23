@@ -227,8 +227,10 @@ at least 12 and a multiple of 12.  The number of entries in the block is
 `first_nameoff / 12`.  Each name runs from its `nameoff` to the next entry's
 `nameoff`, or to the end of the block for the last entry.  Names are trimmed at
 the first NUL (the writer zero-pads the last block) and are limited to 255 bytes.
-`.` and `..` are ordinary entries; `lookup_path` skips `.` and does not implement
-`..` yet.
+`.` and `..` are ordinary entries.  Resolution skips `.` and implements `..`
+by walking back through the directories it descended into, because the format
+has no parent pointer; `..` at the root stays at the root.  A `.` or `..`
+component applied to a non-directory returns `NotDirectory`.
 
 `file_type` uses the standard EROFS values: 1 regular, 2 directory, 3 character
 device, 4 block device, 5 FIFO, 6 socket, 7 symlink.  A dirent nid with bit 63
@@ -242,7 +244,22 @@ directories.
 
 A symlink's target is its file data (normally flat inline).  `Inode::is_symlink`
 is derived from `i_mode`; `read_link` rejects non-symlinks and otherwise returns
-the target bytes.  Path resolution does not follow symlinks automatically.
+the target bytes.
+
+There are two resolvers.  `lookup_path` never follows a symlink: a path that
+ends at a link returns the link inode, which is what `read_link` expects.
+`lookup_path_follow` follows links and returns the final target.
+A relative target is resolved from the directory containing the link, an
+absolute target from the root, and any remaining components are resolved
+against the target: `/link/..` returns `NotDirectory`, because `link` resolves
+to a regular file.
+
+Following is bounded by `MAX_SYMLINK_DEPTH` (8).  A chain longer than that,
+including a link that points at itself, returns `Error::SymlinkLoop` rather than
+looping.  A target that is not valid UTF-8 returns
+`InvalidInode("symlink target is not UTF-8")`, because the path API is textual.
+`read_file_path` uses the following resolver, so `cat /link` prints the target
+file.
 
 ## 8. Errors and limits
 
@@ -255,6 +272,7 @@ The reader returns:
   inconsistent fields;
 - `UnsupportedFeature`, `UnsupportedLayout`, `Unsupported` for formats outside
   this profile;
+- `SymlinkLoop` for a chain of more than `MAX_SYMLINK_DEPTH` links;
 - `OutOfBounds`, `TooLarge`, `OutOfMemory`, `NameTooLong` for read limits.
 
 The crate contains no `unsafe` code.
@@ -277,8 +295,14 @@ let mut fs = Erofs::mount(device)?;
 let root = fs.root()?;
 let inode = fs.lookup_path("/etc/motd")?;
 let text = fs.read_file(&inode)?;
+let target = fs.lookup_path_follow("/link")?;
 for entry in fs.read_dir(&root)? { /* ... */ }
 ```
+
+`lookup_path` is the no-follow resolver; `lookup_path_follow` follows symbolic
+links with the bound described in §7, and `read_file_path` uses it.  Paths are
+always resolved from the root, with or without a leading slash; there is no
+per-process current directory.
 
 The reader keeps no cache; the caller owns the block cache.  The kernel's
 `erofs_cmd` probes the superblock once to learn the image size, then uses
@@ -291,8 +315,10 @@ read-ahead.  It is reached from the telnet console:
 erofs <host>:<port><path> [sha256=hex] [info|ls|cat] [path]
 ```
 
-`info` prints the superblock, `ls` lists a directory, and `cat` prints a file.
-With `sha256=`, the command first performs a full GET, checks the status, the
+`info` prints the superblock, `ls` lists a directory and `cat` prints a file.
+Both `ls` and `cat` follow symbolic links: `ls` works on a link to a directory
+and `cat /link` prints the contents of `hello.txt`.  With `sha256=`, the
+command first performs a full GET, checks the status, the
 length against the superblock's block count, and the whole-image SHA-256; a
 mismatch aborts before mount.  The verification GET currently transfers the
 image a second time; hashing while filling the range cache is future work.
@@ -301,7 +327,7 @@ integration step is a multi-block LRU and a 256 KiB read-ahead window.
 
 ## 10. Verification
 
-`cargo test -p erofs` runs 12 filesystem tests (plus 3 codec tests) against three
+`cargo test -p erofs` runs 16 filesystem tests (plus 3 codec tests) against three
 golden images:
 
 - the full tree on compact inodes;
@@ -309,10 +335,17 @@ golden images:
 - the same tree with the 48-bit feature.
 
 The tests cover the superblock, root directory, nested directories, an empty
-file, a symlink, a 9000-byte flat-inline file (including a read crossing the
-8192-byte boundary), zero-length reads at EOF, bad magic, unknown incompatibility
-bits, truncation, an invalid block size, and a compressed layout that must be
-recognised rather than misread.  The codec tests decode both byte orders.
+file, a symlink, symlink following (relative, absolute and loop-bounded
+targets), `.` and `..` traversal, a 9000-byte flat-inline file (including a read
+crossing the 8192-byte boundary), zero-length reads at EOF, bad magic, unknown
+incompatibility bits, truncation, an invalid block size, and a compressed layout
+that must be recognised rather than misread.  The codec tests decode both byte
+orders.
+
+The absolute-target and loop tests do not add fixtures: each copies the compact
+image in memory and rewrites the target of `/link`, which is a compact inline
+symlink, keeping the metadata layout and its size unchanged.  The loop test
+points `/link` at itself and expects `SymlinkLoop`.
 
 The images are generated by `crates/erofs/tests/fixtures/build.sh` with
 `mkfs.erofs 1.9.4`, checked with `fsck.erofs`, and committed so CI does not need

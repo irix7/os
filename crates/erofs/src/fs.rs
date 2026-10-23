@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The readers: block device, filesystem, directories and paths.
 
+use alloc::borrow::Cow;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 use core::cmp::min;
 
@@ -8,6 +10,12 @@ use crate::codec::{u16_at, u64_at, LittleEndian};
 use crate::error::{Error, Result};
 use crate::inode::{DataLayout, FileType, Inode, EROFS_NULL_ADDR, INODE_SLOT_SIZE};
 use crate::superblock::{Superblock, SUPER_BASE_SIZE, SUPER_OFFSET};
+
+/// The number of symbolic links a single path resolution may follow.
+///
+/// A longer chain, including a link that points at itself, returns
+/// [`Error::SymlinkLoop`].
+pub const MAX_SYMLINK_DEPTH: usize = 8;
 
 /// A byte-addressed block device.
 ///
@@ -294,30 +302,95 @@ impl<D: BlockDevice> Erofs<D> {
         Ok(None)
     }
 
-    /// Resolve a slash-separated path from the root.
+    /// Resolve a slash-separated path from the root without following symlinks.
     ///
-    /// Empty components and `.` are skipped.  `..` is not implemented yet and
-    /// returns [`Error::Unsupported`]; callers should normalise paths before
-    /// asking the reader.
+    /// Empty components and `.` are skipped.  `..` walks back to the directory
+    /// the resolution descended from, including at the root, where it stays at
+    /// the root.  A path that ends at a symbolic link returns the link inode
+    /// itself; use [`Self::lookup_path_follow`] to resolve the target.
     pub fn lookup_path(&mut self, path: &str) -> Result<Inode> {
+        self.resolve_path(path, false)
+    }
+
+    /// Resolve a slash-separated path from the root, following symlinks.
+    ///
+    /// Paths are always resolved from the root, with or without a leading
+    /// slash, so a relative path is not relative to a caller directory.  A
+    /// relative link target is resolved from the directory holding the link;
+    /// an absolute target starts again at the root.  At most
+    /// [`MAX_SYMLINK_DEPTH`] links are followed; a longer chain returns
+    /// [`Error::SymlinkLoop`].
+    pub fn lookup_path_follow(&mut self, path: &str) -> Result<Inode> {
+        self.resolve_path(path, true)
+    }
+
+    fn resolve_path(&mut self, path: &str, follow: bool) -> Result<Inode> {
         let mut inode = self.root()?;
-        for component in path.split('/') {
-            if component.is_empty() || component == "." {
-                continue;
+        // The directories resolution has descended through, innermost last.
+        // EROFS has no parent pointer, so `..` walks back through this stack.
+        let mut parents: Vec<Inode> = Vec::new();
+        // The components still to visit, top of the stack first.  Owned
+        // components hold a symlink target; borrowed ones point into `path`.
+        let mut pending: Vec<Cow<'_, str>> = path.rsplit('/').map(Cow::Borrowed).collect();
+        let mut followed = 0usize;
+
+        while let Some(component) = pending.pop() {
+            match component.as_ref() {
+                "" | "." => {}
+                ".." => {
+                    if !inode.is_dir() {
+                        return Err(Error::NotDirectory);
+                    }
+                    if let Some(parent) = parents.pop() {
+                        inode = parent;
+                    }
+                }
+                name => {
+                    if !inode.is_dir() {
+                        return Err(Error::NotDirectory);
+                    }
+                    let child = self
+                        .lookup(&inode, name.as_bytes())?
+                        .ok_or(Error::NotFound)?;
+                    if !follow || !child.is_symlink() {
+                        parents.push(inode);
+                        inode = child;
+                        continue;
+                    }
+
+                    let target = self.read_link(&child)?;
+                    let target = core::str::from_utf8(&target)
+                        .map_err(|_| Error::InvalidInode("symlink target is not UTF-8"))?;
+                    if target.is_empty() {
+                        return Err(Error::NotFound);
+                    }
+                    followed += 1;
+                    if followed > MAX_SYMLINK_DEPTH {
+                        return Err(Error::SymlinkLoop);
+                    }
+                    if target.starts_with('/') {
+                        inode = self.root()?;
+                        parents.clear();
+                    }
+                    // A relative target continues from the link's directory,
+                    // which is still `inode`.  Push its components in reverse
+                    // so the stack pops them in order, ahead of what is left.
+                    pending.extend(
+                        target
+                            .split('/')
+                            .rev()
+                            .map(|part| Cow::Owned(part.to_string())),
+                    );
+                }
             }
-            if component == ".." {
-                return Err(Error::Unsupported("parent directory lookup"));
-            }
-            inode = self
-                .lookup(&inode, component.as_bytes())?
-                .ok_or(Error::NotFound)?;
         }
+
         Ok(inode)
     }
 
-    /// Read a whole file by path.
+    /// Read a whole file by path, following symbolic links.
     pub fn read_file_path(&mut self, path: &str) -> Result<Vec<u8>> {
-        let inode = self.lookup_path(path)?;
+        let inode = self.lookup_path_follow(path)?;
         self.read_file(&inode)
     }
 
