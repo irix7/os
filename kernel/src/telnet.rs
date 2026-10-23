@@ -239,7 +239,12 @@ pub fn poll() {
         let outcome: Result<i32, &'static str> = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
                 let area = crate::module::area();
-                match crate::http::get_to(ip, req.port, host, path, area) {
+                let fetched = if req.tls {
+                    crate::tls::get_to(ip, req.port, host, path, area)
+                } else {
+                    crate::http::get_to(ip, req.port, host, path, area)
+                };
+                match fetched {
                     Ok((summary, captured)) => {
                         if captured != summary.body_len {
                             Err("module did not fit")
@@ -439,7 +444,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
-                  \x20 module <host>:<port><path> <sha256>  fetch and run a RAM module\r\n\
+                  \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -547,15 +552,26 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 let _ = sock.send_slice(b"usage: https <host>:<port><path>\r\n");
             }
         },
-        _ if line.starts_with(b"module ") => match parse_http(trim(&line[7..]), false) {
-            Some(request) => {
-                let _ = sock.send_slice(b"module: fetching\r\n");
-                console.pending_module = Some(request);
+        _ if line.starts_with(b"module ") => {
+            let arg = trim(&line[7..]);
+            let (arg, tls) = if let Some(rest) = arg.strip_prefix(b"https://") {
+                (rest, true)
+            } else if let Some(rest) = arg.strip_prefix(b"http://") {
+                (rest, false)
+            } else {
+                // Secure by default: the TLS client is the module transport.
+                (arg, true)
+            };
+            match parse_http(arg, tls) {
+                Some(request) => {
+                    let _ = sock.send_slice(b"module: fetching\r\n");
+                    console.pending_module = Some(request);
+                }
+                None => {
+                    let _ = sock.send_slice(b"usage: module [https://]host:port/path <sha256>\r\n");
+                }
             }
-            None => {
-                let _ = sock.send_slice(b"usage: module <host>:<port><path> <sha256>\r\n");
-            }
-        },
+        }
         _ if line.starts_with(b"ping ") => match parse_ping(trim(&line[5..])) {
             Some(request) => {
                 let _ = sock.send_slice(b"ping: probing\r\n");

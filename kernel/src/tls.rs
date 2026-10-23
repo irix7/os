@@ -317,6 +317,29 @@ impl TlsVerifier<Aes128GcmSha256> for PathVerifier {
 
 /// Fetch `path` over HTTPS and return the status and body length.
 pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary, &'static str> {
+    get_inner(ip, port, host, path, None).map(|(summary, _)| summary)
+}
+
+/// Fetch `path` over TLS and copy the body into `out`, returning the summary
+/// and the number of bytes captured.  Fetching continues past a full `out`;
+/// only the capture stops.
+pub fn get_to(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    out: &mut [u8],
+) -> Result<(Summary, usize), &'static str> {
+    get_inner(ip, port, host, path, Some(out))
+}
+
+fn get_inner(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    mut capture: Option<&mut [u8]>,
+) -> Result<(Summary, usize), &'static str> {
     // SAFETY: single-threaded kernel; the pointers are used by the adapter
     // for the duration of this fetch and nothing else borrows the stack.
     let (iface_ptr, sockets_ptr, dev_ptr) =
@@ -416,6 +439,7 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     let mut content_length: Option<usize> = None;
     let mut body_len = 0usize;
     let mut total_rx = 0usize;
+    let mut captured = 0usize;
     let mut hasher = crate::sha256::Hasher::new();
     let mut scratch = [0u8; 2048];
 
@@ -442,6 +466,11 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
         if headers_done {
             body_len += n;
             hasher.update(&scratch[..n]);
+            if let Some(buf) = capture.as_deref_mut() {
+                let take = n.min(buf.len().saturating_sub(captured));
+                buf[captured..captured + take].copy_from_slice(&scratch[..take]);
+                captured += take;
+            }
         } else {
             let take = n.min(headers.len() - header_len);
             headers[header_len..header_len + take].copy_from_slice(&scratch[..take]);
@@ -454,6 +483,12 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
                 let batch_start = total_rx - n;
                 let body_off = (pos + 4).saturating_sub(batch_start).min(n);
                 hasher.update(&scratch[body_off..n]);
+                if let Some(buf) = capture.as_deref_mut() {
+                    let body = &scratch[body_off..n];
+                    let take = body.len().min(buf.len().saturating_sub(captured));
+                    buf[captured..captured + take].copy_from_slice(&body[..take]);
+                    captured += take;
+                }
             } else if header_len == headers.len() {
                 remove_socket(handle);
                 return Err("response headers too large");
@@ -474,12 +509,15 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     if status == 0 {
         return Err("malformed response");
     }
-    Ok(Summary {
-        status,
-        body_len,
-        content_length,
-        sha256: hasher.finalize(),
-    })
+    Ok((
+        Summary {
+            status,
+            body_len,
+            content_length,
+            sha256: hasher.finalize(),
+        },
+        captured,
+    ))
 }
 
 fn remove_socket(handle: SocketHandle) {
