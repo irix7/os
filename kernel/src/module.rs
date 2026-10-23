@@ -11,6 +11,8 @@
 
 use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
+use smoltcp::iface::SocketHandle;
+use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer};
 
 /// Load address of the module area (kseg0, physical `0x0840_0000`).
 ///
@@ -22,7 +24,7 @@ pub const MODULE_BASE: usize = 0x8840_0000;
 pub const MODULE_MAX: usize = 0x0020_0000; // 2 MiB
 
 /// Service table ABI version.
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// Service table passed to a module entry point.
 ///
@@ -38,6 +40,18 @@ pub struct Services {
     pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
     /// Drive the shared network stack once.
     pub poll: extern "C" fn(),
+    /// Listen on `port` in slot `slot` (0..2).  Returns 0 or -1.
+    pub tcp_listen: unsafe extern "C" fn(u32, u16) -> i32,
+    /// 0 closed, 1 listening, 2 established, 3 closing.
+    pub tcp_state: extern "C" fn(u32) -> u32,
+    /// Receive into `ptr`; returns bytes, 0 for none, -1 for no socket.
+    pub tcp_recv: unsafe extern "C" fn(u32, *mut u8, usize) -> isize,
+    /// Send from `ptr`; returns bytes accepted, -1 for no socket.
+    pub tcp_send: unsafe extern "C" fn(u32, *const u8, usize) -> isize,
+    /// Close the connection (send FIN).
+    pub tcp_close: extern "C" fn(u32),
+    /// Abort the connection (send RST).
+    pub tcp_abort: extern "C" fn(u32),
 }
 
 /// What a module returns from its entry point.
@@ -63,6 +77,12 @@ static SERVICES: Services = Services {
     clock_ms: service_clock_ms,
     alloc: service_alloc,
     poll: service_poll,
+    tcp_listen: service_tcp_listen,
+    tcp_state: service_tcp_state,
+    tcp_recv: service_tcp_recv,
+    tcp_send: service_tcp_send,
+    tcp_close: service_tcp_close,
+    tcp_abort: service_tcp_abort,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -195,4 +215,122 @@ unsafe extern "C" fn service_alloc(size: usize, align: usize) -> *mut u8 {
 
 extern "C" fn service_poll() {
     crate::net::poll();
+}
+
+/// Module TCP slots.  Two is enough for an HTTP server plus a client.
+const MODULE_TCP_SLOTS: usize = 2;
+
+static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
+static mut MODULE_TCP_RX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
+static mut MODULE_TCP_TX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
+
+fn module_handle(slot: u32) -> Option<SocketHandle> {
+    let slot = slot as usize;
+    if slot >= MODULE_TCP_SLOTS {
+        return None;
+    }
+    // SAFETY: single-threaded kernel; the table is only written by the
+    // service functions below.
+    unsafe { MODULE_TCP[slot] }
+}
+
+unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
+    let slot_usize = slot as usize;
+    if slot_usize >= MODULE_TCP_SLOTS || port == 0 {
+        return -1;
+    }
+    if let Some(old) = module_handle(slot) {
+        let _ = crate::net::sockets_with(|sockets| sockets.remove(old));
+        // SAFETY: single-threaded; the old socket has been removed.
+        unsafe {
+            MODULE_TCP[slot_usize] = None;
+        }
+    }
+    // SAFETY: each slot's buffers are owned by at most one socket at a time.
+    let rx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_RX[slot_usize]) };
+    let tx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_TX[slot_usize]) };
+    let mut socket = TcpSocket::new(
+        SocketBuffer::new(&mut rx[..]),
+        SocketBuffer::new(&mut tx[..]),
+    );
+    socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(60)));
+    let Some(handle) = crate::net::sockets_with(|sockets| sockets.add(socket)) else {
+        return -1;
+    };
+    let listened = crate::net::sockets_with(|sockets| {
+        sockets.get_mut::<TcpSocket>(handle).listen(port).is_ok()
+    });
+    if listened == Some(true) {
+        // SAFETY: single-threaded.
+        unsafe {
+            MODULE_TCP[slot_usize] = Some(handle);
+        }
+        0
+    } else {
+        let _ = crate::net::sockets_with(|sockets| sockets.remove(handle));
+        -1
+    }
+}
+
+extern "C" fn service_tcp_state(slot: u32) -> u32 {
+    let Some(handle) = module_handle(slot) else {
+        return 0;
+    };
+    use smoltcp::socket::tcp::State;
+    let state = crate::net::sockets_with(|sockets| sockets.get::<TcpSocket>(handle).state());
+    match state {
+        Some(State::Listen) | Some(State::SynSent) | Some(State::SynReceived) => 1,
+        Some(State::Established) => 2,
+        Some(State::FinWait1)
+        | Some(State::FinWait2)
+        | Some(State::CloseWait)
+        | Some(State::Closing)
+        | Some(State::LastAck)
+        | Some(State::TimeWait) => 3,
+        Some(State::Closed) | None => 0,
+    }
+}
+
+unsafe extern "C" fn service_tcp_recv(slot: u32, ptr: *mut u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let Some(handle) = module_handle(slot) else {
+        return -1;
+    };
+    // SAFETY: the module owns the destination buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    match crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).recv_slice(buf)) {
+        Some(Ok(n)) => n as isize,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn service_tcp_send(slot: u32, ptr: *const u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let Some(handle) = module_handle(slot) else {
+        return -1;
+    };
+    // SAFETY: the module owns the source buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
+    match crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).send_slice(buf)) {
+        Some(Ok(n)) => n as isize,
+        _ => -1,
+    }
+}
+
+extern "C" fn service_tcp_close(slot: u32) {
+    let Some(handle) = module_handle(slot) else {
+        return;
+    };
+    let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).close());
+}
+
+extern "C" fn service_tcp_abort(slot: u32) {
+    let Some(handle) = module_handle(slot) else {
+        return;
+    };
+    let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).abort());
 }

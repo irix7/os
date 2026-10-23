@@ -9,7 +9,7 @@
 #![no_std]
 #![no_main]
 
-/// Must match `kernel::module::Services` (version 2).
+/// Prefix of `kernel::module::Services` (version 3).
 #[repr(C)]
 pub struct Services {
     pub version: u32,

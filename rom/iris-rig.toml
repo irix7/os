@@ -38,3 +38,10 @@ host_port  = 2323
 guest_port = 23
 bind       = "localhost"
 
+
+# The module HTTP server listens on guest port 80.
+[[port_forward]]
+proto      = "tcp"
+host_port  = 8088
+guest_port = 80
+bind       = "localhost"
