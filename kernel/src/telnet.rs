@@ -238,6 +238,8 @@ pub fn poll() {
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
         let outcome: Result<i32, &'static str> = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
+                // Zero the area first: the flat image does not include .bss.
+                crate::module::clear();
                 let area = crate::module::area();
                 let fetched = if req.tls {
                     crate::tls::get_to(ip, req.port, host, path, area)

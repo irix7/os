@@ -48,35 +48,51 @@ relocation at load time. The Seeq device's uncached DMA structures start at phys
 The entry point is a normal C call:
 
 ```c
-int32_t _start(const struct Services *services);
+const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 1:
+`Services` is `#[repr(C)]` and versioned. Version 2:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 1 |
+| 0x00 | `version` | 2 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
-| 0x08 | `clock_ms` | `uint64_t (*)(void)` — milliseconds since boot |
+| 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
+| 0x10 | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
+| 0x14 | `poll` | `void (*)(void)` — drive the shared network stack once |
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.
 
-The entry returns an `i32` status, which the console prints as `module: returned N`.
+The entry returns a pointer to a vtable, or null for "initialised, no callback":
+
+| Offset | Field | Meaning |
+|---|---|---|
+| 0x00 | `status` | `int32_t`; 0 is success, anything else is printed and no callback is registered |
+| 0x04 | `tick` | `int32_t (*)(const struct Services *)`, or null |
+
+`tick` is called from the kernel's idle loop at most every 10 ms. Return 0 to keep running;
+return non-zero to unregister the callback. The kernel only accepts a vtable that lies
+inside the verified module image. The console prints the status as `module: returned N`.
+
+A one-shot module can simply return null (status 0) or a vtable with `tick = null`.
 
 ## 5. Lifecycle
 
-- One module slot. Loading a second image overwrites the first; there is no unload and no
-  destructor.
+- One module slot. Loading a second image overwrites the first, clears its `.bss`, and
+  drops any previous tick callback; there is no unload and no destructor.
 - The loader is synchronous: the console is blocked for the duration of the fetch and the
-  module call.
+  entry call. The tick callback runs on the idle loop, so it must be quick.
+- The flat image contains `.text`, `.rodata` and `.data`, not `.bss`. The loader zeroes the
+  whole module area before the download, which gives `.bss` a defined initial value.
 - Exceptions inside a module use the kernel's trap path. The current trap handler prints
   the cause and halts, which is the expected failure mode for a bad module.
 
-## 6. Reference module
+## 6. Reference modules
 
-`modules/hello` is the reference: a 152-byte flat image that prints one line through the
-service table and returns 0. Build it with its own linker script and flatten the ELF:
+`modules/hello` is the one-shot reference: a small flat image that prints one line through
+the service table and returns a vtable with status 0. Build it with its own linker script
+and flatten the ELF:
 
 ```bash
 export CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld"
@@ -87,25 +103,35 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
   -O binary target/mips3-sgi-irix7-n32/release/hello-module hello.module
 ```
 
-Serve `hello.module` and load it:
+`modules/ticker` is the long-running reference: it allocates 32 bytes through the service
+table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for five seconds
+and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
+
+Serve a module and load it:
 
 ```text
-module http://10.1.1.3:18080/hello.module <sha256 of hello.module>
-hello from a downloaded module
+module http://10.1.1.3:18080/ticker.module <sha256 of ticker.module>
+ticker: alloc ok
 module: returned 0
+ticker: tick
+ticker: tick
+ticker: tick
+ticker: tick
+ticker: tick
 ```
 
 ## 7. Planned services
 
-- `alloc(size, align)` for modules that need dynamic buffers (TLS-style workloads).
-- TCP connect/send/recv/state/remove over the shared interface, for modules that speak
-  protocols not implemented in the core.
-- The NTP wall clock.
+- TCP listen/accept/send/recv/state/close over the shared interface, so a module can serve
+  a protocol without linking smoltcp.
+- The NTP wall clock (distinct from monotonic `clock_ms`).
+- A module manifest with a name and required ABI version.
 
-These are additive to the version 1 table.
+These are additive to the version 2 table.
 
 ## 8. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
 - Multiple concurrent modules or dependency resolution.
+- Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.

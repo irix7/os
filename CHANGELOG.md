@@ -43,7 +43,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
   cannot hand out the exception vector, ROM state, kernel image or stack.
 - Loadable modules: flat images linked at `0x88400000`, fetched over HTTPS into RAM,
   SHA-256 checked and called through a versioned C service table. `modules/hello` is the
-  reference module.
+  one-shot reference module.
+- Module ABI version 2: an entry returns a vtable with a status and an optional `tick`
+  callback, which the kernel calls from the idle loop at most every 10 ms. The service
+  table adds a leak-only heap allocator and a network poll. The loader zeroes the module
+  area before the download so `.bss` starts defined. `modules/ticker` demonstrates a
+  periodic module and the allocator.
 - Boot-menu status line with the live address, and a diagnostics action that prints CPU,
   RAM and network state.
 - `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the

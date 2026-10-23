@@ -7,32 +7,53 @@
 #![no_std]
 #![no_main]
 
-/// Must match `kernel::module::Services` (version 1).
+/// Must match `kernel::module::Services` (version 2).
 #[repr(C)]
 pub struct Services {
     pub version: u32,
     pub write: extern "C" fn(*const u8, usize),
     pub clock_ms: extern "C" fn() -> u64,
+    pub alloc: unsafe extern "C" fn(usize, usize) -> *mut u8,
+    pub poll: extern "C" fn(),
 }
+
+#[repr(C)]
+pub struct ModuleVtable {
+    pub status: i32,
+    pub tick: Option<unsafe extern "C" fn(*const Services) -> i32>,
+}
+
+static OK: ModuleVtable = ModuleVtable {
+    status: 0,
+    tick: None,
+};
+static BAD_PTR: ModuleVtable = ModuleVtable {
+    status: 1,
+    tick: None,
+};
+static BAD_VERSION: ModuleVtable = ModuleVtable {
+    status: 2,
+    tick: None,
+};
 
 /// Module entry.
 ///
 /// # Safety
 /// `services` must point to a valid service table supplied by the kernel.
 #[no_mangle]
-pub unsafe extern "C" fn _start(services: *const Services) -> i32 {
+pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtable {
     let Some(services) = (unsafe { services.as_ref() }) else {
-        return 1;
+        return &BAD_PTR;
     };
-    if services.version != 1 {
-        return 2;
+    if services.version != 2 {
+        return &BAD_VERSION;
     }
 
     let message = b"hello from a downloaded module\n";
     (services.write)(message.as_ptr(), message.len());
 
     let _uptime = (services.clock_ms)();
-    0
+    &OK
 }
 
 #[cfg(not(test))]

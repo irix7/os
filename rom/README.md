@@ -185,7 +185,15 @@ trustworthy. `module` uses HTTPS unless the argument starts with `http://`, and
 the image is only executed after its digest matches. Any new feature should be a
 module, not a larger PROM image.
 
-`modules/hello` is the reference module. Build it and serve the flat image:
+Modules use ABI version 2: the entry returns a `ModuleVtable` with a status and
+an optional `tick` callback, which the kernel calls from the idle loop at most
+every 10 ms. The service table adds `alloc` (the kernel heap, never freed) and
+`poll` (drive the network stack). `modules/hello` is the one-shot reference;
+`modules/ticker` is the long-running reference: it allocates 32 bytes, then
+prints `ticker: tick` once a second for five seconds before unregistering.
+
+Build a module and serve the flat image (swap `hello` for `ticker` for the
+periodic example):
 
 ```bash
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld" \
@@ -206,6 +214,9 @@ module: returned 0
 ```
 
 Without the scheme the command uses HTTPS, which is the normal module path.
+The loader zeroes the module area before the download, so a module's `.bss`
+starts at zero; it flushes the data cache and invalidates the instruction cache
+before the entry call.
 
 ## Status
 

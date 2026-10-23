@@ -508,6 +508,7 @@ pub extern "C" fn _start() -> ! {
             }
         }
         net::poll();
+        module::poll();
         telnet::poll();
         if telnet::reboot_requested() {
             reboot();
@@ -544,8 +545,9 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
             poll(core::ptr::null_mut());
         }
 
-        // Drive the network stack and telnet console.
+        // Drive the network stack, module callbacks and telnet console.
         net::poll();
+        module::poll();
         telnet::poll();
         if telnet::reboot_requested() {
             reboot();
