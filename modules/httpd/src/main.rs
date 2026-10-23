@@ -4,8 +4,8 @@
 //! Listens on guest port 80 through the version 3 TCP services.  `GET /`
 //! returns a small status page; `POST /mcp` speaks JSON-RPC 2.0 with the MCP
 //! methods `initialize`, `tools/list` and `tools/call` (`status`, `echo`,
-//! `console`).  This is the first long-running module and the prototype for
-//! the control plane: the compressed PROM image does not grow.
+//! `console`, `block.read`).  This is the first long-running module and the
+//! prototype for the control plane: the compressed PROM image does not grow.
 
 #![no_std]
 #![no_main]
@@ -661,7 +661,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -755,6 +755,40 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
+                }
+                Some(b"block.read") => {
+                    let target = json_u64(body, b"\"target\"").unwrap_or(1) as u8;
+                    let lba = json_u64(body, b"\"lba\"").unwrap_or(0) as u32;
+                    if target > 7 {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(
+                            b",\"error\":{\"code\":-32602,\"message\":\"target must be 0..7\"}}",
+                        );
+                    } else {
+                        let mut sector = [0u8; 512];
+                        let result =
+                            unsafe { (services.block_read)(target, lba, sector.as_mut_ptr()) };
+                        if result != 0 {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(
+                                b",\"error\":{\"code\":-32603,\"message\":\"block read failed\"}}",
+                            );
+                        } else {
+                            const HEX: &[u8; 16] = b"0123456789abcdef";
+                            let mut text = [0u8; 1024];
+                            for (index, byte) in sector.iter().enumerate() {
+                                text[index * 2] = HEX[(byte >> 4) as usize];
+                                text[index * 2 + 1] = HEX[(byte & 0x0f) as usize];
+                            }
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                            w.json_string(&text);
+                            w.push(b"}]}}");
+                        }
+                    }
                 }
                 Some(b"screen.capture") => {
                     let n = thumbnail(services);
