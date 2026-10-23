@@ -218,7 +218,7 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
 - [ ] EROFS reader mounts the standard little-endian image; byte-order codec tested.
 - [ ] HTTP Range client fetches 64–256 KiB blocks with read-ahead.
 - [ ] SHA-256 verifies the image before mount.
-- [ ] Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).
+- [x] Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).
 - [ ] The boot path works with the disk absent and with the disk present.
 
 **Dependencies:** M3 (network), M2 (framework).

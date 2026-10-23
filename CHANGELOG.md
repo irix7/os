@@ -12,6 +12,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   EPC, Status and BadVAddr, the stack pointer and return address, and eight raw stack
   words, then disables interrupts and parks in `wait`.  The telnet console gains a
   `panic` test hook that triggers it deliberately.
+- The `httpd` and `erofs` modules create `/tmp`, `/etc` and `/home` in the RAM
+  overlay when they mount the EROFS root.  `/etc` is merged with the read-only
+  lower; `/home` is created in the upper and is visible immediately.
 - `rom/tools/mcp-smoke.py` now exercises the module tools, the filesystem
   metadata and the autoload loop: `block.read` target 1 LBA 0 (the
   `4d436f6d`/`MComprHD` volume header), `fs.read /etc/motd`, `fs.list /`
