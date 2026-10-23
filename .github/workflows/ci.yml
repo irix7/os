@@ -78,7 +78,7 @@ jobs:
             | sh -s -- -y --default-toolchain none --profile minimal
       - name: Install pinned nightly + rust-src
         run: |
-          rustup toolchain install nightly-2026-10-03 --component rust-src
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
           rustup default nightly-2026-10-03
       - name: Ensure host C compiler (cc)
         run: |
@@ -102,6 +102,19 @@ jobs:
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
             cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
             --target targets/mips3-sgi-irix7-n32.json -p rom
+      - name: Build EROFS module (flat image)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_TOOLS="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/erofs/linker.ld" \
+            cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
+            --target targets/mips3-sgi-irix7-n32.json -p erofs-module
+          "$LLVM_TOOLS/llvm-objcopy" -O binary \
+            target/mips3-sgi-irix7-n32/release/erofs-module erofs.module
+          size=$(stat -c%s erofs.module)
+          echo "erofs.module: $size bytes"
+          test "$size" -le 2097152
 
   docs:
     name: Docs

@@ -468,7 +468,6 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 net           interface addresses\r\n\
                   \x20 mem           RAM accounting\r\n\
                   \x20 scsi          reset/probe the WD33C93\r\n\
-                  \x20 erofsdisk <target> [path]  EROFS from SCSI target at LBA 0\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
                   \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
@@ -546,17 +545,6 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 }
                 Err(error) => {
                     let _ = write!(writer, "scsi: {error}\r\n");
-                }
-            }
-        }
-        _ if line.starts_with(b"erofsdisk ") => {
-            match crate::scsi_disk::command(trim(&line[10..])) {
-                Ok(output) => {
-                    let _ = sock.send_slice(&output);
-                }
-                Err(error) => {
-                    let mut writer = SocketWriter { sock };
-                    let _ = write!(writer, "erofsdisk: {error}\r\n");
                 }
             }
         }

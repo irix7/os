@@ -8,6 +8,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `modules/erofs`: a loadable module that mounts the EROFS fixture on SCSI
+  target 2 at LBA 0, reads `/etc/motd` and prints it through the console
+  service.  It links `crates/erofs` and `crates/block-cache` by path, reads
+  512-byte sectors through the ABI version 10 `block_read` service, and
+  supplies its own global allocator over the `alloc` service, and exercises the
+  RAM overlay over the read-only lower (`/tmp/motd` write, read and whiteout).
+  Moving the filesystem feature into a module keeps it out of the compressed
+  PROM image; the kernel's debug `erofsdisk` command is removed in favour of
+  this module.
 - Module ABI version 10 adds `block_read(target, lba, buffer)` for one 512-byte
   SCSI sector, exposed by `modules/block` via `Context::block_read`.  The OS
   consumes SDK `v0.3.0`; verified on iris with target 1: the module prints
@@ -20,10 +29,6 @@ All notable changes to IRIX 7 are recorded here. The format follows
   copy-up: a write stores a complete upper file.  Nineteen host tests cover lower
   reads, shadowing, whiteouts, directory merge and removal, path normalisation,
   missing and empty files.
-- `erofsdisk <target> [path]`: mount an EROFS image placed at LBA 0 of a SCSI
-  target.  The disk is wrapped in the `block-cache` LRU (16 x 4 KiB), so a 4 KiB
-  EROFS block becomes eight 512-byte READ(6) commands.  Verified on iris with the
-  compact fixture on SCSI ID 2, reading `/etc/motd` from the disk.
 - `crates/block-cache`: a `no_std` + `alloc` LRU block cache over a
   byte-addressed `ReadAt` device, with hit/miss counters and no unsafe.  Seven
   host tests cover hits, eviction, cross-block reads, zero-length reads,
