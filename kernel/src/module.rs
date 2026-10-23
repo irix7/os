@@ -24,7 +24,7 @@ pub const MODULE_BASE: usize = 0x8840_0000;
 pub const MODULE_MAX: usize = 0x0020_0000; // 2 MiB
 
 /// Service table ABI version.
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// Service table passed to a module entry point.
 ///
@@ -56,6 +56,10 @@ pub struct Services {
     pub console_read: unsafe extern "C" fn(u64, *mut u8, usize) -> isize,
     /// Total bytes ever written to the serial console.
     pub console_total: extern "C" fn() -> u64,
+    /// Restart from the PROM entry point.  Does not return.
+    pub reset: extern "C" fn(),
+    /// Halt the machine.  Does not return.
+    pub poweroff: extern "C" fn(),
 }
 
 /// What a module returns from its entry point.
@@ -89,6 +93,8 @@ static SERVICES: Services = Services {
     tcp_abort: service_tcp_abort,
     console_read: service_console_read,
     console_total: service_console_total,
+    reset: service_reset,
+    poweroff: service_poweroff,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -345,6 +351,14 @@ unsafe extern "C" fn service_console_read(offset: u64, ptr: *mut u8, len: usize)
 
 extern "C" fn service_console_total() -> u64 {
     crate::console_total()
+}
+
+extern "C" fn service_reset() {
+    crate::reboot();
+}
+
+extern "C" fn service_poweroff() {
+    crate::poweroff();
 }
 
 extern "C" fn service_tcp_abort(slot: u32) {

@@ -176,7 +176,7 @@ control plane is how everything else gets built.
 
 **Prototype:** `modules/httpd` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
 `initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
-`echo`, `console` and `serial.read` tools. The iris rig forwards host 8088 to the module's guest port 80.
+`echo`, `console`, `serial.read`, `system.reset` and `system.poweroff` tools. The iris rig forwards host 8088 to the module's guest port 80.
 It has no bearer token, SSE, shell or screen/serial tools yet.
 
 **Acceptance criteria:**

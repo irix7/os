@@ -74,6 +74,17 @@ fn wr(reg: u8, data: u8) {
 fn rd(reg: u8) -> u8 {
     unsafe {
         write_volatile(Z85C30_BASE, reg);
+        // The register-select write must reach the SCC before the read.  The
+        // ROM's uncached instruction fetch gave it time; the kernel's cached
+        // loop can otherwise read the previous register (RR8), whose bit 2 is
+        // zero, and spin forever.
+        core::arch::asm!("sync", options(nostack));
+        // The IOC PIO needs a few cycles between the register select and the
+        // read; without this the read can return the previous register (RR8,
+        // whose bit 2 is zero) and the transmitter poll never terminates.
+        for _ in 0..16 {
+            core::arch::asm!("nop", options(nostack));
+        }
         read_volatile(Z85C30_BASE)
     }
 }
@@ -150,12 +161,25 @@ pub fn console_read(offset: u64, dst: &mut [u8]) -> usize {
 
 pub fn write_byte(b: u8) {
     console_log_byte(b);
+    // Wait for the transmitter, but never forever: a stale status read must
+    // not stop the boot.  At 9600 baud 2 ms is more than one character time,
+    // so a bounded wait followed by the write is safe.
+    let start = traps::count_read();
     while !tx_ready() {
+        if traps::count_read().wrapping_sub(start) > 66_000 {
+            break;
+        }
         core::hint::spin_loop();
     }
     unsafe {
         write_volatile(Z85C30_BASE, WR0_DATA);
         write_volatile(Z85C30_BASE, b);
+        core::arch::asm!("sync", options(nostack));
+    }
+    for _ in 0..16 {
+        unsafe {
+            core::arch::asm!("nop", options(nostack));
+        }
     }
 }
 
@@ -598,8 +622,22 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     }
 }
 
+/// Halt the machine.  Interrupts are disabled and the CPU waits.
+pub fn poweroff() -> ! {
+    console_println("kernel: powered off");
+    unsafe {
+        let status = traps::status_read();
+        traps::status_write(status & !1);
+    }
+    loop {
+        unsafe {
+            core::arch::asm!("wait", options(nomem, nostack));
+        }
+    }
+}
+
 /// Restart from the PROM entry point.
-fn reboot() -> ! {
+pub fn reboot() -> ! {
     console_println("kernel: rebooting");
     // Interrupts off, then jump to the PROM reset window (kseg1).
     let status = traps::status_read();

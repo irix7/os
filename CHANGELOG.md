@@ -56,8 +56,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
   the reset raced with the ROM's final characters and intermittently stuck the transmitter.
 - The httpd module serves a prototype MCP control plane at `POST /mcp`: JSON-RPC
   `initialize` (version negotiation), `ping`, `tools/list` and `tools/call` with `status`,
-  `echo`, `console` and `serial.read`. `GET /` remains a plain status page. The kernel keeps
-  an 8 KiB serial ring (ABI version 4 services `console_read`/`console_total`).
+  `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`. `GET /` remains a
+  plain status page. The kernel keeps an 8 KiB serial ring (ABI version 4 services
+  `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
+- The SCC status read now has a settle delay after the register-select write and a bounded
+  transmitter wait.  The kernel's cached polling loop could read the previous register
+  (RR8) through the IOC and spin forever; the ROM's uncached fetch had hidden it.
 - Boot-menu status line with the live address, and a diagnostics action that prints CPU,
   RAM and network state.
 - `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the

@@ -22,8 +22,9 @@ control plane. It implements:
 
 - `POST /mcp` with JSON-RPC 2.0 `initialize` (echoing the client's `protocolVersion`,
   default `2026-07-28`), `ping`, `tools/list` and `tools/call`;
-- tools `status` (guest uptime), `echo`, `console` (write a line to the guest console) and
-  `serial.read` (the kernel's 8 KiB serial ring, from an absolute offset);
+- tools `status` (guest uptime), `echo`, `console`/`serial.write` (write a line to the
+  guest console), `serial.read` (the kernel's 8 KiB serial ring, from an absolute offset),
+  `system.reset` and `system.poweroff`;
 - `GET /` as a plain status page;
 - guest port 80, forwarded to host `8088` by the iris rig.
 

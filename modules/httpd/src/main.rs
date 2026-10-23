@@ -26,6 +26,8 @@ pub struct Services {
     pub tcp_abort: extern "C" fn(u32),
     pub console_read: unsafe extern "C" fn(u64, *mut u8, usize) -> isize,
     pub console_total: extern "C" fn() -> u64,
+    pub reset: extern "C" fn(),
+    pub poweroff: extern "C" fn(),
 }
 
 #[repr(C)]
@@ -65,6 +67,11 @@ static mut CURRENT: u32 = 0;
 static mut NEXT: u32 = 1;
 static mut NEXT_ARMED: bool = false;
 
+/// Deferred reset/poweroff: 0 none, 1 reset, 2 poweroff.  The response is
+/// queued first; the action fires after a few idle ticks.
+static mut ACTION: u32 = 0;
+static mut COUNTDOWN: u32 = 0;
+
 /// Module entry.
 ///
 /// # Safety
@@ -74,7 +81,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 4 {
+    if services.version < 5 {
         return &ERROR_VTABLE;
     }
     let message = b"mcp: listening on port 80\n";
@@ -86,6 +93,23 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
     let Some(services) = (unsafe { services.as_ref() }) else {
         return 1;
     };
+
+    // A deferred system action runs after the tool response has had a few
+    // poll cycles to reach the client.
+    if unsafe { ACTION } != 0 {
+        let left = unsafe { COUNTDOWN };
+        if left > 0 {
+            unsafe {
+                COUNTDOWN = left - 1;
+            }
+        } else {
+            if unsafe { ACTION } == 1 {
+                (services.reset)();
+            } else {
+                (services.poweroff)();
+            }
+        }
+    }
 
     match unsafe { PHASE } {
         ARM => {
@@ -329,7 +353,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest uptime\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest uptime\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");
@@ -349,12 +373,32 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.json_string(text);
                     w.push(b"}]}}");
                 }
-                Some(b"console") => {
+                Some(b"console") | Some(b"serial.write") => {
                     (services.write)(text.as_ptr(), text.len());
                     (services.write)(b"\r\n".as_ptr(), 2);
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+                }
+                Some(b"system.reset") => {
+                    unsafe {
+                        ACTION = 1;
+                        COUNTDOWN = 5;
+                    }
+                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                    w.push(id);
+                    w.push(
+                        b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"resetting\"}]}}",
+                    );
+                }
+                Some(b"system.poweroff") => {
+                    unsafe {
+                        ACTION = 2;
+                        COUNTDOWN = 5;
+                    }
+                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                    w.push(id);
+                    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
                 }
                 Some(b"serial.read") => {
                     let total = (services.console_total)();
