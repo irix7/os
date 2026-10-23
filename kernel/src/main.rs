@@ -504,6 +504,9 @@ pub extern "C" fn _start() -> ! {
         }
         net::poll();
         telnet::poll();
+        if telnet::reboot_requested() {
+            reboot();
+        }
         if telnet::boot_requested() {
             break;
         }
@@ -531,10 +534,29 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         // Drive the network stack and telnet console.
         net::poll();
         telnet::poll();
+        if telnet::reboot_requested() {
+            reboot();
+        }
 
         // Park until the next timer tick; iris releases the host core while
         // wait is outstanding and interrupts are enabled.
         idle::wait();
+    }
+}
+
+/// Restart from the PROM entry point.
+fn reboot() -> ! {
+    console_println("kernel: rebooting");
+    // Interrupts off, then jump to the PROM reset window (kseg1).
+    let status = traps::status_read();
+    traps::status_write(status & !1);
+    unsafe {
+        core::arch::asm!(
+            "jr {0}",
+            "nop",
+            in(reg) 0xBFC0_0000u32,
+            options(noreturn)
+        );
     }
 }
 

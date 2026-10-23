@@ -147,12 +147,24 @@ pub fn draw() {
         BORDER.2,
     );
 
-    // Status line.
-    let status = "Use the arrow keys to choose, Enter to boot, or type an option number";
+    // Status line: show the live network address when DHCP has completed.
+    let status = match crate::net::ip_addr() {
+        Some(ip) => {
+            let o = ip.octets();
+            alloc::format!(
+                "{}.{}.{}.{}   telnet 23   arrows/Enter to boot",
+                o[0],
+                o[1],
+                o[2],
+                o[3]
+            )
+        }
+        None => alloc::string::String::from("No network   arrows/Enter to boot"),
+    };
     gfx::draw_str(
         MENU_X + 40,
         MENU_Y + MENU_H - 30,
-        status,
+        &status,
         DIM.0,
         DIM.1,
         DIM.2,

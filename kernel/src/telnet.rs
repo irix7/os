@@ -26,6 +26,8 @@ static mut TELNET_TX_BUF: [u8; 16384] = [0; 16384];
 
 /// Set when the client asks the kernel to continue booting.
 static BOOT_REQUESTED: AtomicBool = AtomicBool::new(false);
+/// Set when the client asks the kernel to restart from the PROM.
+static REBOOT_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Console session state.
 struct Console {
@@ -187,6 +189,11 @@ pub fn boot_requested() -> bool {
     BOOT_REQUESTED.load(Ordering::SeqCst)
 }
 
+/// Whether a telnet client asked the kernel to reboot.
+pub fn reboot_requested() -> bool {
+    REBOOT_REQUESTED.load(Ordering::SeqCst)
+}
+
 /// Mirror console output to the telnet client, if one is connected.
 pub fn write_output(data: &[u8]) {
     // SAFETY: single-threaded kernel; the console is set once by init().
@@ -329,7 +336,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 http <host>:<port><path>  fetch over HTTP\r\n\
                   \x20 https <host>:<port><path>  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
-                  \x20 boot          continue booting\r\n",
+                  \x20 boot          continue booting\r\n\
+                  \x20 reboot        restart from the PROM\r\n",
             );
         }
         b"status" => {
@@ -405,6 +413,10 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
         b"boot" => {
             let _ = sock.send_slice(b"booting\r\n");
             BOOT_REQUESTED.store(true, Ordering::SeqCst);
+        }
+        b"reboot" => {
+            let _ = sock.send_slice(b"rebooting\r\n");
+            REBOOT_REQUESTED.store(true, Ordering::SeqCst);
         }
         _ if line.starts_with(b"http ") => match parse_http(trim(&line[5..]), false) {
             Some(request) => {
