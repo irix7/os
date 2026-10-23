@@ -93,7 +93,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
 | 0x48 | `screen_read` | `intptr_t (*)(uint32_t offset, uint8_t *ptr, size_t len)` — BGR shadow bytes |
 
-The struct lives in `modules/abi` (crate `module-abi`).  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.2.1`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
 the table is 0x4c bytes.
 
@@ -142,8 +142,8 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
 The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packages the
 developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
 macros, the n32 target and flat linker, a copyable template, a hello example and
-`tools/irix7-module.py` (build, flatten, hash). It pins the `module-abi` crate from this
-repository at a known revision; the ABI in `modules/abi` remains the source of truth.
+`tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
+`v0.2.1` tag, so the contract has one source of truth.
 
 A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
 HTTPS, digest-checked and called through this table. The SDK changes none of the contract
