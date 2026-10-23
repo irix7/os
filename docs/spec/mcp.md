@@ -107,6 +107,8 @@ tool execution failure is `isError: true`, not a JSON-RPC error.
 | `block.read` | `target`, `lba` | 1024 hex characters for one 512-byte SCSI sector |
 | `fs.read` | `path?` (default `/etc/motd`) | file content from the target 2 EROFS fixture |
 | `fs.list` | `path?` (default `/`) | newline-separated directory entries |
+| `fs.write` | `path`, `data` | `ok`; writes to the RAM overlay (`/tmp` exists) |
+| `fs.remove` | `path` | `ok`; whiteouts a lower file or removes an upper file |
 | `fs.read` | `path`, `offset?`, `length?`, `encoding?` (`utf-8`/`base64`) | `data`, `encoding`, `size`, `eof` |
 | `fs.write` | `path`, `data`, `encoding?`, `mode?` (`create`/`truncate`/`append`), `permissions?` | `bytes_written` |
 | `fs.list` | `path` | `entries[]` with `name`, `type`, `size`, `mode`, `mtime` |
