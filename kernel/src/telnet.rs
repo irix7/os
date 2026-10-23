@@ -43,6 +43,8 @@ struct Console {
     pending_http: Option<HttpRequest>,
     /// A deferred NTP query, run outside the socket-set borrow.
     pending_ntp: Option<NtpRequest>,
+    /// A deferred ICMP echo run, outside the socket-set borrow.
+    pending_ping: Option<PingRequest>,
 }
 
 /// Parsed `ntp <ip>[:port]` request.
@@ -50,6 +52,12 @@ struct NtpRequest {
     host: [u8; 64],
     host_len: usize,
     port: u16,
+}
+
+/// Parsed `ping <host>` request.
+struct PingRequest {
+    host: [u8; 64],
+    host_len: usize,
 }
 
 /// Parsed `http <ip>:<port><path>` request.
@@ -89,6 +97,7 @@ pub fn init() {
                 last_cr: false,
                 pending_http: None,
                 pending_ntp: None,
+                pending_ping: None,
             });
         }
     }
@@ -180,6 +189,36 @@ pub fn poll() {
                     }
                     (None, _) => {
                         let _ = w.write_str("ntp: unknown host\r\n");
+                    }
+                }
+                let _ = w.sock.send_slice(b"kernel> ");
+            });
+        }
+    }
+
+    // Run any deferred ICMP echo run, outside the socket-set borrow.
+    let ping_request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_ping.take());
+    if let Some(req) = ping_request {
+        let resolved = resolve_host(&req.host[..req.host_len]);
+        let result = resolved.and_then(crate::ping::run);
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let mut w = SocketWriter { sock };
+                match (resolved, result) {
+                    (Some(_), Some(summary)) => {
+                        let _ = write!(
+                            w,
+                            "ping: {}/{} replies, avg {} ms\r\n",
+                            summary.received, summary.sent, summary.avg_ms
+                        );
+                    }
+                    (Some(_), None) => {
+                        let _ = w.write_str("ping: no reply\r\n");
+                    }
+                    (None, _) => {
+                        let _ = w.write_str("ping: unknown host\r\n");
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
@@ -345,6 +384,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
                   \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
+                  \x20 ping <host>     ICMP echo\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -450,6 +490,15 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             }
             None => {
                 let _ = sock.send_slice(b"usage: https <host>:<port><path>\r\n");
+            }
+        },
+        _ if line.starts_with(b"ping ") => match parse_ping(trim(&line[5..])) {
+            Some(request) => {
+                let _ = sock.send_slice(b"ping: probing\r\n");
+                console.pending_ping = Some(request);
+            }
+            None => {
+                let _ = sock.send_slice(b"usage: ping <host>\r\n");
             }
         },
         _ if line.starts_with(b"ntp ") => match parse_ntp(trim(&line[4..])) {
@@ -609,6 +658,20 @@ fn parse_ntp(arg: &[u8]) -> Option<NtpRequest> {
         host: host_buf,
         host_len: host.len(),
         port,
+    })
+}
+
+/// Parse `ping <host>`.
+fn parse_ping(arg: &[u8]) -> Option<PingRequest> {
+    let s = core::str::from_utf8(arg).ok()?;
+    if s.is_empty() || s.len() > 64 {
+        return None;
+    }
+    let mut host = [0u8; 64];
+    host[..s.len()].copy_from_slice(s.as_bytes());
+    Some(PingRequest {
+        host,
+        host_len: s.len(),
     })
 }
 

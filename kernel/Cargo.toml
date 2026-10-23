@@ -34,6 +34,7 @@ smoltcp = { version = "0.13", default-features = false, features = [
     "proto-dns",
     "proto-dhcpv4",
     "socket-dns",
+    "socket-icmp",
     "socket-udp",
     "socket-tcp",
     "socket-dhcpv4",
