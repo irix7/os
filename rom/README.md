@@ -159,6 +159,7 @@ Commands:
 | `echo <text>` | echo the argument |
 | `ntp <host>[:port]` | set the wall clock from NTP |
 | `ping <host>` | ICMP echo (three requests) |
+| `module <host>:<port><path> <sha256>` | fetch, verify and run a RAM module |
 | `http <host>:<port><path> [sha256]` | fetch over HTTP, optionally verify |
 | `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify |
 | `boot` | leave the menu and continue booting |
@@ -167,6 +168,35 @@ Commands:
 `http` and `https` print the status, body length and a streaming SHA-256 of the body,
 so a fetched image can be checked against the build host.  The clock is advanced from
 CP0 Count; the menu and idle loops execute `WAIT`, which lets iris park the vCPU.
+
+## Loadable modules
+
+The compressed PROM image is a bootstrap, not the place for every feature. Code
+that is not needed to boot can be a **module**: a flat image linked at
+`0x88400000` (in the reserved low window, above the kernel stack), downloaded
+over HTTP into RAM, SHA-256 checked, and called through a versioned C service
+table (`Services` in `kernel/src/module.rs`).
+
+`modules/hello` is the reference module. Build it and serve the flat image:
+
+```bash
+CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld" \
+  cargo build --release -Z build-std=core -Zjson-target-spec \
+  --target targets/mips3-sgi-irix7-n32.json -p hello-module
+
+$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
+  -O binary target/mips3-sgi-irix7-n32/release/hello-module hello.module
+```
+
+Then in the console (with `hello.module` on the HTTP server):
+
+```
+module 10.1.1.3:18080/hello.module <sha256 of hello.module>
+hello from a downloaded module
+module: returned 0
+```
+
+The TLS client is the next feature to move out of the compressed image.
 
 ## Status
 
