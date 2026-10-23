@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "hpc3"
+version = "0.1.0"
+edition = "2021"
+description = "HPC3 DMA descriptor layout and chain rules for IRIX 7"

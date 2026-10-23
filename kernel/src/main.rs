@@ -64,7 +64,7 @@ pub mod traps;
 const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
 
 /// kseg0 offset for MIPS physical-to-virtual address translation.
-const KSEG0_OFFSET: u64 = 0x8000_0000;
+pub(crate) const KSEG0_OFFSET: u64 = 0x8000_0000;
 
 /// End of the low physical memory reserved for the ROM window alias, the
 /// exception vector, the ROM's live state, the kernel image and its stack.

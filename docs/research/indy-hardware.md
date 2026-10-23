@@ -380,6 +380,53 @@ the most widely copied text about this register.
 6. Read the WD33C93 status/FIFO for residual byte count and sense data.
 7. **Invalidate the D-cache** over the buffer before the CPU reads it.
 
+### 5.4.1 Implemented sequence in the IRIX 7 kernel
+
+`kernel/src/scsi.rs` implements this for READ(6) data phases. The sequence below is what the
+code does; it has **not** been checked on a guest, and the emulator's SCSI DMA model has not
+been exercised by this change.
+
+1. Select the target, send IDENTIFY and the READ(6) CDB with the existing polled PIO path.
+   The data phase is left pending.
+2. Allocate a physically contiguous bounce buffer from the frame allocator (one 4 KiB frame
+   per 4 KiB of data) and a separate 4 KiB descriptor frame. Transfers larger than 64 KiB,
+   or reads after a DMA failure, use PIO.
+3. Build a descriptor chain at 16-byte spacing: up to sixteen data descriptors of 4096
+   bytes, each pointing at the next, then a **zero-length `EOX` terminator** (the HPC3
+   last-byte bug workaround in §2.5.2 of the HPC3 specification). Linux's 8192-byte cap is
+   an upper bound for the documented erratum; page-sized chunks also satisfy the
+   specification's rule that a DMA buffer must not cross a page boundary. The final data
+   descriptor carries `XIE`; the terminator carries `EOX`.
+4. Write back and invalidate the D-cache over the descriptors and the bounce buffer, then
+   `sync`.
+5. Program `ndptr` with the descriptor physical address and `bcd` with
+   `first_count | XIE | EOX` (the low-order `bcd` flag bits, unlike the descriptor's
+   high-order flag bits). Linux and NetBSD rely on the descriptor fetch and do not write
+   `bcd`; the HPC3 programming sequence in §5.4 calls for it, so both are programmed.
+6. Write `ctrl = ACTIVE` with bit 1 (little-endian) and bit 2 (direction) **clear**.
+   Set the WD33C93 Control register to burst DMA (`EDI | IDI | 0x20`), program its transfer
+   count, and issue `TRANSFER_INFO`. The HPC3 engine services DREQ from the controller.
+7. Wait, with bounded spins, for the WD33C93 interrupt, rejecting `ctrl.PERR`. Read the
+   WD33C93 residual count: a non-zero residual is treated as a short transfer even if the
+   HPC3 deactivated, so a truncated chain cannot return half-filled data as success.
+8. Read and acknowledge the CSR, then stop the channel: `ctrl |= FLUSH`, wait for `ACTIVE`
+   to clear, then write `ctrl = 0`, and restore the controller to polled mode
+   (`EDI | IDI`) before the status/message finish. If the channel will not stop it is reset
+   with `CRESET` (which also resets the WD33C93) and the read is reported as failed rather
+   than falling back.
+9. Invalidate the D-cache over the bounce buffer and copy it to the caller. A failure to
+   allocate a DMA buffer falls back to PIO before selecting; a data-phase failure stops the
+   channel, aborts the SCSI command and retries the whole read through PIO. A SCSI command
+   failure, or a channel that would not stop, is reported to the caller. The DMA path is
+   disabled after a transfer failure so a machine without working SCSI DMA does not pay the
+   timeout on every sector.
+
+**Direction assumption.** HPC3 specification §2.5.2 says `dir=1` is transmit
+(memory → device) and `dir=0` is receive (device → memory). NetBSD's `hpcreg.h` agrees
+(`0=dev->mem, 1=mem->dev`), and Linux's `sgiwd93.c` sets the bit only for data-out despite
+the contradictory comment in `hpc3.h`. A READ therefore leaves `ctrl` bit 2 clear. This is
+the same reading recommended in §5.3 and listed as unresolved in §18.
+
 ### 5.5 Hard limits
 
 * **Fast SCSI-2, 10 MB/s** maximum on the B revision; narrow (8-bit) bus, single-ended,
