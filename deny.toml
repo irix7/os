@@ -10,6 +10,7 @@ allow = [
   "Unlicense",
   "BSD-2-Clause",
   "BSD-3-Clause",
+  "Unicode-3.0",
   "GPL-3.0-only",
   "GPL-3.0-or-later",
   "LGPL-3.0-only",
