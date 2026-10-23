@@ -387,7 +387,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
             w.push(id);
             w.push(b",\"result\":{\"protocolVersion\":");
             w.json_string(version);
-            w.push(b",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"irix7-mcp\",\"version\":\"0.1.0\"}}}");
+            w.push(b",\"capabilities\":{\"tools\":{},\"resources\":{\"subscribe\":false,\"listChanged\":false}},\"serverInfo\":{\"name\":\"irix7-mcp\",\"version\":\"0.1.0\"}}}");
         }
         Some(b"ping") | Some(b"notifications/initialized") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -398,6 +398,70 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
             w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}}]}}");
+        }
+        Some(b"resources/list") => {
+            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+            w.push(id);
+            w.push(b",\"result\":{\"resources\":[{\"uri\":\"irix7://serial\",\"name\":\"serial\",\"mimeType\":\"text/plain\",\"description\":\"Kernel serial ring\"},{\"uri\":\"irix7://status\",\"name\":\"status\",\"mimeType\":\"text/plain\",\"description\":\"Machine status\"},{\"uri\":\"irix7://net\",\"name\":\"net\",\"mimeType\":\"text/plain\",\"description\":\"Network summary\"},{\"uri\":\"irix7://mem\",\"name\":\"mem\",\"mimeType\":\"text/plain\",\"description\":\"Frame allocator summary\"}]}}");
+        }
+        Some(b"resources/read") => {
+            let uri = json_string(body, b"\"uri\"").unwrap_or(b"");
+            let mut data = [0u8; 1024];
+            let n: isize = if uri == b"irix7://serial" {
+                let total = (services.console_total)();
+                let offset = total.saturating_sub(1024);
+                unsafe { (services.console_read)(offset, data.as_mut_ptr(), data.len()) }
+            } else if uri == b"irix7://status" {
+                unsafe { (services.info)(0, data.as_mut_ptr(), data.len()) }
+            } else if uri == b"irix7://net" {
+                unsafe { (services.info)(1, data.as_mut_ptr(), data.len()) }
+            } else if uri == b"irix7://mem" {
+                unsafe { (services.info)(2, data.as_mut_ptr(), data.len()) }
+            } else {
+                -1
+            };
+            if n < 0 {
+                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                w.push(id);
+                w.push(b",\"error\":{\"code\":-32602,\"message\":\"unknown resource\"}}");
+            } else {
+                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                w.push(id);
+                w.push(b",\"result\":{\"contents\":[{\"uri\":");
+                w.json_string(uri);
+                w.push(b",\"mimeType\":\"text/plain\",\"text\":");
+                w.json_string(&data[..n as usize]);
+                w.push(b"}]}}");
+            }
+        }
+        Some(b"resources/list") => {
+            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+            w.push(id);
+            w.push(b",\"result\":{\"resources\":[{\"uri\":\"irix7://serial\",\"name\":\"serial\",\"description\":\"Guest serial ring\",\"mimeType\":\"text/plain\"}]}}");
+        }
+        Some(b"resources/templates/list") => {
+            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+            w.push(id);
+            w.push(b",\"result\":{\"resourceTemplates\":[]}}");
+        }
+        Some(b"resources/read") => {
+            let uri = json_string(body, b"\"uri\"").unwrap_or(b"");
+            if uri != b"irix7://serial" {
+                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                w.push(id);
+                w.push(b",\"error\":{\"code\":-32602,\"message\":\"unknown resource\"}}");
+            } else {
+                let total = (services.console_total)();
+                let offset = total.saturating_sub(1024);
+                let mut data = [0u8; 1024];
+                let n = unsafe { (services.console_read)(offset, data.as_mut_ptr(), data.len()) };
+                let n = if n > 0 { n as usize } else { 0 };
+                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                w.push(id);
+                w.push(b",\"result\":{\"contents\":[{\"uri\":\"irix7://serial\",\"mimeType\":\"text/plain\",\"text\":");
+                w.json_string(&data[..n]);
+                w.push(b"}]}}");
+            }
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");

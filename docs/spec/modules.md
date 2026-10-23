@@ -157,7 +157,8 @@ and returns non-zero to unregister. Swap `hello` for `ticker` in the two command
 `modules/httpd` is the TCP reference. It listens on guest port 80, answers one request per
 connection, and alternates its two TCP slots so a back-to-back client does not hit the
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
-JSON-RPC methods (see [`mcp.md`](mcp.md)). Its tools include `serial.read` (console ring
+JSON-RPC methods (see [`mcp.md`](mcp.md)), including resources for the serial ring, status,
+network and memory. Its tools include `serial.read` (console ring
 services), `serial.write`, `system.reset`, `system.poweroff` and `status` (the same IP/MAC/RAM/uptime/date
 text as the telnet console), plus `shell.exec` with `net`, `mem` and `time` using the shared
 `info` service.  The system tools defer
