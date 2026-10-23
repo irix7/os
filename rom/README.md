@@ -45,8 +45,9 @@ when the uncompressed size has been produced; the last sequence is literals only
 `ROM_PAYLOAD_LEN` is computed at link time from the section symbols, so the ROM always
 copies exactly the right number of bytes.
 
-A 35 KiB kernel becomes 13 KiB compressed, so the PROM image is 16 KiB rather than
-38 KiB.
+The kernel is now about 1 MiB of text and data (the TLS client and its verifier
+dominate), which compresses to roughly 460 KiB. The PROM image is about 473 KiB,
+inside the 512 KiB PROM window but with little headroom.
 
 ## Memory layout
 
@@ -178,4 +179,6 @@ CP0 Count; the menu and idle loops execute `WAIT`, which lets iris park the vCPU
 - The kernel payload is LZ4-compressed and decompressed by the ROM stub.
 - The ROM has no network stack; the kernel owns DHCP, DNS, NTP, HTTP and HTTPS
   (TLS 1.3), the telnet console, and the Seeq/HPC3 driver.
+- HTTPS verifies server chains against the embedded SSL.com TLS ECC Root CA 2022
+  (`kernel/src/ca/`); chains that end elsewhere are rejected.
 - A CP0 Compare tick drives the network and console; idle loops park in `WAIT`.
