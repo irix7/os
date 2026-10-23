@@ -246,17 +246,9 @@ the full BMP URL.
 
 ### Testing the MCP endpoint
 
-`rom/tools/mcp-smoke.py` drives the JSON-RPC surface and checks `initialize`,
-`tools/list`, `status`, `shell.exec uname`, `serial.read` and `echo`:
-
-```bash
-rom/tools/mcp-smoke.py --iris /path/to/iris --prom /tmp/rom.bin   --cwd /path/to/iris --token secret-token
-```
-
-`--no-launch` tests an already-running guest. `--reset` calls `system.reset`, waits
-for the reboot and autoload, then checks `status` again. The token must match the
-guest's `mcp.token`. Without autoload, pass `--module-url` and `--module-sha256` so the
-script loads the image through the telnet console first.
+`rom/tools/mcp-smoke.py` drives the JSON-RPC surface, including the module's
+`block.read` and EROFS `fs.*` tools; see [MCP smoke test](#mcp-smoke-test) below
+for the command and the checks.
 The loader zeroes the module area before the download, so a module's `.bss`
 starts at zero; it flushes the data cache and invalidates the instruction cache
 before the entry call.
@@ -281,17 +273,44 @@ It is a prototype: no bearer token or SSE yet. `serial.read` returns the kernel'
 ## MCP smoke test
 
 `rom/tools/mcp-smoke.py` checks the live control plane: `initialize`, `tools/list`,
-`status`, `shell.exec uname`, `serial.read` and `echo`. Against an already-running
-guest:
+`status`, `shell.exec uname`, `serial.read`, `echo`, `block.read` on target 1, and
+the EROFS `fs.read`, `fs.list`, `fs.write` and `fs.remove` tools.  It reads
+`/etc/motd`, lists `/` (which must include `etc` and `link`), then writes
+`/tmp/mcp-smoke`, reads it back, removes it, confirms the read now fails and that
+`/etc/motd` still comes from the read-only lower image.
+
+Against an already-running guest whose SCSI target 2 holds the fixture:
 
 ```bash
 rom/tools/mcp-smoke.py --no-launch --token secret-token
 ```
 
+To start and stop its own guest, give it `--iris`, `--prom` and either
+`--erofs-image` (the fixture to attach at SCSI ID 2) or `--scsi2` (a raw image):
+
+```bash
+rom/tools/mcp-smoke.py --iris /mnt/europa/iris/target/release/iris \
+  --prom /tmp/rom.bin --cwd /mnt/europa/iris \
+  --erofs-image crates/erofs/tests/fixtures/root.erofs \
+  --token secret-token
+```
+
+`--erofs-image` and `--scsi2` are resolved against the caller's working
+directory, not `--cwd`.  The guest also needs SCSI target 1 (`scsi1.raw`) for
+`block.read`; the rig configuration supplies it.  When the script launches iris
+without either option it skips the `fs.*` checks; `--skip-fs` skips them for an
+already-running guest that has no target 2.
+
 With `--reset` it also calls `system.reset`, waits for the reboot and autoload, and
-checks the new instance. To load the module through the telnet console instead of
-NVRAM autoload, pass `--module-url` and `--module-sha256`. With `--iris` and `--prom`
-it starts and stops its own iris instance. The token must match `mcp.token`.
+checks `status`, `block.read` and `fs.read` on the new instance; that path needs
+NVRAM autoload.  To load the module through the telnet console instead, pass
+`--module-url` and `--module-sha256`.  The token must match `mcp.token`.
+
+The script's own logic runs without a guest against a fake MCP endpoint:
+
+```bash
+python3 -m unittest discover -s rom/tools -p 'test_*.py'
+```
 
 ## Status
 

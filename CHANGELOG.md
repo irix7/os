@@ -8,6 +8,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `rom/tools/mcp-smoke.py` now exercises the module tools and the autoload
+  loop: `block.read` target 1 LBA 0 (the `4d436f6d`/`MComprHD` volume header),
+  `fs.read /etc/motd`, `fs.list /` (which must include `etc` and `link`), a
+  `fs.write`/`fs.read`/`fs.remove` round trip on `/tmp/mcp-smoke`, and a
+  lower-image read after the overlay change.  `--erofs-image`/`--scsi2` attach
+  the fixture at SCSI ID 2 when the script launches iris, `--skip-fs` covers
+  guests without one, and HTTP/JSON-RPC failures now name the failing tool with
+  the server's code and message.  `--reset` re-checks `block.read` and
+  `fs.read` through the autoloaded module.  Eleven standard-library tests
+  drive the script against a fake MCP server.
 - HTTPS byte ranges on the telnet console: `https <host>:<port><path> range=start-end`
   sends one `Range: bytes=start-end` request through the kernel TLS 1.3 client,
   requires a `206` response whose body is exactly the requested length (a
