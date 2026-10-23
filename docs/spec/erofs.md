@@ -325,17 +325,14 @@ image a second time; hashing while filling the range cache is future work.
 Only HTTP is supported for ranges at present; TLS remains full-body.  The next
 integration step is a 256 KiB read-ahead window.
 
-The kernel also reaches EROFS through the SCSI disk:
-
-```text
-erofsdisk <target> [path]
-```
-
-The image starts at LBA 0 of the selected target.  `ScsiDisk` reads 512-byte
-sectors through READ(6), `block-cache`'s LRU (16 x 4 KiB) coalesces them into
-filesystem blocks, and the same EROFS reader mounts the image.  On iris, a
-compact fixture attached to SCSI ID 2 reads `/etc/motd` correctly.  Descriptor
-DMA will replace the polled PIO sector path.
+The disk filesystem path is a loadable module, not a kernel command.  The
+`modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
+`/etc/motd` and prints it through the console service.  It uses the ABI 10
+`block_read` service, `block-cache`'s LRU (16 x 4 KiB), its own global
+allocator over the kernel `alloc` service, and the same EROFS reader.  The flat
+module is 25,736 bytes and never enters the compressed PROM.  On iris it prints
+the motd content and returns 0.  Descriptor DMA will replace the polled PIO
+sector path.
 
 ## 10. Verification
 
