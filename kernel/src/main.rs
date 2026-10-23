@@ -16,6 +16,8 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(asm, asm_experimental_arch)]
 
+extern crate alloc;
+
 use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
@@ -25,6 +27,7 @@ pub mod dns;
 pub mod font;
 pub mod frames;
 pub mod gfx;
+pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
@@ -34,6 +37,7 @@ pub mod ntp;
 pub mod scheduler;
 pub mod telnet;
 pub mod tlb;
+pub mod tls;
 pub mod traps;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +53,11 @@ const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
 
 /// kseg0 offset for MIPS physical-to-virtual address translation.
 const KSEG0_OFFSET: u64 = 0x8000_0000;
+
+/// End of the low physical memory reserved for the ROM window alias, the
+/// exception vector, the ROM's live state, the kernel image and its stack.
+/// The frame allocator must never hand any of it out.
+const RESERVED_END: u64 = 0x08B0_0000;
 
 fn wr(reg: u8, data: u8) {
     unsafe {
@@ -400,7 +409,7 @@ pub extern "C" fn _start() -> ! {
                     info[kseg0_map as usize + off + 19],
                 ]);
                 if kind == MEM_KIND_USABLE_RAM {
-                    let base = u64::from_le_bytes([
+                    let mut base = u64::from_le_bytes([
                         info[kseg0_map as usize + off],
                         info[kseg0_map as usize + off + 1],
                         info[kseg0_map as usize + off + 2],
@@ -410,7 +419,7 @@ pub extern "C" fn _start() -> ! {
                         info[kseg0_map as usize + off + 6],
                         info[kseg0_map as usize + off + 7],
                     ]);
-                    let size = u64::from_le_bytes([
+                    let mut size = u64::from_le_bytes([
                         info[kseg0_map as usize + off + 8],
                         info[kseg0_map as usize + off + 9],
                         info[kseg0_map as usize + off + 10],
@@ -420,6 +429,16 @@ pub extern "C" fn _start() -> ! {
                         info[kseg0_map as usize + off + 14],
                         info[kseg0_map as usize + off + 15],
                     ]);
+                    // Never hand the frame allocator memory below the
+                    // reserved window, whatever the descriptor says.
+                    if base < RESERVED_END {
+                        let clip = RESERVED_END - base;
+                        if size <= clip {
+                            continue;
+                        }
+                        base = RESERVED_END;
+                        size -= clip;
+                    }
                     usable_descs[usable_count] = frames::MemDesc {
                         base,
                         size,
@@ -432,11 +451,14 @@ pub extern "C" fn _start() -> ! {
         }
         None => {
             // No BootInfo: fall back to the RAM geometry the ROM passed in
-            // registers.  The console/net services are not available yet.
+            // registers.  Reserve the low window: the exception vector, the
+            // ROM's live state, the kernel image and its stack all live there.
             console_println("kernel: no BootInfo; using ROM handoff");
+            let start = (ram_base as u64).max(RESERVED_END);
+            let end = ram_base as u64 + ram_bytes as u64;
             usable_descs[0] = frames::MemDesc {
-                base: ram_base as u64,
-                size: ram_bytes as u64,
+                base: start,
+                size: end.saturating_sub(start),
                 kind: MEM_KIND_USABLE_RAM,
                 flags: 0,
             };

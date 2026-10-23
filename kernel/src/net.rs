@@ -576,6 +576,38 @@ pub fn with_stack<R>(f: impl FnOnce(&mut Interface, &mut SocketSet<'static>) -> 
     unsafe { STACK.as_mut().map(|s| f(&mut s.iface, &mut s.sockets)) }
 }
 
+/// Raw pointers to the live stack pieces, for adapters (TLS) that must poll
+/// across several calls.  The caller must not alias these with any other
+/// borrow; there is one kernel thread.
+///
+/// # Safety
+/// The pointers remain valid for the lifetime of the machine.  They must not
+/// be used concurrently with `poll`, `sockets_with` or `with_stack`.
+pub unsafe fn raw_stack() -> Option<(*mut Interface, *mut SocketSet<'static>, *mut SeeqDevice)> {
+    let stack = STACK.as_mut()?;
+    let dev = SEEQ.as_mut()?;
+    Some((
+        &mut stack.iface as *mut Interface,
+        &mut stack.sockets as *mut SocketSet<'static>,
+        dev as *mut SeeqDevice,
+    ))
+}
+
+/// Drive the interface from raw pointers (see [`raw_stack`]).
+///
+/// # Safety
+/// The pointers must come from [`raw_stack`] and must not alias another
+/// borrow.
+pub unsafe fn poll_raw(
+    iface: *mut Interface,
+    sockets: *mut SocketSet<'static>,
+    dev: *mut SeeqDevice,
+) {
+    clock_tick();
+    let now = clock_now();
+    let _ = (*iface).poll(now, &mut *dev, &mut *sockets);
+}
+
 /// The Seeq station address.
 pub fn mac_address() -> [u8; 6] {
     unsafe {

@@ -57,6 +57,7 @@ struct HttpRequest {
     port: u16,
     path: [u8; 96],
     path_len: usize,
+    tls: bool,
 }
 
 static mut CONSOLE: Option<Console> = None;
@@ -98,8 +99,15 @@ pub fn poll() {
     if let Some(req) = request {
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
         let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
+        let scheme = if req.tls { "https" } else { "http" };
         let result = match resolve_host(&req.host[..req.host_len]) {
-            Some(ip) => crate::http::get(ip, req.port, host, path),
+            Some(ip) => {
+                if req.tls {
+                    crate::tls::get(ip, req.port, host, path)
+                } else {
+                    crate::http::get(ip, req.port, host, path)
+                }
+            }
             None => Err("unknown host"),
         };
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
@@ -112,20 +120,20 @@ pub fn poll() {
                         Some(expected) if expected != summary.body_len => {
                             let _ = write!(
                                 w,
-                                "http: {} {}/{} bytes\r\n",
-                                summary.status, summary.body_len, expected
+                                "{}: {} {}/{} bytes\r\n",
+                                scheme, summary.status, summary.body_len, expected
                             );
                         }
                         _ => {
                             let _ = write!(
                                 w,
-                                "http: {} {} bytes\r\n",
-                                summary.status, summary.body_len
+                                "{}: {} {} bytes\r\n",
+                                scheme, summary.status, summary.body_len
                             );
                         }
                     },
                     Err(err) => {
-                        let _ = write!(w, "http: {}\r\n", err);
+                        let _ = write!(w, "{}: {}\r\n", scheme, err);
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
@@ -312,7 +320,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 mem           RAM accounting\r\n\
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
-                  \x20 http <ip>:<port><path>  fetch over HTTP\r\n\
+                  \x20 http <host>:<port><path>  fetch over HTTP\r\n\
+                  \x20 https <host>:<port><path>  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
                   \x20 boot          continue booting\r\n",
             );
@@ -391,13 +400,22 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let _ = sock.send_slice(b"booting\r\n");
             BOOT_REQUESTED.store(true, Ordering::SeqCst);
         }
-        _ if line.starts_with(b"http ") => match parse_http(trim(&line[5..])) {
+        _ if line.starts_with(b"http ") => match parse_http(trim(&line[5..]), false) {
             Some(request) => {
                 let _ = sock.send_slice(b"http: fetching\r\n");
                 console.pending_http = Some(request);
             }
             None => {
-                let _ = sock.send_slice(b"usage: http <ip>:<port><path>\r\n");
+                let _ = sock.send_slice(b"usage: http <host>:<port><path>\r\n");
+            }
+        },
+        _ if line.starts_with(b"https ") => match parse_http(trim(&line[6..]), true) {
+            Some(request) => {
+                let _ = sock.send_slice(b"https: fetching\r\n");
+                console.pending_http = Some(request);
+            }
+            None => {
+                let _ = sock.send_slice(b"usage: https <host>:<port><path>\r\n");
             }
         },
         _ if line.starts_with(b"ntp ") => match parse_ntp(trim(&line[4..])) {
@@ -469,7 +487,7 @@ impl core::fmt::Display for DisplayIpv4 {
 }
 
 /// Parse `http <ip>:<port><path>`.
-fn parse_http(arg: &[u8]) -> Option<HttpRequest> {
+fn parse_http(arg: &[u8], tls: bool) -> Option<HttpRequest> {
     let s = core::str::from_utf8(arg).ok()?;
     let (host, rest) = s.split_once(':')?;
     let slash = rest.find('/')?;
@@ -488,6 +506,7 @@ fn parse_http(arg: &[u8]) -> Option<HttpRequest> {
         port,
         path: buf,
         path_len: path.len(),
+        tls,
     })
 }
 

@@ -245,12 +245,12 @@ fn append(buf: &mut [u8], len: &mut usize, data: &[u8]) -> Result<(), &'static s
     Ok(())
 }
 
-fn find_header_end(haystack: &[u8]) -> Option<usize> {
+pub(crate) fn find_header_end(haystack: &[u8]) -> Option<usize> {
     haystack.windows(4).position(|w| w == b"\r\n\r\n")
 }
 
 /// Find the `Content-Length` header value, case-insensitively.
-fn parse_content_length(headers: &[u8]) -> Option<usize> {
+pub(crate) fn parse_content_length(headers: &[u8]) -> Option<usize> {
     const NAME: &[u8] = b"content-length:";
     let mut i = 0;
     while i + NAME.len() <= headers.len() {
@@ -275,7 +275,7 @@ fn parse_content_length(headers: &[u8]) -> Option<usize> {
     None
 }
 
-fn parse_status(headers: &[u8]) -> u16 {
+pub(crate) fn parse_status(headers: &[u8]) -> u16 {
     // "HTTP/1.x NNN ..." — find the first space, then read three digits.
     let Some(space) = headers.iter().position(|&b| b == b' ') else {
         return 0;
