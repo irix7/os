@@ -13,6 +13,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`erofs-big-endian-research.md`](erofs-big-endian-research.md) | Whether to fork EROFS to big-endian (verdict: do not). |
 | [`compressed-ram.md`](compressed-ram.md) | What Meta's CRAM actually is and whether compressed RAM fits the Indy (verdict: no). |
 | [`rust-os-design-research.md`](rust-os-design-research.md) | A broad survey of Rust OS design choices. |
+| [`rust-std-irix7.md`](rust-std-irix7.md) | What `std` for IRIX 7 means, the native-vs-compat split, the POSIX.1-2024 native libc ABI it requires, and the implementation and PR plan. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
