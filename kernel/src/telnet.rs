@@ -47,7 +47,7 @@ struct Console {
     pending_ping: Option<PingRequest>,
 }
 
-/// Parsed `ntp <ip>[:port]` request.
+/// Parsed `ntp <host>[:port]` request.
 struct NtpRequest {
     host: [u8; 64],
     host_len: usize,
@@ -383,7 +383,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 echo <text>   echo the argument\r\n\
                   \x20 http <host>:<port><path> [sha256]  fetch over HTTP\r\n\
                   \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
-                  \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
+                  \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
@@ -507,7 +507,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 console.pending_ntp = Some(request);
             }
             None => {
-                let _ = sock.send_slice(b"usage: ntp <ip>[:port]\r\n");
+                let _ = sock.send_slice(b"usage: ntp <host>[:port]\r\n");
             }
         },
         _ if line.starts_with(b"echo ") => {
@@ -642,7 +642,7 @@ fn parse_ipv4(s: &str) -> Option<Ipv4Address> {
     Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
 }
 
-/// Parse `ntp <ip>[:port]`.
+/// Parse `ntp <host>[:port]`.
 fn parse_ntp(arg: &[u8]) -> Option<NtpRequest> {
     let s = core::str::from_utf8(arg).ok()?;
     let (host, port) = match s.split_once(':') {

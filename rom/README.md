@@ -141,7 +141,7 @@ Commands:
 | `mem` | total and free RAM |
 | `time` | uptime and UTC date |
 | `echo <text>` | echo the argument |
-| `ntp <ip>[:port]` | set the wall clock from NTP |
+| `ntp <host>[:port]` | set the wall clock from NTP |
 | `ping <host>` | ICMP echo (three requests) |
 | `http <host>:<port><path> [sha256]` | fetch over HTTP, optionally verify |
 | `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify |
