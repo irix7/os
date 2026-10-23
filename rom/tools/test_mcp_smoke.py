@@ -26,8 +26,52 @@ SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mcp-smoke.py"
 
 STATUS = "stage: kernel\nip: 10.1.1.2\nram: 32 MiB\n"
 MOTD = "Welcome to IRIX 7\n"
+LINK_TARGET = "hello.txt"
 LOWER = {"/etc/motd": MOTD, "/hello.txt": "hello, erofs\n"}
 ROOT = ["etc", "hello.txt", "big.bin", "empty", "dir", "link"]
+STATS = {
+    "/": {
+        "type": "dir",
+        "size": 0,
+        "mode": "040755",
+        "uid": 0,
+        "gid": 0,
+        "origin": "erofs",
+    },
+    "/etc": {
+        "type": "dir",
+        "size": 0,
+        "mode": "040755",
+        "uid": 0,
+        "gid": 0,
+        "origin": "erofs",
+    },
+    "/etc/motd": {
+        "type": "file",
+        "size": len(MOTD.encode()),
+        "mode": "100644",
+        "uid": 0,
+        "gid": 0,
+        "origin": "erofs",
+    },
+    "/hello.txt": {
+        "type": "file",
+        "size": len(LOWER["/hello.txt"].encode()),
+        "mode": "100644",
+        "uid": 0,
+        "gid": 0,
+        "origin": "erofs",
+    },
+    "/link": {
+        "type": "symlink",
+        "size": len(LINK_TARGET),
+        "mode": "120777",
+        "uid": 0,
+        "gid": 0,
+        "origin": "erofs",
+        "target": LINK_TARGET,
+    },
+}
 TOOLS = [
     "status",
     "echo",
@@ -40,6 +84,8 @@ TOOLS = [
     "block.read",
     "fs.read",
     "fs.list",
+    "fs.stat",
+    "fs.readlink",
     "fs.write",
     "fs.remove",
     "screen.capture",
@@ -109,6 +155,39 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
                 return None, "fs list failed"
             names = [name for name in ROOT if "/" + name not in self.server.removed]
             return "".join(name + "\n" for name in names), None
+        if name == "fs.stat":
+            path = arguments.get("path", "/")
+            if self.server.stat_text is not None:
+                return self.server.stat_text, None
+            if path in self.server.overlay:
+                data = self.server.overlay[path]
+                stat = {
+                    "origin": "overlay",
+                    "type": "file",
+                    "size": len(data.encode()),
+                    "mode": "100644",
+                    "uid": 0,
+                    "gid": 0,
+                }
+                return json.dumps(stat, sort_keys=True), None
+            if path in self.server.removed or path not in STATS:
+                return None, "fs path not found"
+            stat = dict(STATS[path])
+            stat.update(self.server.stat_overrides)
+            # Deliberately pretty-print the fake's JSON so the script cannot
+            # rely on the module's compact member order or spacing.
+            return json.dumps(stat, indent=2), None
+        if name == "fs.readlink":
+            path = arguments.get("path", "/")
+            if self.server.readlink_any:
+                return LINK_TARGET, None
+            if path in self.server.overlay:
+                return None, "fs path is not a symlink"
+            if path in self.server.removed or path not in STATS:
+                return None, "fs path not found"
+            if STATS[path]["type"] != "symlink":
+                return None, "fs path is not a symlink"
+            return STATS[path]["target"], None
         if name == "fs.write":
             path = arguments["path"]
             self.server.overlay[path] = arguments.get("data", "")
@@ -201,10 +280,20 @@ class FakeMcpHandler(BaseHTTPRequestHandler):
 class FakeMcp:
     """A fake MCP server on an ephemeral loopback port."""
 
-    def __init__(self, token="", fail_tool=None):
+    def __init__(
+        self,
+        token="",
+        fail_tool=None,
+        readlink_any=False,
+        stat_text=None,
+        stat_overrides=None,
+    ):
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), FakeMcpHandler)
         self.httpd.token = token
         self.httpd.fail_tool = fail_tool
+        self.httpd.readlink_any = readlink_any
+        self.httpd.stat_text = stat_text
+        self.httpd.stat_overrides = dict(stat_overrides or {})
         self.httpd.overlay = {}
         self.httpd.removed = set()
         self.httpd.down_until = 0.0
@@ -258,7 +347,23 @@ class SmokeScriptTests(unittest.TestCase):
             "PASS: block.read target 1 lba 0 starts 4d436f6d", result.stdout
         )
         self.assertIn("PASS: fs.read /etc/motd", result.stdout)
+        self.assertIn("PASS: fs.stat / is a dir from erofs", result.stdout)
+        self.assertIn(
+            "PASS: fs.stat /link is a symlink to hello.txt", result.stdout
+        )
+        self.assertIn(
+            "PASS: fs.stat /etc/motd is an 18-byte file with mode 100644",
+            result.stdout,
+        )
+        self.assertIn("PASS: fs.readlink /link -> hello.txt", result.stdout)
+        self.assertIn(
+            "PASS: fs.readlink /etc/motd rejected: fs path is not a symlink",
+            result.stdout,
+        )
         self.assertIn("PASS: fs.list / includes etc and link", result.stdout)
+        self.assertIn(
+            "PASS: fs.stat /tmp/mcp-smoke is from overlay", result.stdout
+        )
         self.assertIn(
             "PASS: fs.write/fs.read/fs.remove /tmp/mcp-smoke", result.stdout
         )
@@ -272,7 +377,58 @@ class SmokeScriptTests(unittest.TestCase):
         result = self.run_script(fake, "--skip-fs")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("SKIP: fs.* checks (--skip-fs)", result.stdout)
-        self.assertNotIn("PASS: fs.read /etc/motd\n", result.stdout)
+        self.assertNotIn("PASS: fs.", result.stdout)
+
+    def test_diskless_skip_block_and_fs(self):
+        # fail_tool proves the script never calls block.read: if it did, the
+        # fake would answer with a JSON-RPC error and the run would fail.
+        fake = self.start_fake(fail_tool="block.read")
+        result = self.run_script(fake, "--skip-block", "--skip-fs")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            "PASS: initialize, tools/list, status, uname, serial.read, echo",
+            result.stdout,
+        )
+        self.assertIn("SKIP: block.read checks (--skip-block)", result.stdout)
+        self.assertIn("SKIP: fs.* checks (--skip-fs)", result.stdout)
+        self.assertNotIn("PASS: block.read", result.stdout)
+        self.assertNotIn("PASS: fs.", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_skip_block_also_skips_the_reset_recheck(self):
+        fake = self.start_fake(fail_tool="block.read")
+        result = self.run_script(fake, "--skip-block", "--reset")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SKIP: block.read after reset (--skip-block)", result.stdout)
+        self.assertIn(
+            "PASS: system.reset -> autoload -> MCP and module tools",
+            result.stdout,
+        )
+        self.assertNotIn("PASS: block.read", result.stdout)
+
+    def test_fs_stat_requires_json(self):
+        fake = self.start_fake(stat_text="not json")
+        result = self.run_script(fake)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("fs.stat /: text is not JSON", result.stderr)
+
+    def test_fs_stat_field_mismatch_is_reported(self):
+        fake = self.start_fake(stat_overrides={"mode": "100600"})
+        result = self.run_script(fake)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "fs.stat /etc/motd: mode is '100600', expected '100644'",
+            result.stderr,
+        )
+
+    def test_fs_readlink_must_reject_a_non_symlink(self):
+        fake = self.start_fake(readlink_any=True)
+        result = self.run_script(fake)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(
+            "fs.readlink /etc/motd unexpectedly returned 'hello.txt'",
+            result.stderr,
+        )
 
     def test_json_rpc_error_is_reported(self):
         fake = self.start_fake(fail_tool="fs.read")
@@ -323,6 +479,8 @@ class SmokeScriptTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("--erofs-image", result.stdout)
         self.assertIn("--scsi2", result.stdout)
+        self.assertIn("--skip-block", result.stdout)
+        self.assertIn("--skip-fs", result.stdout)
 
     def test_missing_image_is_rejected_before_launch(self):
         result = subprocess.run(

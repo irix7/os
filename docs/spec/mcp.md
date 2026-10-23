@@ -257,6 +257,13 @@ Application errors are returned as tool results with `isError: true` and a text 
 - [ ] JSON-RPC fuzzing: malformed frames, huge fields, unknown methods.
 - [ ] A real MCP client (the agent) completes the M3 demo.
 
+`rom/tools/mcp-smoke.py` exercises the current module surface against a live
+guest: `initialize`, `tools/list`, the console tools, `block.read`, and
+`fs.read`/`fs.list`/`fs.stat`/`fs.readlink`/`fs.write`/`fs.remove`, including
+the `fs.stat` metadata for `/`, `/link` and `/etc/motd` and the non-symlink
+error from `fs.readlink /etc/motd`.  `--skip-block --skip-fs` runs the same
+harness against a diskless guest with no SCSI targets.
+
 ## 10. Open questions
 
 - Streamable HTTP vs a simpler JSON-RPC transport for v1; the standard is preferred.
