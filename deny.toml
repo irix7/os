@@ -20,25 +20,21 @@ allow = [
 # is not a valid SPDX expression.  They are genuinely dual-licensed; state the
 # intended expression so the licence gate can read it.
 [[licenses.clarify]]
-name = "bitflags"
-version = "1.3.2"
+crate = "bitflags@1.3.2"
 expression = "MIT OR Apache-2.0"
 license-files = []
 
 [[licenses.clarify]]
-name = "ff"
-version = "0.13.1"
+crate = "ff@0.13.1"
 expression = "MIT OR Apache-2.0"
 license-files = []
 
 [[licenses.clarify]]
-name = "group"
-version = "0.13.0"
+crate = "group@0.13.0"
 expression = "MIT OR Apache-2.0"
 license-files = []
 
 [[licenses.clarify]]
-name = "version_check"
-version = "0.9.5"
+crate = "version_check@0.9.5"
 expression = "MIT OR Apache-2.0"
 license-files = []
