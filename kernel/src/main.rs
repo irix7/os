@@ -16,6 +16,9 @@
 #![cfg_attr(not(test), no_std)]
 #![feature(asm, asm_experimental_arch)]
 
+use core::panic::PanicInfo;
+use core::ptr::{read_volatile, write_volatile};
+
 pub mod allocator;
 pub mod capability;
 pub mod font;
@@ -23,7 +26,9 @@ pub mod frames;
 pub mod gfx;
 pub mod kbd;
 pub mod menu;
+pub mod net;
 pub mod scheduler;
+pub mod telnet;
 pub mod tlb;
 pub mod traps;
 
@@ -38,9 +43,9 @@ pub mod traps;
 
 const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
 
-/// Z85C30 indirect access: write the register number to the control port to
-/// select it, then read/write the data through the same port.  Register 8
-/// (WR8) is the transmit/receive data register.
+/// kseg0 offset for MIPS physical-to-virtual address translation.
+const KSEG0_OFFSET: u64 = 0x8000_0000;
+
 fn wr(reg: u8, data: u8) {
     unsafe {
         write_volatile(Z85C30_BASE, reg);
@@ -66,7 +71,6 @@ const WR12: u8 = 12;
 const WR13: u8 = 13;
 const WR14: u8 = 14;
 const RR0: u8 = 0;
-/// WR8: the transmit/receive data register.
 const WR0_DATA: u8 = 8;
 
 const BAUD_TC: u8 = 10;
@@ -127,14 +131,27 @@ pub fn print_hex32(v: u32) {
     print_hex8(v as u8);
 }
 
-use core::panic::PanicInfo;
-use core::ptr::{read_volatile, write_volatile};
+// ---------------------------------------------------------------------------
+// Console output: serial + telnet
+// ---------------------------------------------------------------------------
 
-// BootInfo physical address passed in $a0 by the ROM.
-// kseg0 maps physical 0x0000_0000–0x1FFF_FFFF to virtual 0x8000_0000–0x9FFF_FFFF.
-const KSEG0_OFFSET: u64 = 0x8000_0000;
+pub fn console_write(s: &str) {
+    write_str(s);
+    crate::telnet::write_output(s.as_bytes());
+}
 
-/// BootInfo fields (offsets from boot-protocol.md §3).
+pub fn console_write_str(s: &str) {
+    console_write(s);
+}
+
+pub fn console_println(s: &str) {
+    console_write(s);
+    write_byte(b'\r');
+    write_byte(b'\n');
+}
+
+// ---------------------------------------------------------------------------
+// BootInfo fields (offsets from boot-protocol.md §3).
 const BOOTINFO_MAGIC: u32 = 0x49374249; // "I7BI" big-endian
 const BOOTINFO_SIZE: usize = 256;
 
@@ -145,7 +162,7 @@ const BOOTINFO_CONSOLE_POLL: usize = 0xF0;
 const BOOTINFO_NET_STATE: usize = 0xF4;
 const BOOTINFO_SEEQ_STATE: usize = 0xF8;
 
-/// Memory descriptor kind values (matching the ROM).
+// Memory descriptor kind values (matching the ROM).
 const MEM_KIND_USABLE_RAM: u32 = 0;
 const MEM_KIND_RESERVED: u32 = 1;
 
@@ -177,9 +194,6 @@ fn read_u32(addr: u32) -> u32 {
 }
 
 /// Read BootInfo from the physical address passed in $a0.
-///
-/// `phys_addr` is 32-bit: the n32 ABI sign-extends pointers, and a u64 held in
-/// a register pair would leave the high half undefined.
 fn read_bootinfo(phys_addr: u32) -> Option<&'static [u8; BOOTINFO_SIZE]> {
     let kseg0_addr = phys_addr.wrapping_add(0x8000_0000);
     let ptr = kseg0_addr as *const [u8; BOOTINFO_SIZE];
@@ -273,28 +287,24 @@ fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
     (descs[0], count.min(64))
 }
 
-/// Read console_poll function pointer from BootInfo.
-fn read_console_poll(info: &[u8; BOOTINFO_SIZE]) -> extern "C" fn(*mut ()) {
-    let addr = u32::from_le_bytes([info[0xF0], info[0xF1], info[0xF2], info[0xF3]]);
-    unsafe { core::mem::transmute(addr) }
-}
-
-/// Read net_state pointer from BootInfo.
-fn read_net_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
-    let addr = u64::from_le_bytes([
-        info[0xF4], info[0xF5], info[0xF6], info[0xF7], info[0xF8], info[0xF9], info[0xFA],
-        info[0xFB],
+/// Read the resident console-poll function pointer from BootInfo.
+///
+/// The ROM publishes the address of its polled console routine at offset
+/// 0xF0 so the kernel can drive the same terminal after handoff.  A zero
+/// address means the ROM did not provide one.
+fn read_console_poll(info: &[u8; BOOTINFO_SIZE]) -> Option<extern "C" fn(*mut ())> {
+    let addr = u32::from_le_bytes([
+        info[BOOTINFO_CONSOLE_POLL],
+        info[BOOTINFO_CONSOLE_POLL + 1],
+        info[BOOTINFO_CONSOLE_POLL + 2],
+        info[BOOTINFO_CONSOLE_POLL + 3],
     ]);
-    addr as *mut ()
-}
-
-/// Read seeq_state pointer from BootInfo.
-fn read_seeq_state(info: &[u8; BOOTINFO_SIZE]) -> *mut () {
-    let addr = u64::from_le_bytes([
-        info[0xF8], info[0xF9], info[0xFA], info[0xFB], info[0xFC], info[0xFD], info[0xFE],
-        info[0xFF],
-    ]);
-    addr as *mut ()
+    if addr == 0 {
+        return None;
+    }
+    // SAFETY: the ROM populated this field with the address of a routine that
+    // is resident in PROM for the lifetime of the machine.
+    Some(unsafe { core::mem::transmute::<u32, extern "C" fn(*mut ())>(addr) })
 }
 
 /// Kernel entry point.
@@ -369,7 +379,7 @@ pub extern "C" fn _start() -> ! {
 
     match info {
         Some(info) => {
-            println("kernel: BootInfo verified");
+            console_println("kernel: BootInfo verified");
             let (_first_desc, count) = read_mem_map(info);
             let kseg0_map = u64::from_le_bytes([
                 info[0x10], info[0x11], info[0x12], info[0x13], info[0x14], info[0x15], info[0x16],
@@ -419,7 +429,7 @@ pub extern "C" fn _start() -> ! {
         None => {
             // No BootInfo: fall back to the RAM geometry the ROM passed in
             // registers.  The console/net services are not available yet.
-            println("kernel: no BootInfo; using ROM handoff");
+            console_println("kernel: no BootInfo; using ROM handoff");
             usable_descs[0] = frames::MemDesc {
                 base: ram_base as u64,
                 size: ram_bytes as u64,
@@ -435,11 +445,13 @@ pub extern "C" fn _start() -> ! {
     capability::init();
     traps::init_timer();
 
-    println("kernel: up");
+    console_println("kernel: up");
 
     // Bring up the display and show the boot menu.
     gfx::init();
     kbd::init();
+    net::init();
+    telnet::init();
     menu::draw();
     loop {
         if let Some(key) = kbd::poll_key() {
@@ -463,21 +475,22 @@ pub extern "C" fn _start() -> ! {
                 _ => {}
             }
         }
+        net::poll();
+        telnet::poll();
         scheduler::yield_cpu();
     }
-    crate::print_str("kernel: booting ");
-    crate::print_str(menu::OPTIONS[menu::selected()]);
-    crate::println("");
+    console_write("kernel: booting ");
+    console_println(menu::OPTIONS[menu::selected()]);
 
-    // Idle loop: poll the resident console service and the timer.
+    // Idle loop: poll the resident console service, network, and telnet.
     match info {
         Some(info) => {
             let console_poll = read_console_poll(info);
-            let net_state = read_net_state(info);
-            idle_loop(console_poll, net_state);
+            idle_loop(console_poll);
         }
         None => {
-            // No resident service to poll yet.
+            // No BootInfo: fall back to the RAM geometry the ROM passed in
+            // registers.  The console/net services are not available yet.
             loop {
                 scheduler::yield_cpu();
                 core::hint::spin_loop();
@@ -486,13 +499,18 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
-/// Idle loop: drive the resident console/network service and yield on timer.
-fn idle_loop(console_poll: extern "C" fn(*mut ()), net_state: *mut ()) -> ! {
+/// Idle loop: poll the resident console service, network, and telnet.
+fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
-        // Drive the resident console/network service.
-        unsafe {
-            console_poll(net_state);
+        // Drive the resident console service when the ROM provided one.
+        if let Some(poll) = console_poll {
+            // SAFETY: ROM-provided routine, resident in PROM.
+            unsafe { poll(core::ptr::null_mut()) };
         }
+
+        // Drive the network stack and telnet console.
+        net::poll();
+        telnet::poll();
 
         // Yield to the scheduler.
         scheduler::yield_cpu();
