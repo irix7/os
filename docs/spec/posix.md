@@ -172,7 +172,8 @@ called "Rust std".
 
 ## 10. Open questions
 
-- Exact hosted target name and `target_os` value; how to keep the compat target distinct.
+- The hosted target's remaining field set (panic/unwind, TLS, dynamic linking) and how
+  the compat target is kept distinct; the name and `target_os = "irix7"` are chosen.
 - Whether to use the upstream `unix` PAL with a native libc or a dedicated PAL; which
   Linux/glibc assumptions must be removed.
 - The native TLS and unwinding model on MIPS III.
