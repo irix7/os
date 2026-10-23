@@ -93,7 +93,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
 | 0x48 | `screen_read` | `intptr_t (*)(uint32_t offset, uint8_t *ptr, size_t len)` — BGR shadow bytes |
 
-The struct lives in `modules/abi` (crate `module-abi`).  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.2.1`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
 the table is 0x4c bytes.
 
