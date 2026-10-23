@@ -67,11 +67,11 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 9:
+`Services` is `#[repr(C)]` and versioned. Version 10:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 9 |
+| 0x00 | `version` | 10 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x0C | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -90,12 +90,11 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x40 | `config_get` | `intptr_t (*)(const uint8_t *name, size_t name_len, uint8_t *out, size_t out_len)` — PROM environment value, or -1 |
 | 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
 | 0x48 | `screen_read` | `intptr_t (*)(uint32_t offset, uint8_t *ptr, size_t len)` — BGR shadow bytes |
-| 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
-| 0x48 | `screen_read` | `intptr_t (*)(uint32_t offset, uint8_t *ptr, size_t len)` — BGR shadow bytes |
+| 0x4C | `block_read` | `int32_t (*)(uint8_t target, uint32_t lba, uint8_t *ptr)` — one 512-byte SCSI sector; 0 or -1 |
 
-The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.2.1`.  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.3.0`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
-the table is 0x4c bytes.
+the table is 0x50 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.
@@ -143,7 +142,7 @@ The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packag
 developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
 macros, the n32 target and flat linker, a copyable template, a hello example and
 `tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
-`v0.2.1` tag, so the contract has one source of truth.
+`v0.3.0` tag, so the contract has one source of truth.
 
 A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
 HTTPS, digest-checked and called through this table. The SDK changes none of the contract
@@ -152,7 +151,8 @@ below.
 ## 7. Reference modules
 
 `modules/hello` is the one-shot reference: a small flat image that prints one line through
-the service table and returns a vtable with status 0. Build it with its own linker script
+the service table and returns a vtable with status 0. `modules/block` reads block 0 of SCSI
+target 1 through `block_read` and prints the volume-header magic. Build them with their own linker script
 and flatten the ELF:
 
 ```bash

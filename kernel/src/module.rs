@@ -40,6 +40,7 @@ static SERVICES: Services = Services {
     config_get: service_config_get,
     info: service_info,
     screen_read: service_screen_read,
+    block_read: service_block_read,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -312,6 +313,23 @@ unsafe extern "C" fn service_screen_read(offset: u32, ptr: *mut u8, len: usize) 
     }
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
     crate::gfx::shadow_read(offset as usize, buf) as isize
+}
+
+unsafe extern "C" fn service_block_read(target: u8, lba: u32, ptr: *mut u8) -> i32 {
+    if ptr.is_null() {
+        return -1;
+    }
+    let mut sector = [0u8; 512];
+    match crate::scsi::read_sector(target, lba, &mut sector) {
+        Ok(()) => {
+            // SAFETY: the module passed a writable 512-byte buffer.
+            unsafe {
+                core::ptr::copy_nonoverlapping(sector.as_ptr(), ptr, sector.len());
+            }
+            0
+        }
+        Err(_) => -1,
+    }
 }
 
 unsafe extern "C" fn service_info(kind: u32, ptr: *mut u8, len: usize) -> isize {

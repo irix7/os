@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "rom", "kernel", "modules/hello", "modules/ticker", "modules/httpd"]
+members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "rom", "kernel", "modules/hello", "modules/ticker", "modules/httpd", "modules/block"]
 
 [workspace.dependencies]
-module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.2.1", package = "module-abi" }
+module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.3.0", package = "module-abi" }
 
 [profile.dev]
 panic = "abort"
