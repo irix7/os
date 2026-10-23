@@ -24,7 +24,7 @@ pub const MODULE_BASE: usize = 0x8840_0000;
 pub const MODULE_MAX: usize = 0x0020_0000; // 2 MiB
 
 /// Service table ABI version.
-pub const ABI_VERSION: u32 = 6;
+pub const ABI_VERSION: u32 = 7;
 
 /// Service table passed to a module entry point.
 ///
@@ -62,6 +62,8 @@ pub struct Services {
     pub poweroff: extern "C" fn(),
     /// Format the machine status block; returns bytes written.
     pub status: unsafe extern "C" fn(*mut u8, usize) -> isize,
+    /// Read a PROM environment value by name; returns bytes or -1.
+    pub config_get: unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> isize,
 }
 
 /// What a module returns from its entry point.
@@ -98,6 +100,7 @@ static SERVICES: Services = Services {
     reset: service_reset,
     poweroff: service_poweroff,
     status: service_status,
+    config_get: service_config_get,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -362,6 +365,27 @@ extern "C" fn service_reset() {
 
 extern "C" fn service_poweroff() {
     crate::poweroff();
+}
+
+unsafe extern "C" fn service_config_get(
+    name: *const u8,
+    name_len: usize,
+    out: *mut u8,
+    out_len: usize,
+) -> isize {
+    if name.is_null() || out.is_null() || name_len == 0 || name_len > 64 || out_len == 0 {
+        return -1;
+    }
+    // SAFETY: the module owns both buffers for the duration.
+    let name = unsafe { core::slice::from_raw_parts(name, name_len) };
+    let Ok(name) = core::str::from_utf8(name) else {
+        return -1;
+    };
+    let out = unsafe { core::slice::from_raw_parts_mut(out, out_len) };
+    match crate::nvram::get(name, out) {
+        Some(n) => n as isize,
+        None => -1,
+    }
 }
 
 unsafe extern "C" fn service_status(ptr: *mut u8, len: usize) -> isize {

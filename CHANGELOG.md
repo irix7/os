@@ -59,6 +59,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`. `GET /` remains a
   plain status page. The kernel keeps an 8 KiB serial ring (ABI version 4 services
   `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
+- MCP bearer authentication: the module reads `mcp.token` from the NVRAM environment
+  (ABI version 7 service `config_get`); `POST /mcp` then requires
+  `Authorization: Bearer <token>` and returns 401 with `WWW-Authenticate` otherwise.
 - Boot-time module autoload: the kernel reads `mcp.url` and `mcp.sha256` from the DS1386
   PROM environment, fetches the module over HTTPS (explicit `http://` for the rig), verifies
   the digest and runs it before the boot menu. The control plane therefore survives a
@@ -67,8 +70,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `status` tool (ABI version 6 service `status`): IP, MAC, RAM, uptime and date from one
   place.
 - The SCC status read now has a settle delay after the register-select write and a bounded
-  transmitter wait.  The kernel's cached polling loop could read the previous register
-  (RR8) through the IOC and spin forever; the ROM's uncached fetch had hidden it.
+  instruction spin.  The kernel's cached polling loop could read the previous register
+  (RR8) through the IOC and spin forever; the ROM's uncached fetch had hidden it.  The
+  spin fallback also stops depending on CP0 Count before the timer is initialised.
 - Boot-menu status line with the live address, and a diagnostics action that prints CPU,
   RAM and network state.
 - `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the

@@ -68,9 +68,11 @@ Consequences:
   A module may return a tick callback and use the table's TCP slots; long-running
   features (servers, the MCP control plane) belong in modules, not in the core.
 - The module area is inside the reserved low window. Never hand it to the frame allocator.
-- Boot autoload is configured in the DS1386 environment: `mcp.url` and `mcp.sha256` at
-  register offset `0x10` (one byte per 32-bit word in the low lane). A failed fetch or
-  digest leaves the machine at the menu and runs nothing.
+- Boot autoload is configured in the DS1386 environment: `mcp.url`, `mcp.sha256` and
+  optional `mcp.token` at register offset `0x10` (one byte per 32-bit word in the low
+  lane). A failed fetch or digest leaves the machine at the menu and runs nothing. The
+  module reads `mcp.token` through the ABI v7 `config_get` service and requires a bearer
+  token on `POST /mcp` when it is set.
 
 ## Cache coherency
 

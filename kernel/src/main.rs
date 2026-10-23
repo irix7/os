@@ -164,12 +164,13 @@ pub fn console_read(offset: u64, dst: &mut [u8]) -> usize {
 
 pub fn write_byte(b: u8) {
     console_log_byte(b);
-    // Wait for the transmitter, but never forever: a stale status read must
-    // not stop the boot.  At 9600 baud 2 ms is more than one character time,
-    // so a bounded wait followed by the write is safe.
-    let start = traps::count_read();
+    // Wait for the transmitter, but never forever: the IOC can return a
+    // stale register and the CP0 Count is not yet guaranteed to run this
+    // early.  A bounded spin followed by the write is safe at 9600 baud.
+    let mut spins = 0u32;
     while !tx_ready() {
-        if traps::count_read().wrapping_sub(start) > 66_000 {
+        spins += 1;
+        if spins >= 200_000 {
             break;
         }
         core::hint::spin_loop();
@@ -179,10 +180,10 @@ pub fn write_byte(b: u8) {
         write_volatile(Z85C30_BASE, b);
         core::arch::asm!("sync", options(nostack));
     }
-    for _ in 0..16 {
-        unsafe {
-            core::arch::asm!("nop", options(nostack));
-        }
+    // Pace the next byte so the four-deep transmitter FIFO cannot overflow
+    // even when the status read is stale.
+    for _ in 0..20_000 {
+        core::hint::spin_loop();
     }
 }
 

@@ -29,6 +29,7 @@ pub struct Services {
     pub reset: extern "C" fn(),
     pub poweroff: extern "C" fn(),
     pub status: unsafe extern "C" fn(*mut u8, usize) -> isize,
+    pub config_get: unsafe extern "C" fn(*const u8, usize, *mut u8, usize) -> isize,
 }
 
 #[repr(C)]
@@ -73,6 +74,10 @@ static mut NEXT_ARMED: bool = false;
 static mut ACTION: u32 = 0;
 static mut COUNTDOWN: u32 = 0;
 
+/// Bearer token from `mcp.token`; an empty token leaves the endpoint open.
+static mut TOKEN: [u8; 64] = [0; 64];
+static mut TOKEN_LEN: usize = 0;
+
 /// Module entry.
 ///
 /// # Safety
@@ -82,8 +87,33 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 6 {
+    if services.version < 7 {
         return &ERROR_VTABLE;
+    }
+    let mut token = [0u8; 64];
+    let n = unsafe {
+        (services.config_get)(
+            b"mcp.token".as_ptr(),
+            b"mcp.token".len(),
+            token.as_mut_ptr(),
+            token.len(),
+        )
+    };
+    if n > 0 {
+        let n = (n as usize).min(token.len());
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                token.as_ptr(),
+                core::ptr::addr_of_mut!(TOKEN) as *mut u8,
+                n,
+            );
+            TOKEN_LEN = n;
+        }
+        let message = b"mcp: bearer token required\n";
+        (services.write)(message.as_ptr(), message.len());
+    } else {
+        let message = b"mcp: no bearer token configured\n";
+        (services.write)(message.as_ptr(), message.len());
     }
     let message = b"mcp: listening on port 80\n";
     (services.write)(message.as_ptr(), message.len());
@@ -279,6 +309,10 @@ fn handle_request(services: &Services, slot: u32) {
         .unwrap_or(request.len());
     let body = &request[header_end..];
     let (path, is_post) = request_line(request);
+    if is_post && path.starts_with(b"/mcp") && !authorized(request) {
+        send_unauthorized(services, slot);
+        return;
+    }
 
     let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
     let (content_type, n) = if is_post && path.starts_with(b"/mcp") {
@@ -315,6 +349,41 @@ fn status_page(services: &Services, out: &mut [u8]) -> usize {
     w.u64((services.clock_ms)() / 1000);
     w.push(b" s\n");
     w.len
+}
+
+fn authorized(request: &[u8]) -> bool {
+    let token = unsafe { &*core::ptr::addr_of!(TOKEN) };
+    let token = &token[..unsafe { TOKEN_LEN }];
+    if token.is_empty() {
+        return true;
+    }
+    let mut p = 0;
+    while p < request.len() {
+        let end = find(&request[p..], b"\r\n")
+            .map(|i| p + i)
+            .unwrap_or(request.len());
+        let line = &request[p..end];
+        if starts_with_ci(line, b"authorization:") {
+            let mut q = b"authorization:".len();
+            while q < line.len() && (line[q] == b' ' || line[q] == b'\t') {
+                q += 1;
+            }
+            if !starts_with_ci(&line[q..], b"bearer ") {
+                return false;
+            }
+            return &line[q + 7..] == token;
+        }
+        p = end + 2;
+    }
+    false
+}
+
+fn send_unauthorized(services: &Services, slot: u32) {
+    send_all(
+        services,
+        slot,
+        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
 }
 
 fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {

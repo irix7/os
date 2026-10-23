@@ -67,11 +67,11 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 6:
+`Services` is `#[repr(C)]` and versioned. Version 7:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 6 |
+| 0x00 | `version` | 7 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x10 | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -87,6 +87,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x38 | `reset` | `void (*)(void)` — restart from the PROM entry; does not return |
 | 0x3C | `poweroff` | `void (*)(void)` — halt the machine; does not return |
 | 0x40 | `status` | `intptr_t (*)(uint8_t *ptr, size_t len)` — the shared machine status block |
+| 0x44 | `config_get` | `intptr_t (*)(const uint8_t *name, size_t name_len, uint8_t *out, size_t out_len)` — PROM environment value, or -1 |
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.

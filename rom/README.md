@@ -227,6 +227,7 @@ rig, stop the emulator and write both strings into `nvram.bin` at offset `0x10`:
 ```text
 mcp.url=http://10.1.1.3:18080/httpd.module
 mcp.sha256=<64 hex digits of httpd.module>
+mcp.token=<shared secret>          (optional; requires Authorization: Bearer)
 ```
 
 On the next boot the serial log shows `autoload: fetching module`, the module prints

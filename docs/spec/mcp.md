@@ -30,8 +30,10 @@ control plane. It implements:
 
 The module is loaded automatically at boot when the NVRAM environment carries
 `mcp.url` and `mcp.sha256`; the control plane therefore survives `system.reset` without a
-telnet step.  It does **not** yet implement bearer-token authentication, sessions, SSE, resources,
-`screen.capture`, `system.*`, or the dotted tool names.  The serial ring starts at the
+telnet step.  When `mcp.token` is present in the NVRAM environment, `POST /mcp` requires
+`Authorization: Bearer <token>` and returns HTTP 401 with `WWW-Authenticate: Bearer`
+otherwise. `GET /` stays open as the human status page. It does **not** yet implement
+sessions, SSE, resources, `screen.capture` or the dotted tool names.  The serial ring starts at the
 kernel entry, so the ROM's own banner is not included. It is a prototype of
 the transport and tool loop, not a conforming server; the rest of this document is the
 target.

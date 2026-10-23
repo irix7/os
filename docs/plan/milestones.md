@@ -187,7 +187,7 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
 - [ ] MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.
 - [ ] Tools: `shell.exec`, `fs.read`, `fs.write`, `fs.list`, `serial.read`, `serial.write`,
       `screen.capture`, `system.reset`, `system.poweroff`.
-- [ ] Bearer token authentication; no TLS in v1; binds to the LAN interface.
+- [x] Bearer token authentication; no TLS in v1; binds to the LAN interface.
 - [ ] Shell: `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot`, `poweroff`.
 - [ ] `system.reset` is guarded by the watchdog and returns after the reboot.
 - [ ] The agent loop is documented and reproducible.
