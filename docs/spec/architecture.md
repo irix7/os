@@ -622,6 +622,13 @@ The compatibility layer is kernel code; there is no context switch to a userspac
 and no IPC hop. This is the performance argument for the in-kernel container (and the
 reason the original spec rejected a microkernel).
 
+The first layer of the container is [`crates/irix-elf`](../../crates/irix-elf), a `no_std`
+parser and load-plan view for ELF32 big-endian MIPS images. It validates the file header,
+the program-header table and every file and memory range, then exposes the `PT_LOAD`
+segments, `PT_INTERP` path and `PT_DYNAMIC` header without mapping anything. The loader
+contract, including the o32/n32 `e_flags` classification and the deliberate omission of
+dynamic linking, is fixed in [`elf.md`](elf.md).
+
 ### 6.3 ABI details
 
 | ABI | Data model | Syscall number | Arguments | Result |

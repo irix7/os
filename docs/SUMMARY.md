@@ -8,6 +8,7 @@
 
 - [Advanced architecture](spec/architecture.md)
 - [Boot protocol](spec/boot-protocol.md)
+- [IRIX ELF loader contract](spec/elf.md)
 - [Loadable kernel modules](spec/modules.md)
 - [MCP control plane](spec/mcp.md)
 - [Driver interface](spec/driver-interface.md)
