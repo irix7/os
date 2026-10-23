@@ -8,6 +8,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
+  EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
+  allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with
+  JSON-RPC against the guest: the motd content and the eight root entries come
+  back through the module; no kernel filesystem command is added.  `fs.write`
+  and `fs.remove` exercise the RAM overlay (`/tmp` is created at mount), so MCP
+  can write and whiteout overlay files while the EROFS lower stays read-only.
 - `modules/erofs`: a loadable module that mounts the EROFS fixture on SCSI
   target 2 at LBA 0, reads `/etc/motd` and prints it through the console
   service.  It links `crates/erofs` and `crates/block-cache` by path, reads

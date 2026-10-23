@@ -4,13 +4,24 @@
 //! Listens on guest port 80 through the version 3 TCP services.  `GET /`
 //! returns a small status page; `POST /mcp` speaks JSON-RPC 2.0 with the MCP
 //! methods `initialize`, `tools/list` and `tools/call` (`status`, `echo`,
-//! `console`, `block.read`).  This is the first long-running module and the
+//! `console`, `block.read`, `fs.read`, `fs.list`, `fs.write`, `fs.remove`).  This is the first long-running module and the
 //! prototype for the control plane: the compressed PROM image does not grow.
 
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use core::alloc::{GlobalAlloc, Layout};
+use core::ptr::{self, null_mut};
+use core::sync::atomic::{AtomicPtr, Ordering};
+
+use alloc::string::String;
+use block_cache::Lru;
 use module_abi::{ModuleVtable, Services};
+use overlay::{
+    DirEntry as OverlayDirEntry, EntryKind as OverlayKind, Lower as OverlayLower, Overlay,
+};
 
 /// Listening phase.
 const ARM: u32 = 0;
@@ -35,6 +46,194 @@ static ERROR_VTABLE: ModuleVtable = ModuleVtable {
     status: 1,
     tick: None,
 };
+
+/// The service table, published before the first filesystem allocation.
+static SERVICES: AtomicPtr<Services> = AtomicPtr::new(ptr::null_mut());
+
+/// An allocator over the kernel heap service; the heap never frees.
+struct ModuleAllocator;
+
+unsafe impl GlobalAlloc for ModuleAllocator {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let table = SERVICES.load(Ordering::Acquire);
+        if table.is_null() {
+            return null_mut();
+        }
+        // SAFETY: the table came from `_start` and stays valid for the module.
+        let allocate = unsafe { (*table).alloc };
+        unsafe { allocate(layout.size(), layout.align()) }
+    }
+
+    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
+        // The kernel heap is a bump allocator; memory is reclaimed by reboot.
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: ModuleAllocator = ModuleAllocator;
+
+/// The EROFS fixture on SCSI target 2, LBA 0.
+const FS_TARGET: u8 = 2;
+const FS_BLOCK: usize = 4096;
+const FS_PRINT_MAX: usize = 8192;
+
+struct ScsiDisk {
+    services: &'static Services,
+    target: u8,
+}
+
+impl block_cache::ReadAt for ScsiDisk {
+    type Error = erofs::Error;
+
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> Result<(), Self::Error> {
+        let mut done = 0usize;
+        while done < buf.len() {
+            let position = offset.checked_add(done as u64).ok_or(erofs::Error::Io)?;
+            let lba = u32::try_from(position / 512).map_err(|_| erofs::Error::Io)?;
+            let within = (position % 512) as usize;
+            let mut sector = [0u8; 512];
+            let result =
+                unsafe { (self.services.block_read)(self.target, lba, sector.as_mut_ptr()) };
+            if result != 0 {
+                return Err(erofs::Error::Io);
+            }
+            let count = (512 - within).min(buf.len() - done);
+            buf[done..done + count].copy_from_slice(&sector[within..within + count]);
+            done += count;
+        }
+        Ok(())
+    }
+}
+
+struct CachedDisk {
+    cache: Lru<ScsiDisk, 16>,
+}
+
+impl erofs::BlockDevice for CachedDisk {
+    fn read_at(&mut self, offset: u64, buf: &mut [u8]) -> erofs::Result<()> {
+        self.cache
+            .read_at(offset, buf)
+            .map_err(|_| erofs::Error::Io)
+    }
+}
+
+/// The read-only EROFS lower owned by the RAM overlay.
+struct LowerView {
+    fs: erofs::Erofs<CachedDisk>,
+}
+
+impl OverlayLower for LowerView {
+    fn read_file(&mut self, path: &str) -> overlay::Result<Option<alloc::vec::Vec<u8>>> {
+        match self.fs.lookup_path_follow(path) {
+            Ok(inode) if !inode.is_dir() => self
+                .fs
+                .read_file(&inode)
+                .map(Some)
+                .map_err(|_| overlay::Error::Lower("erofs read")),
+            Ok(_) => Ok(None),
+            Err(erofs::Error::NotFound | erofs::Error::NotDirectory) => Ok(None),
+            Err(_) => Err(overlay::Error::Lower("erofs lookup")),
+        }
+    }
+
+    fn read_dir(
+        &mut self,
+        path: &str,
+    ) -> overlay::Result<Option<alloc::vec::Vec<OverlayDirEntry>>> {
+        let inode = match self.fs.lookup_path_follow(path) {
+            Ok(inode) if inode.is_dir() => inode,
+            Ok(_) => return Ok(None),
+            Err(erofs::Error::NotFound | erofs::Error::NotDirectory) => return Ok(None),
+            Err(_) => return Err(overlay::Error::Lower("erofs lookup")),
+        };
+        let entries = self
+            .fs
+            .read_dir(&inode)
+            .map_err(|_| overlay::Error::Lower("erofs readdir"))?;
+        Ok(Some(
+            entries
+                .into_iter()
+                .map(|entry| OverlayDirEntry {
+                    name: String::from_utf8_lossy(&entry.name).into_owned(),
+                    kind: if entry.file_type == erofs::FileType::Directory {
+                        OverlayKind::Directory
+                    } else {
+                        OverlayKind::File
+                    },
+                })
+                .collect(),
+        ))
+    }
+}
+
+/// Mounted lazily on the first `fs.*` tool call.  The server is single-threaded.
+static mut OVERLAY: Option<Overlay<LowerView>> = None;
+
+#[allow(static_mut_refs)]
+fn ensure_fs() -> bool {
+    unsafe {
+        if OVERLAY.is_none() {
+            let services = SERVICES.load(Ordering::Acquire);
+            let Some(services) = services.as_ref() else {
+                return false;
+            };
+            let Some(cache) = Lru::new(
+                ScsiDisk {
+                    services,
+                    target: FS_TARGET,
+                },
+                FS_BLOCK,
+            )
+            .ok() else {
+                return false;
+            };
+            if let Ok(fs) = erofs::Erofs::mount(CachedDisk { cache }) {
+                let mut overlay = Overlay::new(LowerView { fs });
+                let _ = overlay.create_dir("/tmp");
+                OVERLAY = Some(overlay);
+            }
+        }
+        OVERLAY.is_some()
+    }
+}
+
+#[allow(static_mut_refs)]
+fn fs_read(path: &str) -> Option<alloc::vec::Vec<u8>> {
+    unsafe { OVERLAY.as_mut()?.read_file(path).ok() }
+}
+
+#[allow(static_mut_refs)]
+fn fs_list(path: &str) -> Option<String> {
+    unsafe {
+        let entries = OVERLAY.as_mut()?.read_dir(path).ok()?;
+        let mut out = String::new();
+        for entry in entries {
+            out.push_str(&entry.name);
+            out.push('\n');
+        }
+        Some(out)
+    }
+}
+
+#[allow(static_mut_refs)]
+fn fs_write(path: &str, data: &[u8]) -> bool {
+    unsafe {
+        OVERLAY
+            .as_mut()
+            .map(|overlay| overlay.write_file(path, data).is_ok())
+            .unwrap_or(false)
+    }
+}
+
+#[allow(static_mut_refs)]
+fn fs_remove(path: &str) -> bool {
+    unsafe {
+        OVERLAY
+            .as_mut()
+            .map(|overlay| overlay.remove_file(path).is_ok())
+            .unwrap_or(false)
+    }
+}
 
 static mut PHASE: u32 = ARM;
 static mut SCREEN_ROW: u32 = 0;
@@ -81,9 +280,13 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 9 {
+    if services.version < 10 {
         return &ERROR_VTABLE;
     }
+    SERVICES.store(
+        services as *const Services as *mut Services,
+        Ordering::Release,
+    );
     let mut token = [0u8; 64];
     let n = unsafe {
         (services.config_get)(
@@ -661,7 +864,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.write\",\"description\":\"Write a file to the RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}}}},{\"name\":\"fs.remove\",\"description\":\"Remove an overlay file or lower file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -755,6 +958,76 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
+                }
+                Some(b"fs.write") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/tmp/motd");
+                    let data = json_string(body, b"\"data\"").unwrap_or(b"hello from MCP");
+                    let path = core::str::from_utf8(path).unwrap_or("/tmp/motd");
+                    if ensure_fs() && fs_write(path, data) {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs write failed\"}}");
+                    }
+                }
+                Some(b"fs.remove") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/tmp/motd");
+                    let path = core::str::from_utf8(path).unwrap_or("/tmp/motd");
+                    if ensure_fs() && fs_remove(path) {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs remove failed\"}}");
+                    }
+                }
+                Some(b"fs.read") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/etc/motd");
+                    let path = core::str::from_utf8(path).unwrap_or("/etc/motd");
+                    if ensure_fs() {
+                        if let Some(data) = fs_read(path) {
+                            let shown = data.len().min(FS_PRINT_MAX);
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                            w.json_string(&data[..shown]);
+                            w.push(b"}]}}");
+                        } else {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs read failed\"}}");
+                        }
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs mount failed\"}}");
+                    }
+                }
+                Some(b"fs.list") => {
+                    let path = json_string(body, b"\"path\"").unwrap_or(b"/");
+                    let path = core::str::from_utf8(path).unwrap_or("/");
+                    if ensure_fs() {
+                        if let Some(list) = fs_list(path) {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                            w.json_string(list.as_bytes());
+                            w.push(b"}]}}");
+                        } else {
+                            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                            w.push(id);
+                            w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs list failed\"}}");
+                        }
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"fs mount failed\"}}");
+                    }
                 }
                 Some(b"block.read") => {
                     let target = json_u64(body, b"\"target\"").unwrap_or(1) as u8;
