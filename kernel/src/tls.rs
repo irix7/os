@@ -6,6 +6,11 @@
 //! polled, not async: the blocking I/O adapter polls the shared interface
 //! until the socket can make progress.
 //!
+//! A full-body GET is the module transport.  `get_range` and `get_range_to`
+//! add a single `Range: bytes=start-end` request: the response must be 206
+//! with exactly the requested length, and the body is hashed as it arrives.
+//! Certificate verification is identical on both paths.
+//!
 //! Certificate chains are verified with the `rustpki` verifier against the
 //! SSL.com TLS ECC Root CA 2022 (see `ca/`).  Servers that append a
 //! cross-signed copy of their root are handled by trimming that entry.  The
@@ -32,8 +37,9 @@ use smoltcp::wire::{IpAddress, Ipv4Address};
 use x509_cert::der::Decode;
 use x509_cert::Certificate as X509Certificate;
 
-use crate::http::Summary;
+use crate::http::{verify_range, Summary};
 use crate::net;
+use crate::range::{append_decimal, ByteRange};
 
 const TIMEOUT_MS: i64 = 30_000;
 
@@ -317,7 +323,7 @@ impl TlsVerifier<Aes128GcmSha256> for PathVerifier {
 
 /// Fetch `path` over HTTPS and return the status and body length.
 pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary, &'static str> {
-    get_inner(ip, port, host, path, None).map(|(summary, _)| summary)
+    get_inner(ip, port, host, path, None, None).map(|(summary, _)| summary)
 }
 
 /// Fetch `path` over TLS and copy the body into `out`, returning the summary
@@ -330,7 +336,42 @@ pub fn get_to(
     path: &str,
     out: &mut [u8],
 ) -> Result<(Summary, usize), &'static str> {
-    get_inner(ip, port, host, path, Some(out))
+    get_inner(ip, port, host, path, None, Some(out))
+}
+
+/// Fetch an inclusive byte range over HTTPS, as `HTTP Range: bytes=start-end`.
+///
+/// The response must be `206` and its body exactly the requested range; the
+/// body is hashed but not buffered.
+pub fn get_range(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    range: ByteRange,
+) -> Result<Summary, &'static str> {
+    let (summary, _) = get_inner(ip, port, host, path, Some(range), None)?;
+    verify_range(&summary, range)?;
+    Ok(summary)
+}
+
+/// Fetch an inclusive byte range over HTTPS into `out`.  The response must be
+/// `206`, its body exactly the requested range, and `out` must be large
+/// enough to hold it; the whole body is hashed.
+pub fn get_range_to(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    range: ByteRange,
+    out: &mut [u8],
+) -> Result<(Summary, usize), &'static str> {
+    let (summary, captured) = get_inner(ip, port, host, path, Some(range), Some(out))?;
+    let want = verify_range(&summary, range)?;
+    if captured != want {
+        return Err("range buffer too small");
+    }
+    Ok((summary, captured))
 }
 
 fn get_inner(
@@ -338,6 +379,7 @@ fn get_inner(
     port: u16,
     host: &str,
     path: &str,
+    range: Option<ByteRange>,
     mut capture: Option<&mut [u8]>,
 ) -> Result<(Summary, usize), &'static str> {
     // SAFETY: single-threaded kernel; the pointers are used by the adapter
@@ -424,7 +466,13 @@ fn get_inner(
     append(&mut req, &mut n, host.as_bytes())?;
     if port != 443 {
         append(&mut req, &mut n, b":")?;
-        append_decimal(&mut req, &mut n, port as u32)?;
+        append_decimal(&mut req, &mut n, port as u32).ok_or("request too long")?;
+    }
+    if let Some(range) = range {
+        append(&mut req, &mut n, b"\r\nRange: ")?;
+        let mut value = [0u8; 40];
+        let value_len = range.write_value(&mut value).ok_or("request too long")?;
+        append(&mut req, &mut n, &value[..value_len])?;
     }
     append(&mut req, &mut n, b"\r\nConnection: close\r\n\r\n")?;
     if tls.write_all(&req[..n]).is_err() || tls.flush().is_err() {
@@ -535,23 +583,5 @@ fn append(buf: &mut [u8], len: &mut usize, data: &[u8]) -> Result<(), &'static s
     }
     buf[*len..*len + data.len()].copy_from_slice(data);
     *len += data.len();
-    Ok(())
-}
-
-fn append_decimal(buf: &mut [u8], len: &mut usize, mut v: u32) -> Result<(), &'static str> {
-    let mut digits = [0u8; 10];
-    let mut n = 0;
-    if v == 0 {
-        digits[0] = b'0';
-        n = 1;
-    }
-    while v > 0 && n < digits.len() {
-        digits[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    for i in (0..n).rev() {
-        append(buf, len, &digits[i..i + 1])?;
-    }
     Ok(())
 }

@@ -8,6 +8,18 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- HTTPS byte ranges on the telnet console: `https <host>:<port><path> range=start-end`
+  sends one `Range: bytes=start-end` request through the kernel TLS 1.3 client,
+  requires a `206` response whose body is exactly the requested length (a
+  `Content-Length` that disagrees is a protocol error), and hashes the bytes as
+  they arrive.  The console prints `https: 206 range=start-end N bytes` and the
+  body digest, which a host-side `curl | head -c` download can reproduce.
+  Certificate verification is unchanged: the same embedded SSL.com TLS ECC Root
+  CA 2022 chain, hostname check and signature check run before the request is
+  written.  The `erofs` command now accepts an `https://` URL and mounts the
+  image through the TLS range device, so a SHA-256-gated image can be read from
+  an HTTPS host; each range there is a fresh handshake, and the TLS record
+  buffers are not yet reused between fetches.
 - MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
   EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
   allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with

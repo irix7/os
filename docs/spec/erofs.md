@@ -306,24 +306,34 @@ per-process current directory.
 
 The reader keeps no cache; the caller owns the block cache.  The kernel's
 `erofs_cmd` probes the superblock once to learn the image size, then uses
-`http::get_range_to` with a 64 KiB read-ahead window clamped to the final block.
-The first probe is 4 KiB; the mount then reads the superblock, metadata and
-inline data from that window, and a file fetch replaces it with the clamped
-read-ahead.  It is reached from the telnet console:
+`http::get_range_to` or `tls::get_range_to` with a 64 KiB read-ahead window
+clamped to the final block.  The first probe is 4 KiB; the mount then reads the
+superblock, metadata and inline data from that window, and a file fetch replaces
+it with the clamped read-ahead.  It is reached from the telnet console:
 
 ```text
-erofs <host>:<port><path> [sha256=hex] [info|ls|cat] [path]
+erofs [http|https]://<host>:<port><path> [sha256=hex] [info|ls|cat] [path]
 ```
 
-`info` prints the superblock, `ls` lists a directory and `cat` prints a file.
-Both `ls` and `cat` follow symbolic links: `ls` works on a link to a directory
-and `cat /link` prints the contents of `hello.txt`.  With `sha256=`, the
-command first performs a full GET, checks the status, the
-length against the superblock's block count, and the whole-image SHA-256; a
-mismatch aborts before mount.  The verification GET currently transfers the
-image a second time; hashing while filling the range cache is future work.
-Only HTTP is supported for ranges at present; TLS remains full-body.  The next
-integration step is a 256 KiB read-ahead window.
+A bare `host:port/path` is HTTP, as before.  `info` prints the superblock, `ls`
+lists a directory and `cat` prints a file.  Both `ls` and `cat` follow symbolic
+links: `ls` works on a link to a directory and `cat /link` prints the contents
+of `hello.txt`.  With `sha256=`, the command first performs a full GET, checks
+the status, the length against the superblock's block count, and the
+whole-image SHA-256; a mismatch aborts before mount.  The verification GET
+currently transfers the image a second time; hashing while filling the range
+cache is future work.
+
+With `https://`, every range request uses the kernel TLS client and must return
+`206` with exactly the requested length, so the server has to honour `Range`
+over TLS.  Chains are verified against the single embedded root, SSL.com TLS
+ECC Root CA 2022 (`kernel/src/ca/`), with the hostname checked; a host whose
+chain ends elsewhere is rejected, and there is no fallback to HTTP.  Each range
+is a fresh TLS 1.3 handshake because the client does not keep a session, and
+the per-fetch record buffers still come from the bump heap, so a TLS mount costs
+about 29 KiB of heap per range.  Reusing the TLS record buffers across range
+requests and a persistent session are the follow-ups; neither changes the
+on-disk path.  The next integration step is a 256 KiB read-ahead window.
 
 The disk filesystem path is a loadable module, not a kernel command.  The
 `modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
@@ -370,6 +380,25 @@ request covering the whole 12 KiB image.  A correct `sha256=` prints
 `erofs: sha256 ok`; an all-zero digest prints `erofs: sha256: digest mismatch`
 and does not mount.
 
+### 10.1 HTTPS range check
+
+A public host for the TLS range path must both honour `Range` over TLS and
+chain to the embedded SSL.com root.  `example.com` does both (Cloudflare
+answers `Range: bytes=0-99` with `206`), so the guest check is:
+
+```text
+https example.com:443/ range=0-99
+https example.com:443/ <sha256 of the first 100 bytes> range=0-99
+https example.com:443/
+```
+
+The first command prints `https: 206 range=0-99 100 bytes` and the digest of
+those 100 bytes, which `curl -s https://example.com/ | head -c 100 | sha256sum`
+reproduces on the host; the second prints `verify: ok`.  The full-body command
+keeps the old output and checks that the range path did not change it.
+`raw.githubusercontent.com` honours `Range` too, but its chain ends at
+USERTrust/Sectigo, so the kernel rejects it until another root is embedded.
+
 ## 11. Future work
 
 - LZ4 physical clusters, compact/full indexes and the `lz4_0padding` rules.
@@ -379,6 +408,8 @@ and does not mount.
 - Superblock CRC32C verification.
 - A block-at-a-time directory iterator.
 - A multi-block HTTP Range cache with a 256 KiB read-ahead and a shared LRU.
+- Reuse the TLS record buffers across HTTPS range requests and keep the session
+  open, so a TLS mount costs one handshake rather than one per range.
 - Hash the image while filling that cache, instead of a second full GET, and
   take the expected digest from the boot environment.
 - A SCSI `BlockDevice` and the block cell capability.
