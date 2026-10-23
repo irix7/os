@@ -24,7 +24,7 @@
 use core::mem::MaybeUninit;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{compiler_fence, Ordering};
-use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::dhcpv4;
 use smoltcp::time::Instant;
@@ -386,6 +386,7 @@ struct DhcpLease {
     address: Ipv4Cidr,
     router: Option<Ipv4Address>,
     dns: Option<Ipv4Address>,
+    handle: SocketHandle,
 }
 
 /// Run DHCPv4 on an existing interface and return the assigned lease.
@@ -393,7 +394,7 @@ fn dhcpv4_configure(
     iface: &mut Interface,
     socket_set: &mut SocketSet,
     device: &mut SeeqDevice,
-) -> Option<DhcpLease> {
+) -> (Option<DhcpLease>, SocketHandle) {
     let dhcpv4_socket = dhcpv4::Socket::new();
     let dhcpv4_handle = socket_set.add(dhcpv4_socket);
 
@@ -409,11 +410,15 @@ fn dhcpv4_configure(
         let socket = socket_set.get_mut::<dhcpv4::Socket>(dhcpv4_handle);
         match socket.poll() {
             Some(dhcpv4::Event::Configured(config)) => {
-                return Some(DhcpLease {
-                    address: config.address,
-                    router: config.router,
-                    dns: config.dns_servers.first().copied(),
-                });
+                return (
+                    Some(DhcpLease {
+                        address: config.address,
+                        router: config.router,
+                        dns: config.dns_servers.first().copied(),
+                        handle: dhcpv4_handle,
+                    }),
+                    dhcpv4_handle,
+                );
             }
             Some(dhcpv4::Event::Deconfigured) => {
                 // Rediscovering; keep polling.
@@ -427,7 +432,7 @@ fn dhcpv4_configure(
         clock_tick();
         timestamp = clock_now();
         if timestamp.total_millis() - start.total_millis() > timeout_ms {
-            return None;
+            return (None, dhcpv4_handle);
         }
     }
 }
@@ -458,6 +463,7 @@ struct Stack {
     sockets: SocketSet<'static>,
     ip: Option<Ipv4Address>,
     dns: Option<Ipv4Address>,
+    dhcp: Option<SocketHandle>,
 }
 
 /// The Seeq device (and therefore its DMA descriptors and frame buffers)
@@ -499,7 +505,8 @@ pub fn init() {
     );
 
     crate::print_str("network: dhcp...");
-    match dhcpv4_configure(&mut iface, &mut socket_set, seeq) {
+    let (lease, dhcp_handle) = dhcpv4_configure(&mut iface, &mut socket_set, seeq);
+    match lease {
         Some(lease) => {
             let ip = lease.address.address();
             crate::print_str("ok, ip ");
@@ -524,6 +531,7 @@ pub fn init() {
                     sockets: socket_set,
                     ip: Some(ip),
                     dns: lease.dns,
+                    dhcp: Some(dhcp_handle),
                 });
             }
         }
@@ -535,6 +543,7 @@ pub fn init() {
                     sockets: socket_set,
                     ip: None,
                     dns: None,
+                    dhcp: Some(dhcp_handle),
                 });
             }
         }
@@ -554,6 +563,34 @@ pub fn poll() {
     unsafe {
         if let (Some(stack), Some(dev)) = (STACK.as_mut(), SEEQ.as_mut()) {
             let _ = stack.iface.poll(now, dev, &mut stack.sockets);
+
+            // Service the DHCP socket so renewals and rebinds are applied to
+            // the live interface rather than only handled at boot.
+            if let Some(handle) = stack.dhcp {
+                let event = stack.sockets.get_mut::<dhcpv4::Socket>(handle).poll();
+                match event {
+                    Some(dhcpv4::Event::Configured(config)) => {
+                        let ip = config.address.address();
+                        stack.ip = Some(ip);
+                        stack.dns = config.dns_servers.first().copied();
+                        stack.iface.update_ip_addrs(|addrs| {
+                            addrs.clear();
+                            let _ = addrs.push(IpCidr::Ipv4(config.address));
+                        });
+                        if let Some(gateway) = config.router {
+                            let _ = stack.iface.routes_mut().add_default_ipv4_route(gateway);
+                        }
+                        crate::print_str("network: lease ");
+                        print_ipv4(ip);
+                        crate::println("");
+                    }
+                    Some(dhcpv4::Event::Deconfigured) => {
+                        stack.ip = None;
+                        crate::println("network: lease lost");
+                    }
+                    None => {}
+                }
+            }
         }
     }
 }
