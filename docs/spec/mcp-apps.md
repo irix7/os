@@ -7,20 +7,26 @@
 
 ## 1. Purpose and current reality
 
-The MCP server is the development and control plane for the machine.  Today it is **not a
-kernel service**: it is the loadable `modules/httpd` module.  The kernel fetches it over
-HTTPS, verifies its SHA-256, loads the flat image at `0x88400000` and calls its `_start`.
-The module runs in kernel address space, is driven by a 10 ms tick callback, owns two TCP
-slots and listens on guest port 80.  Its tools (`block.read`, `fs.read`, `fs.list`,
-`fs.write`, `fs.remove`, `shell.exec`, `screen.capture`, `serial.read`, `status`, `echo`)
-are compiled into the module; there is no registry.
+The MCP server is the development and control plane for the machine.  Today it is a
+**kernel-resident MCP server packaged as the loadable `modules/httpd` image**.  The kernel
+fetches it over HTTPS, verifies its SHA-256, loads the flat image at `0x88400000` and calls
+its `_start`.  The image is then executed in kernel mode on the kernel stack, in the shared
+kernel address space, driven by a 10 ms tick callback.  It owns two TCP slots and listens
+on guest port 80.  Its tools (`block.read`, `fs.read`, `fs.list`, `fs.write`, `fs.remove`,
+`shell.exec`, `screen.capture`, `serial.read`, `status`, `echo`) are compiled into the
+image; there is no registry.
+
+“Module” here describes download, link address and the versioned service-table ABI.  It
+does **not** describe privilege: a module is not a process, has no MMU boundary, and is part
+of the kernel TCB.  The static-image/loadable-image split exists to keep the compressed PROM
+small and to let features be replaced independently; it is not a security boundary.
 
 That is a development prototype.  IRIX 7 does not yet have userland processes or cells:
-the kernel is a single address space, modules execute with kernel privilege, and native
-cells/capabilities arrive in M9.  An application therefore cannot register an MCP endpoint
-today, and an application must not receive a raw function pointer that the MCP server calls
-in kernel mode.  That would execute application code on the kernel's tick path and would
-bypass every isolation boundary the OS is trying to establish.
+the kernel is a single address space, loadable images execute with kernel privilege, and
+native cells/capabilities arrive in M9.  An application therefore cannot register an MCP
+endpoint today, and an application must not receive a raw function pointer that the MCP
+server calls in kernel mode.  That would execute application code on the kernel's tick path
+and would bypass every isolation boundary the OS is trying to establish.
 
 This document defines the target: one MCP **broker** on the LAN, one MCP server per
 application, and a local registration/routing protocol between them.
@@ -155,10 +161,11 @@ connection itself is gone.
 - The broker never calls application code in kernel mode.  The boundary is always a local
   IPC message with a bounded parser.
 
-## 7. Kernel-module bridge (temporary)
+## 7. Kernel-image bridge (temporary)
 
-Until native cells exist, a kernel module can act as a test application.  A future ABI may
-append a registration service with a static descriptor:
+Until native cells exist, a loadable kernel image can act as a test application.  It is
+still kernel code, so this bridge only tests the broker path; it is not the userland
+contract.  A future ABI may append a registration service with a static descriptor:
 
 ```c
 struct mcp_endpoint {
@@ -171,10 +178,12 @@ struct mcp_endpoint {
 };
 ```
 
-This is a bring-up bridge only.  It executes module code inside the kernel, so it cannot be
-the userland contract and must not be exposed to native cells.  The first implementation of
-this document should preferably use a module that speaks MCP over a local endpoint, so the
-broker path is exercised exactly as a real application will exercise it.
+This is a bring-up bridge only.  It executes loadable kernel code inside the kernel, so it
+cannot be the userland contract and must not be exposed to native cells.  The first
+implementation of this document should preferably use a kernel image that speaks MCP over a
+local endpoint, so the broker path is exercised exactly as a real application will exercise
+it.  The target broker itself moves to a de-privileged native cell in stage 4; until then it
+is also kernel code.
 
 ## 8. Implementation stages
 
