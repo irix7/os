@@ -18,11 +18,13 @@ The v0.1 profile covers the core read-only path needed by the root image:
 - the 128-byte base superblock and its 48-bit extension fields;
 - compact and extended inodes;
 - flat plain and flat inline file data;
+- compressed-full and compressed-compact file data with LZ4 pclusters,
+  including big pclusters and inline (`ztailpacking`) tail pclusters;
 - directories and symbolic links;
 - one device (the primary image).
 
-Compressed clusters, chunk-based files and metabox images are recognised and
-rejected with typed errors.  They are the next layer.
+Fragments, encoded extents, interlaced pclusters, chunk-based files and metabox
+images are recognised and rejected with typed errors.  They are the next layer.
 
 ## 2. Byte order
 
@@ -102,9 +104,12 @@ must be a subset of the bits defined by the current format.  The reader rejects:
   supported).
 
 Compression feature bits are accepted at mount time because an image may contain
-both uncompressed and compressed inodes, but a compressed inode is rejected when
-it is read.  The SHA-256 of the whole image is the integrity check in the boot
-path; the superblock CRC32C is optional and not verified by this crate.
+both uncompressed and compressed inodes.  A compressed inode is decoded with the
+LZ4 rules in §5.4; an inode that names another algorithm, fragments, encoded
+extents or an interlaced pcluster is rejected with
+`UnsupportedCompression`.  The SHA-256 of the whole image is the integrity check
+in the boot path; the superblock CRC32C is optional and not verified by this
+crate.
 
 ## 4. Inodes
 
@@ -153,10 +158,11 @@ occupies two slots; the following inode's nid therefore advances by two.
 | Value | Layout | v0.1 |
 |---:|---|---|
 | 0 | flat plain | supported |
-| 1 | compressed, full indexes | rejected with `UnsupportedLayout(1)` |
+| 1 | compressed, full indexes | supported (§5.4) |
 | 2 | flat inline | supported |
-| 3 | compressed, compact indexes | rejected with `UnsupportedLayout(3)` |
+| 3 | compressed, compact indexes | supported (§5.4) |
 | 4 | chunk-based | rejected with `UnsupportedLayout(4)` |
+| 5..7 | reserved | rejected with `UnsupportedLayout(n)` |
 
 Bit 4 has two meanings: for a non-directory compact inode it is `nlink_1`
 (`i_nb` holds the high start-block bits and the link count is one); for a
@@ -210,10 +216,142 @@ For flat inodes, the high 16 bits of the start block are in `i_nb` when the
 48-bit feature is on and the inode form can carry them.  The reader combines
 them; if the feature is off, the high word is ignored.
 
+### 5.4 Compressed file data (1 and 3)
+
+A compressed inode stores one *logical cluster index* per filesystem block.
+The index maps the logical cluster to a *physical cluster* (pcluster) that
+holds the compressed bytes for one or more logical clusters.  The reader keeps
+this mapping independent of the inode's own `i_u` block count: `i_u` is the
+number of physical blocks used by the file, not a data address.
+
+#### 5.4.1 Map header
+
+The 8-byte `z_erofs_map_header` starts at
+`ALIGN(iloc + inode_size + xattr_size, 8)`.  `inline_offset` in the decoded
+inode already carries the unaligned end of the inode and xattrs.
+
+| Field | Offset | Width | Notes |
+|---|---:|---:|---|
+| `h_fragmentoff` / `h_reserved1` | 0 | 4 | Fragments are rejected |
+| `h_idata_size` | 2 | 2 | Encoded inline pcluster size |
+| `h_advise` | 4 | 2 | See below |
+| `h_algorithmtype` | 6 | 1 | Low nibble HEAD1, high nibble HEAD2 |
+| `h_clusterbits` | 7 | 1 | Bits 0..3 add to `blkszbits`; bit 7 is the packed-inode flag |
+
+`h_advise` bits:
+
+| Bit | Name | Handling |
+|---:|---|---|
+| 0x0001 | `COMPACTED_2B` (layout 3) / `EXTENTS` (layout 1) | 2-byte packs; encoded extents are rejected |
+| 0x0002 | `BIG_PCLUSTER_1` | Pcluster spans several blocks for HEAD1 |
+| 0x0004 | `BIG_PCLUSTER_2` | The same for PLAIN and HEAD2 |
+| 0x0008 | `INLINE_PCLUSTER` | The last pcluster is inline in metadata |
+| 0x0010 | `INTERLACED_PCLUSTER` | Rejected |
+| 0x0020 | `FRAGMENT_PCLUSTER` | Rejected |
+
+The reader accepts only `h_clusterbits & 0x0f == 0`: logical clusters are the
+same size as filesystem blocks.  `h_clusterbits` bit 7 (the whole file in the
+packed inode) is also rejected.  The algorithm nibbles are `0` LZ4, `1` LZMA,
+`2` DEFLATE and `3` Zstandard; only LZ4 is decoded.  A pcluster whose head
+names another algorithm returns `UnsupportedCompression` and its bytes are
+never returned as file data.
+
+#### 5.4.2 Full indexes (layout 1)
+
+`full_index_start = ALIGN(iloc + inode_size + xattr_size, 8) + 16`.  Entry
+`lcn` is 8 bytes at `full_index_start + lcn * 8`:
+
+| Field | Offset | Width |
+|---|---:|---:|
+| `di_advise` | 0 | 2 |
+| `di_clusterofs` | 2 | 2 |
+| `di_u.blkaddr` / `di_u.delta[2]` | 4 | 4 |
+
+The low two bits of `di_advise` are the cluster type: 0 plain, 1 head 1,
+2 non-head, 3 head 2.  For a head, `di_u.blkaddr` is the pcluster's first
+block and `di_clusterofs` is the offset of the extent inside its first logical
+cluster.  For a non-head, `di_u.delta[0]` is the lookback distance to the head,
+`di_u.delta[1]` the distance to the next head, and bit 11 of `delta[0]`
+(`CBLKCNT`) instead carries the pcluster's block count.  A head with bit 15 set
+(`PARTIAL_REF`) is rejected.
+
+#### 5.4.3 Compact indexes (layout 3)
+
+Compact indexes pack several entries into a 32-byte or 8-byte group.  The
+layout mirrors `z_erofs_load_compact_lcluster`:
+
+```text
+ebase = ALIGN(iloc + inode_size + xattr_size, 8) + 8
+initial = ((32 - ebase % 32) / 4) & 7        # 4-byte entries at the start
+compacted_2b = rounddown(totalidx - initial, 16) if COMPACTED_2B else 0
+totalidx = ceil(size / blocksize)
+```
+
+The first `initial` entries use 8-byte groups of two 16-bit entries followed by
+a 32-bit pcluster base.  The next `compacted_2b` entries use 32-byte groups of
+sixteen 14-bit entries followed by the same 32-bit base.  Any remaining entries
+use 8-byte groups again.  `encodebits` is 16 for a 4-byte pack and 14 for a
+2-byte pack; the low `max(lclusterbits, 12)` bits are the value and the next two
+bits the cluster type.
+
+The 32-bit base in a group is the pcluster block before the group.  A head adds
+the number of pcluster blocks that precede it, which is one per head entry plus
+the `CBLKCNT` values of big-pcluster non-head entries.  The reader walks the
+entries before the head inside the same group for this count, exactly as the
+kernel does.  This is why the trailing base word is always present even when a
+group is only partly used.
+
+#### 5.4.4 Mapping a file offset
+
+For a read at byte `offset`, the reader loads the index for
+`lcn = offset / blocksize`.  A head entry with
+`clusterofs <= offset % blocksize` owns the offset; otherwise the reader follows
+`delta[0]` back through non-head entries to the head.  The extent starts at
+`(head_lcn * blocksize) + head_clusterofs` and ends at the next head boundary,
+or at `i_size` for the last inline extent.
+
+The pcluster's encoded length is one block unless the head's advise enables big
+pclusters.  In that case the first non-head entry after the head may carry
+`CBLKCNT`; otherwise the length is one block.  The decoded length is bounded by
+the extent length and by 12 MiB, and the encoded length by 1 MiB.  A corrupt
+image that exceeds either limit returns `InvalidCompressedData`.
+
+#### 5.4.5 Inline tail pclusters
+
+With `ztailpacking`, the last pcluster is stored in the metadata block after
+the inode's index area.  Its offset is the end of the index group that holds
+the logical cluster containing the last byte of the file, and its length is
+`h_idata_size`.  The reader computes this offset before the lookback, matching
+`EROFS_GET_BLOCKS_FINDTAIL`, and rejects inline data that would cross a block
+boundary.  The head logical cluster is still found through the normal lookback,
+so an inline pcluster may cover several logical clusters ending mid-cluster.
+
+#### 5.4.6 Decompression
+
+A pcluster is decoded into a buffer covering the requested prefix of the
+extent's logical data (at most the extent length):
+
+- **PLAIN** heads store the bytes uncompressed ("shifted"); the reader copies
+  the requested prefix, requiring it to fit in `plen`.  Interlaced plain
+  pclusters are rejected.
+- **HEAD1/HEAD2** pclusters are LZ4 blocks.  With `lz4_0padding`, the leading
+  zero bytes of the first block are skipped to find the stream, which ends at
+  the pcluster's end.  The decoder stops as soon as the requested prefix is
+  full, like `LZ4_decompress_safe_partial`, so a pcluster that decodes to more
+  data than the current extent asks for is still read correctly.
+
+The LZ4 decoder is written in the crate with no unsafe code and no dependency.
+It validates every input read, every match offset and every output bound; a
+malformed stream returns `InvalidCompressedData`.
+
+A read that crosses a pcluster boundary maps and decodes each pcluster in turn.
+The reader does not cache decompressed data; the caller's block cache still
+serves the repeated metadata reads.
+
 ## 6. Directories
 
-Directory data uses the same flat plain/inline rules.  Each directory block is a
-sequence of 12-byte entries followed by the names:
+Directory data uses the same file-data rules (flat or compressed).  Each
+directory block is a sequence of 12-byte entries followed by the names:
 
 | Field | Offset | Width |
 |---|---:|---:|
@@ -270,8 +408,10 @@ The reader returns:
 - `Truncated` for a structure shorter than its definition;
 - `BadMagic`, `InvalidSuperblock`, `InvalidInode`, `InvalidDirectory` for
   inconsistent fields;
-- `UnsupportedFeature`, `UnsupportedLayout`, `Unsupported` for formats outside
-  this profile;
+- `UnsupportedFeature`, `UnsupportedLayout`, `Unsupported`,
+  `UnsupportedCompression` for formats outside this profile;
+- `InvalidCompressedData` for a malformed map header, index, pcluster length or
+  LZ4 stream;
 - `SymlinkLoop` for a chain of more than `MAX_SYMLINK_DEPTH` links;
 - `OutOfBounds`, `TooLarge`, `OutOfMemory`, `NameTooLong` for read limits.
 
@@ -349,20 +489,33 @@ sector path.
 
 ## 10. Verification
 
-`cargo test -p erofs` runs 16 filesystem tests (plus 3 codec tests) against three
+`cargo test -p erofs` runs 32 integration tests (16 filesystem, 11 compressed,
+3 codec) plus 11 unit tests for the LZ4 decoder and zero padding, against six
 golden images:
 
 - the full tree on compact inodes;
 - the same tree on extended inodes;
-- the same tree with the 48-bit feature.
+- the same tree with the 48-bit feature;
+- the same tree plus `many.bin` compressed with LZ4, compact indexes and
+  `ztailpacking`;
+- the same compressed tree with the full (legacy) index layout;
+- the same compressed tree with 16 KiB big pclusters.
 
-The tests cover the superblock, root directory, nested directories, an empty
-file, a symlink, symlink following (relative, absolute and loop-bounded
-targets), `.` and `..` traversal, a 9000-byte flat-inline file (including a read
-crossing the 8192-byte boundary), zero-length reads at EOF, bad magic, unknown
-incompatibility bits, truncation, an invalid block size, and a compressed layout
-that must be recognised rather than misread.  The codec tests decode both byte
-orders.
+The uncompressed tests cover the superblock, root directory, nested
+directories, an empty file, a symlink, symlink following (relative, absolute and
+loop-bounded targets), `.` and `..` traversal, a 9000-byte flat-inline file
+(including a read crossing the 8192-byte boundary), zero-length reads at EOF,
+bad magic, unknown incompatibility bits, truncation, an invalid block size, and
+an unknown data layout that must be recognised rather than misread.
+
+The compressed tests mount all three compressed images and compare every file
+with the uncompressed fixture and a generated expected pattern.  They read
+`/big.bin` (one inline pcluster) and `/many.bin` (three block pclusters plus an
+inline tail, crossing cluster and extent boundaries), and assert that the map
+header really carries the inline-pcluster advise.  Error tests corrupt the
+algorithm nibble, the logical cluster bits, the advise bits, a whole pcluster
+and a truncated LZ4 stream, and expect the typed errors above.  The codec tests
+decode both byte orders.
 
 The absolute-target and loop tests do not add fixtures: each copies the compact
 image in memory and rewrites the target of `/link`, which is a compact inline
@@ -371,7 +524,9 @@ points `/link` at itself and expects `SymlinkLoop`.
 
 The images are generated by `crates/erofs/tests/fixtures/build.sh` with
 `mkfs.erofs 1.9.4`, checked with `fsck.erofs`, and committed so CI does not need
-the tool.  Their SHA-256 digests are recorded in the fixture README.
+the tool.  Their SHA-256 digests are recorded in the fixture README.  The three
+uncompressed images are unchanged by the compressed-fixture addition; the
+compressed tree is a copy plus `many.bin`.
 
 The kernel command was verified on the iris guest against
 [`rom/tools/range-server.py`](../../rom/tools/range-server.py): `info`, `ls /`
@@ -404,8 +559,9 @@ USERTrust/Sectigo, so the kernel rejects it until another root is embedded.
 
 ## 11. Future work
 
-- LZ4 physical clusters, compact/full indexes and the `lz4_0padding` rules.
-- Fragments, ztailpacking and the packed inode.
+- Fragments, the packed inode and `all-fragments`.
+- Encoded extents (the 48-bit compressed layout) and interlaced pclusters.
+- Non-LZ4 algorithms (LZMA, DEFLATE, Zstandard).
 - Chunk-based files and multi-device images.
 - Metabox metadata.
 - Superblock CRC32C verification.
