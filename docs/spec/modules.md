@@ -51,11 +51,11 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 5:
+`Services` is `#[repr(C)]` and versioned. Version 6:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 5 |
+| 0x00 | `version` | 6 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x10 | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -70,6 +70,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x34 | `console_total` | `uint64_t (*)(void)` — bytes ever written to the serial console |
 | 0x38 | `reset` | `void (*)(void)` — restart from the PROM entry; does not return |
 | 0x3C | `poweroff` | `void (*)(void)` — halt the machine; does not return |
+| 0x40 | `status` | `intptr_t (*)(uint8_t *ptr, size_t len)` — the shared machine status block |
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`.
@@ -134,7 +135,8 @@ and returns non-zero to unregister. Swap `hello` for `ticker` in the two command
 connection, and alternates its two TCP slots so a back-to-back client does not hit the
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
 JSON-RPC methods (see [`mcp.md`](mcp.md)). Its tools include `serial.read` (console ring
-services), `serial.write`, `system.reset` and `system.poweroff`.  The system tools defer
+services), `serial.write`, `system.reset`, `system.poweroff` and `status` (the same IP/MAC/RAM/uptime/date
+text as the telnet console).  The system tools defer
 the action by five idle ticks so the JSON-RPC response is queued first. The iris rig forwards host `8088` to guest `80`; after
 loading the module:
 

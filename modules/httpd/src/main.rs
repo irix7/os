@@ -28,6 +28,7 @@ pub struct Services {
     pub console_total: extern "C" fn() -> u64,
     pub reset: extern "C" fn(),
     pub poweroff: extern "C" fn(),
+    pub status: unsafe extern "C" fn(*mut u8, usize) -> isize,
 }
 
 #[repr(C)]
@@ -81,7 +82,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 5 {
+    if services.version < 6 {
         return &ERROR_VTABLE;
     }
     let message = b"mcp: listening on port 80\n";
@@ -353,18 +354,26 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest uptime\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");
             let text = json_string(body, b"\"text\"").unwrap_or(b"");
             match name {
                 Some(b"status") => {
-                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
-                    w.push(id);
-                    w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"uptime: ");
-                    w.u64((services.clock_ms)() / 1000);
-                    w.push(b" s\"}]}}");
+                    let mut data = [0u8; 512];
+                    let n = unsafe { (services.status)(data.as_mut_ptr(), data.len()) };
+                    if n < 0 {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"error\":{\"code\":-32603,\"message\":\"status failed\"}}");
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                        w.json_string(&data[..n as usize]);
+                        w.push(b"}]}}");
+                    }
                 }
                 Some(b"echo") => {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");

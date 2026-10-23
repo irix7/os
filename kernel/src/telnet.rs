@@ -452,40 +452,9 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             );
         }
         b"status" => {
-            let mut w = SocketWriter { sock };
-            let uptime = net::clock_now().total_millis() / 1000;
-            let _ = write!(w, "stage: kernel\r\n");
-            match net::ip_addr() {
-                Some(ip) => {
-                    let _ = write!(w, "ip: {}\r\n", DisplayIpv4(ip));
-                }
-                None => {
-                    let _ = w.write_str("ip: none\r\n");
-                }
-            }
-            let mac = net::mac_address();
-            let _ = write!(
-                w,
-                "mac: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\r\n",
-                mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-            );
-            let _ = write!(
-                w,
-                "ram: {} MiB\r\n",
-                crate::frames::total_ram() / (1024 * 1024)
-            );
-            let _ = write!(w, "uptime: {}s\r\n", uptime);
-            match crate::ntp::now_unix() {
-                Some(unix) => {
-                    let mut buf = [0u8; 20];
-                    let n = crate::ntp::format_utc(unix, &mut buf);
-                    let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
-                    let _ = write!(w, "date: {} UTC\r\n", text);
-                }
-                None => {
-                    let _ = w.write_str("date: unsynchronised\r\n");
-                }
-            }
+            let mut buf = [0u8; 512];
+            let n = crate::status::text(&mut buf);
+            let _ = sock.send_slice(&buf[..n]);
         }
         b"net" => {
             let mut w = SocketWriter { sock };

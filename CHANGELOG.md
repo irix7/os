@@ -59,6 +59,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`. `GET /` remains a
   plain status page. The kernel keeps an 8 KiB serial ring (ABI version 4 services
   `console_read`/`console_total`); version 5 adds deferred `reset` and `poweroff`.
+- A shared machine-status formatter now backs both the telnet `status` command and the MCP
+  `status` tool (ABI version 6 service `status`): IP, MAC, RAM, uptime and date from one
+  place.
 - The SCC status read now has a settle delay after the register-select write and a bounded
   transmitter wait.  The kernel's cached polling loop could read the previous register
   (RR8) through the IOC and spin forever; the ROM's uncached fetch had hidden it.

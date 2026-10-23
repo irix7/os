@@ -40,6 +40,7 @@ pub mod ntp;
 pub mod ping;
 pub mod scheduler;
 pub mod sha256;
+pub mod status;
 pub mod telnet;
 pub mod tlb;
 pub mod tls;

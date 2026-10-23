@@ -24,7 +24,7 @@ pub const MODULE_BASE: usize = 0x8840_0000;
 pub const MODULE_MAX: usize = 0x0020_0000; // 2 MiB
 
 /// Service table ABI version.
-pub const ABI_VERSION: u32 = 5;
+pub const ABI_VERSION: u32 = 6;
 
 /// Service table passed to a module entry point.
 ///
@@ -60,6 +60,8 @@ pub struct Services {
     pub reset: extern "C" fn(),
     /// Halt the machine.  Does not return.
     pub poweroff: extern "C" fn(),
+    /// Format the machine status block; returns bytes written.
+    pub status: unsafe extern "C" fn(*mut u8, usize) -> isize,
 }
 
 /// What a module returns from its entry point.
@@ -95,6 +97,7 @@ static SERVICES: Services = Services {
     console_total: service_console_total,
     reset: service_reset,
     poweroff: service_poweroff,
+    status: service_status,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -359,6 +362,15 @@ extern "C" fn service_reset() {
 
 extern "C" fn service_poweroff() {
     crate::poweroff();
+}
+
+unsafe extern "C" fn service_status(ptr: *mut u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    // SAFETY: the module owns the destination buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    crate::status::text(buf) as isize
 }
 
 extern "C" fn service_tcp_abort(slot: u32) {
