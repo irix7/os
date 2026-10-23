@@ -39,6 +39,14 @@ struct Console {
     last_cr: bool,
     /// A deferred HTTP fetch, run outside the socket-set borrow.
     pending_http: Option<HttpRequest>,
+    /// A deferred NTP query, run outside the socket-set borrow.
+    pending_ntp: Option<NtpRequest>,
+}
+
+/// Parsed `ntp <ip>[:port]` request.
+struct NtpRequest {
+    ip: Ipv4Address,
+    port: u16,
 }
 
 /// Parsed `http <ip>:<port><path>` request.
@@ -74,6 +82,7 @@ pub fn init() {
                 iac: 0,
                 last_cr: false,
                 pending_http: None,
+                pending_ntp: None,
             });
         }
     }
@@ -111,6 +120,31 @@ pub fn poll() {
                     },
                     Err(err) => {
                         let _ = write!(w, "http: {}\r\n", err);
+                    }
+                }
+                let _ = w.sock.send_slice(b"kernel> ");
+            });
+        }
+    }
+
+    // Run any deferred NTP query, for the same reason.
+    let ntp_request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_ntp.take());
+    if let Some(req) = ntp_request {
+        let result = crate::ntp::query(req.ip, req.port);
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let mut w = SocketWriter { sock };
+                match result {
+                    Some(unix) => {
+                        let mut buf = [0u8; 20];
+                        let n = crate::ntp::format_utc(unix, &mut buf);
+                        let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
+                        let _ = write!(w, "ntp: {} UTC ({})\r\n", text, unix);
+                    }
+                    None => {
+                        let _ = w.write_str("ntp: no reply\r\n");
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
@@ -269,6 +303,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 time          time since boot\r\n\
                   \x20 echo <text>   echo the argument\r\n\
                   \x20 http <ip>:<port><path>  fetch over HTTP\r\n\
+                  \x20 ntp <ip>[:port]  set the clock from an NTP server\r\n\
                   \x20 boot          continue booting\r\n",
             );
         }
@@ -296,6 +331,17 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 crate::frames::total_ram() / (1024 * 1024)
             );
             let _ = write!(w, "uptime: {}s\r\n", uptime);
+            match crate::ntp::now_unix() {
+                Some(unix) => {
+                    let mut buf = [0u8; 20];
+                    let n = crate::ntp::format_utc(unix, &mut buf);
+                    let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
+                    let _ = write!(w, "date: {} UTC\r\n", text);
+                }
+                None => {
+                    let _ = w.write_str("date: unsynchronised\r\n");
+                }
+            }
         }
         b"net" => {
             let mut w = SocketWriter { sock };
@@ -324,6 +370,12 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let mut w = SocketWriter { sock };
             let ms = net::clock_now().total_millis();
             let _ = write!(w, "uptime: {}.{:03}s\r\n", ms / 1000, ms % 1000);
+            if let Some(unix) = crate::ntp::now_unix() {
+                let mut buf = [0u8; 20];
+                let n = crate::ntp::format_utc(unix, &mut buf);
+                let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
+                let _ = write!(w, "date: {} UTC\r\n", text);
+            }
         }
         b"boot" => {
             let _ = sock.send_slice(b"booting\r\n");
@@ -336,6 +388,15 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             }
             None => {
                 let _ = sock.send_slice(b"usage: http <ip>:<port><path>\r\n");
+            }
+        },
+        _ if line.starts_with(b"ntp ") => match parse_ntp(trim(&line[4..])) {
+            Some(request) => {
+                let _ = sock.send_slice(b"ntp: querying\r\n");
+                console.pending_ntp = Some(request);
+            }
+            None => {
+                let _ = sock.send_slice(b"usage: ntp <ip>[:port]\r\n");
             }
         },
         _ if line.starts_with(b"echo ") => {
@@ -433,4 +494,17 @@ fn parse_ipv4(s: &str) -> Option<Ipv4Address> {
         return None;
     }
     Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
+}
+
+/// Parse `ntp <ip>[:port]`.
+fn parse_ntp(arg: &[u8]) -> Option<NtpRequest> {
+    let s = core::str::from_utf8(arg).ok()?;
+    let (host, port) = match s.split_once(':') {
+        Some((host, port)) => (host, port.parse().ok()?),
+        None => (s, 123),
+    };
+    Some(NtpRequest {
+        ip: parse_ipv4(host)?,
+        port,
+    })
 }

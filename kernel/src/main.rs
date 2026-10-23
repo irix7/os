@@ -28,6 +28,7 @@ pub mod http;
 pub mod kbd;
 pub mod menu;
 pub mod net;
+pub mod ntp;
 pub mod scheduler;
 pub mod telnet;
 pub mod tlb;
