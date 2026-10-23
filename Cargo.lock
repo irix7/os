@@ -65,6 +65,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "block-cache"
+version = "0.1.0"
+
+[[package]]
 name = "boot-protocol-tests"
 version = "0.1.0"
 
