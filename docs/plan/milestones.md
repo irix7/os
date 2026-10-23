@@ -211,15 +211,32 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
 **Demo:** the shell runs `cat /etc/motd` and `ls /` from the EROFS root image; a write to
 `/tmp` goes to the overlay; the machine boots with no SCSI disk.
 
+**Status (2026-10-24):** the prototype runs on iris, but it is **not yet a userspace
+stack**.  SCSI, the block service and the HTTP Range client are kernel code; the HTTP MCP
+server and the filesystem are loadable kernel images (modules).  The console `erofs`
+command mounts an HTTP/HTTPS EROFS image and verifies its SHA-256, and the MCP tools expose
+`fs.read/list/stat/readlink/write/remove` through the overlay.  The target userspace/cell
+form is deferred to M5/M9.  Evidence:
+
+- HTTP Range EROFS with a 256 KiB window, SHA gate and `cat /etc/motd` over telnet;
+- MCP smoke tests for `block.read`, `fs.read/list/stat/readlink/write/remove` and the
+  RAM overlay;
+- a diskless boot with no SCSI target 1 or 2 still reaches the MCP server;
+- a disk-present boot mounts target 2 through the SCSI block service.
+
 **Acceptance criteria:**
 
-- [ ] SCSI cell initialises the WD33C93 and reads blocks.
-- [ ] Block cell exposes a block-device capability and an LRU cache.
-- [ ] EROFS reader mounts the standard little-endian image; byte-order codec tested.
+- [x] SCSI initialises the WD33C93 and reads blocks.  (Prototype: kernel WD33C93 driver
+      with HPC3 descriptor DMA and a polled PIO fallback; the de-privileged SCSI cell is
+      deferred.)
+- [ ] Block cell exposes a block-device capability and an LRU cache.  (Prototype: ABI
+      `block_read` plus a 64-block LRU inside the loadable `httpd`/`erofs` images; the
+      capability and cell form are deferred.)
+- [x] EROFS reader mounts the standard little-endian image; byte-order codec tested.
 - [x] HTTP Range client fetches 64–256 KiB blocks with read-ahead.
-- [ ] SHA-256 verifies the image before mount.
+- [x] SHA-256 verifies the image before mount.
 - [x] Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).
-- [ ] The boot path works with the disk absent and with the disk present.
+- [x] The boot path works with the disk absent and with the disk present.
 
 **Dependencies:** M3 (network), M2 (framework).
 
