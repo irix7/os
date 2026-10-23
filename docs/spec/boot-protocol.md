@@ -1,6 +1,6 @@
 # IRIX 7 — Boot Protocol (ROM ↔ Kernel)
 
-**Status:** draft
+**Status:** draft (the current assembly ROM does not emit `BootInfo`)
 **Version:** 1.0
 **Owner:** boot
 **Related:** [`architecture.md`](architecture.md) §10, [`../plan/milestones.md`](../plan/milestones.md) M1–M2.
@@ -18,6 +18,7 @@ console and the network stack — is the kernel's.
 
 It does not define the kernel's own boot sequence, the boot bundle format or the root image;
 those are in [`image-format.md`](image-format.md) (planned) and `architecture.md` §10.
+Loadable modules are specified in [`modules.md`](modules.md).
 
 ## 2. Handoff
 
@@ -53,6 +54,10 @@ CPU state at entry:
 | FPU | Disabled (`Status.CU1 = 0`) |
 | Watchdog | Disarmed |
 | PC | Kernel `_start` |
+
+The current ROM passes `$a0 = 0` (no `BootInfo`), `$a1` = RAM bytes, `$a2` = RAM base and
+`$sp` = the kernel stack top. The kernel falls back to that geometry, reserves
+`0x0800_0000..0x08B0_0000` and starts the frame allocator at `0x08B0_0000`.
 
 The kernel may re-enable or reconfigure anything after it has validated the handoff. It must
 not call ARCS after it takes over the TLB and caches; anything it needs from ARCS must be

@@ -21,6 +21,22 @@ Rust workspace exists, it records the known candidates and their licences.
 | `backhand` | MIT OR Apache-2.0 | SquashFS fallback |
 | `crc32c` | Apache-2.0 OR MIT | I7FS checksums |
 
+## Kernel runtime (current)
+
+| Component | Licence | Use |
+|---|---|---|
+| `smoltcp` | 0BSD | TCP/IP stack, DHCP, DNS, ICMP |
+| `embedded-tls` | Apache-2.0 | TLS 1.3 client |
+| `embedded-io` | MIT OR Apache-2.0 | Blocking I/O traits for the TLS adapter |
+| `rand_core` | MIT OR Apache-2.0 | RNG traits for the TLS provider |
+| `p384` | Apache-2.0 OR MIT | ECDSA P-384 verification |
+| `x509-cert` | Apache-2.0 OR MIT | Certificate subject/issuer parsing for chain trimming |
+| `der` | Apache-2.0 OR MIT | DER decoding |
+| `heapless` | MIT OR Apache-2.0 | Fixed-capacity buffers in the sockets and TLS |
+
+The embedded CA root (`kernel/src/ca/sslcom-ecc-root.der`) is public certificate data from
+the Mozilla CA bundle, not a separately licensed work; see `kernel/src/ca/README.md`.
+
 ## Build tools
 
 | Tool | Licence | Use |

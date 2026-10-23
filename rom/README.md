@@ -196,7 +196,7 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
 Then in the console (with `hello.module` on the HTTP server; the explicit
 `http://` is only for the local test rig):
 
-```
+```text
 module http://10.1.1.3:18080/hello.module <sha256 of hello.module>
 hello from a downloaded module
 module: returned 0

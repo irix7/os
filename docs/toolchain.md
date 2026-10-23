@@ -160,8 +160,9 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
 
 ## Current Status
 
-- ROM: boots from the PROM window, sizes/tests 32 MiB of DRAM stacklessly, brings up the
-  Seeq, gets DHCP, queries NTP, fetches a kernel over HTTP, verifies SHA-256 and jumps to
-  the load address.
-- Kernel: cross-builds n32, but is not yet linked at the handoff address or consuming
-  `BootInfo`. That is the current M1/M2 boundary.
+- ROM: a MIPS III assembly stub; boots from the PROM window, sizes and tests 32 MiB of DRAM
+  stacklessly, brings up the serial console, LZ4-decompresses the kernel to `0x8804_0000`
+  and jumps to it.
+- Kernel: n32, linked at `0x8804_0000`, booting on iris. It owns the Seeq/HPC3 network
+  stack, DHCP/DNS/NTP/ICMP, HTTP/HTTPS with certificate verification, the telnet console,
+  the CP0 timer/WAIT idle path, and the HTTPS module loader.

@@ -57,3 +57,21 @@ Consequences:
 - **The REX3 command FIFO is shallow.** A driver has to drain it between primitives or
   the writes are dropped; `gfx.rs` polls `STATUS` the way the SGI diagnostics'
   `REX3WAIT(REX)` does.
+
+## Modules and the PROM budget
+
+- The compressed PROM image is the fixed bootstrap. TLS stays in it: it is the transport
+  that makes module downloads trustworthy. New features go into modules, not into the
+  compressed image.
+- A module is a flat image linked at `0x88400000`, fetched over HTTPS into RAM, SHA-256
+  checked, and called through the versioned C service table in `kernel/src/module.rs`.
+- The module area is inside the reserved low window. Never hand it to the frame allocator.
+
+## Cache coherency
+
+- `CP0 Config.K0 = 3`: kseg0 is **cacheable**. DMA-visible memory must be accessed through
+  the kseg1 alias (uncached) or maintained explicitly; the Seeq descriptors and frame
+  buffers are the outstanding case.
+- Code written into RAM and executed (modules) needs a data-cache writeback and an
+  instruction-cache invalidate before the call. A compiler fence is not enough on real
+  hardware.

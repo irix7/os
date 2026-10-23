@@ -15,8 +15,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The kernel image is embedded in the PROM image, LZ4-compressed: `rom/build.rs`
   extracts the kernel ELF's loadable segments, compresses them as an LZ4 block,
   and emits them as `.word` directives in a generated `rom/src/boot/payload.S`.
-  The ROM stub decompresses them into RAM before jumping, so the PROM image is
-  16 KiB instead of 38 KiB.
+  The ROM stub decompresses them into RAM before jumping. The image is now about
+  476 KiB, inside the 512 KiB PROM window.
 - Graphical boot menu in the kernel: the REX3 (Newport) display is programmed for
   24-bit RGB and the menu is drawn with the PROM's own IRIS 10 raster font, converted
   from the IRIX source by `kernel/tools/convert_font.py`.
@@ -26,14 +26,28 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `rom/linker.ld` and the `rom/src/boot/` reset, memory-sizing and memory-test assembly.
 - Research note on Meta CRAM and compressed RAM (`docs/research/compressed-ram.md`);
   compressed RAM is rejected for the Indy in favour of the read-only EROFS root.
-- Kernel handoff: the real n32 kernel is linked at `0x88040000`, receives a physical
-  `BootInfo` in `$a0`, uses its memory map for the frame allocator, and runs with caches
-  enabled.
-- Telnet console on guest port 23, now in the kernel. The ROM is a stub and has no
-  network stack of its own.
-- Styled telnet UI: a `no_std` Lip Gloss subset with truecolor gradients, rounded boxes,
-  tables and 256/16/plain profiles; NAWS sizing, command history, tab completion and
-  system/network/memory/CP0 dashboards.
+- Kernel handoff: the real n32 kernel is linked at `0x88040000` and runs with caches
+  enabled. The assembly ROM passes the RAM geometry in `$a1`/`$a2`; there is no `BootInfo`
+  structure, and the kernel falls back to the register handoff.
+- Telnet console on guest port 23, in the kernel. The ROM is a stub and has no network
+  stack of its own.
+- Kernel networking: Seeq 8003 over HPC3 PDMA, DHCPv4 with renewals, a DNS resolver,
+  NTP wall clock, and ICMP echo (`ping`).
+- HTTP/1.1 and HTTPS/TLS 1.3 clients with DNS names, streaming SHA-256 and an optional
+  expected digest. TLS verifies chains against an embedded SSL.com TLS ECC Root CA 2022
+  and trims a trailing cross-signed root.
+- Plain-text telnet console commands: `status`, `net`, `mem`, `time`, `echo`, `ntp`,
+  `ping`, `http`, `https`, `module`, `boot`, `reboot`.
+- CP0 Compare tick and a `WAIT` idle path; the vCPU parks when the guest is idle.
+- Frame-backed bump allocator, with the frame allocator clamped above `0x08B00000` so it
+  cannot hand out the exception vector, ROM state, kernel image or stack.
+- Loadable modules: flat images linked at `0x88400000`, fetched over HTTPS into RAM,
+  SHA-256 checked and called through a versioned C service table. `modules/hello` is the
+  reference module.
+- Boot-menu status line with the live address, and a diagnostics action that prints CPU,
+  RAM and network state.
+- `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the
+  telnet console.
 - Advanced architecture specification (`docs/spec/architecture.md`), including the D1–D31
   decision register, hybrid SAS/MMU isolation, the native capability ABI, the IRIX
   compatibility container, R2-first boot, EROFS root, X11, the native display server and the
@@ -102,10 +116,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 - Seeq 8003 receive/transmit over HPC3 PDMA, including descriptor self-references that
   must be taken after the device is in its final location.
-- DHCP, NTP and HTTP now share one `Interface`, `SocketSet` and `SeeqDevice`; NTP queries
-  the DHCP router instead of the guest's own address.
-- HTTP response parsing across packet boundaries and connection-close handling.
-- The fetched kernel image is copied to the hand-off address before jumping.
+- DHCP, DNS, NTP, HTTP and TLS share one `Interface`, `SocketSet` and `SeeqDevice`.
+- HTTP body counting across receive batches: the first batch is usually larger than the
+  header buffer, and bytes beyond it still count as body.
+- TLS treats a bare TCP close (no close_notify) as end of response.
 - `kernel-test` `panic_handler` is now `#[cfg(not(test))]` so the host test harness (which
   links std) no longer conflicts with the freestanding `no_std` crate.
 

@@ -11,7 +11,7 @@
 | ID | Milestone | Demo | Estimate | Release |
 |---|---|---|---|---|
 | M0 | Toolchain unblocked | CI cross-compiles a `no_std` binary for n32 and o32; tracer bullet prints on iris | 2–4 weeks | — |
-| M1 | ROM netboot | ROM does DHCP, DNS, HTTP GET, SHA-256, HTTPS, jumps to kernel; styled telnet console stays live across hand-off | 4–6 weeks | — |
+| M1 | ROM netboot | Assembly ROM tests DRAM, decompresses the n32 kernel and jumps; kernel does DHCP/DNS/NTP/HTTP/HTTPS, console and modules | 4–6 weeks | — |
 | M2 | Kernel core | Timer ticks, page fault, panic screen, scheduler | 6–10 weeks | — |
 | M3 | Network + MCP + shell | Agent connects over HTTP, runs a command, reads serial, captures screen | 4–6 weeks | v0.1 |
 | M4 | SCSI + block + EROFS | `cat /etc/motd` from the R2 root image | 8–12 weeks | — |
@@ -83,39 +83,36 @@ tracer bullet boots on iris and prints its marker.
 
 ## M1 — ROM netboot
 
-**Goal:** a `no_std` n32/MIPS III Rust ROM that replaces the factory ARCS PROM, runs from
-the PROM window at `0xBFC00000`, initialises the Indy, brings up the Seeq 8003, runs
-smoltcp, fetches a kernel over HTTP, verifies SHA-256, and jumps to the kernel.
+**Goal (as delivered):** a MIPS III assembly PROM replacement that sizes and tests DRAM,
+brings up the serial console, LZ4-decompresses the n32 kernel to `0x8804_0000` and jumps to
+it. Networking, the console and the clock are initialised once in the kernel.
 
-**Demo:** in iris, the ROM boots from the raw PROM image, prints the DHCP lease, opens a
-telnet console, prints the NTP time, fetches the kernel from a local HTTP server, verifies
-the digest, and jumps to the real n32 kernel, which prints `kernel: up`. The telnet console
-remains live after the hand-off.
+**Demo:** in iris the raw PROM image prints the boot banner, tests 32 MiB of RAM, decompresses
+the kernel and prints `kernel: up`; DHCP and DNS complete; the telnet console answers and
+survives `reboot`. `https example.com:443/` verifies the certificate chain and reports a body
+digest matching the host.
 
 **Acceptance criteria:**
 
 - [x] Serial console works from the first instruction.
-- [x] RAM is sized and tested stacklessly before any RAM structures are created.
-- [x] Seeq 8003 initialises, transmits and receives; HPC3 DMA works.
-- [x] smoltcp brings up IPv4 and DHCPv4; NTP works through the gateway.
-- [x] IPv6 and DNS (smoltcp `DnsSocket` poll-based resolver; DHCP servers, gateway and
-      public resolvers as fallbacks).
-- [x] Basic HTTP/1.1 GET works.
-- [ ] HTTP Range support and response validation.
-- [x] SHA-256 verification of the fetched kernel.
-- [x] HTTPS/TLS 1.3 via `embedded-tls` over smoltcp TCP with `embedded-io` blocking adapter
-      and `NoVerify` certificate verification (bring-up phase).
-- [x] The ROM fits in 512 KiB–1 MiB.
-- [x] Failure paths: no link, no DHCP, 404, bad digest, timeout — all print a clear error.
-- [x] Telnet ROM console opens after DHCP and stays live after the kernel starts.
-- [x] The handoff structure is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md).
-- [x] The real kernel is linked at the handoff address and consumes `BootInfo` in `$a0`.
-- [x] Caches are enabled and flushed before the handoff.
-- [x] Styled telnet UI (no_std Lip Gloss subset): truecolor/256/16-colour gradients,
-      rounded boxes, tables; NAWS sizing, command history, tab completion,
-      system/network/memory/CP0 dashboards.
+- [x] RAM is sized and tested stacklessly before any RAM structures exist.
+- [x] The kernel is decompressed from PROM and entered at `0x8804_0000`.
+- [x] Seeq 8003 + HPC3 PDMA; DHCPv4 with renewals; DNS; NTP; ICMP.
+- [x] HTTP/1.1 and HTTPS/TLS 1.3 with certificate-chain verification.
+- [x] SHA-256 over fetched bodies, and a digest gate for modules.
+- [x] Telnet console with its command set, surviving boot and reconnect.
+- [x] Loadable modules fetched over HTTPS into RAM.
+- [x] The image fits in the 512 KiB PROM window (about 476 KiB).
+- [x] The handoff is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md);
+      `BootInfo` is optional and the current ROM passes registers.
+- [ ] HTTP Range support.
 
-**Dependencies:** M0, a local HTTP server (or R2), a kernel linked for the handoff address.
+**Note:** the design changed during M1. The ROM started as a Rust netboot client; it is now
+an assembly stub that embeds the kernel, and the network stack and console live in the kernel.
+Because the PROM window is the binding constraint, new features are modules downloaded over
+HTTPS rather than growth of the compressed image.
+
+**Dependencies:** M0, iris (or an Indy), a local HTTP server for modules.
 
 **Estimate:** 4–6 weeks.
 
