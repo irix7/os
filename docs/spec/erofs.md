@@ -494,7 +494,7 @@ sector path.
 
 ## 10. Verification
 
-`cargo test -p erofs` runs 32 integration tests (16 filesystem, 11 compressed,
+`cargo test -p erofs` runs 30 integration tests (16 filesystem, 11 compressed,
 3 codec) plus 11 unit tests for the LZ4 decoder and zero padding, against six
 golden images:
 
