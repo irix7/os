@@ -400,6 +400,8 @@ dependencies = [
 name = "httpd-module"
 version = "0.1.0"
 dependencies = [
+ "block-cache",
+ "erofs",
  "module-abi",
 ]
 
