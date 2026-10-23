@@ -1,0 +1,17 @@
+[package]
+license = "GPL-3.0-only"
+name = "hello-module"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "hello-module"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2

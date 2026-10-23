@@ -45,6 +45,8 @@ struct Console {
     pending_ntp: Option<NtpRequest>,
     /// A deferred ICMP echo run, outside the socket-set borrow.
     pending_ping: Option<PingRequest>,
+    /// A deferred module fetch and run.
+    pending_module: Option<HttpRequest>,
 }
 
 /// Parsed `ntp <host>[:port]` request.
@@ -98,6 +100,7 @@ pub fn init() {
                 pending_http: None,
                 pending_ntp: None,
                 pending_ping: None,
+                pending_module: None,
             });
         }
     }
@@ -219,6 +222,57 @@ pub fn poll() {
                     }
                     (None, _) => {
                         let _ = w.write_str("ping: unknown host\r\n");
+                    }
+                }
+                let _ = w.sock.send_slice(b"kernel> ");
+            });
+        }
+    }
+
+    // Run a deferred module fetch.  The image is downloaded straight into the
+    // reserved module area and executed only after its hash checks out.
+    let module_request =
+        unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_module.take());
+    if let Some(req) = module_request {
+        let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
+        let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
+        let outcome: Result<i32, &'static str> = match resolve_host(&req.host[..req.host_len]) {
+            Some(ip) => {
+                let area = crate::module::area();
+                match crate::http::get_to(ip, req.port, host, path, area) {
+                    Ok((summary, captured)) => {
+                        if captured != summary.body_len {
+                            Err("module did not fit")
+                        } else {
+                            match req.expected {
+                                Some(want)
+                                    if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) =>
+                                {
+                                    // SAFETY: the image fits and its hash matched.
+                                    unsafe { Ok(crate::module::call_entry()) }
+                                }
+                                Some(_) => Err("module hash mismatch"),
+                                None => Err("module needs a sha256"),
+                            }
+                        }
+                    }
+                    Err(err) => Err(err),
+                }
+            }
+            None => Err("unknown host"),
+        };
+
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let mut w = SocketWriter { sock };
+                match outcome {
+                    Ok(code) => {
+                        let _ = write!(w, "module: returned {}\r\n", code);
+                    }
+                    Err(err) => {
+                        let _ = write!(w, "module: {}\r\n", err);
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
@@ -385,6 +439,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 https <host>:<port><path> [sha256]  fetch over HTTPS (TLS 1.3)\r\n\
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
+                  \x20 module <host>:<port><path> <sha256>  fetch and run a RAM module\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
@@ -490,6 +545,15 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             }
             None => {
                 let _ = sock.send_slice(b"usage: https <host>:<port><path>\r\n");
+            }
+        },
+        _ if line.starts_with(b"module ") => match parse_http(trim(&line[7..]), false) {
+            Some(request) => {
+                let _ = sock.send_slice(b"module: fetching\r\n");
+                console.pending_module = Some(request);
+            }
+            None => {
+                let _ = sock.send_slice(b"usage: module <host>:<port><path> <sha256>\r\n");
             }
         },
         _ if line.starts_with(b"ping ") => match parse_ping(trim(&line[5..])) {

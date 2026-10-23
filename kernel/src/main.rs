@@ -33,6 +33,7 @@ pub mod http;
 pub mod idle;
 pub mod kbd;
 pub mod menu;
+pub mod module;
 pub mod net;
 pub mod ntp;
 pub mod ping;

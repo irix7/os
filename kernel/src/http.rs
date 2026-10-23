@@ -36,12 +36,36 @@ pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
-    let result = get_inner(ip, port, host, path);
+    let result = get_inner(ip, port, host, path, None).map(|(summary, _)| summary);
     FETCHING.store(false, Ordering::SeqCst);
     result
 }
 
-fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary, &'static str> {
+/// Fetch `path` and copy the body into `out`, returning the summary and the
+/// number of bytes captured.  The fetch stops capturing when `out` is full;
+/// the body is still consumed and hashed.
+pub fn get_to(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    out: &mut [u8],
+) -> Result<(Summary, usize), &'static str> {
+    if FETCHING.swap(true, Ordering::SeqCst) {
+        return Err("a fetch is already running");
+    }
+    let result = get_inner(ip, port, host, path, Some(out));
+    FETCHING.store(false, Ordering::SeqCst);
+    result
+}
+
+fn get_inner(
+    ip: Ipv4Address,
+    port: u16,
+    host: &str,
+    path: &str,
+    mut capture: Option<&mut [u8]>,
+) -> Result<(Summary, usize), &'static str> {
     let handle = net::sockets_with(|sockets| {
         // SAFETY: the buffers are static and used by one fetch at a time.
         let rx = unsafe { &mut HTTP_RX_BUF[..] };
@@ -127,6 +151,7 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
     let mut body_len = 0usize;
     let mut content_length: Option<usize> = None;
     let mut total_rx = 0usize;
+    let mut captured = 0usize;
     let mut hasher = crate::sha256::Hasher::new();
     let mut last_state;
 
@@ -160,6 +185,11 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
             if headers_done {
                 body_len += n;
                 hasher.update(data);
+                if let Some(buf) = capture.as_deref_mut() {
+                    let take = n.min(buf.len().saturating_sub(captured));
+                    buf[captured..captured + take].copy_from_slice(&data[..take]);
+                    captured += take;
+                }
             } else {
                 let take = n.min(headers.len() - header_len);
                 headers[header_len..header_len + take].copy_from_slice(&data[..take]);
@@ -177,6 +207,12 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
                     let batch_start = total_rx - n;
                     let body_off = (pos + 4).saturating_sub(batch_start).min(n);
                     hasher.update(&data[body_off..]);
+                    if let Some(buf) = capture.as_deref_mut() {
+                        let body = &data[body_off..];
+                        let take = body.len().min(buf.len().saturating_sub(captured));
+                        buf[captured..captured + take].copy_from_slice(&body[..take]);
+                        captured += take;
+                    }
                 } else if header_len == headers.len() {
                     cleanup(handle);
                     return Err("response headers too large");
@@ -212,12 +248,15 @@ fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summa
     if status == 0 {
         return Err("malformed response");
     }
-    Ok(Summary {
-        status,
-        body_len,
-        content_length,
-        sha256: hasher.finalize(),
-    })
+    Ok((
+        Summary {
+            status,
+            body_len,
+            content_length,
+            sha256: hasher.finalize(),
+        },
+        captured,
+    ))
 }
 
 /// Remove the socket so repeated fetches do not exhaust the set.
