@@ -9,8 +9,8 @@
 //!
 //! - compact and extended inodes;
 //! - flat plain and flat inline data;
-//! - compressed-full and compressed-compact inodes with LZ4 pclusters (the `lz4` feature),
-//!   including big pclusters and inline tail pclusters;
+//! - compressed-full and compressed-compact inodes with LZ4 pclusters (the
+//!   `lz4` feature), including big pclusters and inline tail pclusters;
 //! - directories and symbolic links, with bounded symlink following on path
 //!   lookup;
 //! - 48-bit block addresses for flat data;

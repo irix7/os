@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Tests against the compressed `mkfs.erofs -zlz4` fixtures.
 
+#![cfg(feature = "lz4")]
+
 use erofs::{DataLayout, Erofs, Error};
 
 const LZ4: &[u8] = include_bytes!("fixtures/lz4.erofs");

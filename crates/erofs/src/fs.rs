@@ -173,10 +173,10 @@ impl<D: BlockDevice> Erofs<D> {
                 self.read_compressed_dispatch(inode, offset, buf)
             }
             other => Err(Error::UnsupportedLayout(other.raw_bits())),
-            other => Err(Error::UnsupportedLayout(other.raw_bits())),
         }
     }
 
+    /// Dispatch compressed reads, or reject them when the `lz4` feature is off.
     fn read_compressed_dispatch(
         &mut self,
         inode: &Inode,
