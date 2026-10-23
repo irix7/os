@@ -306,17 +306,17 @@ fn invalid_block_size_is_rejected() {
 }
 
 #[test]
-fn compressed_layout_is_recognised_not_misread() {
+fn unknown_data_layout_is_recognised_not_misread() {
     let mut image = IMAGE.to_vec();
     // big.bin: nid 42, metadata block 0, compact inode at 42 * 32 = 0x540.
     let nid_offset = 42 * 32;
-    let format: u16 = 1 << 1; // datalayout 1: compressed full, compact inode
+    let format: u16 = 5 << 1; // reserved datalayout 5
     image[nid_offset..nid_offset + 2].copy_from_slice(&format.to_le_bytes());
 
     let mut fs = Erofs::mount(image.as_slice()).expect("mount");
     let big = fs.lookup_path("/big.bin").expect("big.bin");
-    assert_eq!(big.layout, DataLayout::CompressedFull);
-    assert_eq!(fs.read_file(&big), Err(Error::UnsupportedLayout(1)));
+    assert_eq!(big.layout, DataLayout::Unknown(5));
+    assert_eq!(fs.read_file(&big), Err(Error::UnsupportedLayout(5)));
 }
 
 #[test]

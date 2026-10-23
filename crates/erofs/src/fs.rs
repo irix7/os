@@ -7,6 +7,8 @@ use alloc::vec::Vec;
 use core::cmp::min;
 
 use crate::codec::{u16_at, u64_at, LittleEndian};
+#[cfg(feature = "lz4")]
+use crate::compress::CompressedInfo;
 use crate::error::{Error, Result};
 use crate::inode::{DataLayout, FileType, Inode, EROFS_NULL_ADDR, INODE_SLOT_SIZE};
 use crate::superblock::{Superblock, SUPER_BASE_SIZE, SUPER_OFFSET};
@@ -120,7 +122,8 @@ impl<D: BlockDevice> Erofs<D> {
     /// Read part of an inode's data.
     ///
     /// The range is checked against the inode size.  Flat plain and flat inline
-    /// layouts are supported; compressed and chunk-based inodes return
+    /// layouts are read directly from the device; compressed inodes are mapped
+    /// and decompressed one pcluster at a time.  Chunk-based inodes return
     /// [`Error::UnsupportedLayout`].
     pub fn read_at(&mut self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<()> {
         let end = offset
@@ -166,8 +169,77 @@ impl<D: BlockDevice> Erofs<D> {
                 }
                 Ok(())
             }
+            DataLayout::CompressedFull | DataLayout::CompressedCompact => {
+                self.read_compressed_dispatch(inode, offset, buf)
+            }
             other => Err(Error::UnsupportedLayout(other.raw_bits())),
         }
+    }
+
+    /// Dispatch compressed reads, or reject them when the `lz4` feature is off.
+    fn read_compressed_dispatch(
+        &mut self,
+        inode: &Inode,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<()> {
+        #[cfg(feature = "lz4")]
+        {
+            self.read_compressed(inode, offset, buf)
+        }
+        #[cfg(not(feature = "lz4"))]
+        {
+            let _ = (offset, buf);
+            Err(Error::UnsupportedLayout(inode.layout.raw_bits()))
+        }
+    }
+
+    /// Read the compression map header for an inode.
+    #[cfg(feature = "lz4")]
+    fn compression_info(&mut self, inode: &Inode) -> Result<CompressedInfo> {
+        let map_header = inode
+            .inline_offset
+            .checked_add(7)
+            .ok_or(Error::InvalidInode("map header offset"))?
+            & !7;
+        let mut raw = [0u8; 8];
+        self.dev.read_at(map_header, &mut raw)?;
+        let Self { dev, sb } = self;
+        CompressedInfo::parse(&raw, inode, sb, &mut |offset, buf| dev.read_at(offset, buf))
+    }
+
+    /// Read a compressed range, one pcluster extent at a time.
+    ///
+    /// A read that crosses a pcluster boundary decodes each pcluster again
+    /// only when the range requires it; there is no decompression cache.
+    #[cfg(feature = "lz4")]
+    fn read_compressed(&mut self, inode: &Inode, offset: u64, buf: &mut [u8]) -> Result<()> {
+        let info = self.compression_info(inode)?;
+        let zero_padding = self.sb.has_zero_padding();
+        let blocksize = u64::from(self.sb.block_size());
+        let Self { dev, sb: _ } = self;
+        let mut read = |offset: u64, buf: &mut [u8]| dev.read_at(offset, buf);
+        let mut done = 0usize;
+        while done < buf.len() {
+            let pos = offset + done as u64;
+            let extent = info.map(inode, pos, &mut read)?;
+            let start = pos
+                .checked_sub(extent.la)
+                .ok_or(Error::InvalidCompressedData("extent offset"))?;
+            let needed = start
+                .checked_add((buf.len() - done) as u64)
+                .ok_or(Error::OutOfBounds)?;
+            let data = info.decompress(&extent, needed, zero_padding, blocksize, &mut read)?;
+            let start = usize::try_from(start)
+                .map_err(|_| Error::InvalidCompressedData("extent offset"))?;
+            if start >= data.len() {
+                return Err(Error::InvalidCompressedData("extent misses the read"));
+            }
+            let count = min(buf.len() - done, data.len() - start);
+            buf[done..done + count].copy_from_slice(&data[start..start + count]);
+            done += count;
+        }
+        Ok(())
     }
 
     fn read_blocks(&mut self, start_blk: u64, offset: u64, buf: &mut [u8]) -> Result<()> {

@@ -17,6 +17,11 @@ pub enum Error {
     UnsupportedFeature(u32),
     /// An inode uses a data layout this reader does not implement yet.
     UnsupportedLayout(u8),
+    /// A compressed inode uses an algorithm or mapping feature this reader
+    /// does not implement.
+    UnsupportedCompression(&'static str),
+    /// A compressed cluster was malformed.
+    InvalidCompressedData(&'static str),
     /// The superblock was internally inconsistent.
     InvalidSuperblock(&'static str),
     /// An inode was internally inconsistent.
@@ -59,6 +64,12 @@ impl fmt::Display for Error {
             }
             Self::UnsupportedLayout(layout) => {
                 write!(f, "unsupported EROFS inode data layout {layout}")
+            }
+            Self::UnsupportedCompression(what) => {
+                write!(f, "unsupported EROFS compression: {what}")
+            }
+            Self::InvalidCompressedData(reason) => {
+                write!(f, "invalid EROFS compressed data: {reason}")
             }
             Self::InvalidSuperblock(reason) => write!(f, "invalid EROFS superblock: {reason}"),
             Self::InvalidInode(reason) => write!(f, "invalid EROFS inode: {reason}"),

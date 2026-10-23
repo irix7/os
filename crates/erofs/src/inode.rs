@@ -143,7 +143,8 @@ pub struct Inode {
     pub mtime_nsec: u32,
     /// Data layout.
     pub layout: DataLayout,
-    /// First data block for flat layouts.
+    /// First data block for flat layouts; compressed block count for
+    /// compressed layouts.
     pub start_blk: u64,
     /// Inode size: 32 for compact, 64 for extended.
     pub inode_size: u8,

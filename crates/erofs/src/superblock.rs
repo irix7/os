@@ -81,7 +81,8 @@ pub struct Superblock {
     pub volume_name: [u8; 16],
     /// Incompatible feature bits.
     pub feature_incompat: u32,
-    /// LZ4 maximum distance (when compression is configured).
+    /// Compression configuration: the number of available algorithms when
+    /// `compr_cfgs` is set, the LZ4 maximum distance otherwise.
     pub lz4_max_distance: u16,
     /// Number of extra devices.
     pub extra_devices: u16,
@@ -218,6 +219,12 @@ impl Superblock {
     #[must_use]
     pub fn has_mtime(&self) -> bool {
         self.feature_compat & FEATURE_COMPAT_MTIME != 0
+    }
+
+    /// Whether compressed pclusters are zero-padded at the front.
+    #[must_use]
+    pub fn has_zero_padding(&self) -> bool {
+        self.feature_incompat & FEATURE_INCOMPAT_LZ4_0PADDING != 0
     }
 
     /// Whether the image carries an xattr name filter.

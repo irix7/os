@@ -9,14 +9,16 @@
 //!
 //! - compact and extended inodes;
 //! - flat plain and flat inline data;
+//! - compressed-full and compressed-compact inodes with LZ4 pclusters (the
+//!   `lz4` feature), including big pclusters and inline tail pclusters;
 //! - directories and symbolic links, with bounded symlink following on path
 //!   lookup;
 //! - 48-bit block addresses for flat data;
 //! - one device (the primary image).
 //!
-//! Compressed clusters, chunk-based files and metabox images are recognised and
-//! rejected with a typed error.  They are the next layer, not a silent
-//! misinterpretation.
+//! Fragments, encoded extents, interlaced pclusters, chunk-based files and
+//! metabox images are recognised and rejected with a typed error.  They are
+//! the next layer, not a silent misinterpretation.
 //!
 //! See [`docs/spec/erofs.md`](https://github.com/irix7/os/blob/main/docs/spec/erofs.md).
 
@@ -26,6 +28,8 @@
 extern crate alloc;
 
 pub mod codec;
+#[cfg(feature = "lz4")]
+mod compress;
 mod error;
 mod fs;
 mod inode;

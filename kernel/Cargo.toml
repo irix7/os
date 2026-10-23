@@ -25,7 +25,7 @@ cross = []
 
 [dependencies]
 embedded-io = { version = "0.7", default-features = false }
-erofs = { path = "../crates/erofs" }
+erofs = { path = "../crates/erofs", default-features = false }
 hpc3 = { path = "../crates/hpc3" }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384"] }
 rand_core = { version = "0.6", default-features = false }

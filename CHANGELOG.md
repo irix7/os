@@ -59,6 +59,24 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `upper`, so a caller can tell a RAM node from a lower node without reading it.  Both
   responses are bounded: a link target is capped at 512 bytes, well inside the module's
   16 KiB response buffer.
+
+- `crates/erofs`: LZ4 compressed-file support for the M4 root image.
+  Compressed-full (layout 1) and compressed-compact (layout 3) inodes are
+  decoded, including the 2-byte compact index packs, big pclusters with
+  `CBLKCNT`, and inline tail pclusters from `ztailpacking`; pclusters handle
+  `lz4_0padding` and the plain ("shifted") layout.  The LZ4 block decoder is a
+  small `no_std` implementation in the crate with no unsafe code and no new
+  dependency.  Unsupported algorithms, fragments, encoded extents and
+  interlaced pclusters return `UnsupportedCompression`; malformed headers,
+  indexes and streams return `InvalidCompressedData`, so compressed bytes are
+  never returned as file data.  Twenty-two new tests (11 integration, 11 LZ4
+  and zero-padding unit tests) run against three new reproducible
+  `mkfs.erofs -zlz4` fixtures (compact indexes, full/legacy indexes and 16 KiB
+  big pclusters); the three uncompressed fixtures are unchanged.  The `lz4`
+  feature is on by default; the kernel's HTTP EROFS command disables it because
+  the compressed image is already at the PROM budget, while the loadable
+  `erofs` and `httpd` modules enable it.  Compressed inodes reached through the
+  kernel HTTP command return `UnsupportedLayout` rather than being misread.
 - MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
   EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
   allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with
