@@ -1,4 +1,44 @@
 # cargo-deny configuration for IRIX 7.
 # Project is GPL-3.0-only. Dependencies must be GPLv3-compatible.
 
-licenses = { allow = ["MIT", "Apache-2.0", "0BSD", "ISC", "Unlicense", "BSD-2-Clause", "BSD-3-Clause", "GPL-3.0-only", "GPL-3.0-or-later", "LGPL-3.0-only", "LGPL-3.0-or-later"] }
+[licenses]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "0BSD",
+  "ISC",
+  "Unlicense",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "GPL-3.0-only",
+  "GPL-3.0-or-later",
+  "LGPL-3.0-only",
+  "LGPL-3.0-or-later",
+]
+
+# Some older crates still use the deprecated `MIT/Apache-2.0` spelling, which
+# is not a valid SPDX expression.  They are genuinely dual-licensed; state the
+# intended expression so the licence gate can read it.
+[[licenses.clarify]]
+name = "bitflags"
+version = "1.3.2"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "ff"
+version = "0.13.1"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "group"
+version = "0.13.0"
+expression = "MIT OR Apache-2.0"
+license-files = []
+
+[[licenses.clarify]]
+name = "version_check"
+version = "0.9.5"
+expression = "MIT OR Apache-2.0"
+license-files = []
