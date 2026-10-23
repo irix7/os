@@ -22,6 +22,7 @@ use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
+pub mod cache;
 pub mod capability;
 pub mod diagnostics;
 pub mod dns;

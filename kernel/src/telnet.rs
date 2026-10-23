@@ -254,7 +254,7 @@ pub fn poll() {
                                     if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) =>
                                 {
                                     // SAFETY: the image fits and its hash matched.
-                                    unsafe { Ok(crate::module::call_entry()) }
+                                    unsafe { Ok(crate::module::call_entry(captured)) }
                                 }
                                 Some(_) => Err("module hash mismatch"),
                                 None => Err("module needs a sha256"),

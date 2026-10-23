@@ -9,8 +9,6 @@
 //! service table rather than linking against kernel symbols, so the core and
 //! a module can be rebuilt independently.
 
-use core::sync::atomic::{compiler_fence, Ordering};
-
 /// Load address of the module area (kseg0, physical `0x0840_0000`).
 ///
 /// This sits inside the reserved low window, above the kernel stack top at
@@ -53,8 +51,14 @@ pub fn area() -> &'static mut [u8] {
 /// # Safety
 /// The caller must have verified the image and its hash; arbitrary code runs
 /// in kernel mode from here.
-pub unsafe fn call_entry() -> i32 {
-    compiler_fence(Ordering::SeqCst);
+pub unsafe fn call_entry(len: usize) -> i32 {
+    // The image was written through the cacheable kseg0 mapping.  Write the
+    // data cache back to RAM and invalidate stale instruction lines before the
+    // first fetch of module code.
+    crate::cache::dcache_writeback_invalidate(MODULE_BASE, len);
+    crate::cache::icache_invalidate(MODULE_BASE, len);
+    crate::cache::sync();
+
     let entry: Entry = core::mem::transmute(MODULE_BASE);
     entry(&SERVICES)
 }

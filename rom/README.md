@@ -57,6 +57,9 @@ inside the 512 KiB PROM window but with little headroom.
 | `0xBFC00000`+ | kernel payload (compressed or not), copied to RAM at boot |
 | `0x08040000` | kernel image (`0x88040000` kseg0) |
 | `0x08200000` | kernel stack top (`0x88200000` kseg0) |
+| `0x08400000` | module load area, 2 MiB (`0x88400000` kseg0) |
+| `0x08600000` | Seeq device DMA descriptors and buffers (`0xA8600000` kseg1, uncached) |
+| `0x08B00000` | first frame allocator page |
 | `0x08000000` | DRAM base (`LOMEM_BASE`); physical `0x00000000` is an alias for it |
 
 The low 512 KiB of physical address space is a special alias window: physical

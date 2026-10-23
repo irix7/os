@@ -87,6 +87,11 @@ pub fn init() {
             write_volatile(VECTOR.add(i), read_volatile(src.add(i)));
         }
     }
+    // kseg0 is cacheable: publish the written bytes to memory and drop any
+    // stale instruction lines before the vector can be taken.
+    crate::cache::dcache_writeback_invalidate(VECTOR as usize, len);
+    crate::cache::icache_invalidate(VECTOR as usize, len);
+    crate::cache::sync();
 
     // Acknowledge any stale Compare match, then arm the next one.
     let count = traps::count_read();

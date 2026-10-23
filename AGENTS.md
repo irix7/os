@@ -70,8 +70,9 @@ Consequences:
 ## Cache coherency
 
 - `CP0 Config.K0 = 3`: kseg0 is **cacheable**. DMA-visible memory must be accessed through
-  the kseg1 alias (uncached) or maintained explicitly; the Seeq descriptors and frame
-  buffers are the outstanding case.
+  the kseg1 alias (uncached) or maintained explicitly. The Seeq device and its descriptors
+  and frame buffers now live at kseg1 `0xA860_0000` (physical `0x0860_0000`), immediately
+  after the 2 MiB module area.
 - Code written into RAM and executed (modules) needs a data-cache writeback and an
   instruction-cache invalidate before the call. A compiler fence is not enough on real
   hardware.

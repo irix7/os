@@ -40,7 +40,8 @@ area (2 MiB) and the network.
 | Cache | kseg0 is cacheable; the loader must write back the data cache and invalidate the instruction cache before the call |
 
 The module is linked for that exact address by its own linker script; there is no
-relocation at load time.
+relocation at load time. The Seeq device's uncached DMA structures start at physical
+`0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
 
 ## 4. ABI
 

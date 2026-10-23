@@ -7,8 +7,8 @@
 //! frame is abandoned.  That is enough for a bounded number of console
 //! operations and keeps the allocator trivial.
 //!
-//! kseg0 is mapped uncached (CP0 Config.K0 = 0), so the heap needs no cache
-//! maintenance to stay coherent with DMA.
+//! The heap is CPU-only, so the cacheable kseg0 mapping needs no maintenance
+//! for it.  DMA-visible buffers live in the Seeq device's uncached alias.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;

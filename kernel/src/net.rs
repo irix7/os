@@ -33,6 +33,13 @@ use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4C
 /// Seeq register window, kseg1 virtual base.
 const SEEQ_BASE: *mut u8 = 0xBFBD_4000 as *mut u8;
 
+/// The Seeq device (DMA descriptors and frame buffers) is placed in the kseg1
+/// alias of the reserved window.  kseg0 is cacheable (`Config.K0 = 3`), so
+/// keeping the DMA-visible structure uncached avoids cache maintenance on every
+/// descriptor and frame.  Physical `0x0860_0000` is immediately after the 2 MiB
+/// module area and below the frame allocator's first page.
+const SEEQ_AREA: usize = 0xA860_0000;
+
 /// HPC3 enet DMA engines (kseg1).
 const RX_ENGINE: *mut u32 = 0xBFB9_4000 as *mut u32;
 const TX_ENGINE: *mut u32 = 0xBFB9_6000 as *mut u32;
@@ -466,10 +473,17 @@ struct Stack {
     dhcp: Option<SocketHandle>,
 }
 
-/// The Seeq device (and therefore its DMA descriptors and frame buffers)
-/// lives in .bss, not on the stack.
-static mut SEEQ: Option<SeeqDevice> = None;
+/// The Seeq device lives at [`SEEQ_AREA`], not in .bss: its descriptors and
+/// buffers are DMA-visible and must be uncached.
+static mut SEEQ: *mut SeeqDevice = core::ptr::null_mut();
 static mut STACK: Option<Stack> = None;
+
+/// The live Seeq device.
+fn seeq() -> Option<&'static mut SeeqDevice> {
+    // SAFETY: the pointer is written once during init() and the kernel is
+    // single-threaded.
+    unsafe { SEEQ.as_mut() }
+}
 
 /// Bring up the Seeq, run DHCP and publish the live stack.
 pub fn init() {
@@ -481,11 +495,15 @@ pub fn init() {
         }
     };
 
-    // SAFETY: single-threaded bring-up; the device is stored once.
+    // Copy the device into the uncached alias and use only that copy from now
+    // on.  The stack copy is dead after this point.
+    let ptr = SEEQ_AREA as *mut SeeqDevice;
+    // SAFETY: the area is reserved for this device, aligned, and written once.
     unsafe {
-        SEEQ = Some(dev);
+        ptr.write(dev);
+        SEEQ = ptr;
     }
-    let seeq = unsafe { SEEQ.as_mut().unwrap() };
+    let seeq = seeq().unwrap();
     seeq.start();
 
     crate::print_str("network: mac ");
@@ -561,7 +579,7 @@ pub fn poll() {
     let now = clock_now();
     // SAFETY: single-threaded kernel; both statics are initialised by init().
     unsafe {
-        if let (Some(stack), Some(dev)) = (STACK.as_mut(), SEEQ.as_mut()) {
+        if let (Some(stack), Some(dev)) = (STACK.as_mut(), seeq()) {
             let _ = stack.iface.poll(now, dev, &mut stack.sockets);
 
             // Service the DHCP socket so renewals and rebinds are applied to
@@ -622,7 +640,7 @@ pub fn with_stack<R>(f: impl FnOnce(&mut Interface, &mut SocketSet<'static>) -> 
 /// be used concurrently with `poll`, `sockets_with` or `with_stack`.
 pub unsafe fn raw_stack() -> Option<(*mut Interface, *mut SocketSet<'static>, *mut SeeqDevice)> {
     let stack = STACK.as_mut()?;
-    let dev = SEEQ.as_mut()?;
+    let dev = seeq()?;
     Some((
         &mut stack.iface as *mut Interface,
         &mut stack.sockets as *mut SocketSet<'static>,
@@ -647,8 +665,8 @@ pub unsafe fn poll_raw(
 
 /// The Seeq station address.
 pub fn mac_address() -> [u8; 6] {
-    unsafe {
-        match SEEQ.as_ref() {
+    {
+        match seeq() {
             Some(dev) => {
                 let mut mac = [0u8; 6];
                 mac.copy_from_slice(dev.mac_address().as_bytes());
