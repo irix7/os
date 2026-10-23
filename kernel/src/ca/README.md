@@ -14,7 +14,7 @@ Notes:
   via Cloudflare) send a leaf and ECDSA intermediates; the `p384` feature of
   `embedded-tls` verifies the SHA-384 signatures.
 - Cloudflare also appends a cross-signed copy of this root issued by
-  _AAA Certificate Services_. The kernel trims that trailing entry before
+  *AAA Certificate Services*. The kernel trims that trailing entry before
   verification (`trim_cross_signed_root` in `src/tls.rs`), because the chain
   from the leaf to this root is already complete.
 - Validity dates are checked only when the wall clock has been set by NTP;
