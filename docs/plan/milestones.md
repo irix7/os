@@ -149,7 +149,7 @@ register dump.
 - [ ] 16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.
 - [ ] Capability table with generation counters and rights.
 - [ ] EDF and fair run queues; `is_running` debug assertion.
-- [ ] Panic screen with registers, stack trace and a serial dump.
+- [x] Panic screen with registers, stack trace and a serial dump.
 - [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
 - [ ] Real kernel idle path / throttle so an idle guest does not peg host CPU
       (follow up on iris idle-CPU issue).

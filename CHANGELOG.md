@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- A panic screen: the handler prints the panic message and source location, CP0 Cause,
+  EPC, Status and BadVAddr, the stack pointer and return address, and eight raw stack
+  words, then disables interrupts and parks in `wait`.  The telnet console gains a
+  `panic` test hook that triggers it deliberately.
 - `rom/tools/mcp-smoke.py` now exercises the module tools, the filesystem
   metadata and the autoload loop: `block.read` target 1 LBA 0 (the
   `4d436f6d`/`MComprHD` volume header), `fs.read /etc/motd`, `fs.list /`

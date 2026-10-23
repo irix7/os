@@ -683,10 +683,57 @@ pub fn reboot() -> ! {
 
 #[cfg(not(test))]
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    println("kernel panic");
+fn panic(info: &PanicInfo) -> ! {
+    use core::fmt::Write as _;
+
+    struct Console;
+    impl core::fmt::Write for Console {
+        fn write_str(&mut self, text: &str) -> core::fmt::Result {
+            write_str(text);
+            Ok(())
+        }
+    }
+
+    let mut out = Console;
+    let _ = writeln!(out, "kernel panic: {info}");
+
+    let cause = traps::cause_read();
+    let epc = traps::epc_read();
+    let status = traps::status_read();
+    let badvaddr = traps::badvaddr_read();
+    let _ = writeln!(
+        out,
+        "  cause=0x{cause:08x} epc=0x{epc:08x} status=0x{status:08x} badvaddr=0x{badvaddr:08x}"
+    );
+
+    let sp: usize;
+    let ra: usize;
+    // SAFETY: reading $sp and $ra is side-effect free.  The values are only
+    // dereferenced below after a range and alignment check.
+    unsafe {
+        core::arch::asm!("addiu {0}, $sp, 0", out(reg) sp);
+        core::arch::asm!("addiu {0}, $ra, 0", out(reg) ra);
+    }
+    let _ = writeln!(out, "  sp=0x{sp:08x} ra=0x{ra:08x}");
+    if (0x8000_0000..0x9000_0000).contains(&sp) && sp % 4 == 0 {
+        let _ = write!(out, "  stack:");
+        for index in 0..8 {
+            let address = sp + index * 4;
+            // SAFETY: the range check above keeps this in the kernel's direct
+            // mapped window; a corrupted but in-range stack may still fault,
+            // so the dump is deliberately short.
+            let word = unsafe { core::ptr::read_volatile(address as *const u32) };
+            let _ = write!(out, " {word:08x}");
+        }
+        let _ = writeln!(out);
+    }
+
+    let _ = traps::status_write(status & !1);
     loop {
-        core::hint::spin_loop();
+        // SAFETY: interrupts are disabled; `wait` is a parking instruction.
+        unsafe {
+            core::arch::asm!("wait", options(nomem, nostack));
+        }
     }
 }
 
