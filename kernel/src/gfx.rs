@@ -29,6 +29,43 @@ pub const SCREEN_WIDTH: i32 = 1280;
 /// Displayable height in pixels.
 pub const SCREEN_HEIGHT: i32 = 1024;
 
+/// CPU-side shadow of the visible framebuffer: BGR, top-down, 3 bytes/pixel.
+///
+/// It lives in the reserved low window (kseg0 `0x8870_0000`, physical
+/// `0x0870_0000`), between the 2 MiB module area and the frame allocator's
+/// first page at `0x08B0_0000`.  The REX3 primitive wrappers keep it in step;
+/// the MCP screen service reads it.
+const SHADOW_BASE: usize = 0x8870_0000;
+const SHADOW_STRIDE: usize = SCREEN_WIDTH as usize * 3;
+const SHADOW_SIZE: usize = SHADOW_STRIDE * SCREEN_HEIGHT as usize;
+
+fn shadow_put(x: i32, y: i32, r: u32, g: u32, b: u32) {
+    if x < 0 || y < 0 || x >= SCREEN_WIDTH || y >= SCREEN_HEIGHT {
+        return;
+    }
+    let off = SHADOW_BASE + y as usize * SHADOW_STRIDE + x as usize * 3;
+    // SAFETY: the shadow is reserved for this purpose; the kernel is
+    // single-threaded.  BMP order is B, G, R.
+    unsafe {
+        *(off as *mut u8) = b as u8;
+        *((off + 1) as *mut u8) = g as u8;
+        *((off + 2) as *mut u8) = r as u8;
+    }
+}
+
+/// Copy `out.len()` bytes of the shadow starting at `offset`.
+pub fn shadow_read(offset: usize, out: &mut [u8]) -> usize {
+    if offset >= SHADOW_SIZE {
+        return 0;
+    }
+    let n = out.len().min(SHADOW_SIZE - offset);
+    // SAFETY: both regions are valid for n bytes.
+    unsafe {
+        core::ptr::copy_nonoverlapping((SHADOW_BASE + offset) as *const u8, out.as_mut_ptr(), n);
+    }
+    n
+}
+
 // Register offsets.
 const DRAWMODE1: u32 = 0x0000;
 const DRAWMODE0: u32 = 0x0004;
@@ -132,6 +169,10 @@ fn xy(x: i32, y: i32) -> u32 {
 /// Bring the drawing engine up: reset the pipeline state and leave it
 /// configured for 24-bit RGB block and span fills.
 pub fn init() {
+    // SAFETY: the shadow is reserved for the renderer.
+    unsafe {
+        core::ptr::write_bytes(SHADOW_BASE as *mut u8, 0, SHADOW_SIZE);
+    }
     reg(LSMODE, 0);
     reg(LSPATTERN, 0);
     reg(LSPATSAVE, 0);
@@ -175,6 +216,11 @@ pub fn init() {
 
 /// Fill the rectangle `(x0, y0)..=(x1, y1)` with an RGB colour.
 pub fn fill_rect(x0: i32, y0: i32, x1: i32, y1: i32, r: u32, g: u32, b: u32) {
+    for y in y0.max(0)..=y1.min(SCREEN_HEIGHT - 1) {
+        for x in x0.max(0)..=x1.min(SCREEN_WIDTH - 1) {
+            shadow_put(x, y, r, g, b);
+        }
+    }
     wait_idle();
     reg(DRAWMODE1, DM1_RGB24);
     reg(WRMASK, 0x00FF_FFFF);
@@ -190,6 +236,9 @@ pub fn fill_rect(x0: i32, y0: i32, x1: i32, y1: i32, r: u32, g: u32, b: u32) {
 pub fn fill_span(x0: i32, x1: i32, y: i32, r: u32, g: u32, b: u32) {
     if x1 < x0 {
         return;
+    }
+    for x in x0.max(0)..=x1.min(SCREEN_WIDTH - 1) {
+        shadow_put(x, y, r, g, b);
     }
     wait_idle();
     reg(DRAWMODE1, DM1_RGB24);

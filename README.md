@@ -38,7 +38,7 @@ Bootable on iris. A MIPS III assembly PROM replacement sizes and tests DRAM, ser
 decompresses the n32 kernel into RAM and jumps to it. The kernel owns the machine: Seeq 8003
 networking, DHCP/DNS, NTP, ICMP, HTTP and HTTPS (TLS 1.3 with certificate verification), a
 telnet console on port 23, a wall clock seeded from the DS1386 RTC, a CP0-timer idle path, and a loader for modules fetched over
-HTTPS into RAM. The graphical boot menu and diagnostics run on the REX3. A loadable
+HTTPS into RAM. The graphical boot menu and diagnostics run on the REX3. A CPU shadow of the REX3 output is streamed as a BMP by the MCP module. A loadable
 module serves an MCP control plane (JSON-RPC `initialize`, `ping`, `tools/list`,
 `tools/call`) at `POST /mcp`, with `status`, `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`
 tools.
