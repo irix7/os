@@ -65,6 +65,17 @@ jobs:
             echo "No Rust workspace yet; skipping."
           fi
 
+  tools:
+    name: MCP smoke tool tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python tests
+        run: python3 -m unittest discover -s rom/tools -p 'test_*.py'
+
   cross:
     name: Cross-build (M0 gate)
     runs-on: ubuntu-latest
