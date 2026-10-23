@@ -30,16 +30,16 @@ pub struct Summary {
 }
 
 /// Fetch `path` from `ip:port` and return the status and body length.
-pub fn get(ip: Ipv4Address, port: u16, path: &str) -> Result<Summary, &'static str> {
+pub fn get(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary, &'static str> {
     if FETCHING.swap(true, Ordering::SeqCst) {
         return Err("a fetch is already running");
     }
-    let result = get_inner(ip, port, path);
+    let result = get_inner(ip, port, host, path);
     FETCHING.store(false, Ordering::SeqCst);
     result
 }
 
-fn get_inner(ip: Ipv4Address, port: u16, path: &str) -> Result<Summary, &'static str> {
+fn get_inner(ip: Ipv4Address, port: u16, host: &str, path: &str) -> Result<Summary, &'static str> {
     let handle = net::sockets_with(|sockets| {
         // SAFETY: the buffers are static and used by one fetch at a time.
         let rx = unsafe { &mut HTTP_RX_BUF[..] };
@@ -90,7 +90,7 @@ fn get_inner(ip: Ipv4Address, port: u16, path: &str) -> Result<Summary, &'static
     append(&mut req, &mut n, b"GET ")?;
     append(&mut req, &mut n, path.as_bytes())?;
     append(&mut req, &mut n, b" HTTP/1.0\r\nHost: ")?;
-    append_ipv4(&mut req, &mut n, ip)?;
+    append(&mut req, &mut n, host.as_bytes())?;
     if port != 80 {
         append(&mut req, &mut n, b":")?;
         append_decimal(&mut req, &mut n, port as u32)?;
@@ -291,18 +291,6 @@ fn parse_status(headers: &[u8]) -> u16 {
     digits
         .iter()
         .fold(0u16, |acc, &b| acc * 10 + (b - b'0') as u16)
-}
-
-/// Append a dotted-decimal IPv4 address.
-fn append_ipv4(buf: &mut [u8], len: &mut usize, ip: Ipv4Address) -> Result<(), &'static str> {
-    let octets = ip.octets();
-    for (i, octet) in octets.iter().enumerate() {
-        if i > 0 {
-            append(buf, len, b".")?;
-        }
-        append_decimal(buf, len, *octet as u32)?;
-    }
-    Ok(())
 }
 
 /// Append an unsigned decimal number.

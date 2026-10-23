@@ -21,6 +21,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod capability;
+pub mod dns;
 pub mod font;
 pub mod frames;
 pub mod gfx;

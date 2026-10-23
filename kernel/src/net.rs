@@ -385,6 +385,7 @@ fn clock_tick() {
 struct DhcpLease {
     address: Ipv4Cidr,
     router: Option<Ipv4Address>,
+    dns: Option<Ipv4Address>,
 }
 
 /// Run DHCPv4 on an existing interface and return the assigned lease.
@@ -411,6 +412,7 @@ fn dhcpv4_configure(
                 return Some(DhcpLease {
                     address: config.address,
                     router: config.router,
+                    dns: config.dns_servers.first().copied(),
                 });
             }
             Some(dhcpv4::Event::Deconfigured) => {
@@ -455,6 +457,7 @@ struct Stack {
     iface: Interface,
     sockets: SocketSet<'static>,
     ip: Option<Ipv4Address>,
+    dns: Option<Ipv4Address>,
 }
 
 /// The Seeq device (and therefore its DMA descriptors and frame buffers)
@@ -509,12 +512,18 @@ pub fn init() {
             if let Some(gateway) = lease.router {
                 let _ = iface.routes_mut().add_default_ipv4_route(gateway);
             }
+            if let Some(dns) = lease.dns {
+                crate::print_str("network: dns ");
+                print_ipv4(dns);
+                crate::println("");
+            }
 
             unsafe {
                 STACK = Some(Stack {
                     iface,
                     sockets: socket_set,
                     ip: Some(ip),
+                    dns: lease.dns,
                 });
             }
         }
@@ -525,10 +534,16 @@ pub fn init() {
                     iface,
                     sockets: socket_set,
                     ip: None,
+                    dns: None,
                 });
             }
         }
     }
+}
+
+/// The DHCP-provided DNS server, if any.
+pub fn dns_server() -> Option<Ipv4Address> {
+    unsafe { STACK.as_ref().and_then(|s| s.dns) }
 }
 
 /// Drive the interface.  Call from the idle loop.

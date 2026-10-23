@@ -45,13 +45,15 @@ struct Console {
 
 /// Parsed `ntp <ip>[:port]` request.
 struct NtpRequest {
-    ip: Ipv4Address,
+    host: [u8; 64],
+    host_len: usize,
     port: u16,
 }
 
 /// Parsed `http <ip>:<port><path>` request.
 struct HttpRequest {
-    ip: Ipv4Address,
+    host: [u8; 64],
+    host_len: usize,
     port: u16,
     path: [u8; 96],
     path_len: usize,
@@ -95,7 +97,11 @@ pub fn poll() {
     let request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_http.take());
     if let Some(req) = request {
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
-        let result = crate::http::get(req.ip, req.port, path);
+        let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
+        let result = match resolve_host(&req.host[..req.host_len]) {
+            Some(ip) => crate::http::get(ip, req.port, host, path),
+            None => Err("unknown host"),
+        };
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
         if let Some(handle) = handle {
             net::sockets_with(|sockets| {
@@ -130,21 +136,25 @@ pub fn poll() {
     // Run any deferred NTP query, for the same reason.
     let ntp_request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_ntp.take());
     if let Some(req) = ntp_request {
-        let result = crate::ntp::query(req.ip, req.port);
+        let resolved = resolve_host(&req.host[..req.host_len]);
+        let result = resolved.and_then(|ip| crate::ntp::query(ip, req.port));
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
         if let Some(handle) = handle {
             net::sockets_with(|sockets| {
                 let sock = sockets.get_mut::<TcpSocket>(handle);
                 let mut w = SocketWriter { sock };
-                match result {
-                    Some(unix) => {
+                match (resolved, result) {
+                    (Some(_), Some(unix)) => {
                         let mut buf = [0u8; 20];
                         let n = crate::ntp::format_utc(unix, &mut buf);
                         let text = core::str::from_utf8(&buf[..n]).unwrap_or("?");
                         let _ = write!(w, "ntp: {} UTC ({})\r\n", text, unix);
                     }
-                    None => {
+                    (Some(_), None) => {
                         let _ = w.write_str("ntp: no reply\r\n");
+                    }
+                    (None, _) => {
+                        let _ = w.write_str("ntp: unknown host\r\n");
                     }
                 }
                 let _ = w.sock.send_slice(b"kernel> ");
@@ -465,14 +475,16 @@ fn parse_http(arg: &[u8]) -> Option<HttpRequest> {
     let slash = rest.find('/')?;
     let (port_str, path) = rest.split_at(slash);
     let port: u16 = port_str.parse().ok()?;
-    let ip = parse_ipv4(host)?;
-    if path.is_empty() || path.len() > 96 {
+    if host.is_empty() || host.len() > 64 || path.is_empty() || path.len() > 96 {
         return None;
     }
+    let mut host_buf = [0u8; 64];
+    host_buf[..host.len()].copy_from_slice(host.as_bytes());
     let mut buf = [0u8; 96];
     buf[..path.len()].copy_from_slice(path.as_bytes());
     Some(HttpRequest {
-        ip,
+        host: host_buf,
+        host_len: host.len(),
         port,
         path: buf,
         path_len: path.len(),
@@ -503,8 +515,24 @@ fn parse_ntp(arg: &[u8]) -> Option<NtpRequest> {
         Some((host, port)) => (host, port.parse().ok()?),
         None => (s, 123),
     };
+    if host.is_empty() || host.len() > 64 {
+        return None;
+    }
+    let mut host_buf = [0u8; 64];
+    host_buf[..host.len()].copy_from_slice(host.as_bytes());
     Some(NtpRequest {
-        ip: parse_ipv4(host)?,
+        host: host_buf,
+        host_len: host.len(),
         port,
     })
+}
+
+/// Resolve a host name or dotted-decimal address.
+fn resolve_host(host: &[u8]) -> Option<Ipv4Address> {
+    let name = core::str::from_utf8(host).ok()?;
+    if let Some(ip) = parse_ipv4(name) {
+        return Some(ip);
+    }
+    let server = net::dns_server()?;
+    crate::dns::resolve(name, server)
 }
