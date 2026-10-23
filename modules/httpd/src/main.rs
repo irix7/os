@@ -24,6 +24,8 @@ pub struct Services {
     pub tcp_send: unsafe extern "C" fn(u32, *const u8, usize) -> isize,
     pub tcp_close: extern "C" fn(u32),
     pub tcp_abort: extern "C" fn(u32),
+    pub console_read: unsafe extern "C" fn(u64, *mut u8, usize) -> isize,
+    pub console_total: extern "C" fn() -> u64,
 }
 
 #[repr(C)]
@@ -72,7 +74,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     let Some(services) = (unsafe { services.as_ref() }) else {
         return &ERROR_VTABLE;
     };
-    if services.version < 3 {
+    if services.version < 4 {
         return &ERROR_VTABLE;
     }
     let message = b"mcp: listening on port 80\n";
@@ -327,7 +329,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest uptime\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest uptime\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}}]}}");
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");
@@ -353,6 +355,27 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}");
+                }
+                Some(b"serial.read") => {
+                    let total = (services.console_total)();
+                    let offset =
+                        json_u64(body, b"\"offset\"").unwrap_or(total.saturating_sub(2048));
+                    let length = json_u64(body, b"\"length\"").unwrap_or(1024).min(1024) as usize;
+                    let mut data = [0u8; 1024];
+                    let n = unsafe { (services.console_read)(offset, data.as_mut_ptr(), length) };
+                    if n < 0 {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(
+                            b",\"error\":{\"code\":-32603,\"message\":\"console read failed\"}}",
+                        );
+                    } else {
+                        w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                        w.push(id);
+                        w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":");
+                        w.json_string(&data[..n as usize]);
+                        w.push(b"}]}}");
+                    }
                 }
                 _ => {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -402,6 +425,27 @@ fn json_id(body: &[u8]) -> &[u8] {
         }
     }
     &body[start..p]
+}
+
+fn json_u64(body: &[u8], key: &[u8]) -> Option<u64> {
+    let mut p = find(body, key)? + key.len();
+    while p < body.len() && (body[p] == b' ' || body[p] == b':') {
+        p += 1;
+    }
+    let mut value = 0u64;
+    let mut any = false;
+    while p < body.len() && body[p].is_ascii_digit() {
+        value = value
+            .saturating_mul(10)
+            .saturating_add((body[p] - b'0') as u64);
+        p += 1;
+        any = true;
+    }
+    if any {
+        Some(value)
+    } else {
+        None
+    }
 }
 
 fn json_string<'a>(body: &'a [u8], key: &[u8]) -> Option<&'a [u8]> {

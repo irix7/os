@@ -22,12 +22,14 @@ control plane. It implements:
 
 - `POST /mcp` with JSON-RPC 2.0 `initialize` (echoing the client's `protocolVersion`,
   default `2026-07-28`), `ping`, `tools/list` and `tools/call`;
-- tools `status` (guest uptime), `echo` and `console` (write a line to the guest console);
+- tools `status` (guest uptime), `echo`, `console` (write a line to the guest console) and
+  `serial.read` (the kernel's 8 KiB serial ring, from an absolute offset);
 - `GET /` as a plain status page;
 - guest port 80, forwarded to host `8088` by the iris rig.
 
 It does **not** yet implement bearer-token authentication, sessions, SSE, resources,
-`serial.*`, `screen.capture`, `system.*`, or the dotted tool names. It is a prototype of
+`screen.capture`, `system.*`, or the dotted tool names.  The serial ring starts at the
+kernel entry, so the ROM's own banner is not included. It is a prototype of
 the transport and tool loop, not a conforming server; the rest of this document is the
 target.
 

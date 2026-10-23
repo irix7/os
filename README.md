@@ -40,7 +40,7 @@ networking, DHCP/DNS, NTP, ICMP, HTTP and HTTPS (TLS 1.3 with certificate verifi
 telnet console on port 23, a CP0-timer idle path, and a loader for modules fetched over
 HTTPS into RAM. The graphical boot menu and diagnostics run on the REX3. A loadable
 module serves an MCP control plane (JSON-RPC `initialize`, `ping`, `tools/list`,
-`tools/call`) at `POST /mcp`, with `status`, `echo` and `console` tools.
+`tools/call`) at `POST /mcp`, with `status`, `echo`, `console` and `serial.read` tools.
 
 The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
 tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).

@@ -104,7 +104,52 @@ fn tx_ready() -> bool {
     rd(RR0) & 0x04 != 0
 }
 
+/// Serial output ring, so a module (the MCP server) can read the console
+/// without a second driver.  It records every byte written to the Z85C30.
+const CONSOLE_LOG_SIZE: usize = 8192;
+static mut CONSOLE_LOG: [u8; CONSOLE_LOG_SIZE] = [0; CONSOLE_LOG_SIZE];
+static mut CONSOLE_HEAD: usize = 0;
+static mut CONSOLE_TOTAL: u64 = 0;
+
+fn console_log_byte(b: u8) {
+    // SAFETY: single-threaded kernel; the ring is only touched here and in
+    // console_read, which never runs concurrently.
+    unsafe {
+        CONSOLE_LOG[CONSOLE_HEAD] = b;
+        CONSOLE_HEAD = (CONSOLE_HEAD + 1) % CONSOLE_LOG_SIZE;
+        CONSOLE_TOTAL = CONSOLE_TOTAL.wrapping_add(1);
+    }
+}
+
+/// Total bytes ever written to the serial console.
+pub fn console_total() -> u64 {
+    // SAFETY: single-threaded.
+    unsafe { CONSOLE_TOTAL }
+}
+
+/// Copy serial output starting at absolute `offset` into `dst`.
+///
+/// Offsets older than the ring are clamped to the oldest retained byte.
+pub fn console_read(offset: u64, dst: &mut [u8]) -> usize {
+    // SAFETY: single-threaded; `offset` is bounded below.
+    unsafe {
+        let total = CONSOLE_TOTAL;
+        let size = CONSOLE_LOG_SIZE as u64;
+        let oldest = total.saturating_sub(size);
+        let start = offset.max(oldest);
+        if start >= total {
+            return 0;
+        }
+        let count = ((total - start) as usize).min(dst.len());
+        for (i, slot) in dst.iter_mut().take(count).enumerate() {
+            *slot = CONSOLE_LOG[((start + i as u64) % size) as usize];
+        }
+        count
+    }
+}
+
 pub fn write_byte(b: u8) {
+    console_log_byte(b);
     while !tx_ready() {
         core::hint::spin_loop();
     }

@@ -24,7 +24,7 @@ pub const MODULE_BASE: usize = 0x8840_0000;
 pub const MODULE_MAX: usize = 0x0020_0000; // 2 MiB
 
 /// Service table ABI version.
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// Service table passed to a module entry point.
 ///
@@ -52,6 +52,10 @@ pub struct Services {
     pub tcp_close: extern "C" fn(u32),
     /// Abort the connection (send RST).
     pub tcp_abort: extern "C" fn(u32),
+    /// Copy serial output from absolute `offset`; returns bytes copied.
+    pub console_read: unsafe extern "C" fn(u64, *mut u8, usize) -> isize,
+    /// Total bytes ever written to the serial console.
+    pub console_total: extern "C" fn() -> u64,
 }
 
 /// What a module returns from its entry point.
@@ -83,6 +87,8 @@ static SERVICES: Services = Services {
     tcp_send: service_tcp_send,
     tcp_close: service_tcp_close,
     tcp_abort: service_tcp_abort,
+    console_read: service_console_read,
+    console_total: service_console_total,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -326,6 +332,19 @@ extern "C" fn service_tcp_close(slot: u32) {
         return;
     };
     let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).close());
+}
+
+unsafe extern "C" fn service_console_read(offset: u64, ptr: *mut u8, len: usize) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    // SAFETY: the module owns the destination buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    crate::console_read(offset, buf) as isize
+}
+
+extern "C" fn service_console_total() -> u64 {
+    crate::console_total()
 }
 
 extern "C" fn service_tcp_abort(slot: u32) {
