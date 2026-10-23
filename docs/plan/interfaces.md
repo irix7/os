@@ -19,7 +19,7 @@ version, not a silent edit.
 | Display protocol | `../spec/display-protocol.md` | planned | display | 0.1 | golden frames |
 | Audio protocol | `../spec/audio.md` | planned | display | 0.1 | latency/glitch |
 | X11 wire profile | `../spec/x11.md` | planned | display | 0.1 | X Test Suite |
-| EROFS on-disk profile | `../spec/erofs.md` | planned | storage | 0.1 | `fsck.erofs` oracle |
+| EROFS on-disk profile | [`../spec/erofs.md`](../spec/erofs.md) | draft | storage | 0.1 | golden `mkfs.erofs` fixtures + `fsck.erofs` |
 | XFS v4 read-only profile | `../spec/xfs.md` | planned | storage | 0.1 | tree diff |
 | I7FS on-disk format | `../spec/i7fs.md` | planned | storage | 0.1 | fsck + crash tests |
 
