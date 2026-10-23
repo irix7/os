@@ -468,6 +468,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 erofs [http|https]://host:port/path [sha256=hex] [info|ls|cat] [path]\r\n\
                   \x20               read an EROFS image over HTTP or HTTPS\r\n\
                   \x20 boot          continue booting\r\n\
+                  \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
         }
@@ -547,6 +548,10 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
         b"boot" => {
             let _ = sock.send_slice(b"booting\r\n");
             BOOT_REQUESTED.store(true, Ordering::SeqCst);
+        }
+        b"panic" => {
+            let _ = sock.send_slice(b"deliberate panic from the console\r\n");
+            panic!("deliberate panic from the console");
         }
         b"reboot" => {
             let _ = sock.send_slice(b"rebooting\r\n");
