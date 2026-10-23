@@ -47,7 +47,7 @@ targets, separate libcs and separate source contracts (D2, D4, D32).
 
 | Property | Native IRIX 7 | IRIX 6.5 compatibility | Kernel, ROM, modules |
 |---|---|---|---|
-| Target file | `targets/mips3-sgi-irix7-native-n32.json` (proposed, not committed here) | `targets/mips64-sgi-irix-n32.json` (proposed; o32 later) | `targets/mips3-sgi-irix7-n32.json` (existing) |
+| Target file | `targets/mips3-sgi-irix7-native-n32.json` (committed) | `targets/mips64-sgi-irix-n32.json` (proposed; o32 later) | `targets/mips3-sgi-irix7-n32.json` (existing) |
 | Rust cfg identity | `target_os = "irix7"`, `target_family = ["unix"]` | `target_os = "irix"`, `target_family = ["unix"]` | `target_os = "none"`, no `target_family` |
 | Source API | POSIX.1-2024 + selected XSI + extensions | IRIX 6.5 libc and headers | none |
 | Binary ABI | native n32 (this document) | IRIX 6.5 o32/n32 exactly | kernel/module ABI |
@@ -63,9 +63,9 @@ Rules:
 - A native build must never take a `target_os = "irix"` arm; a compat build must never take
   an `irix7` arm.  The native libc carries a compile-time assertion that it is not being
   built for `target_os = "irix"`, and the compat libc carries the inverse.
-- The target JSON is a later PR.  This document fixes the cfg identity and the ABI, not the
-  file's final field set.  The std research report recommends exactly this split
-  (report §3.4).
+- The native target JSON is committed at `targets/mips3-sgi-irix7-native-n32.json`; its
+  cfg identity is fixed here, and future field changes are ABI/toolchain changes, not
+  cosmetic edits.  The std research report recommends exactly this split (report §3.4).
 - `std` is compiler-version-locked.  The stable seam is this C ABI, not a Rust ABI; the OS
   ships a pinned toolchain and sysroot (report §4.3).
 
@@ -705,7 +705,7 @@ should implement unless review says otherwise.
 
 | # | Decision | Recommended default | Owner | Blocks |
 |---|---|---|---|---|
-| 1 | Commit the native target JSON (`os = "irix7"`, family `unix`, n32) | use `targets/mips3-sgi-irix7-native-n32.json`; do not change the kernel target | kernel / ABI | PR 2 |
+| 1 | Commit the native target JSON (`os = "irix7"`, family `unix`, n32) | **done**: `targets/mips3-sgi-irix7-native-n32.json`; the kernel target is unchanged | kernel / ABI | PR 2 |
 | 2 | Static or shared native libc | static per cell for v1; shared `libc.so.0` later | ABI | v1 |
 | 3 | TLS model | pthread keys for v1 (`has-thread-local: false`); ELF TLS later | ABI / loader | v1 |
 | 4 | Floating point | soft-float for v1; hardware FP is a separate kernel decision | kernel | v1 |

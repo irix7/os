@@ -258,7 +258,10 @@ This is grounded in `irix7/project`, not speculation.
 | Parallel path | LLVM custom target `mips3-sgi-irix7-n32` (n32/MIPS III) | codegen proven |
 | ABI | ROM and kernel are both n32/MIPS III; o32 belongs to the compatibility container | — |
 
-The local target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM path).
+The local kernel/module target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM
+path).  The hosted native target is `targets/mips3-sgi-irix7-native-n32.json`
+(`target_os = "irix7"`, Unix family); it is for the POSIX-2024 libc and Rust `std`, and
+is not used by the kernel.
 
 Current status (`stack.md` §5): codegen and `-Z build-std` for n32 are **proven**;
 the ROM boots from the PROM image and runs DHCP/NTP/HTTP under iris; the IRIX patch

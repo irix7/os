@@ -65,12 +65,10 @@ Out of scope for POSIX:
 | Goal | source portability | binary compatibility (ADR-0008) |
 | Certification | profile, not certified | not applicable |
 
-The **kernel and ROM** remain `no_std` and do not link this libc.  The target used to
-build the kernel (`targets/mips3-sgi-irix7-n32.json`, currently `target_os = "none"`) is
-not automatically the hosted target.  The hosted target must set a native OS identity
-and a Unix family for `std`; the compatibility target must stay distinct.  The exact
-triple and `target_os` spelling are an ABI decision for the std research and the native
-libc work, not something to guess here.
+The **kernel and ROM** remain `no_std` and do not link this libc.  The hosted native
+target is `targets/mips3-sgi-irix7-native-n32.json` (`target_os = "irix7"`, Unix
+family); the kernel target stays `targets/mips3-sgi-irix7-n32.json` (`target_os =
+"none"`), and the compatibility target stays separate.
 
 The draft binary contract that pins those n32 choices — symbols, layouts, `errno`, TLS,
 startup, capability entry and the extension list — is [`native-libc.md`](native-libc.md).

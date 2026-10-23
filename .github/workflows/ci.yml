@@ -132,6 +132,15 @@ jobs:
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
             cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
             --target targets/mips3-sgi-irix7-n32.json -p rom
+      - name: Build native target probe (build-std)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export PATH="$RUST_LLD_DIR:$PATH"
+          # This is the hosted native target, not the kernel target: it must expose
+          # target_os=irix7 and the unix family for the POSIX libc/std work.
+          cargo build -Z build-std=core -Zjson-target-spec \
+            --target targets/mips3-sgi-irix7-native-n32.json -p irix-elf
       - name: Build EROFS module (flat image)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"

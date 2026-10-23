@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The hosted native target `targets/mips3-sgi-irix7-native-n32.json` (`target_os =
+  "irix7"`, Unix family) for the POSIX.1-2024 libc and Rust `std`.  It is separate from
+  the kernel/module target and is exercised by a `core`/`build-std` CI probe.
 - The draft native libc ABI contract: [`docs/spec/native-libc.md`](docs/spec/native-libc.md)
   fixes the two-target split (native `target_os = "irix7"` vs IRIX 6.5 compat
   `target_os = "irix"`), the POSIX.1-2024 base profile, the selected XSI subset and the
