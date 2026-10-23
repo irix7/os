@@ -116,6 +116,80 @@ jobs:
           echo "erofs.module: $size bytes"
           test "$size" -le 2097152
 
+  modules:
+    name: Modules (flat images, 2 MiB limit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install pinned nightly + rust-src + llvm-tools
+        run: |
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
+          rustup default nightly-2026-10-03
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "modules-flat"
+      - name: Build and flatten modules
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          TARGET=targets/mips3-sgi-irix7-n32.json
+          OUT=target/modules
+          SIZES="$OUT/sizes.tsv"
+          LIMIT=2097152
+          SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
+
+          mkdir -p "$OUT"
+          : > "$SIZES"
+
+          # module directory, package, build-std set. Every module links with
+          # its own modules/<module>/linker.ld at 0x88400000.
+          while read -r module package build_std; do
+            echo "=== $module ($package, build-std=$build_std) ==="
+            CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/$module/linker.ld" \
+              cargo build --release -Z "build-std=$build_std" -Zjson-target-spec \
+                --target "$TARGET" -p "$package"
+            "$LLVM_OBJCOPY" -O binary "target/mips3-sgi-irix7-n32/release/$package" "$OUT/$module.module"
+            printf '%s\t%s\t%s\t%s\n' \
+              "$module" "$package" "$build_std" "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
+            echo
+          done <<'EOF'
+          hello  hello-module  core
+          ticker ticker-module core
+          block  block-module  core
+          httpd  httpd-module  core,alloc
+          erofs  erofs-module  core,alloc
+          EOF
+
+          echo "=== Module image sizes (limit $LIMIT bytes) ==="
+          printf '%-8s %-14s %-11s %12s %12s\n' module package build-std bytes limit
+          failed=0
+          while IFS=$'\t' read -r module package build_std size; do
+            printf '%-8s %-14s %-11s %12s %12s\n' "$module" "$package" "$build_std" "$size" "$LIMIT"
+            if [ "$size" -gt "$LIMIT" ]; then
+              echo "::error::$module.module is $size bytes, over the $LIMIT-byte module area"
+              failed=1
+            fi
+          done < "$SIZES"
+
+          {
+            echo "### Module image sizes"
+            echo
+            echo "| Module | Package | build-std | Bytes | Limit |"
+            echo "| --- | --- | --- | ---: | ---: |"
+            while IFS=$'\t' read -r module package build_std size; do
+              echo "| $module | $package | $build_std | $size | $LIMIT |"
+            done < "$SIZES"
+          } >> "$SUMMARY"
+
+          test "$failed" -eq 0
+
   docs:
     name: Docs
     runs-on: ubuntu-latest

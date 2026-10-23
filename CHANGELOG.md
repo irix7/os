@@ -20,6 +20,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   image through the TLS range device, so a SHA-256-gated image can be read from
   an HTTPS host; each range there is a fresh handshake, and the TLS record
   buffers are not yet reused between fetches.
+
+- A CI `modules` job builds all five loadable modules (`hello`, `ticker`, `block`,
+  `httpd`, `erofs`) in release with the pinned nightly, each with its own linker script
+  and `build-std` set, flattens the images with `llvm-objcopy` and fails if any exceeds
+  the 2 MiB module area. It prints a stable size table and the job summary records it.
 - MCP `fs.read` and `fs.list` tools in the `httpd` module: mount the target 2
   EROFS fixture through ABI 10 `block_read`, the `block-cache` LRU and a global
   allocator over `alloc`, then read `/etc/motd` and list `/`.  Verified with

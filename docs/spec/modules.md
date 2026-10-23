@@ -186,6 +186,12 @@ curl -s http://127.0.0.1:8088/
 prints the module's uptime. Build it by swapping `hello` for `httpd` in the commands above;
 it links the same flat image.
 
+The CI `modules` job builds every reference module (`hello`, `ticker`, `block`, `httpd` and
+`erofs`) in release with the pinned nightly, each with its own linker script, flattens the
+ELF with `llvm-objcopy -O binary` and fails if any image exceeds the 2 MiB module area. It
+uses `build-std=core` for `hello`, `ticker` and `block`, and `build-std=core,alloc` for
+`httpd` and `erofs`; that job is the authoritative list and prints the size of each image.
+
 Serve a module and load it:
 
 ```text
