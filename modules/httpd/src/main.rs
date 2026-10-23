@@ -434,34 +434,10 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                 w.push(b"}]}}");
             }
         }
-        Some(b"resources/list") => {
-            w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
-            w.push(id);
-            w.push(b",\"result\":{\"resources\":[{\"uri\":\"irix7://serial\",\"name\":\"serial\",\"description\":\"Guest serial ring\",\"mimeType\":\"text/plain\"}]}}");
-        }
         Some(b"resources/templates/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
             w.push(b",\"result\":{\"resourceTemplates\":[]}}");
-        }
-        Some(b"resources/read") => {
-            let uri = json_string(body, b"\"uri\"").unwrap_or(b"");
-            if uri != b"irix7://serial" {
-                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
-                w.push(id);
-                w.push(b",\"error\":{\"code\":-32602,\"message\":\"unknown resource\"}}");
-            } else {
-                let total = (services.console_total)();
-                let offset = total.saturating_sub(1024);
-                let mut data = [0u8; 1024];
-                let n = unsafe { (services.console_read)(offset, data.as_mut_ptr(), data.len()) };
-                let n = if n > 0 { n as usize } else { 0 };
-                w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
-                w.push(id);
-                w.push(b",\"result\":{\"contents\":[{\"uri\":\"irix7://serial\",\"mimeType\":\"text/plain\",\"text\":");
-                w.json_string(&data[..n]);
-                w.push(b"}]}}");
-            }
         }
         Some(b"tools/call") => {
             let name = json_string(body, b"\"name\"");
