@@ -505,6 +505,43 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                          id 0x{:02x}\r\n",
                         probe.revision, probe.csr, probe.asr_before, probe.asr_after, probe.own_id
                     );
+                    match crate::scsi::inquiry(1) {
+                        Ok(data) => {
+                            let vendor = core::str::from_utf8(&data[8..16]).unwrap_or("?");
+                            let product = core::str::from_utf8(&data[16..32]).unwrap_or("?");
+                            let revision = core::str::from_utf8(&data[32..36]).unwrap_or("?");
+                            let _ = write!(
+                                writer,
+                                "scsi: target 1 INQUIRY vendor `{}` product `{}` rev `{}`\r\n",
+                                vendor.trim(),
+                                product.trim(),
+                                revision.trim()
+                            );
+                            let mut sector = [0u8; 512];
+                            match crate::scsi::read_sector(1, 0, &mut sector) {
+                                Ok(()) => {
+                                    let magic = u32::from_be_bytes([
+                                        sector[0], sector[1], sector[2], sector[3],
+                                    ]);
+                                    let _ = write!(
+                                        writer,
+                                        "scsi: read block 0 magic 0x{magic:08x}\r\n"
+                                    );
+                                    let _ = writer.write_str("scsi: sector:");
+                                    for byte in &sector[..16] {
+                                        let _ = write!(writer, " {byte:02x}");
+                                    }
+                                    let _ = writer.write_str("\r\n");
+                                }
+                                Err(error) => {
+                                    let _ = write!(writer, "scsi: read block 0: {error}\r\n");
+                                }
+                            }
+                        }
+                        Err(error) => {
+                            let _ = write!(writer, "scsi: target 1: {error}\r\n");
+                        }
+                    }
                 }
                 Err(error) => {
                     let _ = write!(writer, "scsi: {error}\r\n");

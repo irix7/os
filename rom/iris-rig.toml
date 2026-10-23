@@ -25,6 +25,11 @@ board = "newport"
 heads = 1
 resolution = "1280x1024"
 
+# The internal disk used by the M4 SCSI tests.  Run iris from a directory that
+# contains scsi1.raw (normally /mnt/europa/iris).
+[scsi.1]
+path = "scsi1.raw"
+
 # Empty CD-ROM tray: the emulator's default configuration points at a
 # cdrom4.iso that is not present in this checkout.
 [scsi.4]
