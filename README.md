@@ -47,6 +47,11 @@ tools.
 The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
 tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).
 
+Module developers can use the separate
+[IRIX 7 module SDK](https://github.com/irix7/os-sdk): the ABI context and entry macros,
+a copyable template, the n32 target and linker, and a build tool that produces a flat,
+hashed module image. The SDK pins the `module-abi` crate from this repository.
+
 ## Licence
 
 GPL-3.0.
