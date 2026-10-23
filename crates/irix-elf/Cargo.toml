@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "irix-elf"
+version = "0.1.0"
+edition = "2021"
+description = "IRIX ELF32 program-header parser and load plan for IRIX 7"

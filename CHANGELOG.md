@@ -8,6 +8,22 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `crates/irix-elf`: the first M5 dependency, a `no_std` parser and load-plan
+  view for IRIX o32 and n32 ELF images.  It decodes the ELF32 big-endian MIPS
+  file header, all 32-byte program headers, the MIPS ABI in `e_flags`, the
+  `PT_INTERP` path and the `PT_DYNAMIC` header.  Every file and memory range
+  is checked with checked arithmetic against the borrowed image: short images,
+  ELF64, little-endian data, non-MIPS machines, non-loadable `e_type`, bad
+  entry sizes, tables outside the image, 32-bit overflow, `p_filesz >
+  p_memsz`, non-power-of-two `p_align`, misaligned `PT_LOAD` offsets,
+  unterminated or duplicate `PT_INTERP` and extended section numbering are
+  rejected with typed errors.  `Elf::load_plan()` exposes the `PT_LOAD`
+  segments with load address, file bytes, memory size, zero-fill length and
+  permissions; it performs no mapping, dynamic linking or relocation.  The
+  crate has no unsafe code, no allocation and no external dependencies, and
+  fifty-six host tests build synthetic images rather than committing a real
+  IRIX binary.  The contract is in `docs/spec/elf.md`.
+
 - A panic screen: the handler prints the panic message and source location, CP0 Cause,
   EPC, Status and BadVAddr, the stack pointer and return address, and eight raw stack
   words, then disables interrupts and parks in `wait`.  The telnet console gains a
