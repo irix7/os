@@ -25,6 +25,7 @@ pub mod font;
 pub mod frames;
 pub mod gfx;
 pub mod http;
+pub mod idle;
 pub mod kbd;
 pub mod menu;
 pub mod net;
@@ -445,7 +446,7 @@ pub extern "C" fn _start() -> ! {
 
     scheduler::init();
     capability::init();
-    traps::init_timer();
+    idle::init();
 
     console_println("kernel: up");
 
@@ -482,7 +483,7 @@ pub extern "C" fn _start() -> ! {
         if telnet::boot_requested() {
             break;
         }
-        scheduler::yield_cpu();
+        idle::wait();
     }
     console_write("kernel: booting ");
     console_println(menu::OPTIONS[menu::selected()]);
@@ -507,10 +508,9 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         net::poll();
         telnet::poll();
 
-        // Yield to the scheduler.
-        scheduler::yield_cpu();
-
-        core::hint::spin_loop();
+        // Park until the next timer tick; iris releases the host core while
+        // wait is outstanding and interrupts are enabled.
+        idle::wait();
     }
 }
 
