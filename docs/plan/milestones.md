@@ -216,7 +216,7 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
 - [ ] SCSI cell initialises the WD33C93 and reads blocks.
 - [ ] Block cell exposes a block-device capability and an LRU cache.
 - [ ] EROFS reader mounts the standard little-endian image; byte-order codec tested.
-- [ ] HTTP Range client fetches 64–256 KiB blocks with read-ahead.
+- [x] HTTP Range client fetches 64–256 KiB blocks with read-ahead.
 - [ ] SHA-256 verifies the image before mount.
 - [x] Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).
 - [ ] The boot path works with the disk absent and with the disk present.

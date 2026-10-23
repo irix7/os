@@ -33,6 +33,9 @@ const TARGET: u8 = 2;
 const MOTD: &str = "/etc/motd";
 /// EROFS block size passed to the cache.
 const BLOCK_SIZE: usize = 4096;
+/// The module-side read-ahead cache: 64 x 4 KiB = 256 KiB.
+const CACHE_BLOCKS: usize = 64;
+const _: () = assert!(CACHE_BLOCKS * BLOCK_SIZE == 256 * 1024);
 /// Console chunks stay below the service's 8 KiB write limit.
 const CHUNK: usize = 4096;
 /// Ceiling on the printed file, so a bad image cannot flood the console.
@@ -119,7 +122,7 @@ impl block_cache::ReadAt for Disk {
 /// The cached disk, adapted to the EROFS reader (the orphan rule keeps
 /// `erofs::BlockDevice` off the foreign `Lru` type).
 struct CachedDisk {
-    cache: Lru<Disk, 16>,
+    cache: Lru<Disk, CACHE_BLOCKS>,
 }
 
 impl erofs::BlockDevice for CachedDisk {

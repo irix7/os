@@ -163,14 +163,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   cases rewrite the `/link` target in an in-memory copy of the compact image.
 - Telnet `erofs <host>:<port><path> [info|ls|cat] [path]` mounts an EROFS image
   over HTTP Range and prints the superblock, a directory or a file.  It probes
-  the superblock to learn the image size, then reads with a 64 KiB read-ahead
-  window clamped to the final block, so metadata and inline data stay cached and
+  the superblock to learn the image size, then reads with a read-ahead window
+  clamped to the final block, so metadata and inline data stay cached and
   adjacent file blocks arrive together.  Verified on the iris guest with
   `rom/tools/range-server.py`, including an eight-entry `ls /` and the 9000-byte
   flat-inline `big.bin`.  `sha256=<hex>` performs a full GET and aborts before
   mount on a length or digest mismatch; verified with the correct fixture digest
-  and an all-zero digest.  SCSI, the shared LRU and 256 KiB read-ahead, and the
-  overlay are still to come.
+  and an all-zero digest.
 - `scsi` console command: resets the HPC3 SCSI channel and the WD33C93 through
   the external register window, selects target 1, sends IDENTIFY and INQUIRY,
   then reads block 0 with READ(6).  Verified on iris: `csr 0x01`, own ID `0x2f`,
@@ -326,6 +325,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - CI cross-build job (`.github/workflows/ci.yml`) is now the M0 gate: `continue-on-error`
   removed, pinned nightly + `rust-src`, host `cc`, `rust-lld`, `-Zjson-target-spec`, and
   `Swatinem/rust-cache` (`m0-cross`).
+- The kernel's HTTP/HTTPS EROFS read-ahead window is now 256 KiB, up from 64 KiB,
+  and the `erofs` and `httpd` modules keep a 64 x 4 KiB (256 KiB) `block-cache`
+  LRU.  The window arithmetic moved to `kernel/src/readahead.rs` so the host tests
+  can pin the 256 KiB size, alignment and clamping; `crates/block-cache` gains a
+  test that fills all 64 slots without eviction and then checks the LRU victim.
+  The window is in `.bss`, so the raw PROM image is 512,756 bytes, under the
+  524,288-byte limit.
 
 ### Fixed
 

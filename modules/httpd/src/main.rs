@@ -76,6 +76,9 @@ static ALLOCATOR: ModuleAllocator = ModuleAllocator;
 /// The EROFS fixture on SCSI target 2, LBA 0.
 const FS_TARGET: u8 = 2;
 const FS_BLOCK: usize = 4096;
+/// The module-side read-ahead cache: 64 x 4 KiB = 256 KiB.
+const FS_CACHE_BLOCKS: usize = 64;
+const _: () = assert!(FS_CACHE_BLOCKS * FS_BLOCK == 256 * 1024);
 const FS_PRINT_MAX: usize = 8192;
 
 /// The longest symbolic link target a `fs.stat` or `fs.readlink` response
@@ -112,7 +115,7 @@ impl block_cache::ReadAt for ScsiDisk {
 }
 
 struct CachedDisk {
-    cache: Lru<ScsiDisk, 16>,
+    cache: Lru<ScsiDisk, FS_CACHE_BLOCKS>,
 }
 
 impl erofs::BlockDevice for CachedDisk {
