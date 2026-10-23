@@ -256,7 +256,7 @@ pub fn run(request: &Request) -> Output {
                 Ok(())
             }
             Op::Ls => {
-                let inode = fs.lookup_path(target)?;
+                let inode = fs.lookup_path_follow(target)?;
                 let entries = fs.read_dir(&inode)?;
                 let _ = write!(out, "erofs: {} ({} entries)\n", target, entries.len());
                 for entry in entries {
@@ -266,7 +266,7 @@ pub fn run(request: &Request) -> Output {
                 Ok(())
             }
             Op::Cat => {
-                let inode = fs.lookup_path(target)?;
+                let inode = fs.lookup_path_follow(target)?;
                 if inode.is_dir() {
                     return Err(Error::NotRegularFile);
                 }

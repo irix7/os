@@ -17,9 +17,18 @@ All notable changes to IRIX 7 are recorded here. The format follows
   decodes the standard little-endian format through an explicit byte-order codec:
   the superblock, compact and extended inodes, flat plain and flat inline data,
   directories, symlinks and 48-bit flat block addresses.  Compressed, chunk-based
-  and metabox inodes are recognised and rejected with typed errors.  Fifteen host
-  tests (twelve filesystem, three codec) run against reproducible `mkfs.erofs`
+  and metabox inodes are recognised and rejected with typed errors.  Nineteen host
+  tests (sixteen filesystem, three codec) run against reproducible `mkfs.erofs`
   1.9.4 golden images (compact, extended and 48-bit) checked with `fsck.erofs`.
+- `crates/erofs`: symlink following and full path traversal.  `lookup_path_follow`
+  resolves `.`, `..`, relative and absolute link targets with a bounded follow
+  depth of eight (`MAX_SYMLINK_DEPTH`), returning `Error::SymlinkLoop` on a longer
+  chain or a self-reference; `lookup_path` remains the no-follow resolver and
+  `read_file_path` now follows.  The telnet `erofs` command uses the following
+  resolver, so `cat /link` prints the target file and `ls` works on a link to a
+  directory.  Four new host tests cover relative, absolute and loop-bounded
+  targets and `..`, without changing the golden images: the absolute and loop
+  cases rewrite the `/link` target in an in-memory copy of the compact image.
 - Telnet `erofs <host>:<port><path> [info|ls|cat] [path]` mounts an EROFS image
   over HTTP Range and prints the superblock, a directory or a file.  It probes
   the superblock to learn the image size, then reads with a 64 KiB read-ahead

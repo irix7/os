@@ -31,6 +31,8 @@ pub enum Error {
     NotRegularFile,
     /// The inode was not a symbolic link.
     NotSymlink,
+    /// A path followed more symbolic links than the reader allows.
+    SymlinkLoop,
     /// The requested range extended past the end of the file.
     OutOfBounds,
     /// A buffered read was larger than the reader's safety limit.
@@ -65,6 +67,7 @@ impl fmt::Display for Error {
             Self::NotDirectory => f.write_str("inode is not a directory"),
             Self::NotRegularFile => f.write_str("inode is not a regular file"),
             Self::NotSymlink => f.write_str("inode is not a symbolic link"),
+            Self::SymlinkLoop => f.write_str("too many levels of symbolic links"),
             Self::OutOfBounds => f.write_str("read past the end of the file"),
             Self::TooLarge => f.write_str("file is too large to buffer"),
             Self::NameTooLong => f.write_str("directory name is too long"),

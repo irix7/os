@@ -9,7 +9,8 @@
 //!
 //! - compact and extended inodes;
 //! - flat plain and flat inline data;
-//! - directories and symbolic links;
+//! - directories and symbolic links, with bounded symlink following on path
+//!   lookup;
 //! - 48-bit block addresses for flat data;
 //! - one device (the primary image).
 //!
@@ -32,6 +33,6 @@ mod superblock;
 
 pub use codec::{BigEndian, ByteOrder, LittleEndian};
 pub use error::{Error, Result};
-pub use fs::{BlockDevice, DirEntry, Erofs};
+pub use fs::{BlockDevice, DirEntry, Erofs, MAX_SYMLINK_DEPTH};
 pub use inode::{DataLayout, FileType, Inode, EROFS_NULL_ADDR};
 pub use superblock::{Superblock, MAGIC, SUPER_BASE_SIZE, SUPER_OFFSET};
