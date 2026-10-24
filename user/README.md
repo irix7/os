@@ -24,6 +24,10 @@ uses the provisional kernel syscall codes:
 | 4 | `$a0` address, `$a1` length | `munmap`; v0 returns 0 and the heap is one-way |
 | 5 | `$a0` address, `$a1` length, `$a2` protection | `mprotect`; v0 returns 0 (pages are already read/write) |
 
+The hello ELF is built at `-O1` because the n32 backend currently
+miscompiles this libc write/exit flow at `-Oz` (the post-write continuation can
+be replaced by a break).  The image remains under the loader's 80 KiB limit.
+
 The loader builds the conventional initial stack: `argc` at `$sp`, followed by
 the `argv` and `envp` pointer arrays, with `"hello"`, `"PATH=/"` and `"HOME=/"`
 above them.  `$a0`, `$a1` and `$a2` hold `argc`, `argv` and `envp` on entry.

@@ -100,6 +100,7 @@ extern "C" {
 }
 
 /// POSIX `write` over the provisional fd ABI.
+#[inline(never)]
 #[no_mangle]
 pub unsafe extern "C" fn write(fd: c_int, buffer: *const c_void, count: usize) -> isize {
     let result = __irix7_write(fd, buffer as *const u8, count);

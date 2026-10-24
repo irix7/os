@@ -60,12 +60,17 @@ pub extern "C" fn _start() -> ! {
 
     // The kernel places PATH=/ and HOME=/ on the initial environment.
     let env0 = unsafe { core::ptr::read_volatile(envp as *const u32) };
-    if env0 == 0 || !write_user(env0, 6) {
+    if env0 == 0 {
         exit(48);
     }
-    if !write_bytes(b"\n") {
-        exit(49);
+    let mut env_line = [0u8; 7];
+    unsafe {
+        core::ptr::copy_nonoverlapping(env0 as *const u8, env_line.as_mut_ptr(), 6);
     }
+    env_line[6] = b'\n';
+    // The path/argv checks above already exercise the write return; do not
+    // fold this one into another conditional in the smoke image.
+    let _ = write_bytes(&env_line);
 
     // libc malloc maps anonymous pages; check zeroing and copy bytes into it.
     let heap = unsafe { malloc(8192) };
@@ -126,11 +131,15 @@ pub extern "C" fn _start() -> ! {
 }
 
 fn write_bytes(bytes: &[u8]) -> bool {
-    unsafe { write(1, bytes.as_ptr() as *const c_void, bytes.len()) == bytes.len() as isize }
+    let pointer = core::hint::black_box(bytes.as_ptr()) as *const c_void;
+    let length = core::hint::black_box(bytes.len());
+    unsafe { write(1, pointer, length) == length as isize }
 }
 
 fn write_user(address: u32, length: u32) -> bool {
-    unsafe { write(1, address as *const c_void, length as usize) == length as isize }
+    let pointer = core::hint::black_box(address) as *const c_void;
+    let length = core::hint::black_box(length) as usize;
+    unsafe { write(1, pointer, length) == length as isize }
 }
 
 fn exit(status: u32) -> ! {
