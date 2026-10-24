@@ -3,6 +3,7 @@ extend-exclude = ["docs/research/**", "THIRD-PARTY-NOTICES.md", "tools/std-spike
 
 [default.extend-words]
 nto = "nto"
+controllen = "controllen"
 IRIX = "IRIX"
 Indy = "Indy"
 Guinness = "Guinness"

@@ -120,6 +120,7 @@ default = true
 "TLS" = true
 "MIPS" = true
 "nto" = true  # QNX Neutrino module name in the libc source
+"controllen" = true  # POSIX msghdr field name
 "n32" = true
 "BootInfo" = true
 "kseg" = true

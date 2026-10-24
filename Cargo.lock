@@ -459,6 +459,10 @@ version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.3.0#9e27368d8ea5f1f7937fd19d60129420b0fbf914"
 
 [[package]]
+name = "native-abi"
+version = "0.1.0"
+
+[[package]]
 name = "num-conv"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

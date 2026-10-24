@@ -10,6 +10,8 @@ process model) and §6 (compatibility container), [`elf.md`](elf.md) (ELF loader
 [`std` research report](../research/rust-std-irix7.md).
 
 **Machine-readable manifest:** [`native-libc-symbols.json`](native-libc-symbols.json).
+**Rust layout source:** [`crates/native-abi`](../../crates/native-abi/README.md) — provisional v0 types,
+layouts and constants, with host layout tests.
 **Audit tool:** [`../../tools/std-abi-surface.py`](../../tools/std-abi-surface.py).
 
 ## 1. Scope and status

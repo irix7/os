@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `crates/native-abi`: provisional native n32 C types, public layouts and constants,
+  with host layout tests and a native-target CI build.  It is the layout source for the
+  native libc/std work; it is layout-only and not yet a frozen ABI.
 - The hosted native target `targets/mips3-sgi-irix7-native-n32.json` (`target_os =
   "irix7"`, Unix family) for the POSIX.1-2024 libc and Rust `std`.  It is separate from
   the kernel/module target and is exercised by a `core`/`build-std` CI probe.

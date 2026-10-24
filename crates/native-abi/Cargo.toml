@@ -1,0 +1,9 @@
+[package]
+license = "GPL-3.0-only"
+name = "native-abi"
+version = "0.1.0"
+edition = "2021"
+description = "Provisional native IRIX 7 n32 C ABI types and layout assertions"
+
+[lib]
+path = "src/lib.rs"
