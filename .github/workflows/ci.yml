@@ -94,6 +94,11 @@ jobs:
         run: python3 -m unittest discover -s tools -p 'test_*.py'
       - name: Audit the std ABI surface (warning mode)
         run: python3 tools/std-abi-surface.py
+      - name: Build native std rlib (spike)
+        timeout-minutes: 15
+        env:
+          STD_SPIKE_WORK: ${{ runner.temp }}/std-spike
+        run: tools/std-spike/build-std.sh
 
   cross:
     name: Cross-build (M0 gate)
