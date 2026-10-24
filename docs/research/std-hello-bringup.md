@@ -85,11 +85,10 @@ and attached at SCSI target 2.
 
 ## Limitations
 
-- True user-mode isolation is not established yet.  The entry path sets `UX`
-  without the correct `KSU` field, maps user pages uncached (LL/SC is undefined),
-  saves 32 bits per GPR, and uses PageMask constants that are not the R4000
-  encodings.  The threads/TLS Stage 0 gate fixes these before threads land; this
-  image is a smoke path, not a security boundary.
+- The Stage 0 CPU/MMU gate now runs the image with the correct `KSU=user` and
+  `UX` bits, the XTLB vector, R4000 PageMask encodings, cacheable LL/SC pages and
+  a 64-bit trap frame.  It is still a single-address-space bring-up path, not a
+  process isolation boundary.
 - Single-threaded only; `pthread_create` is not implemented.
 - A small two-file ramfs with a root directory and mutable file data; no
   general filesystem or process creation.

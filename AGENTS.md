@@ -45,10 +45,10 @@ Consequences:
 - Do not present the bring-up shim as the final libc, or the provisional syscalls as
   the native capability ABI.  `docs/spec/native-abi.md` and `docs/spec/native-libc.md`
   are the contracts; `docs/research/std-hello-bringup.md` records the bring-up.
-- Before threads, clear the Stage 0 CPU/MMU defects: `Status.KSU`/`UX` and the
-  XTLB vector, R4000 PageMask values, cacheable user pages for LL/SC, a 64-bit
-  trap frame, and clearing the LL bit on trap/switch.  The current std image runs
-  in a bring-up state, not an isolation boundary.
+- The Stage 0 CPU/MMU gate is in place: user mode uses the correct `Status.KSU`
+  and `UX` bits, the XTLB vector is installed, user pages are cacheable and
+  LL/SC-safe, PageMask uses the R4000 encodings, the trap frame is 64-bit and
+  LL is cleared on traps.  Do not regress these in thread or process work.
 
 ## Other standing requirements
 
