@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! HTTP and MCP server module.
+//! MCP control-plane module (HTTP transport).
 //!
 //! Listens on guest port 80 through the version 3 TCP services.  `GET /`
 //! returns a small status page; `POST /mcp` speaks JSON-RPC 2.0 with the MCP

@@ -23,4 +23,4 @@ configuration errors and device-error propagation.
 This is groundwork for the M4 block cell: the HTTP read-ahead window in
 `kernel/src/erofs_cmd.rs` is a single 256 KiB window; the block cell will use
 this cache with the SCSI driver or a larger HTTP block source.  The `erofs` and
-`httpd` modules configure the cache with 64 blocks of 4 KiB (256 KiB).
+`mcp` modules configure the cache with 64 blocks of 4 KiB (256 KiB).

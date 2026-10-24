@@ -216,7 +216,7 @@ jobs:
           hello  hello-module  core
           ticker ticker-module core
           block  block-module  core
-          httpd  httpd-module  core,alloc
+          mcp    mcp-module    core,alloc
           erofs  erofs-module  core,alloc
           EOF
 

@@ -347,7 +347,7 @@ malformed stream returns `InvalidCompressedData`.
 The decoder is behind the default `lz4` feature.  The kernel's HTTP EROFS
 command depends on the crate with `default-features = false` to stay inside the
 512 KiB PROM window; it rejects compressed inodes with `UnsupportedLayout`.
-The loadable `modules/erofs` and `modules/httpd` images enable `lz4` and decode
+The loadable `modules/erofs` and `modules/mcp` images enable `lz4` and decode
 the compressed fixtures.
 
 A read that crosses a pcluster boundary maps and decodes each pcluster in turn.

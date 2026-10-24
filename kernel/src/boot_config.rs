@@ -161,14 +161,12 @@ mod tests {
 
     #[test]
     fn parses_release_config() {
-        let body = b"# generated\nversion=1\nrelease=v0.1.0\nmcp.url=https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/httpd.module\nmcp.sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
+        let body = b"# generated\nversion=1\nrelease=v0.1.0\nmcp.url=https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/mcp.module\nmcp.sha256=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n";
         let config = parse(body).expect("valid config");
         assert_eq!(config.release_len, 6);
         assert_eq!(
             config.url_string(),
-            Some(
-                "https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/httpd.module"
-            )
+            Some("https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/mcp.module")
         );
         assert_eq!(config.digest[0], 0x01);
         assert_eq!(config.digest[31], 0xef);
@@ -176,7 +174,7 @@ mod tests {
 
     #[test]
     fn rejects_missing_digest() {
-        let body = b"mcp.url=https://example.invalid/httpd.module\n";
+        let body = b"mcp.url=https://example.invalid/mcp.module\n";
         assert!(parse(body).is_none());
     }
 

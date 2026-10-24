@@ -122,7 +122,7 @@ sends a FIN; once the socket reaches the closed state the module can call `tcp_l
 again.
 
 A server can arm the second slot while the first connection is closing. smoltcp permits
-two listening sockets on the same port, and the httpd module uses that to avoid a re-arm
+two listening sockets on the same port, and the mcp module uses that to avoid a re-arm
 gap between back-to-back clients.
 
 The entry returns a pointer to a vtable, or null for "initialised, no callback":
@@ -181,7 +181,7 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
 table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for five seconds
 and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
 
-`modules/httpd` is the TCP reference. It listens on guest port 80, answers one request per
+`modules/mcp` is the TCP reference. It listens on guest port 80, answers one request per
 connection, and alternates its two TCP slots so a back-to-back client does not hit the
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
 JSON-RPC methods (see [`mcp.md`](mcp.md)), including resources for the serial ring, status,
@@ -196,14 +196,14 @@ loading the module:
 curl -s http://127.0.0.1:8088/
 ```
 
-prints the module's uptime. Build it by swapping `hello` for `httpd` in the commands above;
+prints the module's uptime. Build it by swapping `hello` for `mcp` in the commands above;
 it links the same flat image.
 
-The CI `modules` job builds every reference module (`hello`, `ticker`, `block`, `httpd` and
+The CI `modules` job builds every reference module (`hello`, `ticker`, `block`, `mcp` and
 `erofs`) in release with the pinned nightly, each with its own linker script, flattens the
 ELF with `llvm-objcopy -O binary` and fails if any image exceeds the 2 MiB module area. It
 uses `build-std=core` for `hello`, `ticker` and `block`, and `build-std=core,alloc` for
-`httpd` and `erofs`; that job is the authoritative list and prints the size of each image.
+`mcp` and `erofs`; that job is the authoritative list and prints the size of each image.
 
 Serve a module and load it:
 

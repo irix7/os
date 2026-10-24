@@ -189,7 +189,7 @@ control plane is how everything else gets built.
 **Demo:** an agent connects to the Indy over Streamable HTTP with a bearer token, runs
 `uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.
 
-**Prototype:** `modules/httpd` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
+**Prototype:** `modules/mcp` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
 `initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
 `echo`, `console`, `serial.read`, `system.reset`, `system.poweroff` and `status`
 (IP/MAC/RAM/uptime/date) tools. The iris rig forwards host 8088 to the module's guest port 80.
@@ -246,7 +246,7 @@ form is deferred to M5/M9.  Evidence:
       with HPC3 descriptor DMA and a polled PIO fallback; the de-privileged SCSI cell is
       deferred.)
 - [ ] Block cell exposes a block-device capability and an LRU cache.  (Prototype: ABI
-      `block_read` plus a 64-block LRU inside the loadable `httpd`/`erofs` images; the
+      `block_read` plus a 64-block LRU inside the loadable `mcp`/`erofs` images; the
       capability and cell form are deferred.)
 - [x] EROFS reader mounts the standard little-endian image; byte-order codec tested.
 - [x] HTTP Range client fetches 64–256 KiB blocks with read-ahead.

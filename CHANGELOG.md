@@ -385,6 +385,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Changed
 
+- Renamed the loadable MCP control plane from `modules/httpd`/`httpd.module`
+  to `modules/mcp`/`mcp.module`.  The v0.1.0 release keeps the historical
+  `httpd.module` name for its immutable assets; subsequent releases use
+  `mcp.module`.
 - `crates/native-abi`: corrected the provisional `sockaddr_storage` 8-byte
   alignment, modelled `sockaddr_in`/`sockaddr_in6` with 4-byte-aligned
   `in_addr`/`in6_addr`, and removed an unnecessary `msghdr` pad (32 to 28
