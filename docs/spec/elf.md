@@ -230,3 +230,15 @@ Run the tests with:
 ```sh
 cargo test -p irix-elf
 ```
+
+## 9. First kernel consumer
+
+The kernel's `userelf` console command is the first consumer of the load plan.  It
+reads up to 80 KiB from SCSI target 2 LBA 0, accepts an n32 `ET_EXEC` image, maps
+each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at `e_entry` with a
+fixed four-page user stack at `0x7FF0_0000`.  It maps 4 KiB pages in JTLB
+even/odd pairs and uses TLB indices 40-47.
+
+This is deliberately narrow: there is no argv/envp, process table, fd table,
+dynamic linker, o32 support, address-space teardown or libc.  The image's write
+and exit syscalls are the provisional smoke ABI in `kernel/src/traps.rs`.

@@ -106,29 +106,49 @@ pub fn map_page(vpn: u32, pfn: u32, asid: u32, mask: u32, valid: bool, global: b
     }
 }
 
-/// Map a 4 KiB page at a fixed TLB index.
-///
-/// `vpn` and `pfn` are page-aligned virtual and physical addresses.  The
-/// EntryLo PFN field is encoded at bit 6; the caller chooses the cache
-/// attribute (0 is uncached for the user smoke test).
-pub fn map_page_at(vpn: u32, pfn: u32, asid: u32, index: u32, cache: u32, global: bool) {
-    pagemask_write(PAGE_MASK_4K);
-    let entryhi = (vpn & PAGE_MASK_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
-    entryhi_write(entryhi);
-
+fn entrylo(pfn: u32, cache: u32, global: bool) -> u32 {
     let mut entrylo = ((pfn >> 12) << 6) | ENTRYLO_DIRTY | ENTRYLO_VALID;
     entrylo |= (cache & 0x7) << 3;
     if global {
         entrylo |= ENTRYLO_GLOBAL;
     }
-    entrylo0_write(entrylo);
-    entrylo1_write(entrylo);
+    entrylo
+}
+
+/// Map an even/odd 4 KiB pair at a fixed TLB index.
+///
+/// One JTLB entry covers a pair of adjacent 4 KiB pages: EntryLo0 is the even
+/// page and EntryLo1 is the odd page.  Loading a user ELF with mixed code, data
+/// and BSS pages must map the pair in one operation; two independent
+/// `map_page_at` calls for the same pair would overwrite each other.
+pub fn map_page_pair(
+    vpn2: u32,
+    pfn_even: u32,
+    pfn_odd: u32,
+    asid: u32,
+    index: u32,
+    cache: u32,
+    global: bool,
+) {
+    pagemask_write(PAGE_MASK_4K);
+    let entryhi = (vpn2 & ENTRYHI_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
+    entryhi_write(entryhi);
+    entrylo0_write(entrylo(pfn_even, cache, global));
+    entrylo1_write(entrylo(pfn_odd, cache, global));
     index_write(index);
     unsafe {
         core::arch::asm!("tlbwi");
         core::arch::asm!("nop");
         core::arch::asm!("nop");
     }
+}
+
+/// Map a 4 KiB page at a fixed TLB index, with both halves pointing at it.
+///
+/// This is sufficient for the fixed smoke image, where only the even half of
+/// each pair is used.  Use [`map_page_pair`] for independent adjacent pages.
+pub fn map_page_at(vpn: u32, pfn: u32, asid: u32, index: u32, cache: u32, global: bool) {
+    map_page_pair(vpn, pfn, pfn, asid, index, cache, global);
 }
 
 /// Invalidate a TLB entry by index.

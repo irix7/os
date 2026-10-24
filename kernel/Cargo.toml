@@ -22,11 +22,15 @@ opt-level = 2
 [features]
 default = []
 cross = []
+# Debug console EROFS-over-HTTP command.  The loadable erofs module is the
+# normal filesystem path; this feature is off by default to keep the PROM small.
+erofs-debug = ["dep:erofs"]
 
 [dependencies]
 embedded-io = { version = "0.7", default-features = false }
-erofs = { path = "../crates/erofs", default-features = false }
+erofs = { path = "../crates/erofs", default-features = false, optional = true }
 hpc3 = { path = "../crates/hpc3" }
+irix-elf = { path = "../crates/irix-elf" }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384"] }
 rand_core = { version = "0.6", default-features = false }
 x509-cert = { version = "0.2", default-features = false }

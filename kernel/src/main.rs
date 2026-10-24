@@ -27,6 +27,7 @@ pub mod cache;
 pub mod capability;
 pub mod diagnostics;
 pub mod dns;
+#[cfg(feature = "erofs-debug")]
 pub mod erofs_cmd;
 pub mod font;
 pub mod frames;
@@ -52,6 +53,7 @@ pub mod telnet;
 pub mod tlb;
 pub mod tls;
 pub mod traps;
+pub mod user;
 
 // ---------------------------------------------------------------------------
 // Serial console driver (Z85C30 ESCC inside the IOC2).

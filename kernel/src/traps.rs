@@ -130,6 +130,7 @@ static mut USER_RETURN_REGS: [u32; 9] = [0; 9];
 
 extern "C" {
     pub fn user_from_console();
+    pub fn user_from_console_elf();
     pub fn user_return_trampoline();
 }
 
@@ -169,6 +170,54 @@ user_from_console:
     jal     user_smoke
     nop
 9:  b       9b
+    nop
+
+    .section .text.user_from_console_elf, "ax", @progbits
+    .align 4
+    .globl user_from_console_elf
+user_from_console_elf:
+    addiu   $sp, $sp, -16
+    sw      $ra, 12($sp)
+    addiu   $t0, $sp, 16
+    lui     $t1, %hi(USER_RETURN_SP)
+    addiu   $t1, $t1, %lo(USER_RETURN_SP)
+    sw      $t0, 0($t1)
+    lui     $t1, %hi(USER_RETURN_RA)
+    addiu   $t1, $t1, %lo(USER_RETURN_RA)
+    sw      $ra, 0($t1)
+    lui     $t1, %hi(USER_RETURN_REGS)
+    addiu   $t1, $t1, %lo(USER_RETURN_REGS)
+    sw      $16, 0($t1)
+    sw      $17, 4($t1)
+    sw      $18, 8($t1)
+    sw      $19, 12($t1)
+    sw      $20, 16($t1)
+    sw      $21, 20($t1)
+    sw      $22, 24($t1)
+    sw      $23, 28($t1)
+    sw      $30, 32($t1)
+    jal     user_elf
+    nop
+    /* The loader returns only on a load failure; restore the console caller.
+       A successful user image exits through user_return_trampoline instead. */
+    lui     $t1, %hi(USER_RETURN_REGS)
+    addiu   $t1, $t1, %lo(USER_RETURN_REGS)
+    lw      $16, 0($t1)
+    lw      $17, 4($t1)
+    lw      $18, 8($t1)
+    lw      $19, 12($t1)
+    lw      $20, 16($t1)
+    lw      $21, 20($t1)
+    lw      $22, 24($t1)
+    lw      $23, 28($t1)
+    lw      $30, 32($t1)
+    lui     $t1, %hi(USER_RETURN_RA)
+    addiu   $t1, $t1, %lo(USER_RETURN_RA)
+    lw      $ra, 0($t1)
+    lui     $t1, %hi(USER_RETURN_SP)
+    addiu   $t1, $t1, %lo(USER_RETURN_SP)
+    lw      $sp, 0($t1)
+    jr      $ra
     nop
 
     .section .text.user_return_trampoline, "ax", @progbits
@@ -772,6 +821,11 @@ pub extern "C" fn user_smoke() -> ! {
     crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
     crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
 
+    run_user(0x1000_0000, 0x1000_2000)
+}
+
+/// Enter user mode at `entry` with `user_sp` and the provisional syscall ABI.
+pub fn run_user(entry: u32, user_sp: u32) -> ! {
     let kernel_gp: u32;
     unsafe {
         core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
@@ -781,7 +835,7 @@ pub extern "C" fn user_smoke() -> ! {
     let mut status = status_read();
     status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
     status |= STATUS_KSU_USER | STATUS_IE | (1 << 15);
-    epc_write(0x1000_0000);
+    epc_write(entry);
     status_write(status);
 
     crate::println("user: entering user mode");
@@ -790,7 +844,7 @@ pub extern "C" fn user_smoke() -> ! {
             "move $sp, {0}",
             "move $ra, $zero",
             "eret",
-            in(reg) 0x1000_2000u32,
+            in(reg) user_sp,
             options(noreturn)
         );
     }

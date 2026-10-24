@@ -1,0 +1,34 @@
+# Native user images
+
+These are small **native IRIX 7** n32 user images.  They are not IRIX 6.5
+compatibility binaries and they do not use a libc yet.
+
+## hello
+
+`user/hello` is the ELF-loader smoke image.  It is linked at `0x1000_0000` and
+uses the provisional kernel syscall codes:
+
+| `$v0` | Meaning |
+|---|---|
+| 1 | write; the kernel reports it and returns to user |
+| 2 | exit; the kernel returns to the telnet console |
+
+Build it from the repository root:
+
+```sh
+export PATH=/mnt/europa/rust-toolchain/bin:/mnt/europa/rust-toolchain/cargo/bin:$PATH
+cd user/hello
+CARGO_TARGET_DIR=/tmp/irix7-user-hello-target \
+CARGO_TARGET_MIPS3_SGI_IRIX7_NATIVE_N32_RUSTFLAGS="-Clink-arg=-T$PWD/linker.ld" \
+  cargo build --release -Zbuild-std=core -Zjson-target-spec \
+  --target ../../targets/mips3-sgi-irix7-native-n32.json
+```
+
+The resulting ELF is `$CARGO_TARGET_DIR/mips3-sgi-irix7-native-n32/release/hello`.
+`tools/build-user-hello.sh` does the same build and also creates an 80 KiB
+raw SCSI image.
+To run it on iris, place it at LBA 0 of a raw SCSI disk image and attach that
+image as SCSI target 2, then use the telnet `userelf` command.
+
+The kernel reads up to 80 KiB from target 2, so the raw image can be padded to
+80 KiB; the loader does not use a filesystem yet.
