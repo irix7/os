@@ -110,9 +110,10 @@ panel with a title, a list of boot options and a status line, drawn with the PRO
 own IRIS 10 raster font. The PS/2 keyboard drives it — arrow keys move the
 selection, a number selects that option, and Enter boots the highlighted one.
 
-iris has to program the video mode, because the ROM stub does not: the replacement
-kernel draws through the real REX3 pipeline but the VC2 timing tables come from the
-host. `rom/iris-rig.toml` has the settings:
+The kernel programs the 1280x1024 VC2 timing table, XMAP9 RGB24 mode and an
+identity Bt445 gamma table itself.  The host preset still keeps the emulator
+surface and the earliest ROM output at a known size.  `rom/iris-rig.toml` has
+the settings:
 
 ```toml
 [graphics]

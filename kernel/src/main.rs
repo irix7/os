@@ -33,6 +33,7 @@ pub mod erofs_cmd;
 pub mod font;
 pub mod frames;
 pub mod gfx;
+pub mod graphics_console;
 pub mod heap;
 pub mod http;
 pub mod idle;
@@ -177,6 +178,7 @@ pub fn console_read(offset: u64, dst: &mut [u8]) -> usize {
 /// service cannot re-enter the socket set.
 pub fn write_bytes(data: &[u8]) {
     for &byte in data {
+        graphics_console::write_byte(byte);
         console_log_byte(byte);
         serial_byte(byte);
     }
@@ -593,8 +595,9 @@ pub extern "C" fn _start_rust() -> ! {
 
     console_println("kernel: up");
 
-    // Bring up the display and show the boot menu.
+    // Bring up the display and the local text console.
     gfx::init();
+    graphics_console::init();
     kbd::init();
     net::init();
     telnet::init();
@@ -643,6 +646,7 @@ pub extern "C" fn _start_rust() -> ! {
                 _ => {}
             }
         }
+        graphics_console::flush();
         net::poll();
         module::poll();
         telnet::poll();
@@ -682,6 +686,7 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         }
 
         // Drive the network stack, module callbacks and telnet console.
+        graphics_console::flush();
         net::poll();
         module::poll();
         telnet::poll();

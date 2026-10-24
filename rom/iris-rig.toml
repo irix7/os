@@ -10,10 +10,10 @@
 #
 # Two settings matter here:
 #
-#   resolution  the replacement ROM does not program the VC2 video timing
-#               tables -- the real ARCS PROM did -- so the host presets the
-#               mode at start-up.  The kernel draws through the real REX3
-#               pipeline either way.
+#   resolution  the kernel programs the 1280x1024 VC2 timing table itself;
+#               the host preset keeps the emulator surface and the earliest
+#               ROM output at a known size.  The kernel draws through the real
+#               REX3 pipeline either way.
 #
 #   no --headless  headless mode turns the Newport off entirely, and there
 #               is then no graphics device for the kernel to draw on.  In

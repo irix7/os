@@ -169,4 +169,8 @@ pub fn draw() {
         DIM.1,
         DIM.2,
     );
+
+    // The console pane sits below the menu and the menu fill covers the whole
+    // screen, so repaint it after every menu redraw.
+    crate::graphics_console::flush();
 }
