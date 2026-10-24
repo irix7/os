@@ -39,3 +39,12 @@ license-files = []
 crate = "version_check@0.9.5"
 expression = "MIT OR Apache-2.0"
 license-files = []
+
+[advisories]
+# The RSA crate is used only to verify server certificate and
+# CertificateVerify signatures with public keys.  The Marvin timing
+# side-channel affects private-key operations, which this kernel never
+# performs (there is no RSA decryption or signing path).
+ignore = [
+  { id = "RUSTSEC-2023-0071", reason = "public-key verification only; no private-key operations" },
+]

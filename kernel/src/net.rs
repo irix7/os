@@ -69,7 +69,7 @@ const RX_CMD_STA_MULTI: u8 = 0xC0;
 const NVRAM_MAC: *const u32 = 0xBFBE_04E8 as *const u32;
 
 /// Fallback station address when the NVRAM battery is dead (all 0xFF).
-const FALLBACK_MAC: [u8; 6] = [0x08, 0x00, 0x69, 0x12, 0x34, 0x56];
+const FALLBACK_MAC: [u8; 6] = [0x02, 0x00, 0x69, 0x12, 0x34, 0x56];
 
 /// Write one byte to a Seeq register (lane 0).
 fn seeq_wr8(reg: u8, data: u8) {

@@ -20,6 +20,22 @@ static mut HTTP_TX_BUF: [u8; 2048] = [0; 2048];
 /// Only one fetch may run at a time.
 static FETCHING: AtomicBool = AtomicBool::new(false);
 
+/// Maximum `Location` header captured for a redirect.
+pub(crate) const LOCATION_MAX: usize = 512;
+
+/// A bounded redirect target.
+#[derive(Clone, Copy)]
+pub struct Location {
+    bytes: [u8; LOCATION_MAX],
+    len: usize,
+}
+
+impl Location {
+    pub fn as_str(&self) -> Option<&str> {
+        core::str::from_utf8(&self.bytes[..self.len]).ok()
+    }
+}
+
 /// Result of a completed fetch.
 pub struct Summary {
     /// HTTP status code from the response line.
@@ -30,6 +46,8 @@ pub struct Summary {
     pub content_length: Option<usize>,
     /// SHA-256 of the body bytes.
     pub sha256: crate::sha256::Sha256,
+    /// `Location` header, when the response has one.
+    pub location: Option<Location>,
 }
 
 /// Fetch `path` from `ip:port` and return the status and body length.
@@ -216,6 +234,7 @@ fn get_inner(
     let mut status = 0u16;
     let mut body_len = 0usize;
     let mut content_length: Option<usize> = None;
+    let mut location: Option<Location> = None;
     let mut total_rx = 0usize;
     let mut captured = 0usize;
     let mut hasher = crate::sha256::Hasher::new();
@@ -263,6 +282,7 @@ fn get_inner(
                 if let Some(pos) = find_header_end(&headers[..header_len]) {
                     status = parse_status(&headers[..header_len]);
                     content_length = parse_content_length(&headers[..header_len]);
+                    location = parse_location(&headers[..header_len]);
                     headers_done = true;
                     // `pos` is relative to the start of the response, so the
                     // header occupies `pos + 4` bytes of the stream.  Any
@@ -320,6 +340,7 @@ fn get_inner(
             body_len,
             content_length,
             sha256: hasher.finalize(),
+            location,
         },
         captured,
     ))
@@ -382,6 +403,35 @@ pub(crate) fn parse_content_length(headers: &[u8]) -> Option<usize> {
                 j += 1;
             }
             return if any { Some(value) } else { None };
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Find the `Location` header value, case-insensitively.
+pub(crate) fn parse_location(headers: &[u8]) -> Option<Location> {
+    const NAME: &[u8] = b"location:";
+    let mut i = 0;
+    while i + NAME.len() <= headers.len() {
+        if headers[i..i + NAME.len()].eq_ignore_ascii_case(NAME) {
+            let mut j = i + NAME.len();
+            while j < headers.len() && (headers[j] == b' ' || headers[j] == b'\t') {
+                j += 1;
+            }
+            let start = j;
+            while j < headers.len() && headers[j] != b'\r' && headers[j] != b'\n' {
+                j += 1;
+            }
+            if j == start || j - start > LOCATION_MAX {
+                return None;
+            }
+            let mut bytes = [0u8; LOCATION_MAX];
+            bytes[..j - start].copy_from_slice(&headers[start..j]);
+            return Some(Location {
+                bytes,
+                len: j - start,
+            });
         }
         i += 1;
     }

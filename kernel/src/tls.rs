@@ -11,12 +11,13 @@
 //! with exactly the requested length, and the body is hashed as it arrives.
 //! Certificate verification is identical on both paths.
 //!
-//! Certificate chains are verified with the `rustpki` verifier against the
-//! SSL.com TLS ECC Root CA 2022 (see `ca/`).  Servers that append a
-//! cross-signed copy of their root are handled by trimming that entry.  The
-//! verifier clock comes from NTP; before a sync the validity dates are not
-//! checked, but the chain signatures and hostname still are.  The RNG is
-//! xorshift128+ seeded from CP0 Count.
+//! Certificate chains are verified with the `rustpki` verifier against a
+//! small embedded root set (see `ca/`): SSL.com, USERTrust ECC and ISRG Root
+//! X1.  GitHub's raw and release hosts send a Let's Encrypt chain whose last
+//! entry is `Root YR` cross-signed by ISRG Root X1; the kernel selects the
+//! anchor from that issuer.  The verifier clock comes from NTP; before a sync
+//! the validity dates are not checked, but the chain signatures and hostname
+//! still are.  The RNG is xorshift128+ seeded from CP0 Count.
 
 use alloc::boxed::Box;
 use alloc::format;
@@ -37,7 +38,7 @@ use smoltcp::wire::{IpAddress, Ipv4Address};
 use x509_cert::der::Decode;
 use x509_cert::Certificate as X509Certificate;
 
-use crate::http::{verify_range, Summary};
+use crate::http::{verify_range, Location, Summary};
 use crate::net;
 use crate::range::{append_decimal, ByteRange};
 
@@ -226,38 +227,44 @@ impl TlsClock for WallClock {
     }
 }
 
-/// The CA root used to verify server chains.
-const CA_ROOT: &[u8] = include_bytes!("ca/sslcom-ecc-root.der");
+/// CA roots used to verify server chains.
+///
+/// The list is deliberately small: SSL.com for the project's signed hosts,
+/// USERTrust ECC for GitHub, and ISRG Root X1 for Let's Encrypt-backed GitHub
+/// release and Pages endpoints.  Let's Encrypt's current chains use RSA
+/// signatures, so the `rsa` feature of `embedded-tls` is enabled as well.
+const CA_ROOTS: &[&[u8]] = &[
+    include_bytes!("ca/sslcom-ecc-root.der"),
+    include_bytes!("ca/usertrust-ecc-root.der"),
+    include_bytes!("ca/isrg-root-x1.der"),
+];
 
 /// Maximum server certificate size the verifier buffers.
 const CERT_SIZE: usize = 8192;
 
-/// Drop a trailing root certificate that the server appended as a
-/// cross-signed copy: its subject is the issuer of the previous entry, so the
-/// chain already terminates at our embedded root of the same name.
-fn trim_cross_signed_root(cert: &mut CertificateRef) {
-    if cert.entries.len() < 3 {
-        return;
+/// Choose the embedded root that issued the last certificate in the chain.
+///
+/// The server sends its chain leaf-first, usually with either its self-signed
+/// root or a cross-signed copy of that root appended.  Matching the issuer of
+/// the last entry against the embedded root subjects selects the right anchor
+/// without copying the certificate chain; the verifier still checks every
+/// signature.
+fn root_for(cert: &CertificateRef<'_>) -> Option<&'static [u8]> {
+    let CertificateEntryRef::X509(last_der) = cert.entries.last()? else {
+        return None;
+    };
+    let last = X509Certificate::from_der(last_der).ok()?;
+    for root_der in CA_ROOTS {
+        let root = X509Certificate::from_der(root_der).ok()?;
+        if root.tbs_certificate.subject == last.tbs_certificate.issuer {
+            return Some(root_der);
+        }
     }
-    let Some(CertificateEntryRef::X509(last_der)) = cert.entries.last() else {
-        return;
-    };
-    let Some(CertificateEntryRef::X509(prev_der)) = cert.entries.get(cert.entries.len() - 2) else {
-        return;
-    };
-    let Ok(last) = X509Certificate::from_der(last_der) else {
-        return;
-    };
-    let Ok(prev) = X509Certificate::from_der(prev_der) else {
-        return;
-    };
-    if last.tbs_certificate.subject == prev.tbs_certificate.issuer {
-        cert.entries.pop();
-    }
+    None
 }
 
-/// Verifier that trims a cross-signed root before handing the chain to the
-/// rustpki verifier, then delegates signature checks to that verifier.
+/// Verifier that selects the embedded root for the server chain, then
+/// delegates signature checks to the rustpki verifier.
 struct PathVerifier {
     host: [u8; 64],
     host_len: usize,
@@ -290,13 +297,12 @@ impl TlsVerifier<Aes128GcmSha256> for PathVerifier {
         cert: CertificateRef,
     ) -> Result<(), TlsError> {
         let host = core::str::from_utf8(&self.host[..self.host_len]).unwrap_or("");
-
-        let host = core::str::from_utf8(&self.host[..self.host_len]).unwrap_or("");
-        let mut cert = cert;
-        trim_cross_signed_root(&mut cert);
-
+        let Some(root) = root_for(&cert) else {
+            crate::println("tls: no matching root");
+            return Err(TlsError::InvalidCertificate);
+        };
         let mut verifier =
-            CertVerifier::<Aes128GcmSha256, WallClock, CERT_SIZE>::new(Certificate::X509(CA_ROOT));
+            CertVerifier::<Aes128GcmSha256, WallClock, CERT_SIZE>::new(Certificate::X509(root));
         verifier.set_hostname_verification(host)?;
         match verifier.verify_certificate(transcript, cert) {
             Ok(()) => {
@@ -431,7 +437,7 @@ fn get_inner(
     let record_write = Box::leak(Box::new([0u8; 4096]));
 
     let seed = crate::traps::count_read() as u64;
-    let mut provider = TlsProvider {
+    let provider = TlsProvider {
         rng: SimpleRng::new(seed),
         verifier: PathVerifier::new(),
     };
@@ -485,6 +491,7 @@ fn get_inner(
     let mut headers_done = false;
     let mut status = 0u16;
     let mut content_length: Option<usize> = None;
+    let mut location: Option<Location> = None;
     let mut body_len = 0usize;
     let mut total_rx = 0usize;
     let mut captured = 0usize;
@@ -526,6 +533,7 @@ fn get_inner(
             if let Some(pos) = crate::http::find_header_end(&headers[..header_len]) {
                 status = crate::http::parse_status(&headers[..header_len]);
                 content_length = crate::http::parse_content_length(&headers[..header_len]);
+                location = crate::http::parse_location(&headers[..header_len]);
                 headers_done = true;
                 body_len = total_rx.saturating_sub(pos + 4);
                 let batch_start = total_rx - n;
@@ -563,6 +571,7 @@ fn get_inner(
             body_len,
             content_length,
             sha256: hasher.finalize(),
+            location,
         },
         captured,
     ))

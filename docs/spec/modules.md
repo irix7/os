@@ -32,18 +32,30 @@ area (2 MiB) and the network.
 ## 2.1 Boot autoload
 
 A machine that reboots must bring the control plane back without a human at the console.
-The DS1386 PROM environment supplies two variables:
+The primary configuration is `boot/config.conf` in the repository, fetched from:
+
+```text
+https://raw.githubusercontent.com/irix7/os/main/boot/config.conf
+```
+
+The release workflow updates it with immutable raw module URLs. The file supplies:
 
 | Name | Value |
 |---|---|
-| `mcp.url` | `https://host[:port]/path` (an explicit `http://` is only for the local rig) |
+| `mcp.url` | `https://host[:port]/path` |
 | `mcp.sha256` | 64 hex digits, the digest of the module image |
 
-After DHCP and DNS are up, and before the boot menu is drawn, the kernel reads both,
-zeroes the module area, fetches the image, verifies the digest and calls the entry. A
-failure prints `autoload: ...` and leaves the machine at the menu; it never runs an
-unverified image. The environment lives in the DS1386 register array at offset `0x10`
-(the RTC registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane.
+The DS1386 environment may override the same two names for a local test rig; it is a
+hardware chip, not a release distribution channel. After DHCP and DNS are up, and before
+the boot menu is drawn, the kernel reads the configuration, zeroes the module area,
+fetches the image, verifies the digest and calls the entry. A failure prints
+`autoload: ...` and leaves the machine at the menu; it never runs an unverified image.
+
+At startup the kernel also validates the DS1386 environment and MAC. A blank or corrupt
+environment is repaired with a minimal default and a locally administered fallback MAC,
+so a dead battery does not leave the machine with an unusable network identity. The
+environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), one byte per
+32-bit word in the low lane.
 
 ## 3. Address space
 
