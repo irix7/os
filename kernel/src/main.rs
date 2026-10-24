@@ -169,8 +169,20 @@ pub fn console_read(offset: u64, dst: &mut [u8]) -> usize {
     }
 }
 
-pub fn write_byte(b: u8) {
-    console_log_byte(b);
+/// Write bytes to the serial sink and queue the same bytes for telnet.
+///
+/// This is the one console service.  The serial sink also records the MCP
+/// telemetry ring; telnet output is queued so a print from inside the socket
+/// service cannot re-enter the socket set.
+pub fn write_bytes(data: &[u8]) {
+    for &byte in data {
+        console_log_byte(byte);
+        serial_byte(byte);
+    }
+    crate::telnet::write_output(data);
+}
+
+fn serial_byte(b: u8) {
     // Wait for the transmitter, but never forever: the IOC can return a
     // stale register and the CP0 Count is not yet guaranteed to run this
     // early.  A bounded spin followed by the write is safe at 9600 baud.
@@ -195,19 +207,20 @@ pub fn write_byte(b: u8) {
 }
 
 pub fn write_str(s: &str) {
-    for b in s.bytes() {
-        write_byte(b);
-    }
+    write_bytes(s.as_bytes());
+}
+
+pub fn write_byte(b: u8) {
+    write_bytes(&[b]);
 }
 
 pub fn print_str(s: &str) {
-    write_str(s);
+    write_bytes(s.as_bytes());
 }
 
 pub fn println(s: &str) {
-    write_str(s);
-    write_byte(b'\r');
-    write_byte(b'\n');
+    write_bytes(s.as_bytes());
+    write_bytes(b"\r\n");
 }
 
 pub fn print_hex8(v: u8) {
@@ -229,7 +242,6 @@ pub fn print_hex32(v: u32) {
 
 pub fn console_write(s: &str) {
     write_str(s);
-    crate::telnet::write_output(s.as_bytes());
 }
 
 pub fn console_write_str(s: &str) {
@@ -237,9 +249,7 @@ pub fn console_write_str(s: &str) {
 }
 
 pub fn console_println(s: &str) {
-    console_write(s);
-    write_byte(b'\r');
-    write_byte(b'\n');
+    println(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -575,7 +585,8 @@ pub extern "C" fn _start() -> ! {
     }
 
     // Boot-time module configuration from the PROM environment.
-    autoload::boot();
+    let autoload = autoload::boot();
+    announce_boot(autoload);
 
     menu::draw();
     loop {
@@ -650,6 +661,63 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         // Park until the next timer tick; iris releases the host core while
         // wait is outstanding and interrupts are enabled.
         idle::wait();
+    }
+}
+
+/// Emit the single machine-readable boot readiness marker.
+///
+/// The serial ring and the telnet console both receive this line.  Tests must
+/// poll for this marker rather than incidental boot messages.  `boot` is the
+/// RTC Unix second at the marker (or zero when the RTC is unset); it is
+/// monotonic across normal reboots but can repeat if a machine is reset
+/// within the same second.
+fn announce_boot(autoload: autoload::Status) {
+    let boot_id = crate::ntp::now_unix().unwrap_or(0);
+    let network_up = crate::net::ip_addr().is_some();
+    let ready = autoload == autoload::Status::Loaded && network_up;
+    console_write(if ready {
+        "BOOT-READY v=1 boot="
+    } else {
+        "BOOT-NOT-READY v=1 boot="
+    });
+    write_u64_dec(boot_id);
+    console_write(" kernel=up network=");
+    console_write(if network_up { "up" } else { "down" });
+    console_write(" mcp=");
+    match autoload {
+        autoload::Status::Loaded => console_write("listening"),
+        autoload::Status::Disabled => console_write("disabled"),
+        autoload::Status::Failed => console_write("failed"),
+    }
+    if ready {
+        console_println("");
+    } else {
+        console_write(" reason=");
+        console_println(if !network_up {
+            "network-down"
+        } else if autoload == autoload::Status::Disabled {
+            "no-mcp-url"
+        } else {
+            "autoload-failed"
+        });
+    }
+}
+
+fn write_u64_dec(mut value: u64) {
+    let mut digits = [0u8; 20];
+    let mut count = 0usize;
+    if value == 0 {
+        write_byte(b'0');
+        return;
+    }
+    while value > 0 && count < digits.len() {
+        digits[count] = b'0' + (value % 10) as u8;
+        value /= 10;
+        count += 1;
+    }
+    while count > 0 {
+        count -= 1;
+        write_byte(digits[count]);
     }
 }
 

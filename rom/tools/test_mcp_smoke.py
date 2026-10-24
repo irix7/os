@@ -312,6 +312,43 @@ class FakeMcp:
         self.thread.join(timeout=5)
 
 
+class ReadinessTests(unittest.TestCase):
+    def test_ready_marker_is_accepted(self):
+        module = load_script()
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("boot noise\nBOOT-READY v=1 boot=7 kernel=up network=up mcp=listening\n")
+            path = f.name
+        try:
+            text = module.wait_boot_ready(path, timeout=1)
+            self.assertIn("BOOT-READY v=1", text)
+        finally:
+            os.unlink(path)
+
+    def test_not_ready_marker_is_distinct(self):
+        module = load_script()
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("BOOT-NOT-READY v=1 boot=8 kernel=up network=up mcp=disabled reason=no-mcp-url\n")
+            path = f.name
+        try:
+            with self.assertRaises(module.SmokeError) as context:
+                module.wait_boot_ready(path, timeout=1)
+            self.assertIn("BOOT-NOT-READY", str(context.exception))
+            self.assertIn("no-mcp-url", str(context.exception))
+        finally:
+            os.unlink(path)
+
+    def test_missing_marker_times_out(self):
+        module = load_script()
+        with tempfile.NamedTemporaryFile("w", delete=False) as f:
+            f.write("kernel: up\n")
+            path = f.name
+        try:
+            with self.assertRaises(module.SmokeError):
+                module.wait_boot_ready(path, timeout=0.2)
+        finally:
+            os.unlink(path)
+
+
 class SmokeScriptTests(unittest.TestCase):
     token = "secret-token"
 

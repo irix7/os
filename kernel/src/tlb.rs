@@ -151,6 +151,17 @@ pub fn map_page_at(vpn: u32, pfn: u32, asid: u32, index: u32, cache: u32, global
     map_page_pair(vpn, pfn, pfn, asid, index, cache, global);
 }
 
+/// Invalidate every non-wired JTLB entry.
+///
+/// The kernel's fixed kseg2 entries (indices 0-3) are left alone.  This is
+/// used by the refill self-test so stale test or user mappings can never make
+/// a later test read a page that happens to be mapped already.
+pub fn invalidate_all() {
+    for index in WIRED_COUNT..JTLB_ENTRIES as u32 {
+        invalidate_index(index);
+    }
+}
+
 /// Invalidate a TLB entry by index.
 pub fn invalidate_index(index: u32) {
     index_write(index);

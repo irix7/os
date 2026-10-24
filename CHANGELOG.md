@@ -8,6 +8,22 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- Unify kernel and native-user output through one console service: serial, the
+  MCP serial ring and a queued telnet mirror.  Telnet output is drained outside
+  the smoltcp borrow, so a user syscall can print while the console socket is
+  being serviced.
+- Emit one `BOOT-READY` or `BOOT-NOT-READY` line after RTC, network and MCP
+  autoload.  The marker includes a boot id, kernel/network/MCP state and a
+  reason token for non-ready boots.
+- Add a `gfx` diagnostic that verifies REX3 RGB24 mode (`DRAWMODE1` bit 15) and
+  drives the shallow-FIFO wait path.
+- Make the TLB-refill self-test independent of prior user mappings: use a
+  distinct VPN, write through the uncached alias, and invalidate all non-wired
+  JTLB entries before and after the test.
+- Boot smoke tests now poll `BOOT-READY`/`BOOT-NOT-READY` instead of incidental
+  serial text, retry `machine-start` once, use per-run temporary directories and
+  clean up their iris process and logs.  The MCP smoke script attaches a clear
+  non-ready diagnostic and removes its temporary run directory.
 - Add `user/libc`, a freestanding native C ABI v0: `write`, `_exit`/`exit`,
   anonymous `mmap`, `munmap`/`mprotect` no-ops, a one-way mapping
   `malloc`/`calloc`/`realloc`/`free`, `mem*`, basic string functions,

@@ -10,37 +10,52 @@ use crate::nvram;
 use crate::sha256::Sha256;
 use crate::{console_println, http, module, tls};
 
+/// Outcome of the boot-time module autoload.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Status {
+    /// No `mcp.url` is configured.
+    Disabled,
+    /// The configured image loaded and returned a zero status.
+    Loaded,
+    /// Configuration or fetch/verification failed.
+    Failed,
+}
+
 /// Load and run the configured module, if any.
-pub fn boot() {
+pub fn boot() -> Status {
     let mut url = [0u8; 192];
     let Some(n) = nvram::get("mcp.url", &mut url) else {
-        return;
+        return Status::Disabled;
     };
     let Ok(url) = core::str::from_utf8(&url[..n]) else {
         console_println("autoload: mcp.url is not UTF-8");
-        return;
+        return Status::Failed;
     };
 
     let mut digest_buf = [0u8; 80];
     let Some(dn) = nvram::get("mcp.sha256", &mut digest_buf) else {
         console_println("autoload: mcp.sha256 missing");
-        return;
+        return Status::Failed;
     };
     let Some(digest) = parse_digest(&digest_buf[..dn]) else {
         console_println("autoload: mcp.sha256 is not 64 hex digits");
-        return;
+        return Status::Failed;
     };
 
     match run(url, &digest) {
-        Ok(code) => {
+        Ok(0) => {
             console_println("autoload: module returned");
-            if code != 0 {
-                console_println("autoload: non-zero status");
-            }
+            Status::Loaded
+        }
+        Ok(_) => {
+            console_println("autoload: module returned");
+            console_println("autoload: non-zero status");
+            Status::Failed
         }
         Err(err) => {
             console_println("autoload: failed");
             console_println(err);
+            Status::Failed
         }
     }
 }
