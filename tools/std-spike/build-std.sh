@@ -62,6 +62,11 @@ if ! command -v "$CC" >/dev/null 2>&1; then
     echo "host C compiler '$CC' not found (build scripts need one)" >&2
     exit 1
 fi
+# Build scripts and rustc's default host linker look for `cc` on PATH, not at
+# $CC.  Put the selected compiler's directory on PATH as well.
+CC_DIR=$(dirname "$(command -v "$CC")")
+PATH="$CC_DIR:$PATH"
+export PATH
 
 SYSROOT=$(rustc --print sysroot)
 RUST_SRC_ORIG="$SYSROOT/lib/rustlib/src/rust"
