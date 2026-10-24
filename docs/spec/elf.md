@@ -238,8 +238,8 @@ by the automatic post-boot handoff and by the telnet `userelf` command.  It read
 up to 256 KiB from SCSI target 2 LBA 0 in 64 KiB chunks, accepts an n32 `ET_EXEC`
 image, maps each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at
 `e_entry` with a four-page user stack at `0x7FF0_0000`.  It maps 4 KiB pages in
-JTLB even/odd pairs starting at index 4; the 1 MiB anonymous heap is mapped with
-two 256 KiB page pairs.
+JTLB even/odd pairs starting at index 4; the heap is intended to be a 1 MiB window
+mapped with two 256 KiB page pairs (see the bring-up caveat below).
 
 The initial stack is the conventional layout: `argc` at `$sp`, then the `argv`
 and `envp` pointer arrays, then NUL-terminated strings.  `$a0`, `$a1` and `$a2`
@@ -255,3 +255,11 @@ console, `/dev/null` and a two-file read/write ramfs; `stat`/`fstat` and directo
 iteration work.  Threads/TLS, `posix_spawn`, real signals and termios are still
 absent.  The 42-symbol C shim in `crates/irix7-libc` is the bring-up libc; the
 production layer is the relibc fork.
+
+**Bring-up caveat (2026-10-25).** The current loader is not yet a security
+boundary.  It sets `UX` without the correct `KSU` field, maps user pages uncached
+(where LL/SC is undefined), saves only 32 bits per GPR in the trap frame and uses
+PageMask constants that are not the R4000 encodings.  The threads/TLS Stage 0 gate
+must correct the CPU state, install the XTLB vector, fix the page masks, make the
+user pages cacheable for atomics and widen the trap frame before threads are
+enabled.  Until then the std image is a smoke path, not an isolated process.

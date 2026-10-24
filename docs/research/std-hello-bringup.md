@@ -85,6 +85,11 @@ and attached at SCSI target 2.
 
 ## Limitations
 
+- True user-mode isolation is not established yet.  The entry path sets `UX`
+  without the correct `KSU` field, maps user pages uncached (LL/SC is undefined),
+  saves 32 bits per GPR, and uses PageMask constants that are not the R4000
+  encodings.  The threads/TLS Stage 0 gate fixes these before threads land; this
+  image is a smoke path, not a security boundary.
 - Single-threaded only; `pthread_create` is not implemented.
 - A small two-file ramfs with a root directory and mutable file data; no
   general filesystem or process creation.

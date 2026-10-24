@@ -138,11 +138,13 @@ kernel falls back to the register handoff, reserves the low window through `0x08
 and starts the frame allocator above it.  The kernel owns the telnet console after the
 hand-off.  The general exception vector saves a full register frame and round-trips a
 deliberate `break`/`syscall` through `eret`; timer interrupts stay on the fast path.
-User-mode entry, syscall return and the native n32 user image work, and a CP0 Compare
-timer plus `WAIT` idle loop parks the vCPU.  The capability table has generation-checked
+Entry through the trap/`eret` path, syscall return and the native n32 user image
+work, and a CP0 Compare timer plus `WAIT` idle loop parks the vCPU.  The capability table has generation-checked
 handles, object preservation and rights checks; wiring it into every kernel service is
 still open.  A general page-table refill, page-fault handling and the EDF/fair run queues
-remain open.
+remain open.  A Stage 0 CPU/MMU audit is also open before threads: correct
+`Status.KSU`/`UX` and the XTLB vector, R4000 PageMask encodings, cacheable user
+pages for LL/SC, a 64-bit trap frame and LL-bit clearing on trap/switch.
 
 **Demo:** the kernel prints the boot RAM geometry, calibrates the timer, runs two kernel
 tasks with EDF and fair classes, handles a deliberate page fault, and panics cleanly with
@@ -159,7 +161,8 @@ a register dump.
       MIPS III (kernel-mode self-test).
 - [x] One-entry software TLB refill and `eret` work on MIPS III (kernel-mode
       self-test).
-- [x] User-mode entry, syscall return and the native n32 user image work on MIPS III.
+- [x] Trap/`eret` entry, syscall return and the native n32 user image work on MIPS III
+      (true privilege separation is blocked on the Stage 0 audit).
 - [ ] General page-table refill and page-fault handling work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
 - [x] Frame allocator uses the boot RAM geometry and the reserved low window; no RAM probing.
