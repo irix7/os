@@ -3,6 +3,14 @@
 These are small **native IRIX 7** n32 user images.  They are not IRIX 6.5
 compatibility binaries and they do not use a libc yet.
 
+## native libc v0
+
+`user/libc` is a freestanding C ABI layer over the provisional syscalls.  It
+provides `write`, `_exit`, anonymous `mmap`, a one-way `malloc`/`calloc`/`realloc`
+family, the `mem*` and basic string primitives, and `__errno_location`.  It is
+not the POSIX.1-2024 native libc yet: there is no fd table, filesystem, pthread,
+TLS, signal or capability layer.
+
 ## hello
 
 `user/hello` is the ELF-loader smoke image.  It is linked at `0x1000_0000` and

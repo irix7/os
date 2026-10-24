@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- Add `user/libc`, a freestanding native C ABI v0: `write`, `_exit`/`exit`,
+  anonymous `mmap`, `munmap`/`mprotect` no-ops, a one-way mapping
+  `malloc`/`calloc`/`realloc`/`free`, `mem*`, basic string functions,
+  `memalign` up to 16 bytes and `__errno_location`.  `user/hello` now uses it.
 - The user loader now tracks its page pairs and frees the image, stack and heap
   frames on exit or a failed load.  `mmap` maps zeroed anonymous heap pages from
   `0x2000_0000` (128 KiB); `munmap` and `mprotect` are provisional no-ops.

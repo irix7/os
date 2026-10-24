@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "irix7-user-hello"
 version = "0.1.0"
+dependencies = [
+ "native-libc",
+]
+
+[[package]]
+name = "native-libc"
+version = "0.1.0"

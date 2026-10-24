@@ -23,10 +23,18 @@ libc-to-capability boundary and the conformance rules.  The **source API** is
 [POSIX.1-2024](posix.md) plus a documented XSI subset and a short extension list.  POSIX
 defines the C source contract; it does not define this binary contract.
 
-This is a specification, not an implementation and not a certification claim.  No native
-libc exists yet: M9 builds the first one, and M9.5 builds the first native `std` subset
+This is a specification, not a certification claim.  No POSIX-conformant native libc
+exists yet: M9 builds the full one, and M9.5 builds the first native `std` subset
 ([`../plan/milestones.md`](../plan/milestones.md)).  Every statement below is a
 requirement on that work, not a report of shipped behaviour.
+
+**v0 implementation (2026-10-24):** [`user/libc`](../../user/libc) is a small freestanding
+C ABI layer over the provisional kernel syscalls.  It provides `write`, `_exit`/`exit`,
+anonymous `mmap`, `munmap`/`mprotect` no-ops, `malloc`/`calloc`/`realloc`/`free`
+(a one-way mapping allocator), the `mem*` primitives, `strlen`/`strcmp`/`strncmp`/
+`strcpy`, `memalign` up to 16-byte alignment and `__errno_location`.  It has no fd
+table, file system, pthreads, TLS, signals, locale or capability boundary; it is a
+loader/libc smoke implementation, not the v1 profile.
 
 The document deliberately separates three things:
 
