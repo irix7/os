@@ -196,7 +196,7 @@ an optional `tick` callback, which the kernel calls from the idle loop at most
 every 10 ms. The service table adds `alloc` (the kernel heap, never freed),
 `poll` (drive the network stack), and two TCP slots with listen/state/recv/send/
 close/abort. `modules/hello` is the one-shot reference; `modules/ticker` is the
-periodic reference; `modules/httpd` is the TCP reference: it listens on guest
+periodic reference; `modules/mcp` is the TCP reference: it listens on guest
 port 80, answers one request per connection with its uptime, and alternates its
 two slots so back-to-back clients do not hit the close handshake.
 
@@ -231,8 +231,8 @@ registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane. For
 rig, stop the emulator and write both strings into `nvram.bin` at offset `0x10`:
 
 ```text
-mcp.url=http://10.1.1.3:18080/httpd.module
-mcp.sha256=<64 hex digits of httpd.module>
+mcp.url=http://10.1.1.3:18080/mcp.module
+mcp.sha256=<64 hex digits of mcp.module>
 mcp.token=<shared secret>          (optional; requires Authorization: Bearer)
 ```
 

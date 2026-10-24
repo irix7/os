@@ -17,7 +17,7 @@ security posture. It does not define the agent's policy or the client implementa
 
 ## 1.1 Current prototype
 
-`modules/httpd` is loaded over HTTPS into the module area and is the first slice of the
+`modules/mcp` is loaded over HTTPS into the module area and is the first slice of the
 control plane.  It is **kernel-space code in the shared kernel address space**, packaged as
 a loadable image; “module” is not a privilege boundary.  It implements:
 

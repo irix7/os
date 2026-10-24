@@ -12,9 +12,12 @@ The file maps the boot-time module names to immutable raw GitHub files:
 ```text
 version=1
 release=v0.1.0
-mcp.url=https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/httpd.module
+mcp.url=https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.1/mcp.module
 mcp.sha256=<64 hex digits>
 ```
+
+The v0.1.0 release used the historical `httpd.module` name.  Subsequent
+releases build `mcp.module`.
 
 The release workflow builds the flat module under `boot/modules/<tag>/` and
 proposes an update to this file.  Because `main` is protected, that update is a

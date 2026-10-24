@@ -1,11 +1,11 @@
 [package]
 license = "GPL-3.0-only"
-name = "httpd-module"
+name = "mcp-module"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "httpd-module"
+name = "mcp-module"
 path = "src/main.rs"
 
 [profile.dev]

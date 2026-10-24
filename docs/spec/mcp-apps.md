@@ -8,7 +8,7 @@
 ## 1. Purpose and current reality
 
 The MCP server is the development and control plane for the machine.  Today it is a
-**kernel-resident MCP server packaged as the loadable `modules/httpd` image**.  The kernel
+**kernel-resident MCP server packaged as the loadable `modules/mcp` image**.  The kernel
 fetches it over HTTPS, verifies its SHA-256, loads the flat image at `0x88400000` and calls
 its `_start`.  The image is then executed in kernel mode on the kernel stack, in the shared
 kernel address space, driven by a 10 ms tick callback.  It owns two TCP slots and listens
