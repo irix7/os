@@ -72,7 +72,7 @@ pub extern "C" fn _start() -> ! {
     if heap.is_null() {
         exit(50);
     }
-    if unsafe { core::ptr::read_volatile(heap as *const u8) } != 0 {
+    if unsafe { memcmp(heap, b"\0".as_ptr() as *const c_void, 1) } != 0 {
         exit(51);
     }
     let heap_message = b"heap\n";
@@ -95,7 +95,7 @@ pub extern "C" fn _start() -> ! {
     if zeroed.is_null() {
         exit(53);
     }
-    if unsafe { core::ptr::read_volatile(zeroed as *const u8) } != 0 {
+    if unsafe { memcmp(zeroed, b"\0".as_ptr() as *const c_void, 1) } != 0 {
         exit(54);
     }
     unsafe { free(zeroed) };
