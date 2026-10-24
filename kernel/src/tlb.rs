@@ -33,8 +33,9 @@ const PAGE_MASK_4M: u32 = 0x0000_2400;
 const PAGE_MASK_16M: u32 = 0x0000_2c00;
 
 // EntryLo fields (R4400).
+const ENTRYLO_DIRTY: u32 = 0x0000_0004;
 const ENTRYLO_VALID: u32 = 0x0000_0002;
-const ENTRYLO_GLOBAL: u32 = 0x0000_0100;
+const ENTRYLO_GLOBAL: u32 = 0x0000_0001;
 
 // EntryHi ASID field (8 bits).
 const ENTRYHI_ASID_MASK: u32 = 0x0000_00ff;
@@ -86,8 +87,8 @@ pub fn map_page(vpn: u32, pfn: u32, asid: u32, mask: u32, valid: bool, global: b
     let entryhi = (vpn & PAGE_MASK_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
     entryhi_write(entryhi);
 
-    // EntryLo0: even page.
-    let mut lo0 = pfn & 0xffff_f000;
+    // EntryLo: PFN at bit 6, D/V/G flags.  Uncached for this low-level helper.
+    let mut lo0 = ((pfn >> 12) << 6) | ENTRYLO_DIRTY;
     if valid {
         lo0 |= ENTRYLO_VALID;
     }
@@ -102,6 +103,31 @@ pub fn map_page(vpn: u32, pfn: u32, asid: u32, mask: u32, valid: bool, global: b
     // Write the TLB entry.
     unsafe {
         core::arch::asm!("tlbwr");
+    }
+}
+
+/// Map a 4 KiB page at a fixed TLB index.
+///
+/// `vpn` and `pfn` are page-aligned virtual and physical addresses.  The
+/// EntryLo PFN field is encoded at bit 6; the caller chooses the cache
+/// attribute (0 is uncached for the user smoke test).
+pub fn map_page_at(vpn: u32, pfn: u32, asid: u32, index: u32, cache: u32, global: bool) {
+    pagemask_write(PAGE_MASK_4K);
+    let entryhi = (vpn & PAGE_MASK_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
+    entryhi_write(entryhi);
+
+    let mut entrylo = ((pfn >> 12) << 6) | ENTRYLO_DIRTY | ENTRYLO_VALID;
+    entrylo |= (cache & 0x7) << 3;
+    if global {
+        entrylo |= ENTRYLO_GLOBAL;
+    }
+    entrylo0_write(entrylo);
+    entrylo1_write(entrylo);
+    index_write(index);
+    unsafe {
+        core::arch::asm!("tlbwi");
+        core::arch::asm!("nop");
+        core::arch::asm!("nop");
     }
 }
 

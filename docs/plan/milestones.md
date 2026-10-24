@@ -270,6 +270,12 @@ form is deferred to M5/M9.  Evidence:
 **Demo:** an o32 `hello` binary from the IRIX 6.5.7m sysroot prints `hello, IRIX 7` and exits
 with status 0; the shell reports the exit status.
 
+**Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a one-way
+user-mode smoke test now proves KSU user entry, user TLB mappings, a syscall trap,
+the trap-stack switch and `eret` handling on iris.  It runs a fixed four-instruction
+image and parks in the syscall handler; there is no ELF process, argv/envp, libc or
+return-to-user path yet.
+
 **Acceptance criteria:**
 
 - [ ] ELF loader maps the o32 image and its interpreter/libs.
