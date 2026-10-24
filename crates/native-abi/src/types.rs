@@ -187,13 +187,29 @@ pub struct sockaddr {
     pub sa_data: [u8; 14],
 }
 
-/// `sockaddr_in`: 16 bytes.
+/// `struct in_addr`: one 32-bit address.  The struct (not a bare array) is
+/// what gives `sockaddr_in` its 4-byte alignment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct in_addr {
+    pub s_addr: u32,
+}
+
+/// `struct in6_addr`: 16 bytes with the 4-byte alignment used by `libc`'s
+/// shared `in6_addr`.
+#[repr(C, align(4))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct in6_addr {
+    pub s6_addr: [u8; 16],
+}
+
+/// `sockaddr_in`: 16 bytes, 4-byte aligned.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct sockaddr_in {
     pub sin_family: sa_family_t,
     pub sin_port: u16,
-    pub sin_addr: [u8; 4],
+    pub sin_addr: in_addr,
     pub sin_zero: [u8; 8],
 }
 
@@ -204,12 +220,12 @@ pub struct sockaddr_in6 {
     pub sin6_family: sa_family_t,
     pub sin6_port: u16,
     pub sin6_flowinfo: u32,
-    pub sin6_addr: [u8; 16],
+    pub sin6_addr: in6_addr,
     pub sin6_scope_id: u32,
 }
 
 /// `sockaddr_storage`: at least 128 bytes, 8-byte aligned.
-#[repr(C)]
+#[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct sockaddr_storage {
     pub ss_family: sa_family_t,
@@ -225,7 +241,10 @@ pub struct sockaddr_un {
     pub sun_path: [u8; 108],
 }
 
-/// `struct msghdr`: provisional 32-byte layout.
+/// `struct msghdr`: the POSIX-2024 field order, 28 bytes on n32.
+///
+/// The provisional 32-byte version had a trailing pad that the POSIX fields do
+/// not require; the natural n32 size is 28.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct msghdr {
@@ -236,7 +255,6 @@ pub struct msghdr {
     pub msg_control: u32,
     pub msg_controllen: size_t,
     pub msg_flags: c_int,
-    pub _pad: u32,
 }
 
 /// `struct cmsghdr`: 12 bytes.
@@ -270,7 +288,10 @@ pub struct linger {
     pub l_linger: c_int,
 }
 
-/// `fd_set`: 1024 bits.
+/// `fd_set`: 1024 bits, 128 bytes with the natural 32-bit `long` alignment.
+///
+/// The element type is `u32` because n32 `long` is 32-bit; `FD_SETSIZE` is
+/// still marked open in the specification.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct fd_set {
@@ -305,7 +326,9 @@ pub struct passwd {
     pub pw_shell: u32,
 }
 
-/// `struct utsname`: five 65-byte fields.
+/// `struct utsname`: the five POSIX fields, with no Linux `domainname`
+/// extension.  The 65-byte field width is a provisional choice; the
+/// specification does not pin the size yet.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct utsname {
@@ -363,6 +386,9 @@ pub struct DIR {
 }
 
 /// `sem_t` is optional; this provisional storage is 32 bytes.
+///
+/// POSIX semaphores are outside the v1 profile (`[SEM] = no`), so the size is
+/// a placeholder, not a frozen ABI decision.
 #[repr(C, align(8))]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct sem_t {

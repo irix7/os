@@ -1,0 +1,392 @@
+--- a/src/unix/irix7/mod.rs
++++ b/src/unix/irix7/mod.rs
+@@ -18,6 +18,9 @@
+ //!   big-endian, ILP32, 8-byte-aligned 64-bit fields).  A handful of types
+ //!   that `std` never touches are omitted rather than guessed at; see the
+ //!   "Deliberately absent" note at the end of the file.
++//! * The layouts are cross-checked at compile time against the committed
++//!   `native-abi` crate in `layout.rs`.  Passing that check means the spike
++//!   and the ABI crate agree; it is not a C oracle or a frozen ABI.
+ //! * `errno` values, signal numbers and `W*` encodings have never been
+ //!   compared with a C implementation, because none exists yet.
+ //!
+@@ -36,10 +39,6 @@
+ /// MIPS/IRIX `wchar_t` is a signed 32-bit integer.
+ pub type wchar_t = c_int;
+ 
+-/// Opaque placeholder for `sem_t`; POSIX semaphores are optional and outside
+-/// the v1 profile (spec §3.2, `[SEM]` = no).
+-pub type sem_t = *mut c_void;
+-
+ // ---------------------------------------------------------------------------
+ // Fundamental types (spec §4.1)
+ // ---------------------------------------------------------------------------
+@@ -210,13 +209,14 @@
+         pub pw_shell: *mut c_char,
+     }
+ 
++    /// The five POSIX fields; the Linux `domainname` extension is not part
++    /// of the native ABI (and is not pinned by `native-abi`).
+     pub struct utsname {
+         pub sysname: [c_char; 65],
+         pub nodename: [c_char; 65],
+         pub release: [c_char; 65],
+         pub version: [c_char; 65],
+         pub machine: [c_char; 65],
+-        pub domainname: [c_char; 65],
+     }
+ 
+     pub struct termios {
+@@ -234,6 +234,14 @@
+         pub __val: [u64; 16],
+     }
+ 
++    /// Opaque storage for `sem_t`.  POSIX semaphores are optional and outside
++    /// the v1 profile (spec §3.2, `[SEM]` = no); the 32-byte size is the
++    /// provisional value pinned by `native-abi`, not a frozen ABI decision.
++    #[repr(align(8))]
++    pub struct sem_t {
++        pub __opaque: [u8; 32],
++    }
++
+     pub struct sigaction {
+         pub sa_sigaction: sighandler_t,
+         pub sa_mask: sigset_t,
+@@ -241,10 +249,11 @@
+         pub sa_restorer: Option<extern "C" fn()>,
+     }
+ 
++    /// POSIX order: `ss_sp`, `ss_size`, `ss_flags` (native-libc.md §4.1).
+     pub struct stack_t {
+         pub ss_sp: *mut c_void,
+-        pub ss_flags: c_int,
+         pub ss_size: size_t,
++        pub ss_flags: c_int,
+     }
+ 
+     /// Opaque placeholder.  The real layout is open in the specification
+@@ -255,8 +264,10 @@
+         pub __opaque: [u8; 128],
+     }
+ 
++    /// 1024 bits in 32-bit words; n32 `long` is 32-bit.  The element type
++    /// and alignment are pinned by `native-abi`; `FD_SETSIZE` remains open.
+     pub struct fd_set {
+-        pub fds_bits: [u64; 16],
++        pub fds_bits: [u32; 32],
+     }
+ 
+     pub struct linger {
+@@ -1139,8 +1150,8 @@
+ //   `itimerspec`, `posix_spawn_file_actions_t`, `posix_spawnattr_t`,
+ //   `DIR` contents and `FILE` contents (opaque in the ABI).
+ //
+-// `sem_t` is declared as an opaque pointer and `Dl_info` as a placeholder
+-// struct; they exist only because the shared Unix declarations in
++// `sem_t` is declared as 32 bytes of opaque storage and `Dl_info` as a
++// placeholder struct; they exist only because the shared Unix declarations in
+ // `src/unix/mod.rs` mention them.  Dynamic loading and POSIX semaphores are
+ // post-v1 (specification §3.2 and §4.8).
+ //
+@@ -1149,3 +1160,11 @@
+ // defined once in `src/unix/mod.rs` and are re-exported through the glob in
+ // that module, so they must *not* be redefined here: a duplicate definition
+ // would be shadowed by the module-level item and silently ignored.
++//
++// ---------------------------------------------------------------------------
++// Compile-time ABI cross-check
++// ---------------------------------------------------------------------------
++//
++// The assertions in `layout.rs` compare every type this module shares with the
++// committed `native-abi` crate.  They are part of the crate build, not a test.
++mod layout;
+--- /dev/null
++++ b/src/unix/irix7/layout.rs
+@@ -0,0 +1,287 @@
++//! Compile-time layout cross-check against `native-abi`.
++//!
++//! `native-abi` is the source of truth for the native n32 layouts.  This
++//! module is compiled as part of `libc` for the `irix7` target (32-bit
++//! pointers), and every assertion compares the spike's public type with the
++//! committed `native-abi` type: size, alignment and the documented field
++//! offsets.  A failure means the spike has drifted from the ABI crate.
++//!
++//! The types are still **provisional**.  Passing this check is not a C
++//! verification and does not freeze the ABI.  `FILE` and `DIR` are opaque
++//! extern types in `libc`, as the specification requires, so their storage is
++//! not asserted; `native-abi`'s 128-byte placeholders are host-testable
++//! stand-ins, not an ABI claim.
++#![allow(clippy::assertions_on_constants)]
++
++use super::*;
++use crate::{
++    in6_addr,
++    iovec,
++    pollfd,
++    rlimit,
++    timespec,
++    timeval,
++    winsize,
++    DIR,
++    FILE,
++};
++
++/// Assert that a `libc` type and a `native-abi` type have the same size and
++/// alignment.
++macro_rules! same_layout {
++    ($libc:ty, $abi:ty) => {
++        const _: () = {
++            assert!(core::mem::size_of::<$libc>() == core::mem::size_of::<$abi>());
++            assert!(core::mem::align_of::<$libc>() == core::mem::align_of::<$abi>());
++        };
++    };
++}
++
++/// Assert that each named field has the same offset in both types.
++macro_rules! same_fields {
++    ($libc:ty, $abi:ty, $($field:ident),+ $(,)?) => {
++        $(
++            const _: () = assert!(
++                core::mem::offset_of!($libc, $field) == core::mem::offset_of!($abi, $field)
++            );
++        )+
++    };
++}
++
++// ---------------------------------------------------------------------------
++// Fundamental types (spec §4.1)
++// ---------------------------------------------------------------------------
++
++same_layout!(c_char, native_abi::c_char);
++same_layout!(c_int, native_abi::c_int);
++same_layout!(c_long, native_abi::c_long);
++same_layout!(size_t, native_abi::size_t);
++same_layout!(ssize_t, native_abi::ssize_t);
++same_layout!(off_t, native_abi::off_t);
++same_layout!(ino_t, native_abi::ino_t);
++same_layout!(dev_t, native_abi::dev_t);
++same_layout!(mode_t, native_abi::mode_t);
++same_layout!(nlink_t, native_abi::nlink_t);
++same_layout!(blkcnt_t, native_abi::blkcnt_t);
++same_layout!(blksize_t, native_abi::blksize_t);
++same_layout!(pid_t, native_abi::pid_t);
++same_layout!(uid_t, native_abi::uid_t);
++same_layout!(gid_t, native_abi::gid_t);
++same_layout!(id_t, native_abi::id_t);
++same_layout!(time_t, native_abi::time_t);
++same_layout!(clockid_t, native_abi::clockid_t);
++same_layout!(socklen_t, native_abi::socklen_t);
++same_layout!(sa_family_t, native_abi::sa_family_t);
++same_layout!(rlim_t, native_abi::rlim_t);
++same_layout!(wchar_t, native_abi::wchar_t);
++same_layout!(pthread_t, native_abi::pthread_t);
++same_layout!(pthread_key_t, native_abi::pthread_key_t);
++
++// ---------------------------------------------------------------------------
++// Structs: size and alignment
++// ---------------------------------------------------------------------------
++
++same_layout!(timespec, native_abi::timespec);
++same_layout!(timeval, native_abi::timeval);
++same_layout!(iovec, native_abi::iovec);
++same_layout!(pollfd, native_abi::pollfd);
++same_layout!(winsize, native_abi::winsize);
++same_layout!(rlimit, native_abi::rlimit);
++same_layout!(stat, native_abi::stat);
++same_layout!(dirent, native_abi::dirent);
++same_layout!(posix_dent, native_abi::posix_dent);
++same_layout!(sigset_t, native_abi::sigset_t);
++same_layout!(stack_t, native_abi::stack_t);
++same_layout!(in_addr, native_abi::in_addr);
++same_layout!(in6_addr, native_abi::in6_addr);
++same_layout!(sockaddr, native_abi::sockaddr);
++same_layout!(sockaddr_in, native_abi::sockaddr_in);
++same_layout!(sockaddr_in6, native_abi::sockaddr_in6);
++same_layout!(sockaddr_storage, native_abi::sockaddr_storage);
++same_layout!(sockaddr_un, native_abi::sockaddr_un);
++same_layout!(msghdr, native_abi::msghdr);
++same_layout!(cmsghdr, native_abi::cmsghdr);
++same_layout!(addrinfo, native_abi::addrinfo);
++same_layout!(linger, native_abi::linger);
++same_layout!(fd_set, native_abi::fd_set);
++same_layout!(termios, native_abi::termios);
++same_layout!(passwd, native_abi::passwd);
++same_layout!(utsname, native_abi::utsname);
++same_layout!(Dl_info, native_abi::Dl_info);
++same_layout!(pthread_attr_t, native_abi::pthread_attr_t);
++same_layout!(pthread_mutex_t, native_abi::pthread_mutex_t);
++same_layout!(pthread_mutexattr_t, native_abi::pthread_mutexattr_t);
++same_layout!(pthread_cond_t, native_abi::pthread_cond_t);
++same_layout!(pthread_condattr_t, native_abi::pthread_condattr_t);
++same_layout!(pthread_rwlock_t, native_abi::pthread_rwlock_t);
++same_layout!(pthread_rwlockattr_t, native_abi::pthread_rwlockattr_t);
++same_layout!(sem_t, native_abi::sem_t);
++
++// ---------------------------------------------------------------------------
++// Structs: documented field offsets
++// ---------------------------------------------------------------------------
++
++same_fields!(timespec, native_abi::timespec, tv_sec, tv_nsec);
++same_fields!(timeval, native_abi::timeval, tv_sec, tv_usec);
++same_fields!(iovec, native_abi::iovec, iov_base, iov_len);
++same_fields!(pollfd, native_abi::pollfd, fd, events, revents);
++same_fields!(
++    winsize,
++    native_abi::winsize,
++    ws_row,
++    ws_col,
++    ws_xpixel,
++    ws_ypixel
++);
++same_fields!(rlimit, native_abi::rlimit, rlim_cur, rlim_max);
++same_fields!(
++    stat,
++    native_abi::stat,
++    st_dev,
++    st_ino,
++    st_mode,
++    st_nlink,
++    st_uid,
++    st_gid,
++    st_rdev,
++    st_size,
++    st_blksize,
++    st_blocks,
++    st_atim,
++    st_mtim,
++    st_ctim
++);
++const _: () = assert!(
++    core::mem::offset_of!(stat, __st_spare) == core::mem::offset_of!(native_abi::stat, _reserved)
++);
++same_fields!(
++    dirent,
++    native_abi::dirent,
++    d_ino,
++    d_off,
++    d_reclen,
++    d_type,
++    d_name
++);
++same_fields!(
++    posix_dent,
++    native_abi::posix_dent,
++    d_ino,
++    d_off,
++    d_reclen,
++    d_type,
++    d_name
++);
++const _: () = assert!(
++    core::mem::offset_of!(sigset_t, __val) == core::mem::offset_of!(native_abi::sigset_t, bits)
++);
++same_fields!(stack_t, native_abi::stack_t, ss_sp, ss_size, ss_flags);
++same_fields!(in_addr, native_abi::in_addr, s_addr);
++same_fields!(in6_addr, native_abi::in6_addr, s6_addr);
++same_fields!(sockaddr, native_abi::sockaddr, sa_family, sa_data);
++same_fields!(
++    sockaddr_in,
++    native_abi::sockaddr_in,
++    sin_family,
++    sin_port,
++    sin_addr,
++    sin_zero
++);
++same_fields!(
++    sockaddr_in6,
++    native_abi::sockaddr_in6,
++    sin6_family,
++    sin6_port,
++    sin6_flowinfo,
++    sin6_addr,
++    sin6_scope_id
++);
++// The padding members have different names; only the public family field is
++// comparable.
++same_fields!(sockaddr_storage, native_abi::sockaddr_storage, ss_family);
++same_fields!(sockaddr_un, native_abi::sockaddr_un, sun_family, sun_path);
++same_fields!(
++    msghdr,
++    native_abi::msghdr,
++    msg_name,
++    msg_namelen,
++    msg_iov,
++    msg_iovlen,
++    msg_control,
++    msg_controllen,
++    msg_flags
++);
++same_fields!(
++    cmsghdr,
++    native_abi::cmsghdr,
++    cmsg_len,
++    cmsg_level,
++    cmsg_type
++);
++same_fields!(
++    addrinfo,
++    native_abi::addrinfo,
++    ai_flags,
++    ai_family,
++    ai_socktype,
++    ai_protocol,
++    ai_addrlen,
++    ai_addr,
++    ai_canonname,
++    ai_next
++);
++same_fields!(linger, native_abi::linger, l_onoff, l_linger);
++const _: () = assert!(
++    core::mem::offset_of!(fd_set, fds_bits) == core::mem::offset_of!(native_abi::fd_set, bits)
++);
++same_fields!(
++    termios,
++    native_abi::termios,
++    c_iflag,
++    c_oflag,
++    c_cflag,
++    c_lflag,
++    c_line,
++    c_cc,
++    c_ispeed,
++    c_ospeed
++);
++same_fields!(
++    passwd,
++    native_abi::passwd,
++    pw_name,
++    pw_passwd,
++    pw_uid,
++    pw_gid,
++    pw_gecos,
++    pw_dir,
++    pw_shell
++);
++same_fields!(
++    utsname,
++    native_abi::utsname,
++    sysname,
++    nodename,
++    release,
++    version,
++    machine
++);
++same_fields!(
++    Dl_info,
++    native_abi::Dl_info,
++    dli_fname,
++    dli_fbase,
++    dli_sname,
++    dli_saddr
++);
++const _: () = assert!(
++    core::mem::offset_of!(sem_t, __opaque) == core::mem::offset_of!(native_abi::sem_t, _opaque)
++);
++
++// `FILE` and `DIR` are opaque extern types in both the specification and
++// `libc`; there is no storage layout to compare, only the width of the
++// pointers used to reach them.
++const _: () = {
++    assert!(core::mem::size_of::<*mut FILE>() == core::mem::size_of::<usize>());
++    assert!(core::mem::size_of::<*mut DIR>() == core::mem::size_of::<usize>());
++};

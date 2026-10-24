@@ -16,6 +16,11 @@ the `stat` size, `dirent` `NAME_MAX`, signal context and several numeric
 constants are marked open there; this crate pins the recommended defaults so
 changes are visible and testable.
 
+The `std` build spike's `libc` `irix7` module checks every shared type against
+this crate at compile time; see [`tools/std-spike`](../../tools/std-spike) and
+[`docs/research/rust-std-build-spike.md`](../../docs/research/rust-std-build-spike.md)
+§10.
+
 [spec]: https://github.com/irix7/os/blob/main/docs/spec/native-libc.md
 
 ## Use
