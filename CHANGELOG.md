@@ -16,6 +16,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - Capability derivation now preserves the object type and identifier, and the table
   exposes object lookup and rights checks.  The capability tests are corrected and
   run under `rustc --test`.
+- A one-entry software TLB-refill vector maps a private kernel test page through
+  kuseg and returns through `eret`; the telnet `tlb` command exercises it.  A
+  general page-table refill and user-mode versions remain open.
 - `crates/native-abi`: provisional native n32 C types, public layouts and constants,
   with host layout tests and a native-target CI build.  It is the layout source for the
   native libc/std work; it is layout-only and not yet a frozen ABI.

@@ -137,7 +137,8 @@ uses a 2-entry memory map, clears `.bss`, sets up the stack, and prints `kernel:
 The telnet ROM console remains live after the hand-off via the resident console poll.
 The general exception vector now saves a full register frame and round-trips a
 deliberate `break`/`syscall` through `eret`; timer interrupts stay on the fast path.
-The TLB-refill vector exists but the software refill path is not implemented.  The
+A one-entry software TLB-refill vector now maps a private test page and returns
+through `eret`; a general page-table refill and user-mode return are still open.  The
 capability table has generation-checked handles, object preservation and rights
 checks; wiring it into kernel services is still open.
 
@@ -154,7 +155,9 @@ register dump.
 - [x] Telnet ROM console remains live after kernel boots (resident console poll).
 - [x] General exception vector, full register frame and `eret` round trip work on
       MIPS III (kernel-mode self-test).
-- [ ] TLB refill and user-mode exception return work on MIPS III.
+- [x] One-entry software TLB refill and `eret` work on MIPS III (kernel-mode
+      self-test).
+- [ ] General page-table refill and user-mode exception return work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
 - [ ] Frame allocator from the ARCS memory descriptor list; no probing.
 - [ ] 16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.
