@@ -217,4 +217,5 @@ extend-exclude = [
     "target",
     ".git",
     "node_modules",
+    "tools/std-spike/patches",
 ]
