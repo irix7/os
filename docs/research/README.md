@@ -14,6 +14,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`compressed-ram.md`](compressed-ram.md) | What Meta's CRAM actually is and whether compressed RAM fits the Indy (verdict: no). |
 | [`rust-os-design-research.md`](rust-os-design-research.md) | A broad survey of Rust OS design choices. |
 | [`rust-std-irix7.md`](rust-std-irix7.md) | What `std` for IRIX 7 means, the native-vs-compat split, the POSIX.1-2024 native libc ABI it requires, and the implementation and PR plan. |
+| [`rust-std-build-spike.md`](rust-std-build-spike.md) | The measured spike: build the `std` rlib for the native n32 target from a patched `rust-src` and libc, the exact method and patch set, the result, and the remaining runtime gaps. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
