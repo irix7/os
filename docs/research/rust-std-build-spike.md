@@ -27,8 +27,8 @@ exits 0 in 70–80 s on the build host and produces:
 | Item | Value |
 |---|---|
 | rlib | `libstd-1d5ef169874e6597.rlib` |
-| size | 18,761,614 bytes (17.9 MiB) |
-| md5 | `38f7159a8146eaf813a06b780584a7ce` (this patch revision) |
+| size | about 18.7 MiB (18,761,614 bytes in this scratch; absolute build paths can change the exact metadata bytes) |
+| md5 | `38f7159a8146eaf813a06b780584a7ce` for this scratch path; not a cross-path reproducibility contract |
 | object format | ELF32, **big-endian**, `EM_MIPS`, `e_flags = 0x2000_0021` |
 | ISA / ABI | `EF_MIPS_ARCH_3` (MIPS III) + `EF_MIPS_ABI2` (n32) |
 | `restricted_std` | **absent** (the port has a `std/build.rs` entry) |
