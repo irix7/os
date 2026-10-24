@@ -1,0 +1,17 @@
+[package]
+name = "irix7-user-hello"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "hello"
+path = "src/main.rs"
+
+[workspace]
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true

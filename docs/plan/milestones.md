@@ -229,7 +229,8 @@ It is autoloaded from the NVRAM environment (`mcp.url`/`mcp.sha256`) and comes b
 **Status (2026-10-24):** the prototype runs on iris, but it is **not yet a userspace
 stack**.  SCSI, the block service and the HTTP Range client are kernel code; the HTTP MCP
 server and the filesystem are loadable kernel images (modules).  The console `erofs`
-command mounts an HTTP/HTTPS EROFS image and verifies its SHA-256, and the MCP tools expose
+command (built with the optional `erofs-debug` feature) mounts an HTTP/HTTPS EROFS image
+and verifies its SHA-256, and the MCP tools expose
 `fs.read/list/stat/readlink/write/remove` through the overlay.  The target userspace/cell
 form is deferred to M5/M9.  Evidence:
 
@@ -270,12 +271,13 @@ form is deferred to M5/M9.  Evidence:
 **Demo:** an o32 `hello` binary from the IRIX 6.5.7m sysroot prints `hello, IRIX 7` and exits
 with status 0; the shell reports the exit status.
 
-**Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a
-user-mode smoke test now proves KSU user entry, user TLB mappings, a write syscall
-that returns to user mode, an exit syscall that returns to the console, the
-trap-stack switch and `eret`.  It runs a fixed seven-instruction image and restores
-the console's callee-saved registers; there is no ELF process, argv/envp, libc or
-general process return path yet.
+**Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a native
+n32 user ELF now loads from SCSI target 2 through `userelf`: the kernel maps its
+`PT_LOAD` pages, sets up a user stack and enters it.  The ELF runs a write syscall
+that returns to user, then exit(42), which returns through the trampoline to the
+telnet console.  A fixed-code smoke test also covers KSU entry and the trap-stack
+switch.  This is still a fixed native image: no o32/IRIX compatibility, argv/envp,
+dynamic linking, fd table or libc.
 
 **Acceptance criteria:**
 

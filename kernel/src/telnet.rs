@@ -48,6 +48,7 @@ struct Console {
     pending_ping: Option<PingRequest>,
     /// A deferred module fetch and run.
     pending_module: Option<HttpRequest>,
+    #[cfg(feature = "erofs-debug")]
     /// A deferred EROFS image read over HTTP.
     pending_erofs: Option<crate::erofs_cmd::Request>,
 }
@@ -105,6 +106,7 @@ pub fn init() {
                 pending_ntp: None,
                 pending_ping: None,
                 pending_module: None,
+                #[cfg(feature = "erofs-debug")]
                 pending_erofs: None,
             });
         }
@@ -171,19 +173,22 @@ pub fn poll() {
         }
     }
 
-    // Run a deferred EROFS image read.  It performs several HTTP range
-    // fetches, so it must own the interface outside the console borrow.
-    let erofs_request =
-        unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_erofs.take());
-    if let Some(request) = erofs_request {
-        let output = crate::erofs_cmd::run(&request);
-        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
-        if let Some(handle) = handle {
-            net::sockets_with(|sockets| {
-                let sock = sockets.get_mut::<TcpSocket>(handle);
-                let _ = sock.send_slice(output.as_bytes());
-                let _ = sock.send_slice(b"kernel> ");
-            });
+    #[cfg(feature = "erofs-debug")]
+    {
+        // Run a deferred EROFS image read.  It performs several HTTP range
+        // fetches, so it must own the interface outside the console borrow.
+        let erofs_request =
+            unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_erofs.take());
+        if let Some(request) = erofs_request {
+            let output = crate::erofs_cmd::run(&request);
+            let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+            if let Some(handle) = handle {
+                net::sockets_with(|sockets| {
+                    let sock = sockets.get_mut::<TcpSocket>(handle);
+                    let _ = sock.send_slice(output.as_bytes());
+                    let _ = sock.send_slice(b"kernel> ");
+                });
+            }
         }
     }
 
@@ -465,13 +470,12 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
-                  \x20 erofs [http|https]://host:port/path [sha256=hex] [info|ls|cat] [path]\r\n\
-                  \x20               read an EROFS image over HTTP or HTTPS\r\n\
                   \x20 boot          continue booting\r\n\
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
                   \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
-                  \x20 user          enter a one-way user-mode smoke test\r\n\
+                  \x20 user          enter the fixed user-mode smoke test\r\n\
+                  \x20 userelf       load and run an n32 ELF from SCSI target 2\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
         }
@@ -582,6 +586,16 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             crate::tlb::invalidate_index(41);
             let _ = sock.send_slice(b"user: returned to console\r\n");
         }
+        b"userelf" => {
+            let _ = sock.send_slice(b"userelf: loading target 2\r\n");
+            unsafe {
+                crate::traps::user_from_console_elf();
+            }
+            for index in 40..48 {
+                crate::tlb::invalidate_index(index);
+            }
+            let _ = sock.send_slice(b"userelf: returned to console\r\n");
+        }
         b"reboot" => {
             let _ = sock.send_slice(b"rebooting\r\n");
             REBOOT_REQUESTED.store(true, Ordering::SeqCst);
@@ -626,6 +640,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 }
             }
         }
+        #[cfg(feature = "erofs-debug")]
         _ if line.starts_with(b"erofs ") => {
             match crate::erofs_cmd::Request::parse(trim(&line[6..])) {
                 Some(request) => {

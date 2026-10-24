@@ -455,7 +455,10 @@ The reader keeps no cache; the caller owns the block cache.  The kernel's
 `http::get_range_to` or `tls::get_range_to` with a 256 KiB read-ahead window
 clamped to the final block.  The first probe is 4 KiB; the mount then reads the
 superblock, metadata and inline data from that window, and a file fetch replaces
-it with the clamped read-ahead.  It is reached from the telnet console:
+it with the clamped read-ahead.  The kernel command is built only with the
+`erofs-debug` feature (off by default to keep the compressed PROM small); the
+loadable `erofs` module is the normal filesystem path.  With the feature enabled,
+it is reached from the telnet console:
 
 ```text
 erofs [http|https]://<host>:<port><path> [sha256=hex] [info|ls|cat] [path]

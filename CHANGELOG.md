@@ -8,6 +8,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- `userelf` loads a native n32 ELF from SCSI target 2.  The kernel reads up to
+  80 KiB, validates it with `irix-elf`, maps its `PT_LOAD` pages into kuseg, sets
+  a four-page user stack and enters through the provisional write/exit syscall ABI.
+  `user/hello` builds a minimal image with the native target; the telnet command
+  returns to the console after exit.
+- The kernel's HTTP `erofs` debug command is now behind the `erofs-debug` feature
+  and off by default, keeping the PROM image small; the loadable `erofs` module is
+  the normal filesystem path.
 - A user-mode smoke test: maps a fixed code and stack page, enters KSU user, takes
   a write syscall through the general exception vector (returning to user), then an
   exit syscall that returns through a kernel trampoline to the telnet command loop.

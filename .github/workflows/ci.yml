@@ -137,6 +137,15 @@ jobs:
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
             cargo build -Z build-std=core,alloc -Zjson-target-spec --features cross \
             --target targets/mips3-sgi-irix7-n32.json -p rom
+      - name: Build native user hello ELF
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export PATH="$RUST_LLD_DIR:$PATH"
+          tools/build-user-hello.sh ${{ runner.temp }}/user-hello
+
       - name: Build native target probe (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"

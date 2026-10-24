@@ -431,6 +431,7 @@ dependencies = [
  "embedded-tls",
  "erofs",
  "hpc3",
+ "irix-elf",
  "module-abi",
  "rand_core",
  "smoltcp",
