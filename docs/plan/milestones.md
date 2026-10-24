@@ -273,11 +273,12 @@ with status 0; the shell reports the exit status.
 
 **Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a native
 n32 user ELF now loads from SCSI target 2 through `userelf`: the kernel maps its
-`PT_LOAD` pages, sets up a user stack and enters it.  The ELF runs a write syscall
-that returns to user, then exit(42), which returns through the trampoline to the
-telnet console.  A fixed-code smoke test also covers KSU entry and the trap-stack
-switch.  This is still a fixed native image: no o32/IRIX compatibility, argv/envp,
-dynamic linking, fd table or libc.
+`PT_LOAD` pages and BSS, builds the conventional argc/argv/envp initial stack and
+enters it.  The ELF writes a string from its read-only segment and `argv[0]`/`envp[0]`
+from the stack through `write(fd, buffer, length)`, then exits 42 and returns through
+the trampoline to the telnet console.  A fixed-code smoke test also covers KSU entry
+and the trap-stack switch.  This is still a fixed native image: no o32/IRIX
+compatibility, process table, fd table, dynamic linking or libc.
 
 **Acceptance criteria:**
 

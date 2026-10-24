@@ -132,6 +132,7 @@ extern "C" {
     pub fn user_from_console();
     pub fn user_from_console_elf();
     pub fn user_return_trampoline();
+    fn user_eret(user_sp: u32, argc: u32, argv: u32, envp: u32) -> !;
 }
 
 core::arch::global_asm!(
@@ -218,6 +219,21 @@ user_from_console_elf:
     addiu   $t1, $t1, %lo(USER_RETURN_SP)
     lw      $sp, 0($t1)
     jr      $ra
+    nop
+
+    /* Enter user mode from C ABI arguments: $sp, $a0, $a1, $a2.  Keeping
+       this in assembly avoids clobbering inline-asm inputs while loading
+       the fixed argument registers. */
+    .section .text.user_eret, "ax", @progbits
+    .align 4
+    .globl user_eret
+user_eret:
+    move    $sp, $4
+    move    $a0, $5
+    move    $a1, $6
+    move    $a2, $7
+    move    $ra, $zero
+    eret
     nop
 
     .section .text.user_return_trampoline, "ax", @progbits
@@ -631,7 +647,34 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
         match tf.regs[2] {
             1 => {
-                crate::println("user: write syscall (returning to user)");
+                let fd = tf.regs[4];
+                let address = tf.regs[5];
+                let length = tf.regs[6];
+                if address == 0 && length == 0 {
+                    // The fixed smoke image uses write with no arguments.
+                    crate::println("user: write syscall (returning to user)");
+                    tf.regs[2] = 0;
+                } else if fd != 1 && fd != 2 {
+                    tf.regs[2] = u32::MAX;
+                } else if length > 256 || !crate::user::range_ok(address, length) {
+                    tf.regs[2] = u32::MAX;
+                } else {
+                    let mut buffer = [0u8; 256];
+                    for (index, byte) in buffer[..length as usize].iter_mut().enumerate() {
+                        *byte =
+                            unsafe { core::ptr::read_volatile((address as *const u8).add(index)) };
+                    }
+                    match core::str::from_utf8(&buffer[..length as usize]) {
+                        Ok(text) => {
+                            crate::print_str(text);
+                            tf.regs[2] = length;
+                        }
+                        Err(_) => {
+                            crate::println("user: write is not valid UTF-8");
+                            tf.regs[2] = u32::MAX;
+                        }
+                    }
+                }
                 tf.epc = tf.epc.wrapping_add(4);
             }
             2 => {
@@ -821,11 +864,11 @@ pub extern "C" fn user_smoke() -> ! {
     crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
     crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
 
-    run_user(0x1000_0000, 0x1000_2000)
+    run_user(0x1000_0000, 0x1000_2000, 0, 0, 0)
 }
 
-/// Enter user mode at `entry` with `user_sp` and the provisional syscall ABI.
-pub fn run_user(entry: u32, user_sp: u32) -> ! {
+/// Enter user mode at `entry` with `user_sp`, `argc`, `argv` and `envp`.
+pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! {
     let kernel_gp: u32;
     unsafe {
         core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
@@ -839,15 +882,7 @@ pub fn run_user(entry: u32, user_sp: u32) -> ! {
     status_write(status);
 
     crate::println("user: entering user mode");
-    unsafe {
-        core::arch::asm!(
-            "move $sp, {0}",
-            "move $ra, $zero",
-            "eret",
-            in(reg) user_sp,
-            options(noreturn)
-        );
-    }
+    unsafe { user_eret(user_sp, argc, argv, envp) }
 }
 
 /// Exercise the general exception vector, frame save/restore and `eret`.
