@@ -115,6 +115,8 @@ Requirements:
 - [ ] Reproducible-build check passes.
 - [ ] Upgrade and rollback tested.
 - [ ] Release notes and changelog written.
+- [ ] Merge the release workflow's boot-configuration pull request so new machines
+      fetch the published module.
 - [ ] Install/upgrade docs updated.
 - [ ] Announcement in Discussions.
 - [ ] Post-release: archive the previous stable; update the mirror.

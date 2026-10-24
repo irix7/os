@@ -38,7 +38,8 @@ The primary configuration is `boot/config.conf` in the repository, fetched from:
 https://raw.githubusercontent.com/irix7/os/main/boot/config.conf
 ```
 
-The release workflow updates it with immutable raw module URLs. The file supplies:
+The release workflow proposes an update with immutable raw module URLs (a pull
+request, because `main` is protected). The file supplies:
 
 | Name | Value |
 |---|---|
