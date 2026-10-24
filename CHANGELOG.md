@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The user loader now tracks its page pairs and frees the image, stack and heap
+  frames on exit or a failed load.  `mmap` maps zeroed anonymous heap pages from
+  `0x2000_0000` (128 KiB); `munmap` and `mprotect` are provisional no-ops.
 - The native user entry now builds the conventional `argc`/`argv`/`envp` initial
   stack and passes them in `$a0`-`$a2`.  The provisional `write(fd, buffer, length)`
   syscall validates a recorded user range, copies up to 256 bytes and returns the

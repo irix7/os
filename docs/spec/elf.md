@@ -246,7 +246,12 @@ and `envp` pointer arrays, then the strings.  `$a0`, `$a1` and `$a2` carry
 
 This is deliberately narrow: there is no process table, fd table, dynamic
 linker, o32 support, address-space teardown or libc.  The provisional syscalls
-are `write(fd, buffer, length)` and `exit(status)`; the kernel validates the
-write range against the loaded segments and stack before copying.  There is no
-fd table: fd 1 and 2 are accepted, the copied buffer is capped at 256 bytes, and
-the bytes go to the serial console for now.
+are `write(fd, buffer, length)`, `exit(status)`, anonymous `mmap`, a one-way
+`munmap` and a permissive `mprotect`.  The kernel validates the write range against
+the loaded segments, stack and heap before copying.  There is no fd table: fd 1
+and 2 are accepted, the copied buffer is capped at 256 bytes, and the bytes go to
+the serial console for now.
+
+The provisional heap starts at `0x2000_0000` and grows to 128 KiB.  The loader
+maps it in even/odd 4 KiB pairs and releases every pair, including the image and
+stack, when the user exits or a load fails.

@@ -64,6 +64,22 @@ pub extern "C" fn _start() -> ! {
         exit(49);
     }
 
+    // Anonymous mmap(8192) returns zeroed heap pages at 0x2000_0000.
+    let heap = mmap(8192);
+    if heap == u32::MAX || heap == 0 {
+        exit(50);
+    }
+    if unsafe { core::ptr::read_volatile(heap as *const u8) } != 0 {
+        exit(51);
+    }
+    let heap_message = b"heap\n";
+    unsafe {
+        core::ptr::copy_nonoverlapping(heap_message.as_ptr(), heap as *mut u8, heap_message.len());
+    }
+    if write(1, heap as *const u8, heap_message.len() as u32) != heap_message.len() as u32 {
+        exit(52);
+    }
+
     unsafe {
         // Exercise the highest mapped stack page.
         core::arch::asm!("sw $zero, -4($sp)", options(nostack));
@@ -86,14 +102,39 @@ user_write:
 "#
 );
 
+core::arch::global_asm!(
+    r#"
+    .set noreorder
+    .set mips3
+    .section .text.user_mmap, "ax", @progbits
+    .align 2
+    .globl user_mmap
+user_mmap:
+    move    $a1, $4
+    move    $a0, $zero
+    li      $a2, 3
+    li      $a3, 0x22
+    li      $v0, 3
+    syscall
+    jr      $ra
+    nop
+"#
+);
+
 extern "C" {
     /// The n32 C ABI already places fd/buffer/length in $a0/$a1/$a2.
     fn user_write(fd: u32, buffer: *const u8, length: u32) -> u32;
+    fn user_mmap(length: u32) -> u32;
 }
 
 #[inline(never)]
 fn write(fd: u32, buffer: *const u8, length: u32) -> u32 {
     unsafe { user_write(fd, buffer, length) }
+}
+
+#[inline(never)]
+fn mmap(length: u32) -> u32 {
+    unsafe { user_mmap(length) }
 }
 
 fn exit(code: u32) -> ! {

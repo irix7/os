@@ -275,10 +275,12 @@ with status 0; the shell reports the exit status.
 n32 user ELF now loads from SCSI target 2 through `userelf`: the kernel maps its
 `PT_LOAD` pages and BSS, builds the conventional argc/argv/envp initial stack and
 enters it.  The ELF writes a string from its read-only segment and `argv[0]`/`envp[0]`
-from the stack through `write(fd, buffer, length)`, then exits 42 and returns through
-the trampoline to the telnet console.  A fixed-code smoke test also covers KSU entry
-and the trap-stack switch.  This is still a fixed native image: no o32/IRIX
-compatibility, process table, fd table, dynamic linking or libc.
+from the stack through `write(fd, buffer, length)`, maps a zeroed anonymous heap
+page through `mmap`, then exits 42 and returns through the trampoline to the telnet
+console.  The exit path frees the image, stack and heap frame pairs.  A fixed-code
+smoke test also covers KSU entry and the trap-stack switch.  This is still a fixed
+native image: no o32/IRIX compatibility, process table, fd table, dynamic linking or
+libc.
 
 **Acceptance criteria:**
 

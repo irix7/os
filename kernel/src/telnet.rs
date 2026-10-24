@@ -591,9 +591,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             unsafe {
                 crate::traps::user_from_console_elf();
             }
-            for index in 40..48 {
-                crate::tlb::invalidate_index(index);
-            }
+            crate::user::cleanup();
             let _ = sock.send_slice(b"userelf: returned to console\r\n");
         }
         b"reboot" => {
