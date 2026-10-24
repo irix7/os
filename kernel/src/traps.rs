@@ -111,6 +111,14 @@ static mut TRAP_FRAME: TrapFrame = TrapFrame {
     status: 0,
 };
 
+/// Separate kernel stack for the exception handler.  A user exception may
+/// arrive with an untrusted `$sp`; the handler must not run on it.
+#[repr(align(16))]
+struct TrapStack([u8; 16 * 1024]);
+
+#[no_mangle]
+static mut TRAP_STACK: TrapStack = TrapStack([0; 16 * 1024]);
+
 /// Number of self-test break exceptions handled.
 static mut BREAKS: u32 = 0;
 /// Number of self-test syscall exceptions handled.
@@ -248,6 +256,12 @@ trap_entry:
     sw      $t0, 144($k0)
     mfc0    $t0, $12
     sw      $t0, 148($k0)
+
+    /* Switch to the dedicated trap stack; the saved user/kernel $sp is in
+       the frame and is restored below. */
+    lui     $sp, %hi(TRAP_STACK)
+    addiu   $sp, $sp, %lo(TRAP_STACK)
+    addiu   $sp, $sp, 16384
 
     move    $a0, $k0
     jal     trap_handler
@@ -493,6 +507,19 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
+    // User-mode syscall smoke test.  There is no native syscall ABI yet;
+    // reaching this branch proves the kernel entered user mode, took the
+    // exception and switched to the trap stack.  It parks rather than
+    // returning to an incomplete process model.
+    if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
+        crate::print_str("user: syscall from user mode v0=0x");
+        crate::print_hex32(tf.regs[2]);
+        crate::println("");
+        loop {
+            core::hint::spin_loop();
+        }
+    }
+
     match exc_code {
         EXC_BP => {
             // Only the console's `break 7` self-test is handled.  Every other
@@ -620,6 +647,50 @@ pub fn tlb_self_test() -> bool {
     observed == value
 }
 
+/// Enter a tiny user-mode image and take one syscall.
+///
+/// This is a one-way smoke test: the user syscall handler reports the trap and
+/// parks, because there is no process/return path yet.  It proves the TLB
+/// user mappings, Status.KSU, exception entry, trap-stack switch and CP0
+/// frame handling.  Use the telnet `user` command; reboot to recover.
+pub fn user_smoke() -> ! {
+    let code_phys = crate::frames::alloc_frame().expect("user smoke: code frame");
+    let stack_phys = crate::frames::alloc_frame().expect("user smoke: stack frame");
+    let code_phys = code_phys as u32;
+    let stack_phys = stack_phys as u32;
+
+    // MIPS III: li $v0, 1; syscall; b .; nop
+    let code: [u32; 4] = [0x2402_0001, 0x0000_000c, 0x1000_ffff, 0x0000_0000];
+    let code_alias = (code_phys | 0x8000_0000) as *mut u32;
+    for (i, word) in code.iter().enumerate() {
+        unsafe {
+            core::ptr::write_volatile(code_alias.add(i), *word);
+        }
+    }
+    crate::cache::dcache_writeback_invalidate(code_alias as usize, code.len() * 4);
+    crate::cache::sync();
+
+    crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
+    crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
+
+    let mut status = status_read();
+    status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
+    status |= STATUS_KSU_USER | STATUS_IE | (1 << 15);
+    epc_write(0x1000_0000);
+    status_write(status);
+
+    crate::println("user: entering user mode");
+    unsafe {
+        core::arch::asm!(
+            "move $sp, {0}",
+            "move $ra, $zero",
+            "eret",
+            in(reg) 0x1000_2000u32,
+            options(noreturn)
+        );
+    }
+}
+
 /// Exercise the general exception vector, frame save/restore and `eret`.
 ///
 /// This deliberately executes a break and a syscall in kernel mode.  It does
@@ -676,6 +747,12 @@ pub fn install_vectors() {
         let len = (&tlb_refill_vector_end as *const u8 as usize) - (src as usize);
         (src, len)
     };
+
+    crate::print_str("vectors: src=0x");
+    crate::print_hex32(general_src as u32);
+    crate::print_str(" len=0x");
+    crate::print_hex32(general_len as u32);
+    crate::println("");
 
     for i in 0..general_len {
         // SAFETY: both ranges are in the kernel's direct-mapped window.

@@ -471,6 +471,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
                   \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
+                  \x20 user          enter a one-way user-mode smoke test\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
         }
@@ -570,6 +571,10 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             } else {
                 b"tlb: self-test FAILED\r\n".as_slice()
             });
+        }
+        b"user" => {
+            let _ = sock.send_slice(b"user: entering (one-way; reboot to recover)\r\n");
+            crate::traps::user_smoke();
         }
         b"reboot" => {
             let _ = sock.send_slice(b"rebooting\r\n");
