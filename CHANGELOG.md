@@ -397,6 +397,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Changed
 
+- Removed the graphical ARCS-style boot menu. The kernel now paints the boot
+  log full-screen on the REX3 and automatically enters the native n32 ELF on
+  SCSI target 2; if no image is attached, the loader error stays visible and
+  the kernel console continues. Diagnostics moved to the telnet console.
 - Renamed the loadable MCP control plane from `modules/httpd`/`httpd.module`
   to `modules/mcp`/`mcp.module`.  The v0.1.0 release keeps the historical
   `httpd.module` name for its immutable assets; subsequent releases use

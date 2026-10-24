@@ -38,7 +38,6 @@ pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
-pub mod menu;
 pub mod module;
 pub mod net;
 pub mod ntp;
@@ -622,59 +621,36 @@ pub extern "C" fn _start_rust() -> ! {
     let autoload = autoload::boot();
     announce_boot(autoload);
 
-    menu::draw();
-    loop {
-        let mut action: Option<usize> = None;
-        if let Some(key) = kbd::poll_key() {
-            match key {
-                kbd::Key::Up => {
-                    menu::move_selection(-1);
-                    menu::draw();
-                }
-                kbd::Key::Down => {
-                    menu::move_selection(1);
-                    menu::draw();
-                }
-                kbd::Key::Enter => action = Some(menu::selected()),
-                kbd::Key::Char(c) if c.is_ascii_digit() => {
-                    let n = (c - b'1') as usize;
-                    if n < menu::OPTIONS.len() {
-                        menu::select(n);
-                        action = Some(n);
-                    }
-                }
-                _ => {}
-            }
-        }
-        graphics_console::flush();
-        net::poll();
-        module::poll();
-        telnet::poll();
-        if telnet::reboot_requested() {
-            reboot();
-        }
-        if telnet::boot_requested() {
-            break;
-        }
-        if let Some(index) = action {
-            if index == 3 {
-                // "Run diagnostics": print the inventory and return to the menu.
-                diagnostics::run();
-                menu::draw();
-                continue;
-            }
-            break;
-        }
-        idle::wait();
-    }
-    console_write("kernel: booting ");
-    console_println(menu::OPTIONS[menu::selected()]);
+    // The boot log is the local display now.  Paint it before handing over so
+    // the last kernel messages are visible even if userland never returns.
+    start_userland();
 
-    // Idle loop: poll the resident console service, network, and telnet.
+    // Userland returned (normally after exit, or because target 2 had no
+    // loadable image).  Keep the console, network and module services alive.
     // Both the BootInfo path and the register-handoff path keep the console
     // and network alive; only the resident poll routine is conditional.
     let console_poll = info.and_then(|info| read_console_poll(info));
     idle_loop(console_poll);
+}
+
+/// Hand over to the native user image on SCSI target 2.
+///
+/// This is the same one-way entry used by the telnet `userelf` command.  It
+/// saves the kernel console context, enters user mode, and returns here only
+/// on a load failure or after the user process exits.
+fn start_userland() {
+    console_println("kernel: starting userland from SCSI target 2");
+    graphics_console::flush();
+
+    // SAFETY: single-threaded kernel; the trampoline saves and restores the
+    // caller's $sp/$ra and callee-saved registers around the one-way entry.
+    unsafe {
+        traps::user_from_console_elf();
+    }
+
+    user::cleanup();
+    console_println("kernel: userland returned to kernel console");
+    graphics_console::flush();
 }
 
 /// Idle loop: poll the resident console service, network, and telnet.
@@ -683,6 +659,11 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {
             poll(core::ptr::null_mut());
+        }
+
+        // A telnet `boot` retries the target-2 userland image.
+        if telnet::boot_requested() {
+            start_userland();
         }
 
         // Drive the network stack, module callbacks and telnet console.
