@@ -11,6 +11,7 @@
   "env": "",
   "features": "+mips3,+soft-float,+noabicalls",
   "has-rpath": false,
+  "has-thread-local": false,
   "linker": "rust-lld",
   "linker-flavor": "gnu-lld",
   "llvm-abiname": "n32",

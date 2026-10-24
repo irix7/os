@@ -28,7 +28,7 @@
 # Kernel image destinations
 .set KERNEL_PHYS_KSEG1, 0xA8040000   /* physical 0x08040000, uncached */
 .set KERNEL_ENTRY,      0x88040000   /* kseg0 cached entry point */
-.set KERNEL_STACK_TOP,  0x88200000   /* matches the kernel's __stack_top */
+.set KERNEL_STACK_TOP,  0x88300000   /* matches the kernel's __stack_top */
 
 .section .text._start, "ax", @progbits
 .align 4

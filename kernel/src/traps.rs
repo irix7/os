@@ -647,35 +647,7 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
         match tf.regs[2] {
             1 => {
-                let fd = tf.regs[4];
-                let address = tf.regs[5];
-                let length = tf.regs[6];
-                if address == 0 && length == 0 {
-                    // The fixed smoke image uses write with no arguments.
-                    crate::println("user: write syscall (returning to user)");
-                    tf.regs[2] = 0;
-                } else if fd != 1 && fd != 2 {
-                    tf.regs[2] = u32::MAX;
-                } else if length > 256 || !crate::user::range_ok(address, length) {
-                    tf.regs[2] = u32::MAX;
-                } else {
-                    let mut buffer = [0u8; 256];
-                    for (index, byte) in buffer[..length as usize].iter_mut().enumerate() {
-                        *byte =
-                            unsafe { core::ptr::read_volatile((address as *const u8).add(index)) };
-                    }
-                    match core::str::from_utf8(&buffer[..length as usize]) {
-                        Ok(text) => {
-                            crate::print_str(text);
-                            crate::graphics_console::flush();
-                            tf.regs[2] = length;
-                        }
-                        Err(_) => {
-                            crate::println("user: write is not valid UTF-8");
-                            tf.regs[2] = u32::MAX;
-                        }
-                    }
-                }
+                tf.regs[2] = crate::user::write_fd(tf.regs[4], tf.regs[5], tf.regs[6]);
                 tf.epc = tf.epc.wrapping_add(4);
             }
             3 => {
@@ -692,6 +664,72 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
             5 => {
                 // mprotect: every user page is already read/write.
                 tf.regs[2] = 0;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            6 => {
+                tf.regs[2] = crate::user::open_path(tf.regs[4], tf.regs[5]) as u32;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            7 => {
+                tf.regs[2] = crate::fd::close(tf.regs[4] as i32) as u32;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            8 => {
+                tf.regs[2] = 0;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            9 => {
+                tf.regs[2] = crate::fd::dup(tf.regs[4] as i32) as u32;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            10 => {
+                tf.regs[2] = crate::user::getcwd_text(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            11 => {
+                tf.regs[2] = crate::user::poll_user(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            12 => {
+                // signal(SIGPIPE, SIG_IGN): no signal machinery yet.
+                tf.regs[2] = 0;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            13 => {
+                tf.regs[2] = crate::user::entropy_user(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            14 => {
+                tf.regs[2] = crate::user::clock_user(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            15 => {
+                tf.regs[2] = 1;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            16 => {
+                tf.regs[2] = crate::user::read_fd(tf.regs[4], tf.regs[5], tf.regs[6]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            17 => {
+                tf.regs[2] = crate::user::fstat_user(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            18 => {
+                tf.regs[2] = crate::user::stat_user(tf.regs[4], tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            19 => {
+                tf.regs[2] =
+                    crate::user::readdir_user(tf.regs[4], tf.regs[5], tf.regs[6], tf.regs[7]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            20 => {
+                tf.regs[2] = crate::user::sleep_user(tf.regs[4]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            21 => {
+                tf.regs[2] = crate::user::chdir_user(tf.regs[4]);
                 tf.epc = tf.epc.wrapping_add(4);
             }
             2 => {

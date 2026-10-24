@@ -64,7 +64,7 @@ environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), o
 |---|---|
 | Load virtual address (kseg0) | `0x8840_0000` (physical `0x0840_0000`) |
 | Maximum size | 2 MiB (`0x0020_0000`) |
-| Placement | inside the reserved low window, above the kernel stack top (`0x8820_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
+| Placement | inside the reserved low window, above the kernel stack top (`0x8830_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
 | Image format | flat binary, entry at offset 0 |
 | Cache | kseg0 is cacheable; the loader must write back the data cache and invalidate the instruction cache before the call |
 

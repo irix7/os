@@ -1,0 +1,19 @@
+[package]
+name = "irix7-std-hello"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[[bin]]
+name = "std-hello"
+path = "src/main.rs"
+
+[workspace]
+
+[dependencies]
+irix7-libc = { path = "../../crates/irix7-libc" }
+
+[profile.release]
+panic = "abort"
+opt-level = 2

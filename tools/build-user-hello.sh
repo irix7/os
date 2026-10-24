@@ -18,8 +18,8 @@ export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$REPO/target/user-hello-target}
 )
 cp "$CARGO_TARGET_DIR/mips3-sgi-irix7-native-n32/release/hello" "$OUT/hello.elf"
 
-# The loader expects the ELF at LBA 0 on SCSI target 2 and reads 80 KiB.
+# The loader expects the ELF at LBA 0 on SCSI target 2 and reads 256 KiB.
 cp "$OUT/hello.elf" "$OUT/hello-disk.raw"
-truncate -s 81920 "$OUT/hello-disk.raw"
+truncate -s 262144 "$OUT/hello-disk.raw"
 echo "ELF:  $OUT/hello.elf"
 echo "disk: $OUT/hello-disk.raw"

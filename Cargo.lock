@@ -421,6 +421,10 @@ name = "irix-elf"
 version = "0.1.0"
 
 [[package]]
+name = "irix7-libc"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [

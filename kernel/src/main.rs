@@ -30,6 +30,7 @@ pub mod diagnostics;
 pub mod dns;
 #[cfg(feature = "erofs-debug")]
 pub mod erofs_cmd;
+pub mod fd;
 pub mod font;
 pub mod frames;
 pub mod gfx;
