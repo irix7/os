@@ -667,6 +667,7 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                     match core::str::from_utf8(&buffer[..length as usize]) {
                         Ok(text) => {
                             crate::print_str(text);
+                            crate::graphics_console::flush();
                             tf.regs[2] = length;
                         }
                         Err(_) => {
@@ -917,13 +918,18 @@ pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! 
         USER_KERNEL_GP = kernel_gp;
     }
 
+    // Set up the user entry with interrupts masked by EXL.  If IE is enabled
+    // before EPC is set, a timer interrupt can overwrite EPC; the following
+    // `eret` then returns to the interrupted kernel PC instead of userland.
     let mut status = status_read();
-    status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
-    status |= STATUS_KSU_USER | STATUS_IE | (1 << 15);
+    status &= !(STATUS_KSU_MASK | STATUS_ERL | STATUS_IE);
+    status_write(status);
     epc_write(entry);
+    status |= STATUS_KSU_USER | STATUS_IE | (1 << 15) | STATUS_EXL;
     status_write(status);
 
     crate::println("user: entering user mode");
+    crate::graphics_console::flush();
     unsafe { user_eret(user_sp, argc, argv, envp) }
 }
 

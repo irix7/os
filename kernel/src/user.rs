@@ -113,13 +113,24 @@ pub extern "C" fn user_elf() {
             let Some(phys) = ensure_page(address) else {
                 return;
             };
+            // The code and data land in cacheable kseg0 if written through the
+            // 0x8 alias.  Use the uncached kseg1 alias so the bytes are in RAM
+            // before the instruction cache is invalidated below.
             unsafe {
                 core::ptr::write_volatile(
-                    ((phys | 0x8000_0000) as *mut u8).add((address & 0xFFF) as usize),
+                    ((phys | 0xA000_0000) as *mut u8).add((address & 0xFFF) as usize),
                     *byte,
                 );
             }
         }
+
+        // The entry point may have been fetched into the instruction cache by
+        // an earlier attempt, or hold stale lines from the kernel.  Invalidate
+        // the whole mapped segment before entering it.
+        crate::cache::icache_invalidate(
+            start_page as usize,
+            end_page.saturating_sub(start_page) as usize,
+        );
     }
 
     // A fixed four-page user stack, separate from the loaded image.

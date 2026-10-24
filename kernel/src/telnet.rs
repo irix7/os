@@ -331,9 +331,9 @@ pub fn poll() {
     }
 }
 
-/// Whether a telnet client asked the kernel to continue booting.
+/// Take and clear a telnet client's request to retry the userland image.
 pub fn boot_requested() -> bool {
-    BOOT_REQUESTED.load(Ordering::SeqCst)
+    BOOT_REQUESTED.swap(false, Ordering::SeqCst)
 }
 
 /// Whether a telnet client asked the kernel to reboot.
@@ -535,6 +535,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 b"commands:\r\n\
                   \x20 help          this text\r\n\
                   \x20 status        kernel and network state\r\n\
+                  \x20 diagnostics   CPU, memory and network inventory\r\n\
                   \x20 net           interface addresses\r\n\
                   \x20 mem           RAM accounting\r\n\
                   \x20 scsi          reset/probe the WD33C93\r\n\
@@ -545,7 +546,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 ntp <host>[:port]  set the clock from an NTP server\r\n\
                   \x20 ping <host>     ICMP echo\r\n\
                   \x20 module [https://]host:port/path <sha256>  fetch and run a RAM module\r\n\
-                  \x20 boot          continue booting\r\n\
+                  \x20 boot          retry the target-2 userland image\r\n\
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
                   \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
@@ -559,6 +560,9 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             let mut buf = [0u8; 512];
             let n = crate::status::text(&mut buf);
             let _ = sock.send_slice(&buf[..n]);
+        }
+        b"diagnostics" => {
+            crate::diagnostics::run();
         }
         b"net" => {
             let mut buf = [0u8; 256];

@@ -32,6 +32,16 @@ Consequences:
 
 ## Other standing requirements
 
+- **Rust-first components.** Prefer a Rust implementation for every new
+  component, tool and dependency. If a non-Rust option is proposed, find a
+  maintained Rust equivalent first; if none exists, develop one in Rust.
+  Porting an existing Rust project is preferred over binding a non-Rust one.
+- **Dependencies are work items, not disqualifiers.** Do not reject a component
+  merely because it has a large dependency tree. For every dependency, record
+  its licence, target/platform assumptions, build requirements and port or
+  replacement strategy. Prefer implementing the missing OS service or a
+  Rust-native replacement over dropping the feature. Only defer a dependency
+  when it genuinely belongs to a later layer, and say which layer.
 - Rust, n32, MIPS III minimum; the kernel is n32. The ROM is assembly.
 - The ROM executes from PROM space, not RAM.
 - RAM tests run before any RAM structures exist.
