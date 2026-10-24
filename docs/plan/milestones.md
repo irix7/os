@@ -313,7 +313,7 @@ tracking; the hardware cursor moves; the desktop has a launcher and a clock.
 **Acceptance criteria:**
 
 - [ ] Newport REX3 blit, fill, line and text paths work.
-- [ ] VC2 mode programming (1024×768 or 1280×1024) and XMAP9 palette.
+- [x] VC2 mode programming (1024×768 or 1280×1024) and XMAP9 palette.
 - [ ] Hardware cursor in the XMAP9 auxiliary plane.
 - [ ] Retained window images and damage-driven repair.
 - [ ] Display lease for a full-screen cell.

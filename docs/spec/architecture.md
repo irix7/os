@@ -62,7 +62,7 @@ development and test machine:
 | Machine | SGI Indy (iris profile `IndyIp24`) |
 | CPU | MIPS R4400, MIPS III, big-endian; 16 KiB L1 I/D caches, 1 MiB L2 |
 | RAM | 256 MiB (`banks = [128, 128, 0, 0]`) |
-| Graphics | Newport XL (REX3 + RB2 + VC2 + XMAP9), guest-programmed mode |
+| Graphics | Newport XL (REX3 + RB2 + VC2 + XMAP9), kernel-programmed 1280×1024 mode |
 | Audio | HAL2 |
 | Ethernet | Seeq 8003, 10 Mbit |
 | SCSI | WD33C93, disk at ID 1, CD-ROM at ID 4 |

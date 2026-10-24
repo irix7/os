@@ -383,6 +383,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
   (compiles `core`/`alloc` from source).
 - Nix devshell (`flake.nix`) pinning rustc, cargo, rustfmt, clippy, gcc and binutils.
 
+- A local graphical console: kernel console output is mirrored into a text
+  pane below the boot menu, the kernel downloads the 1280x1024 VC2 timing
+  table itself, and XMAP9 plus the Bt445 gamma table are programmed for
+  24-bit RGB.  The Newport display now comes up even when the host has not
+  preselected a mode.
+- The IRIS 10 font converter now strips the source's `/* char 0xNN */`
+  comments before collecting glyph words; the previous output embedded those
+  hex values as extra rows and misaligned every glyph after the first comment.
+
 ### Changed
 
 - Renamed the loadable MCP control plane from `modules/httpd`/`httpd.module`

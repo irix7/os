@@ -112,6 +112,41 @@ const STALL1: u32 = 0x132C;
 const CONFIG: u32 = 0x1330;
 const STATUS: u32 = 0x1338;
 
+// DCB bridge: VC2, CMAP, XMAP9 and the BT445 RAMDAC hang off these registers.
+const DCBMODE: u32 = 0x0238;
+const DCBDATA0: u32 = 0x0240;
+
+/// DCB target addresses.
+const DCB_ADDR_VC2: u32 = 0;
+const DCB_ADDR_XMAP: u32 = 4; // writes both XMAP9s on an XL24 board
+const DCB_ADDR_RAMDAC: u32 = 7;
+/// DCBMODE data widths.
+const DCB_WIDTH_8: u32 = 1;
+const DCB_WIDTH_16: u32 = 2;
+const DCB_WIDTH_32: u32 = 0;
+
+/// VC2 registers used by the mode-set routine.
+const VC2_VIDEO_ENTRY_PTR: u32 = 0x00;
+const VC2_CURSOR_ENTRY_PTR: u32 = 0x01;
+const VC2_CURSOR_X: u32 = 0x02;
+const VC2_CURSOR_Y: u32 = 0x03;
+const VC2_RAM_ADDR: u32 = 0x07;
+const VC2_VT_FRAME_PTR: u32 = 0x08;
+const VC2_SCANLINE_LEN: u32 = 0x06;
+const VC2_DISPLAY_CONTROL: u32 = 0x10;
+const VC2_CONFIG: u32 = 0x1f;
+const VC2_CTRL_BLACKOUT: u32 = 1 << 1;
+const VC2_CTRL_VIDEO_TIMING_EN: u32 = 1 << 2;
+const VC2_CTRL_CURSOR_FUNC_EN: u32 = 1 << 4;
+const VC2_CTRL_CURSOR_EN: u32 = 1 << 7;
+const VT_HPOS_VC_N: u32 = 1 << 1;
+const VT_CBLANK_XMAP_N: u32 = 1 << 6;
+
+/// XMAP9 register selects.
+const XMAP_MODE_TABLE: u32 = 5;
+/// RGB24, 24 bits per pixel, buffer 0, no overlay.
+const XMAP_MODE_RGB24: u32 = 0x0000_0F00;
+
 /// STATUS bit 3: the drawing engine is busy.
 const STATUS_GFXBUSY: u32 = 1 << 3;
 /// STATUS bits 9:7: command FIFO level.
@@ -181,6 +216,121 @@ fn xy(x: i32, y: i32) -> u32 {
     (xi << 16) | yi
 }
 
+fn dcb_mode(addr: u32, crs: u32, width: u32) -> u32 {
+    (addr << 7) | (crs << 4) | width
+}
+
+/// Write one 16-bit VC2 register through the REX3 DCB bridge.
+///
+/// VC2 mode setting is a table download, not a single register write.  The
+/// kernel provides the 1280x1024 table itself so the display comes up even
+/// when the emulator/host has not preselected a Newport mode.
+fn vc2_reg(index: u32, value: u32) {
+    reg(DCBMODE, dcb_mode(DCB_ADDR_VC2, 0, DCB_WIDTH_16));
+    reg(DCBDATA0, index & 0x1f);
+    reg(DCBMODE, dcb_mode(DCB_ADDR_VC2, 1, DCB_WIDTH_16));
+    reg(DCBDATA0, value & 0xffff);
+}
+
+fn vc2_set_ram_addr(address: u32) {
+    vc2_reg(VC2_RAM_ADDR, address);
+}
+
+fn vc2_ram_word(value: u16) {
+    reg(DCBMODE, dcb_mode(DCB_ADDR_VC2, 3, DCB_WIDTH_16));
+    reg(DCBDATA0, value as u32);
+}
+
+/// Emit a run of VC2 video-timing pixels.
+///
+/// Each line-sequence entry covers at most 254 pixels: duration is stored in
+/// half-pixel units and one entry carries the three signal-state bytes.  The
+/// active-video run asserts `VT_CBLANK_XMAP_N`; the final run carries EOL.
+fn vc2_push_pixels(mut pixels: u32, state_a: u32, state_c: u32, eol: bool) {
+    while pixels > 0 {
+        let chunk = pixels.min(254);
+        let duration = (chunk / 2).max(1) as u32;
+        let last = eol && pixels <= chunk;
+        let word0 = ((last as u32) << 15) | (duration << 8) | state_a;
+        let word1 = state_c;
+        vc2_ram_word(word0 as u16);
+        vc2_ram_word(word1 as u16);
+        pixels -= chunk;
+    }
+}
+
+/// Download the 1280x1024 @ ~72 Hz VC2 timing table and enable the display.
+fn program_vc2_1280x1024() {
+    const FRAME_PTR: u32 = 0x100;
+    const LINE_SEQ_PTR: u32 = 0x200;
+    const WIDTH: u32 = 1280;
+    const HEIGHT: u32 = 1024;
+
+    vc2_set_ram_addr(FRAME_PTR);
+    vc2_ram_word(LINE_SEQ_PTR as u16);
+    vc2_ram_word(HEIGHT as u16);
+
+    vc2_set_ram_addr(LINE_SEQ_PTR);
+    // Horizontal blank, HPOS pulse, gap to active video, then active pixels.
+    vc2_push_pixels(408, 0, 0, false);
+    vc2_push_pixels(2, VT_HPOS_VC_N, 0, false);
+    vc2_push_pixels(36, 0, 0, false);
+    vc2_push_pixels(WIDTH, 0, VT_CBLANK_XMAP_N, true);
+    // The VC2 line table chains each line sequence to the next.  A self-loop
+    // lets the frame entry repeat this one active line for every raster line.
+    vc2_ram_word(LINE_SEQ_PTR as u16);
+
+    vc2_reg(VC2_VIDEO_ENTRY_PTR, FRAME_PTR);
+    vc2_reg(VC2_VT_FRAME_PTR, FRAME_PTR);
+    vc2_reg(VC2_SCANLINE_LEN, WIDTH << 5);
+    vc2_reg(VC2_CURSOR_ENTRY_PTR, 0);
+    vc2_reg(VC2_CURSOR_X, 0);
+    vc2_reg(VC2_CURSOR_Y, 0);
+    vc2_reg(VC2_CONFIG, 0);
+    vc2_reg(
+        VC2_DISPLAY_CONTROL,
+        VC2_CTRL_BLACKOUT | VC2_CTRL_VIDEO_TIMING_EN | VC2_CTRL_CURSOR_FUNC_EN | VC2_CTRL_CURSOR_EN,
+    );
+    wait_idle();
+}
+
+/// Program both XMAP9s for 24-bit RGB on every display ID.
+///
+/// The display path starts with XMAP mode 0, which is colour-indexed and reads
+/// the (uninitialised) CMAP.  REX3 writes 24-bit RGB, so without this the
+/// framebuffer is drawn but the monitor sees black.
+fn program_xmap_rgb24() {
+    reg(
+        DCBMODE,
+        dcb_mode(DCB_ADDR_XMAP, XMAP_MODE_TABLE, DCB_WIDTH_32),
+    );
+    for id in 0..32u32 {
+        reg(DCBDATA0, (id << 24) | XMAP_MODE_RGB24);
+    }
+    wait_idle();
+}
+
+/// Load an identity gamma table into the Bt445 RAMDAC.
+///
+/// The compositor applies the RAMDAC LUT to every pixel.  Its power-on state
+/// is all zeroes, so an otherwise correct RGB image comes out black until the
+/// table is loaded.
+fn program_identity_gamma() {
+    // CRS 0 is the palette address register; start at index 0.
+    reg(DCBMODE, dcb_mode(DCB_ADDR_RAMDAC, 0, DCB_WIDTH_8));
+    reg(DCBDATA0, 0);
+    // CRS 1 is the 256 x RGB palette.  The chip auto-increments its address
+    // after the blue component, so one pass of 768 bytes fills it.
+    reg(DCBMODE, dcb_mode(DCB_ADDR_RAMDAC, 1, DCB_WIDTH_8));
+    for value in 0..=255u32 {
+        let byte = value << 24;
+        reg(DCBDATA0, byte); // red
+        reg(DCBDATA0, byte); // green
+        reg(DCBDATA0, byte); // blue
+    }
+    wait_idle();
+}
+
 /// Bring the drawing engine up: reset the pipeline state and leave it
 /// configured for 24-bit RGB block and span fills.
 pub fn init() {
@@ -227,6 +377,9 @@ pub fn init() {
     reg(CLIPMODE, 0xF << 9);
     reg(STALL1, 0);
     reg(CONFIG, 0);
+    program_vc2_1280x1024();
+    program_xmap_rgb24();
+    program_identity_gamma();
 }
 
 /// Fill the rectangle `(x0, y0)..=(x1, y1)` with an RGB colour.
@@ -331,13 +484,16 @@ pub fn self_test() -> bool {
 /// pen advance in pixels.
 pub fn draw_char(x: i32, y: i32, ch: u8, r: u32, g: u32, b: u32) -> i32 {
     let idx = ch as usize;
-    if idx < 0x20 || idx - 0x20 >= FONT_INFO.len() {
+    if !(0x20..=0x7e).contains(&idx) {
         return 0;
     }
-    let (off, xsize, ysize, xorig, yorig, xmove) = FONT_INFO[idx - 0x20];
+    let glyph = idx - 0x20;
+    let (off, xsize, ysize, xorig, yorig, xmove) = FONT_INFO[glyph];
     let base = y + FONT_BASELINE as i32 - ysize as i32 - yorig as i32;
+    // The IRIX font data stores glyph rows bottom-up.  Reverse them here so
+    // the raster is drawn top-down like the rest of the display code.
     for row in 0..ysize as usize {
-        let bits = FONT_DATA[off as usize + row];
+        let bits = FONT_DATA[off as usize + (ysize as usize - 1 - row)];
         if bits == 0 {
             continue;
         }

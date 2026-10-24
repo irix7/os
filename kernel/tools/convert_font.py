@@ -14,8 +14,13 @@ Format (see stand/arcs/include/stand_htport.h):
     };
 
 Each 16-bit data word is one glyph row; the pixel for column x is bit
-(15 - x).  The font height is 16 with a 3 pixel descender, so the baseline
-sits at row 13 and a glyph's first row is at (13 - ysize - yorig).
+(15 - x).  The source stores rows bottom-up, so `gfx::draw_char` reverses
+them while rasterising.  The font height is 16 with a 3 pixel descender, so
+the baseline sits at row 13 and a glyph's first row is at
+(13 - ysize - yorig).
+
+The data block carries the character number in `/* char 0xNN */` comments.
+Those are comments, not glyph words; strip them before collecting the data.
 """
 
 import re
@@ -33,7 +38,10 @@ def parse(path):
     m = re.search(r"iris10iData\[\]\s*=\s*\{(.*?)\};", text, re.S)
     if not m:
         sys.exit("iris10iData[] not found")
-    data = [int(w, 16) for w in re.findall(r"0x([0-9a-fA-F]+)", m.group(1))]
+    # The data block is annotated with `/* char 0xNN */` comments; those hex
+    # values are not glyph rows.  Strip comments before collecting words.
+    body = re.sub(r"/\*.*?\*/", "", m.group(1), flags=re.S)
+    data = [int(w, 16) for w in re.findall(r"0x([0-9a-fA-F]+)", body)]
 
     # Info table: struct fontinfo iris10iInfo[] = { {off, xs, ys, xo, yo, xm}, ... };
     m = re.search(r"iris10iInfo\[\]\s*=\s*\{(.*?)\};", text, re.S)
