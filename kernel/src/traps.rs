@@ -130,6 +130,9 @@ static mut TLB_TEST_VPN: u32 = 0;
 #[no_mangle]
 static mut TLB_TEST_ENTRYLO: u32 = 0;
 
+/// Kernel `$gp` saved before entering user mode.
+static mut USER_KERNEL_GP: u32 = 0;
+
 #[repr(C, align(4096))]
 struct TlbTestPage([u8; 4096]);
 
@@ -305,6 +308,11 @@ trap_entry:
     mtlo    $t0
     lw      $t0, 136($k0)
     mtc0    $t0, $14
+    /* Return status: keep EXL set until eret clears it.  The handler may
+       switch KSU for a user exit. */
+    lw      $t0, 148($k0)
+    ori     $t0, $t0, 0x2
+    mtc0    $t0, $12
     eret
     nop
 "#
@@ -507,17 +515,30 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
-    // User-mode syscall smoke test.  There is no native syscall ABI yet;
-    // reaching this branch proves the kernel entered user mode, took the
-    // exception and switched to the trap stack.  It parks rather than
-    // returning to an incomplete process model.
+    // User-mode syscall smoke test.  Code 1 is a console write and returns to
+    // user mode; code 2 exits to a kernel continuation.  This is deliberately
+    // a fixed ABI for the smoke test, not the native syscall ABI.
     if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
-        crate::print_str("user: syscall from user mode v0=0x");
-        crate::print_hex32(tf.regs[2]);
-        crate::println("");
-        loop {
-            core::hint::spin_loop();
+        match tf.regs[2] {
+            1 => {
+                crate::println("user: write syscall (returning to user)");
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            2 => {
+                let code = tf.regs[4];
+                crate::print_str("user: exit syscall code=0x");
+                crate::print_hex32(code);
+                crate::println("");
+                tf.epc = user_exited as usize as u32;
+                tf.regs[4] = code;
+                tf.regs[28] = unsafe { USER_KERNEL_GP };
+                tf.regs[29] = (core::ptr::addr_of!(TRAP_STACK) as u32) + 16 * 1024;
+                tf.regs[31] = 0;
+                tf.status &= !STATUS_KSU_MASK; // return to kernel mode
+            }
+            _ => fatal_trap(tf, exc_code),
         }
+        return;
     }
 
     match exc_code {
@@ -647,6 +668,17 @@ pub fn tlb_self_test() -> bool {
     observed == value
 }
 
+/// Kernel continuation reached after a user exit syscall.
+#[no_mangle]
+pub extern "C" fn user_exited(code: u32) -> ! {
+    crate::print_str("user: returned to kernel, exit=0x");
+    crate::print_hex32(code);
+    crate::println("");
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 /// Enter a tiny user-mode image and take one syscall.
 ///
 /// This is a one-way smoke test: the user syscall handler reports the trap and
@@ -659,8 +691,17 @@ pub fn user_smoke() -> ! {
     let code_phys = code_phys as u32;
     let stack_phys = stack_phys as u32;
 
-    // MIPS III: li $v0, 1; syscall; b .; nop
-    let code: [u32; 4] = [0x2402_0001, 0x0000_000c, 0x1000_ffff, 0x0000_0000];
+    // MIPS III: write syscall; exit(42); loop.  Code 1 returns to user, code
+    // 2 switches to user_exited.
+    let code: [u32; 7] = [
+        0x2402_0001, // li $v0, 1
+        0x0000_000c, // syscall
+        0x2402_0002, // li $v0, 2
+        0x2404_002a, // li $a0, 42
+        0x0000_000c, // syscall
+        0x1000_ffff, // b .
+        0x0000_0000, // nop
+    ];
     let code_alias = (code_phys | 0x8000_0000) as *mut u32;
     for (i, word) in code.iter().enumerate() {
         unsafe {
@@ -672,6 +713,12 @@ pub fn user_smoke() -> ! {
 
     crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
     crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
+
+    let kernel_gp: u32;
+    unsafe {
+        core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
+        USER_KERNEL_GP = kernel_gp;
+    }
 
     let mut status = status_read();
     status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
