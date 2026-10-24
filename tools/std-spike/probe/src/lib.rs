@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: GPL-3.0-only
+
 //! Probe crate for the `-Zbuild-std=std` spike.
 //!
 //! It has no code and no dependencies.  Its purpose is to give Cargo a package
