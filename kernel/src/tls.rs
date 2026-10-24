@@ -433,7 +433,12 @@ fn get_inner(
         }
     }
 
-    let record_read = Box::leak(Box::new([0u8; 16384]));
+    // embedded-tls asks for at least 16640 bytes: a maximum-size 16 KiB
+    // plaintext record plus the AEAD tag and content type.  A 16384-byte
+    // buffer works for small responses (such as the boot config) but fails
+    // with InsufficientSpace on the first full-size record of a module body.
+    const RECORD_READ_SIZE: usize = 16640;
+    let record_read = Box::leak(Box::new([0u8; RECORD_READ_SIZE]));
     let record_write = Box::leak(Box::new([0u8; 4096]));
 
     let seed = crate::traps::count_read() as u64;
