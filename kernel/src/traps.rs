@@ -119,6 +119,67 @@ struct TrapStack([u8; 16 * 1024]);
 #[no_mangle]
 static mut TRAP_STACK: TrapStack = TrapStack([0; 16 * 1024]);
 
+/// Kernel `$sp`/`$ra` to restore when a user exit returns to the console.
+#[no_mangle]
+static mut USER_RETURN_SP: u32 = 0;
+#[no_mangle]
+static mut USER_RETURN_RA: u32 = 0;
+/// Kernel callee-saved registers ($16-$23, $30) at the console entry.
+#[no_mangle]
+static mut USER_RETURN_REGS: [u32; 9] = [0; 9];
+
+extern "C" {
+    pub fn user_from_console();
+    pub fn user_return_trampoline();
+}
+
+core::arch::global_asm!(
+    r#"
+    .set noreorder
+    .set mips3
+    .set noat
+
+    /* Called from the telnet command.  Save the console caller's SP/RA, then
+       enter the one-way user image.  A user exit erets to the trampoline,
+       which returns here. */
+    .section .text.user_from_console, "ax", @progbits
+    .align 4
+    .globl user_from_console
+user_from_console:
+    addiu   $sp, $sp, -16
+    sw      $ra, 12($sp)
+    addiu   $t0, $sp, 16
+    lui     $t1, %hi(USER_RETURN_SP)
+    addiu   $t1, $t1, %lo(USER_RETURN_SP)
+    sw      $t0, 0($t1)
+    lui     $t1, %hi(USER_RETURN_RA)
+    addiu   $t1, $t1, %lo(USER_RETURN_RA)
+    sw      $ra, 0($t1)
+    lui     $t1, %hi(USER_RETURN_REGS)
+    addiu   $t1, $t1, %lo(USER_RETURN_REGS)
+    sw      $16, 0($t1)
+    sw      $17, 4($t1)
+    sw      $18, 8($t1)
+    sw      $19, 12($t1)
+    sw      $20, 16($t1)
+    sw      $21, 20($t1)
+    sw      $22, 24($t1)
+    sw      $23, 28($t1)
+    sw      $30, 32($t1)
+    jal     user_smoke
+    nop
+9:  b       9b
+    nop
+
+    .section .text.user_return_trampoline, "ax", @progbits
+    .align 4
+    .globl user_return_trampoline
+user_return_trampoline:
+    jr      $ra
+    nop
+"#
+);
+
 /// Number of self-test break exceptions handled.
 static mut BREAKS: u32 = 0;
 /// Number of self-test syscall exceptions handled.
@@ -129,6 +190,9 @@ static mut SYSCALLS: u32 = 0;
 static mut TLB_TEST_VPN: u32 = 0;
 #[no_mangle]
 static mut TLB_TEST_ENTRYLO: u32 = 0;
+
+/// Kernel `$gp` saved before entering user mode.
+static mut USER_KERNEL_GP: u32 = 0;
 
 #[repr(C, align(4096))]
 struct TlbTestPage([u8; 4096]);
@@ -305,6 +369,11 @@ trap_entry:
     mtlo    $t0
     lw      $t0, 136($k0)
     mtc0    $t0, $14
+    /* Return status: keep EXL set until eret clears it.  The handler may
+       switch KSU for a user exit. */
+    lw      $t0, 148($k0)
+    ori     $t0, $t0, 0x2
+    mtc0    $t0, $12
     eret
     nop
 "#
@@ -507,17 +576,36 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
-    // User-mode syscall smoke test.  There is no native syscall ABI yet;
-    // reaching this branch proves the kernel entered user mode, took the
-    // exception and switched to the trap stack.  It parks rather than
-    // returning to an incomplete process model.
+    // User-mode syscall smoke test.  Code 1 is a console write and returns to
+    // user mode; code 2 exits to a kernel continuation.  This is deliberately
+    // a fixed ABI for the smoke test, not the native syscall ABI.
     if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
-        crate::print_str("user: syscall from user mode v0=0x");
-        crate::print_hex32(tf.regs[2]);
-        crate::println("");
-        loop {
-            core::hint::spin_loop();
+        match tf.regs[2] {
+            1 => {
+                crate::println("user: write syscall (returning to user)");
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            2 => {
+                let code = tf.regs[4];
+                crate::print_str("user: exit syscall code=0x");
+                crate::print_hex32(code);
+                crate::println("");
+                tf.epc = user_return_trampoline as usize as u32;
+                tf.regs[4] = code;
+                let saved =
+                    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(USER_RETURN_REGS)) };
+                for (index, value) in saved[..8].iter().enumerate() {
+                    tf.regs[16 + index] = *value;
+                }
+                tf.regs[30] = saved[8];
+                tf.regs[28] = unsafe { USER_KERNEL_GP };
+                tf.regs[29] = unsafe { USER_RETURN_SP };
+                tf.regs[31] = unsafe { USER_RETURN_RA };
+                tf.status &= !STATUS_KSU_MASK; // return to kernel mode
+            }
+            _ => fatal_trap(tf, exc_code),
         }
+        return;
     }
 
     match exc_code {
@@ -610,7 +698,7 @@ fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
 /// the test virtual page absent, then reads it through kuseg.  The refill
 /// vector maps it uncached and returns through `eret`.
 pub fn tlb_self_test() -> bool {
-    let virt = 0x1000_0000u32;
+    let virt = 0x2000_0000u32;
     let page = core::ptr::addr_of_mut!(TLB_TEST_PAGE) as u32;
     let phys32 = page.wrapping_sub(0x8000_0000);
     let alias = page;
@@ -652,15 +740,26 @@ pub fn tlb_self_test() -> bool {
 /// This is a one-way smoke test: the user syscall handler reports the trap and
 /// parks, because there is no process/return path yet.  It proves the TLB
 /// user mappings, Status.KSU, exception entry, trap-stack switch and CP0
-/// frame handling.  Use the telnet `user` command; reboot to recover.
-pub fn user_smoke() -> ! {
+/// frame handling.  The telnet `user` command enters through
+/// [`user_from_console`] and returns there after the exit syscall.
+#[no_mangle]
+pub extern "C" fn user_smoke() -> ! {
     let code_phys = crate::frames::alloc_frame().expect("user smoke: code frame");
     let stack_phys = crate::frames::alloc_frame().expect("user smoke: stack frame");
     let code_phys = code_phys as u32;
     let stack_phys = stack_phys as u32;
 
-    // MIPS III: li $v0, 1; syscall; b .; nop
-    let code: [u32; 4] = [0x2402_0001, 0x0000_000c, 0x1000_ffff, 0x0000_0000];
+    // MIPS III: write syscall; exit(42); loop.  Code 1 returns to user, code
+    // 2 switches to the console return trampoline.
+    let code: [u32; 7] = [
+        0x2402_0001, // li $v0, 1
+        0x0000_000c, // syscall
+        0x2402_0002, // li $v0, 2
+        0x2404_002a, // li $a0, 42
+        0x0000_000c, // syscall
+        0x1000_ffff, // b .
+        0x0000_0000, // nop
+    ];
     let code_alias = (code_phys | 0x8000_0000) as *mut u32;
     for (i, word) in code.iter().enumerate() {
         unsafe {
@@ -672,6 +771,12 @@ pub fn user_smoke() -> ! {
 
     crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
     crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
+
+    let kernel_gp: u32;
+    unsafe {
+        core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
+        USER_KERNEL_GP = kernel_gp;
+    }
 
     let mut status = status_read();
     status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
