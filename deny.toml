@@ -47,4 +47,9 @@ license-files = []
 # performs (there is no RSA decryption or signing path).
 ignore = [
   { id = "RUSTSEC-2023-0071", reason = "public-key verification only; no private-key operations" },
+  # crypto-bigint 0.5.5 is pulled in by elliptic-curve 0.13 for ECDSA and
+  # ephemeral ECDH.  Its constant-time arithmetic may branch depending on the
+  # compiler and target CPU.  This is accepted for a hobby operating system's
+  # TLS transport; it is not protecting a long-lived high-value secret.
+  { id = "RUSTSEC-2026-0387", reason = "accepted timing side channel in TLS ECDSA/ECDH for a non-mission-critical machine" },
 ]
