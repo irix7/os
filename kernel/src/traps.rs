@@ -677,8 +677,25 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 }
                 tf.epc = tf.epc.wrapping_add(4);
             }
+            3 => {
+                // Provisional anonymous mmap(addr, length, prot, flags):
+                // the address, protection and flags are ignored in v0.
+                tf.regs[2] = crate::user::mmap(tf.regs[5]);
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            4 => {
+                // munmap: the v0 heap is one-way; mappings are released at exit.
+                tf.regs[2] = 0;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
+            5 => {
+                // mprotect: every user page is already read/write.
+                tf.regs[2] = 0;
+                tf.epc = tf.epc.wrapping_add(4);
+            }
             2 => {
                 let code = tf.regs[4];
+                crate::user::cleanup();
                 crate::print_str("user: exit syscall code=0x");
                 crate::print_hex32(code);
                 crate::println("");

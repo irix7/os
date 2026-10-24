@@ -12,13 +12,17 @@ uses the provisional kernel syscall codes:
 |---|---|---|
 | 1 | `$a0` fd, `$a1` buffer, `$a2` length | write; `$v0` returns the length or -1. The kernel copies from a recorded user range. |
 | 2 | `$a0` status | exit; the kernel returns to the telnet console |
+| 3 | `$a1` length (other arguments ignored) | anonymous `mmap`; returns zeroed heap pages at `0x2000_0000` or -1 |
+| 4 | `$a0` address, `$a1` length | `munmap`; v0 returns 0 and the heap is one-way |
+| 5 | `$a0` address, `$a1` length, `$a2` protection | `mprotect`; v0 returns 0 (pages are already read/write) |
 
 The loader builds the conventional initial stack: `argc` at `$sp`, followed by
 the `argv` and `envp` pointer arrays, with `"hello"`, `"PATH=/"` and `"HOME=/"`
 above them.  `$a0`, `$a1` and `$a2` hold `argc`, `argv` and `envp` on entry.
 `write` currently sends bytes to the serial console (visible through MCP
 `serial.read`); there is no fd table, only fd 1 and 2 are accepted, and the
-buffer is capped at 256 bytes.
+buffer is capped at 256 bytes.  The provisional heap is a contiguous 128 KiB
+anonymous range; the loader frees its page pairs on exit.
 
 Build it from the repository root:
 
