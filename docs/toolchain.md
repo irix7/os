@@ -96,15 +96,37 @@ The `irix7/iris` fork is the primary development and test machine. It models the
 (IP24) with an R4400 CPU, Seeq 8003 Ethernet, WD33C93 SCSI, HAL2 audio and DS1386
 RTC/watchdog.
 
-Use a current iris build that includes the bulk-DMA fix (`1492b44`; `nightly.2026.10.20` or
-later). Run the raw ROM image:
+Use iris `0.1.3+irix7` (2026-10-24) or later. That build contains the bulk-DMA fix
+(`1492b44`) and the launcher; nightlies before `nightly.2026.10.20` do not. Check the
+checkout before running:
 
 ```bash
 cd /mnt/europa/iris
-./target/release/iris --prom /path/to/rom.bin \
+git describe --tags                              # v0.1.3+irix7
+./target/launcher/bin/iris --help >/dev/null     # launcher works without LD_LIBRARY_PATH
+```
+
+Build it once in the repository's dev shell, which also installs the launcher under
+`target/launcher/bin`:
+
+```bash
+cd /mnt/europa/iris
+nix develop --command cargo build --release --features lightning,gpujit
+```
+
+Then run the raw ROM image through the launcher:
+
+```bash
+cd /mnt/europa/iris
+./target/launcher/bin/iris --prom /path/to/rom.bin \
   --bank0 32 --bank1 0 --headless \
   --monitor-port 9998 --serial-log serial.log
 ```
+
+The launcher puts the flake's runtime libraries on the loader's search path from the
+build's own closure, so it works in any shell and needs no `LD_LIBRARY_PATH`. The raw
+`target/release/iris` stays available for `gdb`, `perf` and `ldd`, but it needs the dev
+shell's environment; the launcher is the documented entry point.
 
 Serial channels:
 

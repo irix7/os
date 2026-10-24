@@ -3,7 +3,7 @@
 # Run iris from a directory that has the SCSI images, e.g.:
 #
 #   cd /mnt/europa/iris
-#   ./iris --config /path/to/rom/iris-rig.toml \
+#   ./target/launcher/bin/iris --config /path/to/rom/iris-rig.toml \
 #          --prom /path/to/rom.bin \
 #          --bank0 32 --bank1 0 \
 #          --monitor-port 9998 --serial-log /tmp/serial.log
