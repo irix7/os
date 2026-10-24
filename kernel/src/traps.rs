@@ -460,43 +460,30 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
 
     match exc_code {
         EXC_BP => {
-            // Self-test break: skip the break instruction and return.
-            unsafe {
-                BREAKS = BREAKS.wrapping_add(1);
+            // Only the console's `break 7` self-test is handled.  Every other
+            // break is a real fault and must not be swallowed.
+            if self_test_instruction(tf.epc, 7, 16) {
+                unsafe {
+                    BREAKS = BREAKS.wrapping_add(1);
+                }
+                tf.epc = tf.epc.wrapping_add(4);
+            } else {
+                fatal_trap(tf, exc_code);
             }
-            tf.epc = tf.epc.wrapping_add(4);
         }
         EXC_SYS => {
-            // Self-test syscall: skip the syscall instruction and return.
-            unsafe {
-                SYSCALLS = SYSCALLS.wrapping_add(1);
-            }
-            tf.epc = tf.epc.wrapping_add(4);
-        }
-        _ => {
-            crate::println("trap:");
-            crate::print_str("  cause=0x");
-            print_hex8((cause >> 24) as u8);
-            print_hex8((cause >> 16) as u8);
-            print_hex8((cause >> 8) as u8);
-            print_hex8(cause as u8);
-            crate::print_str(" exc=");
-            print_hex8(exc_code as u8);
-            crate::print_str(" epc=0x");
-            print_hex8((tf.epc >> 24) as u8);
-            print_hex8((tf.epc >> 16) as u8);
-            print_hex8((tf.epc >> 8) as u8);
-            print_hex8(tf.epc as u8);
-            crate::print_str(" badvaddr=0x");
-            print_hex8((tf.badvaddr >> 24) as u8);
-            print_hex8((tf.badvaddr >> 16) as u8);
-            print_hex8((tf.badvaddr >> 8) as u8);
-            print_hex8(tf.badvaddr as u8);
-            crate::println("");
-            loop {
-                core::hint::spin_loop();
+            // Only the console's `syscall 7` self-test is handled here.  A
+            // user syscall has no ABI yet and must not be silently skipped.
+            if self_test_instruction(tf.epc, 7, 6) {
+                unsafe {
+                    SYSCALLS = SYSCALLS.wrapping_add(1);
+                }
+                tf.epc = tf.epc.wrapping_add(4);
+            } else {
+                fatal_trap(tf, exc_code);
             }
         }
+        _ => fatal_trap(tf, exc_code),
     }
 }
 
@@ -515,6 +502,46 @@ pub extern "C" fn trap_tlb_refill() -> ! {
     }
 }
 
+/// Whether the instruction at `epc` is the self-test `break`/`syscall` with
+/// the expected code.  Only canonical kseg0/kseg1 instruction addresses are
+/// read; a user address is not safe to dereference from the handler.
+fn self_test_instruction(epc: u32, code: u32, shift: u32) -> bool {
+    if !(0x8000_0000..0x9000_0000).contains(&epc) || epc % 4 != 0 {
+        return false;
+    }
+    // SAFETY: the range check keeps this in the kernel's direct map; the
+    // self-test instruction itself is known to be present.
+    let instruction = unsafe { core::ptr::read_volatile(epc as *const u32) };
+    (instruction >> shift) & 0x3ff == code
+}
+
+/// Print a fatal trap and park.  The console is the only safe sink while the
+/// exception level is set.
+fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
+    crate::println("trap:");
+    crate::print_str("  cause=0x");
+    print_hex8((tf.cause >> 24) as u8);
+    print_hex8((tf.cause >> 16) as u8);
+    print_hex8((tf.cause >> 8) as u8);
+    print_hex8(tf.cause as u8);
+    crate::print_str(" exc=");
+    print_hex8(exc_code as u8);
+    crate::print_str(" epc=0x");
+    print_hex8((tf.epc >> 24) as u8);
+    print_hex8((tf.epc >> 16) as u8);
+    print_hex8((tf.epc >> 8) as u8);
+    print_hex8(tf.epc as u8);
+    crate::print_str(" badvaddr=0x");
+    print_hex8((tf.badvaddr >> 24) as u8);
+    print_hex8((tf.badvaddr >> 16) as u8);
+    print_hex8((tf.badvaddr >> 8) as u8);
+    print_hex8(tf.badvaddr as u8);
+    crate::println("");
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 /// Exercise the general exception vector, frame save/restore and `eret`.
 ///
 /// This deliberately executes a break and a syscall in kernel mode.  It does
@@ -526,7 +553,7 @@ pub fn self_test() -> bool {
     // SAFETY: the exception vector is installed before this is callable.
     unsafe {
         core::arch::asm!("break 7");
-        core::arch::asm!("syscall");
+        core::arch::asm!("syscall 7");
     }
 
     let after_breaks = unsafe { BREAKS };
