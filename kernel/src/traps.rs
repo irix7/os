@@ -9,11 +9,10 @@
 //! - CP0 Count/Compare is the only usable periodic timer (the 8254's
 //!   interrupt output is broken on the Indy).
 //!
-//! Trap frame layout on the kernel stack:
-//!   $at   $v0   $v1   $a0   $a1   $a2   $a3
-//!   $t0..$t9  $s0..$s7  $t8   $t9
-//!   $k0   $k1   $gp   $sp   $s8   $ra   $hi   $lo
-//!   Cause   BadVAddr   Status   PC   CP0  ...
+//! The general vector saves a full frame in `TRAP_FRAME`:
+//!   `regs[0..32]` (`$0` is always zero), `lo`, `hi`, `epc`, `badvaddr`,
+//!   `cause`, `status`.  The kernel is single-threaded while `EXL` is set, so
+//!   one static frame is enough; nested exceptions are a bug.
 
 use crate::print_hex8;
 
@@ -96,6 +95,171 @@ pub struct TrapFrame {
     pub cause: u32,
     pub status: u32,
 }
+
+/// The single kernel-mode trap frame used by the exception vector.
+///
+/// The kernel is single-threaded while an exception is being handled and
+/// interrupts are disabled by `EXL`; a nested exception is a bug.
+#[no_mangle]
+static mut TRAP_FRAME: TrapFrame = TrapFrame {
+    regs: [0; 32],
+    lo: 0,
+    hi: 0,
+    epc: 0,
+    badvaddr: 0,
+    cause: 0,
+    status: 0,
+};
+
+/// Number of self-test break exceptions handled.
+static mut BREAKS: u32 = 0;
+/// Number of self-test syscall exceptions handled.
+static mut SYSCALLS: u32 = 0;
+
+core::arch::global_asm!(
+    r#"
+    .set noreorder
+    .set mips3
+    .set noat
+
+    /* General exception vector, copied to 0x8000_0180.  Timer interrupts
+       stay on the fast path; every other cause enters the full frame save. */
+    .section .text.trap_vector, "ax", @progbits
+    .align 4
+    .globl trap_vector
+trap_vector:
+    mfc0    $k0, $13
+    andi    $k0, $k0, 0x7c
+    bnez    $k0, 9f
+    nop
+
+    /* Timer: Compare = Count + 330000 (10 ms at the current iris rate). */
+    mfc0    $k0, $9
+    lui     $k1, 0x0005
+    ori     $k1, $k1, 0x0910
+    addu    $k0, $k0, $k1
+    mtc0    $k0, $11
+
+    lui     $k0, %hi(TICKS)
+    addiu   $k0, $k0, %lo(TICKS)
+    lw      $k1, 0($k0)
+    addiu   $k1, $k1, 1
+    sw      $k1, 0($k0)
+    eret
+    nop
+
+9:  j       trap_entry
+    nop
+    .globl trap_vector_end
+trap_vector_end:
+
+    /* TLB refill vector, copied to 0x8000_0000.  It reports and parks until
+       the software refill path lands. */
+    .section .text.tlb_refill_vector, "ax", @progbits
+    .align 4
+    .globl tlb_refill_vector
+tlb_refill_vector:
+    j       trap_tlb_refill
+    nop
+    .globl tlb_refill_vector_end
+tlb_refill_vector_end:
+
+    /* Full register frame.  $k0/$k1 are scratch and are not restored. */
+    .section .text.trap_entry, "ax", @progbits
+    .align 4
+    .globl trap_entry
+trap_entry:
+    lui     $k0, %hi(TRAP_FRAME)
+    addiu   $k0, $k0, %lo(TRAP_FRAME)
+    sw      $1, 4($k0)
+    sw      $2, 8($k0)
+    sw      $3, 12($k0)
+    sw      $4, 16($k0)
+    sw      $5, 20($k0)
+    sw      $6, 24($k0)
+    sw      $7, 28($k0)
+    sw      $8, 32($k0)
+    sw      $9, 36($k0)
+    sw      $10, 40($k0)
+    sw      $11, 44($k0)
+    sw      $12, 48($k0)
+    sw      $13, 52($k0)
+    sw      $14, 56($k0)
+    sw      $15, 60($k0)
+    sw      $16, 64($k0)
+    sw      $17, 68($k0)
+    sw      $18, 72($k0)
+    sw      $19, 76($k0)
+    sw      $20, 80($k0)
+    sw      $21, 84($k0)
+    sw      $22, 88($k0)
+    sw      $23, 92($k0)
+    sw      $24, 96($k0)
+    sw      $25, 100($k0)
+    sw      $28, 112($k0)
+    sw      $29, 116($k0)
+    sw      $30, 120($k0)
+    sw      $31, 124($k0)
+
+    mfhi    $t0
+    sw      $t0, 128($k0)
+    mflo    $t0
+    sw      $t0, 132($k0)
+    mfc0    $t0, $14
+    sw      $t0, 136($k0)
+    mfc0    $t0, $8
+    sw      $t0, 140($k0)
+    mfc0    $t0, $13
+    sw      $t0, 144($k0)
+    mfc0    $t0, $12
+    sw      $t0, 148($k0)
+
+    move    $a0, $k0
+    jal     trap_handler
+    nop
+
+    lui     $k0, %hi(TRAP_FRAME)
+    addiu   $k0, $k0, %lo(TRAP_FRAME)
+    lw      $1, 4($k0)
+    lw      $2, 8($k0)
+    lw      $3, 12($k0)
+    lw      $4, 16($k0)
+    lw      $5, 20($k0)
+    lw      $6, 24($k0)
+    lw      $7, 28($k0)
+    lw      $8, 32($k0)
+    lw      $9, 36($k0)
+    lw      $10, 40($k0)
+    lw      $11, 44($k0)
+    lw      $12, 48($k0)
+    lw      $13, 52($k0)
+    lw      $14, 56($k0)
+    lw      $15, 60($k0)
+    lw      $16, 64($k0)
+    lw      $17, 68($k0)
+    lw      $18, 72($k0)
+    lw      $19, 76($k0)
+    lw      $20, 80($k0)
+    lw      $21, 84($k0)
+    lw      $22, 88($k0)
+    lw      $23, 92($k0)
+    lw      $24, 96($k0)
+    lw      $25, 100($k0)
+    lw      $28, 112($k0)
+    lw      $29, 116($k0)
+    lw      $30, 120($k0)
+    lw      $31, 124($k0)
+
+    lw      $t0, 128($k0)
+    mthi    $t0
+    lw      $t0, 132($k0)
+    mtlo    $t0
+    lw      $t0, 136($k0)
+    mtc0    $t0, $14
+    eret
+    nop
+"#
+);
 
 /// Read CP0 Status.
 pub fn status_read() -> u32 {
@@ -286,63 +450,122 @@ pub fn badvaddr_read() -> u32 {
 
 /// Trap the current exception into the trap frame.
 ///
-/// Called from the assembly top-half in traps.S after saving registers.
+/// The assembly vector has already saved every general register and the CP0
+/// state.  Break and syscall are currently used by the kernel self-test; every
+/// other non-interrupt exception is fatal for now.
 #[no_mangle]
 pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
+    match exc_code {
+        EXC_BP => {
+            // Only the console's `break 7` self-test is handled.  Every other
+            // break is a real fault and must not be swallowed.
+            if self_test_instruction(tf.epc, 7, 16) {
+                unsafe {
+                    BREAKS = BREAKS.wrapping_add(1);
+                }
+                tf.epc = tf.epc.wrapping_add(4);
+            } else {
+                fatal_trap(tf, exc_code);
+            }
+        }
+        EXC_SYS => {
+            // Only the console's `syscall 7` self-test is handled here.  A
+            // user syscall has no ABI yet and must not be silently skipped.
+            if self_test_instruction(tf.epc, 7, 6) {
+                unsafe {
+                    SYSCALLS = SYSCALLS.wrapping_add(1);
+                }
+                tf.epc = tf.epc.wrapping_add(4);
+            } else {
+                fatal_trap(tf, exc_code);
+            }
+        }
+        _ => fatal_trap(tf, exc_code),
+    }
+}
+
+/// TLB refill vector target.  The software refill path is not implemented yet.
+#[no_mangle]
+pub extern "C" fn trap_tlb_refill() -> ! {
+    let badvaddr = badvaddr_read();
+    crate::print_str("trap: TLB refill at badvaddr=0x");
+    print_hex8((badvaddr >> 24) as u8);
+    print_hex8((badvaddr >> 16) as u8);
+    print_hex8((badvaddr >> 8) as u8);
+    print_hex8(badvaddr as u8);
+    crate::println(" (software refill not implemented)");
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+/// Whether the instruction at `epc` is the self-test `break`/`syscall` with
+/// the expected code.  Only canonical kseg0/kseg1 instruction addresses are
+/// read; a user address is not safe to dereference from the handler.
+fn self_test_instruction(epc: u32, code: u32, shift: u32) -> bool {
+    if !(0x8000_0000..0x9000_0000).contains(&epc) || epc % 4 != 0 {
+        return false;
+    }
+    // SAFETY: the range check keeps this in the kernel's direct map; the
+    // self-test instruction itself is known to be present.
+    let instruction = unsafe { core::ptr::read_volatile(epc as *const u32) };
+    (instruction >> shift) & 0x3ff == code
+}
+
+/// Print a fatal trap and park.  The console is the only safe sink while the
+/// exception level is set.
+fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
     crate::println("trap:");
     crate::print_str("  cause=0x");
-    print_hex8((cause >> 24) as u8);
-    print_hex8((cause >> 16) as u8);
-    print_hex8((cause >> 8) as u8);
-    print_hex8(cause as u8);
-    crate::println("");
-
-    crate::print_str("  exc_code=");
+    print_hex8((tf.cause >> 24) as u8);
+    print_hex8((tf.cause >> 16) as u8);
+    print_hex8((tf.cause >> 8) as u8);
+    print_hex8(tf.cause as u8);
+    crate::print_str(" exc=");
     print_hex8(exc_code as u8);
-    crate::println("");
-
-    crate::print_str("  epc=0x");
+    crate::print_str(" epc=0x");
     print_hex8((tf.epc >> 24) as u8);
     print_hex8((tf.epc >> 16) as u8);
     print_hex8((tf.epc >> 8) as u8);
     print_hex8(tf.epc as u8);
-    crate::println("");
-
-    crate::print_str("  badvaddr=0x");
+    crate::print_str(" badvaddr=0x");
     print_hex8((tf.badvaddr >> 24) as u8);
     print_hex8((tf.badvaddr >> 16) as u8);
     print_hex8((tf.badvaddr >> 8) as u8);
     print_hex8(tf.badvaddr as u8);
     crate::println("");
-
-    match exc_code {
-        EXC_INT => {
-            crate::println("  exception: interrupt");
-        }
-        EXC_TLBL => {
-            crate::println("  exception: TLB miss (load/inst fetch)");
-        }
-        EXC_TLBS => {
-            crate::println("  exception: TLB miss (store)");
-        }
-        EXC_SYS => {
-            crate::println("  exception: syscall");
-        }
-        EXC_RI => {
-            crate::println("  exception: reserved instruction");
-        }
-        _ => {
-            crate::println("  exception: unknown");
-        }
-    }
-
-    // Halt on trap for now — the kernel will be extended to handle each case.
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Exercise the general exception vector, frame save/restore and `eret`.
+///
+/// This deliberately executes a break and a syscall in kernel mode.  It does
+/// not test user mode or a TLB refill.
+pub fn self_test() -> bool {
+    let before_breaks = unsafe { BREAKS };
+    let before_syscalls = unsafe { SYSCALLS };
+
+    // SAFETY: the exception vector is installed before this is callable.
+    unsafe {
+        core::arch::asm!("break 7");
+        core::arch::asm!("syscall 7");
+    }
+
+    let after_breaks = unsafe { BREAKS };
+    let after_syscalls = unsafe { SYSCALLS };
+    crate::print_str("trap: self-test break=");
+    crate::print_hex32(after_breaks.wrapping_sub(before_breaks));
+    crate::print_str(" syscall=");
+    crate::print_hex32(after_syscalls.wrapping_sub(before_syscalls));
+    crate::println("");
+
+    after_breaks == before_breaks.wrapping_add(1)
+        && after_syscalls == before_syscalls.wrapping_add(1)
 }
 
 /// Initialise traps and exception vectors.
@@ -353,10 +576,54 @@ pub fn init() {
     // ROM already configured CP0 and exception vectors; nothing to initialise.
 }
 
-/// Install exception vectors into kseg0.
+/// Install the general and TLB-refill vectors into kseg0.
 pub fn install_vectors() {
-    // The exception vector is at 0x8000_0000 (BEV = 0).
-    // The assembly stub in traps.S is linked at this address.
+    extern "C" {
+        static trap_vector: u8;
+        static trap_vector_end: u8;
+        static tlb_refill_vector: u8;
+        static tlb_refill_vector_end: u8;
+    }
+
+    const GENERAL_VECTOR: *mut u8 = 0x8000_0180 as *mut u8;
+    const TLB_VECTOR: *mut u8 = 0x8000_0000 as *mut u8;
+
+    let (general_src, general_len) = unsafe {
+        let src = &trap_vector as *const u8;
+        let len = (&trap_vector_end as *const u8 as usize) - (src as usize);
+        (src, len)
+    };
+    let (tlb_src, tlb_len) = unsafe {
+        let src = &tlb_refill_vector as *const u8;
+        let len = (&tlb_refill_vector_end as *const u8 as usize) - (src as usize);
+        (src, len)
+    };
+
+    for i in 0..general_len {
+        // SAFETY: both ranges are in the kernel's direct-mapped window.
+        unsafe {
+            core::ptr::write_volatile(
+                GENERAL_VECTOR.add(i),
+                core::ptr::read_volatile(general_src.add(i)),
+            );
+        }
+    }
+    for i in 0..tlb_len {
+        // SAFETY: both ranges are in the kernel's direct-mapped window.
+        unsafe {
+            core::ptr::write_volatile(TLB_VECTOR.add(i), core::ptr::read_volatile(tlb_src.add(i)));
+        }
+    }
+
+    crate::cache::dcache_writeback_invalidate(GENERAL_VECTOR as usize, general_len);
+    crate::cache::icache_invalidate(GENERAL_VECTOR as usize, general_len);
+    crate::cache::dcache_writeback_invalidate(TLB_VECTOR as usize, tlb_len);
+    crate::cache::icache_invalidate(TLB_VECTOR as usize, tlb_len);
+    crate::cache::sync();
+
+    // The vectors above are the BEV=0 table.
+    let status = status_read();
+    status_write(status & !STATUS_BEV);
 }
 
 /// Initialise the CP0 timer (Count/Compare).

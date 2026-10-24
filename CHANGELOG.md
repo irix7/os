@@ -8,6 +8,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- A general MIPS III exception vector with a full register/CP0 frame, saving and
+  restoring all caller-visible state, and `eret` return.  Timer interrupts keep a
+  fast path that advances Compare and increments the tick counter.  The telnet
+  `trap` command exercises `break` and `syscall` deliberately; the TLB-refill
+  vector is installed but the software refill path is still pending.
+- Capability derivation now preserves the object type and identifier, and the table
+  exposes object lookup and rights checks.  The capability tests are corrected and
+  run under `rustc --test`.
 - `crates/native-abi`: provisional native n32 C types, public layouts and constants,
   with host layout tests and a native-target CI build.  It is the layout source for the
   native libc/std work; it is layout-only and not yet a frozen ABI.

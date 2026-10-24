@@ -26,6 +26,11 @@ impl Rights {
     pub const fn all() -> Rights {
         Rights(0x3ff)
     }
+
+    /// Whether all bits in `right` are present.
+    pub const fn has_right(&self, right: u32) -> bool {
+        self.0 & right == right
+    }
 }
 
 /// A capability handle — index plus generation counter.
@@ -95,7 +100,7 @@ impl Capability {
     }
 
     pub fn has_right(&self, right: u32) -> bool {
-        self.rights.0 & right != 0
+        self.rights.0 & right == right
     }
 }
 
@@ -160,6 +165,25 @@ impl CapTable {
         Some(Rights(entry.rights))
     }
 
+    /// The object type and identifier behind a live capability.
+    pub fn object(&self, cap: &Cap) -> Option<(u32, u32)> {
+        if cap.index == 0 || cap.index as usize >= self.caps.len() {
+            return None;
+        }
+        let entry = self.caps[cap.index as usize];
+        if !entry.allocated || entry.generation != cap.generation {
+            return None;
+        }
+        Some((entry.obj_type, entry.obj_id))
+    }
+
+    /// Check that a live capability carries all requested rights.
+    pub fn permits(&self, cap: &Cap, rights: Rights) -> bool {
+        self.lookup(cap)
+            .map(|actual| actual.0 & rights.0 == rights.0)
+            .unwrap_or(false)
+    }
+
     /// Revoke a capability — invalidate its generation.
     pub fn revoke(&mut self, cap: &Cap) -> bool {
         if cap.index == 0 || cap.index as usize >= self.caps.len() {
@@ -181,7 +205,8 @@ impl CapTable {
         if rights.0 & !parent_rights.0 != 0 {
             return None; // Derivation can only attenuate rights.
         }
-        self.alloc(0, 0, rights) // obj_type/obj_id filled in by caller
+        let entry = self.caps[parent.index as usize];
+        self.alloc(entry.obj_type, entry.obj_id, rights)
     }
 
     /// Count of allocated capabilities.
@@ -201,7 +226,7 @@ mod tests {
             .alloc(1, 42, Rights::all())
             .expect("alloc should succeed");
         assert!(!cap.is_null());
-        let rights = table.lookup(&cap).expect("lookup should succeed");
+        let rights = table.lookup(&cap.cap).expect("lookup should succeed");
         assert!(rights.has_right(Rights::READ));
         assert!(rights.has_right(Rights::WRITE));
     }
@@ -212,28 +237,47 @@ mod tests {
         let cap = table
             .alloc(1, 42, Rights::all())
             .expect("alloc should succeed");
-        assert!(table.revoke(&cap));
-        assert!(table.lookup(&cap).is_none());
+        assert!(table.revoke(&cap.cap));
+        assert!(table.lookup(&cap.cap).is_none());
         // Re-allocating should give a new generation.
         let cap2 = table
-            .alloc(1, 43, Rights::READ)
+            .alloc(1, 43, Rights(Rights::READ))
             .expect("alloc should succeed");
-        assert_ne!(cap.cap.index, cap2.cap.index);
+        assert_eq!(cap.cap.index, cap2.cap.index);
+        assert_ne!(cap.cap.generation, cap2.cap.generation);
+        assert!(table.lookup(&cap.cap).is_none());
+        assert!(table.lookup(&cap2.cap).is_some());
+    }
+
+    #[test]
+    fn derive_preserves_object_and_checks_rights() {
+        let mut table = init();
+        let parent = table
+            .alloc(7, 99, Rights(Rights::READ | Rights::WRITE))
+            .expect("alloc");
+        assert!(table.permits(&parent.cap, Rights(Rights::READ)));
+        assert!(!table.permits(&parent.cap, Rights(Rights::DMA)));
+        let child = table
+            .derive(&parent.cap, Rights(Rights::READ))
+            .expect("derive");
+        assert_eq!(table.object(&child.cap), Some((7, 99)));
+        assert!(table.permits(&child.cap, Rights(Rights::READ)));
+        assert!(!table.permits(&child.cap, Rights(Rights::WRITE)));
     }
 
     #[test]
     fn derivation_attenuates() {
         let mut table = init();
         let parent = table
-            .alloc(1, 42, Rights::READ | Rights::WRITE)
+            .alloc(1, 42, Rights(Rights::READ | Rights::WRITE))
             .expect("alloc");
         let child = table
-            .derive(&parent.cap, Rights::READ)
+            .derive(&parent.cap, Rights(Rights::READ))
             .expect("derive should succeed");
         assert!(child.rights.has_right(Rights::READ));
         assert!(!child.rights.has_right(Rights::WRITE));
         // Cannot derive more rights than parent.
-        let child2 = table.derive(&parent.cap, Rights::READ | Rights::DMA);
+        let child2 = table.derive(&parent.cap, Rights(Rights::READ | Rights::DMA));
         assert!(child2.is_none());
     }
 }

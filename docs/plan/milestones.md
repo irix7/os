@@ -135,6 +135,11 @@ capability table, panic path and serial console.
 **Status:** in progress — the kernel links at `0x88040000`, consumes `BootInfo` in `$a0`,
 uses a 2-entry memory map, clears `.bss`, sets up the stack, and prints `kernel: up`.
 The telnet ROM console remains live after the hand-off via the resident console poll.
+The general exception vector now saves a full register frame and round-trips a
+deliberate `break`/`syscall` through `eret`; timer interrupts stay on the fast path.
+The TLB-refill vector exists but the software refill path is not implemented.  The
+capability table has generation-checked handles, object preservation and rights
+checks; wiring it into kernel services is still open.
 
 **Demo:** the kernel prints the ARCS memory map, calibrates the timer, runs two kernel tasks
 with EDF and fair classes, handles a deliberate page fault, and panics cleanly with a
@@ -147,11 +152,14 @@ register dump.
 - [x] Kernel clears `.bss`, sets up stack, uses 2-entry memory map.
 - [x] Kernel prints `kernel: up`; serial console works after hand-off.
 - [x] Telnet ROM console remains live after kernel boots (resident console poll).
-- [ ] Exception vectors, TLB refill and `eret` work on MIPS III.
+- [x] General exception vector, full register frame and `eret` round trip work on
+      MIPS III (kernel-mode self-test).
+- [ ] TLB refill and user-mode exception return work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
 - [ ] Frame allocator from the ARCS memory descriptor list; no probing.
 - [ ] 16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.
-- [ ] Capability table with generation counters and rights.
+- [x] Capability table with generation counters, object identity and rights checks
+      (kernel-service enforcement wiring still open).
 - [ ] EDF and fair run queues; `is_running` debug assertion.
 - [x] Panic screen with registers, stack trace and a serial dump.
 - [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
