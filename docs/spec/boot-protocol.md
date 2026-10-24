@@ -239,3 +239,28 @@ here — no DHCP, DNS failure, HTTP errors — move to the kernel once it owns t
 - Whether the R2 base URL belongs in `BootInfo` or in a separate config blob.
 - MCP token provisioning (not in `BootInfo`; the token must not be world-readable).
 - Watchdog ownership during the handoff (the ROM must leave it disarmed).
+
+## 10. Kernel boot readiness
+
+The ROM handoff in §2 is followed by the kernel's own boot sequence.  The kernel
+emits exactly one readiness line per boot, after the RTC, network and
+boot-time module autoload have run:
+
+```text
+BOOT-READY v=1 boot=<unix> kernel=up network=up mcp=listening
+```
+
+A boot that cannot satisfy the MCP prerequisite emits a distinct line instead:
+
+```text
+BOOT-NOT-READY v=1 boot=<unix> kernel=up network=<up|down> mcp=<disabled|failed> reason=<token>
+```
+
+`boot` is the RTC Unix second at which the marker was emitted, or `0` when the
+RTC has no valid time.  It is monotonic across normal reboots but can repeat if
+the machine is reset within the same second.  `reason` is one of `no-mcp-url`,
+`autoload-failed` or `network-down`.
+
+The marker is written through the console service, so it appears on serial, in
+the MCP serial ring and on a connected telnet session.  The boot menu is shown
+after the marker; a diagnostic menu does not affect readiness.

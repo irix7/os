@@ -803,45 +803,54 @@ fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
 
 /// Exercise the software TLB-refill vector with one private mapping.
 ///
-/// The test allocates a frame, writes a word through the kseg0 alias, makes
-/// the test virtual page absent, then reads it through kuseg.  The refill
-/// vector maps it uncached and returns through `eret`.
+/// The test writes a word through the uncached kseg1 alias, invalidates the
+/// non-wired TLB, then reads the private virtual page through kuseg.  The
+/// refill vector maps it uncached and returns through `eret`.
 pub fn tlb_self_test() -> bool {
-    let virt = 0x2000_0000u32;
+    // Keep the test VPN disjoint from the user image (0x1000_0000), the
+    // anonymous heap (0x2000_0000) and the user stack (0x7FF0_0000).
+    let virt = 0x3000_0000u32;
     let page = core::ptr::addr_of_mut!(TLB_TEST_PAGE) as u32;
     let phys32 = page.wrapping_sub(0x8000_0000);
-    let alias = page;
+    // Write through kseg1 (uncached) so this test does not depend on a
+    // writeback from the cached kseg0 alias.
+    let alias = (phys32 | 0xA000_0000) as *mut u32;
     let entrylo = ((phys32 >> 12) << 6) | 0x7; // D | V | G, uncached
     let value = 0x5a17_c0deu32;
 
-    // Publish the one-entry mapping before touching the page.
+    // Start from a clean non-wired TLB and a 4 KiB page mask.  A previous
+    // user image or an earlier test must not satisfy the read without the
+    // refill vector running.
+    crate::tlb::invalidate_all();
+    crate::traps::pagemask_write(0);
     unsafe {
         core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_VPN), virt);
         core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_ENTRYLO), entrylo);
     }
     crate::cache::sync();
 
-    // Write through the cached kseg0 alias, then flush before the uncached
-    // virtual read.  The test page is private to this self-test.
     unsafe {
-        core::ptr::write_volatile(alias as *mut u32, value);
+        core::ptr::write_volatile(alias, value);
     }
-    crate::cache::dcache_writeback_invalidate(alias as usize, 4);
     crate::cache::sync();
 
     let observed = unsafe { core::ptr::read_volatile(virt as *const u32) };
 
-    // Drop the test mapping so a later unexpected access is still fatal.
+    // Drop the test mapping and any stale entry it created.
     unsafe {
         core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_VPN), 0);
         core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_ENTRYLO), 0);
     }
+    crate::tlb::invalidate_all();
     crate::cache::sync();
 
     crate::print_str("tlb: self-test value=");
     crate::print_hex32(observed);
     crate::println("");
-    observed == value
+    let ok = observed == value;
+    crate::print_str("tlb: self-test ");
+    crate::println(if ok { "ok" } else { "FAILED" });
+    ok
 }
 
 /// Enter a tiny user-mode image and take one syscall.
@@ -924,8 +933,11 @@ pub fn self_test() -> bool {
     crate::print_hex32(after_syscalls.wrapping_sub(before_syscalls));
     crate::println("");
 
-    after_breaks == before_breaks.wrapping_add(1)
-        && after_syscalls == before_syscalls.wrapping_add(1)
+    let ok = after_breaks == before_breaks.wrapping_add(1)
+        && after_syscalls == before_syscalls.wrapping_add(1);
+    crate::print_str("trap: self-test ");
+    crate::println(if ok { "ok" } else { "FAILED" });
+    ok
 }
 
 /// Initialise traps and exception vectors.

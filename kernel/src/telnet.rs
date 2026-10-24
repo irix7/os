@@ -80,6 +80,18 @@ struct HttpRequest {
 
 static mut CONSOLE: Option<Console> = None;
 
+/// Whether a console client is connected, safe to read while `CONSOLE` is
+/// mutably borrowed by `service`.
+static CONSOLE_CONNECTED: AtomicBool = AtomicBool::new(false);
+
+/// Telnet output is queued rather than written from inside `service`: a user
+/// syscall or diagnostic can print while the socket set is already borrowed.
+const OUTPUT_QUEUE_SIZE: usize = 8192;
+static mut OUTPUT_QUEUE: [u8; OUTPUT_QUEUE_SIZE] = [0; OUTPUT_QUEUE_SIZE];
+static mut OUTPUT_HEAD: usize = 0;
+static mut OUTPUT_LEN: usize = 0;
+static mut OUTPUT_LAST_CR: bool = false;
+
 /// Register the listening socket.  Call after `net::init()`.
 pub fn init() {
     let handle = net::sockets_with(|sockets| {
@@ -313,6 +325,10 @@ pub fn poll() {
     let console = unsafe { CONSOLE.as_mut() };
     let Some(console) = console else { return };
     net::sockets_with(|sockets| service(sockets, console));
+    let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+    if let Some(handle) = handle {
+        net::sockets_with(|sockets| drain_output(sockets, handle));
+    }
 }
 
 /// Whether a telnet client asked the kernel to continue booting.
@@ -325,20 +341,71 @@ pub fn reboot_requested() -> bool {
     REBOOT_REQUESTED.load(Ordering::SeqCst)
 }
 
-/// Mirror console output to the telnet client, if one is connected.
+/// Queue console output for the connected telnet client.
+///
+/// This is safe to call from inside `service`: it never touches the socket or
+/// the `CONSOLE` object.  The queue is drained by [`poll`] after the socket
+/// borrow ends.  Output generated without a client is dropped.
 pub fn write_output(data: &[u8]) {
-    // SAFETY: single-threaded kernel; the console is set once by init().
-    let console = unsafe { CONSOLE.as_ref() };
-    let Some(console) = console else { return };
-    if !console.connected {
+    if !CONSOLE_CONNECTED.load(Ordering::SeqCst) || data.is_empty() {
         return;
     }
-    net::sockets_with(|sockets| {
-        let sock = sockets.get_mut::<TcpSocket>(console.handle);
-        if sock.can_send() {
-            let _ = sock.send_slice(data);
+    // SAFETY: single-threaded kernel; the queue is only touched here and in
+    // drain_output, which never runs concurrently.
+    unsafe {
+        for &byte in data {
+            if byte == b'\n' && !OUTPUT_LAST_CR {
+                push_output(b'\r');
+            }
+            push_output(byte);
+            OUTPUT_LAST_CR = byte == b'\r';
         }
-    });
+    }
+}
+
+unsafe fn push_output(byte: u8) {
+    if OUTPUT_LEN == OUTPUT_QUEUE_SIZE {
+        // Keep the newest bytes; losing a diagnostic is worse than losing an
+        // old line when a client is not draining.
+        OUTPUT_HEAD = (OUTPUT_HEAD + 1) % OUTPUT_QUEUE_SIZE;
+        OUTPUT_LEN -= 1;
+    }
+    let tail = (OUTPUT_HEAD + OUTPUT_LEN) % OUTPUT_QUEUE_SIZE;
+    OUTPUT_QUEUE[tail] = byte;
+    OUTPUT_LEN += 1;
+}
+
+fn clear_output() {
+    unsafe {
+        OUTPUT_HEAD = 0;
+        OUTPUT_LEN = 0;
+        OUTPUT_LAST_CR = false;
+    }
+}
+
+fn drain_output(sockets: &mut SocketSet<'static>, handle: smoltcp::iface::SocketHandle) {
+    drain_to_socket(sockets.get_mut::<TcpSocket>(handle));
+}
+
+/// Send queued console bytes to one socket, preserving the queue if the
+/// transmit window is currently full.
+fn drain_to_socket(sock: &mut TcpSocket) {
+    // SAFETY: single-threaded kernel; only this function and write_output
+    // touch the queue, and they never run concurrently.
+    unsafe {
+        while OUTPUT_LEN > 0 && sock.can_send() {
+            let first = OUTPUT_HEAD;
+            let contiguous = OUTPUT_LEN.min(OUTPUT_QUEUE_SIZE - first);
+            match sock.send_slice(&OUTPUT_QUEUE[first..first + contiguous]) {
+                Ok(0) => break,
+                Ok(sent) => {
+                    OUTPUT_HEAD = (OUTPUT_HEAD + sent) % OUTPUT_QUEUE_SIZE;
+                    OUTPUT_LEN -= sent;
+                }
+                Err(_) => break,
+            }
+        }
+    }
 }
 
 fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
@@ -352,6 +419,8 @@ fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
         sock.abort();
         let _ = sock.listen(TELNET_PORT);
         console.connected = false;
+        CONSOLE_CONNECTED.store(false, Ordering::SeqCst);
+        clear_output();
         return;
     }
 
@@ -363,6 +432,8 @@ fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
 
     if now_connected && !console.connected {
         console.connected = true;
+        CONSOLE_CONNECTED.store(true, Ordering::SeqCst);
+        clear_output();
         console.line_len = 0;
         console.iac = 0;
         console.last_cr = false;
@@ -372,6 +443,8 @@ fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
         prompt(sock);
     } else if !now_connected {
         console.connected = false;
+        CONSOLE_CONNECTED.store(false, Ordering::SeqCst);
+        clear_output();
     }
 
     let mut buf = [0u8; 64];
@@ -390,6 +463,8 @@ fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
     if sock.state() == State::CloseWait {
         sock.close();
         console.connected = false;
+        CONSOLE_CONNECTED.store(false, Ordering::SeqCst);
+        clear_output();
     }
 }
 
@@ -474,6 +549,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
                   \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
+                  \x20 gfx           verify REX3 rgbmode and FIFO drain (test hook)\r\n\
                   \x20 user          enter the fixed user-mode smoke test\r\n\
                   \x20 userelf       load and run an n32 ELF from SCSI target 2\r\n\
                   \x20 reboot        restart from the PROM\r\n",
@@ -561,20 +637,13 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             panic!("deliberate panic from the console");
         }
         b"trap" => {
-            let ok = crate::traps::self_test();
-            let _ = sock.send_slice(if ok {
-                b"trap: self-test ok\r\n".as_slice()
-            } else {
-                b"trap: self-test FAILED\r\n".as_slice()
-            });
+            crate::traps::self_test();
         }
         b"tlb" => {
-            let ok = crate::traps::tlb_self_test();
-            let _ = sock.send_slice(if ok {
-                b"tlb: self-test ok\r\n".as_slice()
-            } else {
-                b"tlb: self-test FAILED\r\n".as_slice()
-            });
+            crate::traps::tlb_self_test();
+        }
+        b"gfx" => {
+            crate::gfx::self_test();
         }
         b"user" => {
             let _ = sock.send_slice(b"user: entering (write returns, exit returns here)\r\n");
@@ -681,6 +750,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
     }
 
     console.line_len = 0;
+    drain_to_socket(sock);
     prompt(sock);
 }
 

@@ -47,9 +47,11 @@ are required.
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -122,6 +124,27 @@ def wait_for(path, needle, timeout):
             pass
         time.sleep(0.2)
     return None
+
+
+def wait_boot_ready(path, timeout=90.0):
+    """Poll for the kernel's machine-readable boot marker."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with open(path, "r", errors="replace") as f:
+                text = f.read()
+        except FileNotFoundError:
+            text = ""
+        if "BOOT-READY v=1 " in text:
+            return text
+        if "BOOT-NOT-READY v=1 " in text:
+            line = next(
+                (line for line in text.splitlines() if line.startswith("BOOT-NOT-READY")),
+                "BOOT-NOT-READY (line lost)",
+            )
+            raise SmokeError(f"guest reported not ready: {line}")
+        time.sleep(0.2)
+    raise SmokeError("guest did not emit BOOT-READY within the timeout")
 
 
 def monitor(port, command, timeout=5.0):
@@ -436,11 +459,25 @@ def run(args, scsi2, fs_checks):
             except OSError as error:
                 raise SmokeError(f"could not start iris: {error}") from None
             wait_monitor(args.monitor_port, "machine-start", proc=proc)
-            if wait_for(log, "network: dns", 60) is None:
-                raise SmokeError(
-                    f"kernel did not reach DHCP; see {log} "
-                    "(check --cwd contains scsi1.raw)"
-                )
+            # No monitor acknowledgement yet (irix7/iris#102); retry once if
+            # the ROM banner did not start within a short window.
+            if wait_for(log, "ROM:", 8) is None:
+                wait_monitor(args.monitor_port, "machine-start", proc=proc)
+                if wait_for(log, "ROM:", 8) is None:
+                    raise SmokeError("guest did not start after machine-start")
+            if args.module_url:
+                # A manual module load is the fallback when NVRAM autoload is
+                # absent; only the network is a prerequisite for telnet.
+                if wait_for(log, "network: dns", 60) is None:
+                    raise SmokeError(
+                        f"kernel did not reach DHCP; see {log} "
+                        "(check --cwd contains scsi1.raw)"
+                    )
+            else:
+                try:
+                    wait_boot_ready(log, 90)
+                except SmokeError as error:
+                    raise SmokeError(f"{error}; see {log}") from None
 
         if args.module_url:
             if not args.module_sha256:
@@ -702,7 +739,21 @@ def main():
     parser.add_argument("--monitor-port", type=int, default=9998)
     parser.add_argument("--telnet-port", type=int, default=2323)
     parser.add_argument("--host-port", type=int, default=8088)
-    parser.add_argument("--serial-log", default="/tmp/opencode/mcp-smoke.log")
+    parser.add_argument(
+        "--serial-log",
+        default=None,
+        help="serial log path (default: <run-dir>/serial.log)",
+    )
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="per-run directory for the serial log (default: temporary)",
+    )
+    parser.add_argument(
+        "--keep-artifacts",
+        action="store_true",
+        help="keep the temporary run directory after the run",
+    )
     parser.add_argument("--token", default=os.environ.get("IRIX7_MCP_TOKEN", ""))
     parser.add_argument(
         "--erofs-image",
@@ -737,6 +788,7 @@ def main():
     )
     args = parser.parse_args()
 
+    created_run_dir = False
     if not args.no_launch and (not args.iris or not args.prom):
         parser.error("--iris and --prom are required unless --no-launch")
     if args.erofs_image and args.scsi2:
@@ -761,11 +813,26 @@ def main():
         # Nothing to attach, so the guest cannot have the fixture.
         fs_checks = False
 
+    if not args.no_launch and args.run_dir is None:
+        args.run_dir = tempfile.mkdtemp(prefix="irix7-mcp-")
+        created_run_dir = True
+    if args.serial_log is None:
+        args.serial_log = os.path.join(
+            args.run_dir if args.run_dir else tempfile.gettempdir(),
+            "mcp-smoke.log",
+        )
+
     try:
         return run(args, scsi2, fs_checks)
     except SmokeError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
+    finally:
+        if created_run_dir:
+            if args.keep_artifacts:
+                print(f"artifacts: {args.run_dir}")
+            else:
+                shutil.rmtree(args.run_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

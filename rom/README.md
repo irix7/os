@@ -128,7 +128,8 @@ mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, w
 
 ## Scripted smoke test
 
-`rom/tools/smoke.py` starts iris, releases the CPU, waits for DHCP and drives the
+`rom/tools/smoke.py` starts iris, releases the CPU, waits for the kernel's
+`BOOT-READY` marker and drives the
 telnet console:
 
 ```bash
@@ -139,7 +140,9 @@ python3 rom/tools/smoke.py \
 ```
 
 It is not part of CI (it needs iris and the disk images); it is the repeatable
-version of the manual checks in this document.
+version of the manual checks in this document.  Each run gets a fresh temporary
+work directory and log; pass `--work-dir` or `--keep-artifacts` to retain them.
+`rom/tools/mcp-smoke.py` does the same with `--run-dir` / `--keep-artifacts`.
 
 ## Kernel console
 
@@ -333,7 +336,11 @@ python3 -m unittest discover -s rom/tools -p 'test_*.py'
 - The real n32 kernel is linked at `0x88040000`, is copied there by the ROM, and
   prints `kernel: up`.
 - The kernel brings up the REX3 and shows a graphical boot menu, and reads the
-  PS/2 keyboard to drive it.
+  PS/2 keyboard to drive it.  A telnet-visible `tlb`, `gfx`, `trap` and user
+  smoke path exercise the TLB refill, REX3 RGB24/FIFO contract and user exit.
+- After RTC, network and MCP autoload, the kernel emits one
+  `BOOT-READY v=1 boot=<id> kernel=up network=up mcp=listening` line (or a
+  distinct `BOOT-NOT-READY` line with a reason).  Test tools poll this marker.
 - The kernel payload is LZ4-compressed and decompressed by the ROM stub.
 - The ROM has no network stack; the kernel owns DHCP, DNS, NTP, HTTP and HTTPS
   (TLS 1.3), the telnet console, and the Seeq/HPC3 driver.

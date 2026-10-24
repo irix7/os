@@ -16,6 +16,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use crate::font::{FONT_BASELINE, FONT_DATA, FONT_INFO};
+use crate::{console_println, print_hex32, print_str, println};
 
 /// REX3 register block (kseg1 alias of physical 0x1F0F_0000).
 const REX3: u32 = 0xBF0F_0000;
@@ -117,6 +118,10 @@ const STATUS_GFXBUSY: u32 = 1 << 3;
 const STATUS_GFIFOLEVEL_SHIFT: u32 = 7;
 const STATUS_GFIFOLEVEL_MASK: u32 = 0x3F;
 
+/// Wait-path counters used by the diagnostics self-test.
+static mut WAIT_CALLS: u32 = 0;
+static mut WAIT_LOOPS: u32 = 0;
+
 /// DRAWMODE1: RGB planes, 24-bit draw depth, compare disabled, logicop SRC.
 ///
 /// The bit layout matters: planes is bits [2:0], drawdepth [4:3], compare
@@ -147,6 +152,9 @@ fn reg_go(off: u32, val: u32) {
 /// so a driver has to throttle.  Real SGI code does the same thing with
 /// `REX3WAIT(REX)`, which polls STATUS for the busy bit.
 fn wait_idle() {
+    unsafe {
+        WAIT_CALLS = WAIT_CALLS.wrapping_add(1);
+    }
     loop {
         let status = unsafe { read_volatile((REX3 + STATUS) as *const u32) };
         let busy = status & STATUS_GFXBUSY != 0;
@@ -154,8 +162,15 @@ fn wait_idle() {
         if !busy && level == 0 {
             return;
         }
+        unsafe {
+            WAIT_LOOPS = WAIT_LOOPS.wrapping_add(1);
+        }
         core::hint::spin_loop();
     }
+}
+
+fn read_reg(offset: u32) -> u32 {
+    unsafe { read_volatile((REX3 + offset) as *const u32) }
 }
 
 /// Encode a screen coordinate for XYSTARTI/XYENDI.
@@ -251,6 +266,65 @@ pub fn fill_span(x0: i32, x1: i32, y: i32, r: u32, g: u32, b: u32) {
     reg_go(DRAWMODE0, DM0_SPAN);
 }
 
+/// Verify the REX3 mode and FIFO-drain contract from the driver side.
+///
+/// This is deliberately not an emulator conformance test.  It checks that the
+/// fill path actually programs RGB24 mode (including `DRAWMODE1` bit 15), that
+/// the register readback agrees, and that the shallow-FIFO wait was called and
+/// ended with `GFXBUSY=0` and FIFO level 0.  A driver regression that clears
+/// rgbmode or bypasses `REX3WAIT` fails here even if the emulator is more
+/// permissive than the real REX3.
+pub fn self_test() -> bool {
+    let calls_before = unsafe { WAIT_CALLS };
+    // One small span at the bottom-right avoids touching the menu body.
+    fill_span(
+        SCREEN_WIDTH - 2,
+        SCREEN_WIDTH - 1,
+        SCREEN_HEIGHT - 1,
+        1,
+        2,
+        3,
+    );
+    wait_idle();
+
+    let mode = read_reg(DRAWMODE1);
+    let status = read_reg(STATUS);
+    let calls = unsafe { WAIT_CALLS }.wrapping_sub(calls_before);
+    let mode_ok = mode & (1 << 15) != 0 && mode & 0x7 == 1 && (mode >> 3) & 0x3 == 3;
+    let fifo_ok = calls >= 2
+        && status & STATUS_GFXBUSY == 0
+        && (status >> STATUS_GFIFOLEVEL_SHIFT) & STATUS_GFIFOLEVEL_MASK == 0;
+    let pixel_offset =
+        ((SCREEN_HEIGHT - 1) as usize * SCREEN_WIDTH as usize + (SCREEN_WIDTH - 1) as usize) * 3;
+    let mut pixel = [0u8; 3];
+    shadow_read(pixel_offset, &mut pixel);
+    let shadow_ok = pixel == [3, 2, 1]; // shadow is BGR; fill was r=1,g=2,b=3
+
+    console_println("gfx: self-test");
+    print_str("  drawmode1=0x");
+    print_hex32(mode);
+    print_str(" rgbmode=");
+    print_str(if mode & (1 << 15) != 0 {
+        "set"
+    } else {
+        "CLEAR"
+    });
+    print_str(" status=0x");
+    print_hex32(status);
+    print_str(" waits=");
+    print_dec(calls);
+    print_str(" loops=");
+    print_dec(unsafe { WAIT_LOOPS });
+    println("");
+    let ok = mode_ok && fifo_ok && shadow_ok;
+    print_str(" shadow=");
+    print_str(if shadow_ok { "bgr" } else { "BAD" });
+    println("");
+    print_str("gfx: self-test ");
+    println(if ok { "ok" } else { "FAILED" });
+    ok
+}
+
 /// Draw one character with the PROM's raster font.
 ///
 /// `x` and `y` are the top-left corner of the character cell.  Returns the
@@ -303,4 +377,22 @@ pub fn draw_str(x: i32, y: i32, s: &str, r: u32, g: u32, b: u32) -> i32 {
 /// Draw a horizontal rule.
 pub fn hline(x0: i32, x1: i32, y: i32, r: u32, g: u32, b: u32) {
     fill_span(x0, x1, y, r, g, b);
+}
+
+fn print_dec(mut value: u32) {
+    let mut digits = [0u8; 10];
+    let mut count = 0usize;
+    if value == 0 {
+        crate::write_byte(b'0');
+        return;
+    }
+    while value > 0 && count < digits.len() {
+        digits[count] = b'0' + (value % 10) as u8;
+        value /= 10;
+        count += 1;
+    }
+    while count > 0 {
+        count -= 1;
+        crate::write_byte(digits[count]);
+    }
 }

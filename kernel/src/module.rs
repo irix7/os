@@ -145,10 +145,7 @@ extern "C" fn service_write(ptr: *const u8, len: usize) {
         return;
     }
     let data = unsafe { core::slice::from_raw_parts(ptr, len) };
-    for &byte in data {
-        crate::write_byte(byte);
-    }
-    crate::telnet::write_output(data);
+    crate::write_bytes(data);
 }
 
 extern "C" fn service_clock_ms() -> u64 {
