@@ -750,7 +750,23 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
 #[no_mangle]
 pub extern "C" fn trap_tlb_refill() -> ! {
     let badvaddr = badvaddr_read();
-    crate::print_str("trap: TLB refill at badvaddr=0x");
+    let epc: u32;
+    let cause: u32;
+    unsafe {
+        core::arch::asm!(".set noat", "mfc0 {0}, $14", out(reg) epc);
+        core::arch::asm!(".set noat", "mfc0 {0}, $13", out(reg) cause);
+    }
+    crate::print_str("trap: TLB refill epc=0x");
+    print_hex8((epc >> 24) as u8);
+    print_hex8((epc >> 16) as u8);
+    print_hex8((epc >> 8) as u8);
+    print_hex8(epc as u8);
+    crate::print_str(" cause=0x");
+    print_hex8((cause >> 24) as u8);
+    print_hex8((cause >> 16) as u8);
+    print_hex8((cause >> 8) as u8);
+    print_hex8(cause as u8);
+    crate::print_str(" badvaddr=0x");
     print_hex8((badvaddr >> 24) as u8);
     print_hex8((badvaddr >> 16) as u8);
     print_hex8((badvaddr >> 8) as u8);

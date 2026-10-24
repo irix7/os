@@ -71,11 +71,15 @@ Consequences:
   A module may return a tick callback and use the table's TCP slots; long-running
   features (servers, the MCP control plane) belong in modules, not in the core.
 - The module area is inside the reserved low window. Never hand it to the frame allocator.
-- Boot autoload is configured in the DS1386 environment: `mcp.url`, `mcp.sha256` and
-  optional `mcp.token` at register offset `0x10` (one byte per 32-bit word in the low
-  lane). A failed fetch or digest leaves the machine at the menu and runs nothing. The
-  module reads `mcp.token` through the ABI v7 `config_get` service and requires a bearer
-  token on `POST /mcp` when it is set.
+- Boot autoload is configured by `boot/config.conf` in the repository, fetched at boot from
+  `https://raw.githubusercontent.com/irix7/os/main/boot/config.conf`. A release workflow
+  updates that file with immutable raw module URLs and SHA-256 digests. A local test rig
+  may override the same keys through the DS1386 environment (`mcp.url`, `mcp.sha256`) at
+  register offset `0x10` (one byte per 32-bit word in the low lane). A failed fetch or
+  digest leaves the machine at the menu and runs nothing. The module reads the optional
+  `mcp.token` through the ABI v7 `config_get` service and requires a bearer token on
+  `POST /mcp` when it is set. NVRAM is a hardware chip, not a distribution channel: the
+  kernel validates it at startup and rewrites a blank or corrupt environment and MAC.
 
 ## Cache coherency
 

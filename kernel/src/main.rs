@@ -23,6 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod autoload;
+pub mod boot_config;
 pub mod cache;
 pub mod capability;
 pub mod diagnostics;
@@ -409,13 +410,6 @@ fn read_console_poll(info: &[u8; BOOTINFO_SIZE]) -> Option<extern "C" fn(*mut ()
     Some(unsafe { core::mem::transmute::<u32, extern "C" fn(*mut ())>(addr) })
 }
 
-/// Kernel entry point.
-///
-/// Handoff from the ROM (all 32-bit: the n32 ABI sign-extends pointers, and
-/// a u64 in a register pair would leave the high half undefined):
-///   $a0 = BootInfo physical address (0 when the ROM has none)
-///   $a1 = total RAM bytes
-///   $a2 = RAM base physical address
 /// Linker-provided bounds of the kernel's .bss section.
 #[cfg(not(test))]
 extern "C" {
@@ -441,32 +435,69 @@ fn clear_bss() {
     }
 }
 
+/// The ROM handoff, captured by the assembly entry stub before any Rust
+/// code can clobber `$a0`-`$a2`.
+#[repr(C)]
+struct BootHandoff {
+    bootinfo_phys: u32,
+    ram_bytes: u32,
+    ram_base: u32,
+}
+
+// Non-zero initial values keep this in `.data`, which `clear_bss` does not
+// touch.  The assembly stub overwrites all three words on entry.
+#[no_mangle]
+static mut BOOT_HANDOFF: BootHandoff = BootHandoff {
+    bootinfo_phys: 0xFFFF_FFFF,
+    ram_bytes: 0xFFFF_FFFF,
+    ram_base: 0xFFFF_FFFF,
+};
+
+// The C ABI's argument registers are not visible to the Rust compiler through
+// an `asm!` block, so capture them in a tiny real entry stub.  The earlier
+// inline-asm capture could be scheduled after `$a0` had been reused as a
+// string pointer, which handed `read_bootinfo` a rodata address.
+#[cfg(not(test))]
+core::arch::global_asm!(
+    r#"
+    .section .text._start, "ax", @progbits
+    .globl _start
+    .type _start, @function
+_start:
+    lui     $t0, %hi(BOOT_HANDOFF)
+    addiu   $t0, $t0, %lo(BOOT_HANDOFF)
+    sw      $a0, 0($t0)
+    sw      $a1, 4($t0)
+    sw      $a2, 8($t0)
+    j       _start_rust
+    nop
+    .size _start, .-_start
+"#
+);
+
+/// Rust entry point, called by the assembly stub above.
+///
+/// Handoff registers:
+///   $a0 = BootInfo physical address (0 when the ROM has none)
+///   $a1 = total RAM bytes
+///   $a2 = RAM base physical address
 #[cfg_attr(not(test), no_mangle)]
-pub extern "C" fn _start() -> ! {
+pub extern "C" fn _start_rust() -> ! {
     clear_bss();
 
-    // Capture the ROM handoff FIRST: init() below clobbers the argument
-    // registers, so reading $a0/$a1/$a2 afterwards would pick up whatever
-    // the serial driver left behind.
-    let bootinfo_phys: u32;
-    let ram_bytes: u32;
-    let ram_base: u32;
-    unsafe {
-        core::arch::asm!(
-            "move {0}, $a0",
-            "move {1}, $a1",
-            "move {2}, $a2",
-            out(reg) bootinfo_phys,
-            out(reg) ram_bytes,
-            out(reg) ram_base,
-        );
-    }
+    // SAFETY: the assembly stub wrote all three words before entering Rust.
+    let handoff = core::ptr::addr_of!(BOOT_HANDOFF);
+    let bootinfo_phys =
+        unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).bootinfo_phys)) };
+    let ram_bytes = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).ram_bytes)) };
+    let ram_base = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).ram_base)) };
 
     init();
 
     traps::init();
     traps::install_vectors();
     tlb::init();
+    nvram::init();
 
     let info = read_bootinfo(bootinfo_phys);
 

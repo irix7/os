@@ -12,3 +12,4 @@ opt-level = 0
 [profile.release]
 panic = "abort"
 opt-level = 2
+
