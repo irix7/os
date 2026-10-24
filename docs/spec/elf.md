@@ -239,6 +239,14 @@ each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at `e_entry` with 
 fixed four-page user stack at `0x7FF0_0000`.  It maps 4 KiB pages in JTLB
 even/odd pairs and uses TLB indices 40-47.
 
-This is deliberately narrow: there is no argv/envp, process table, fd table,
-dynamic linker, o32 support, address-space teardown or libc.  The image's write
-and exit syscalls are the provisional smoke ABI in `kernel/src/traps.rs`.
+The initial stack is the conventional layout: `argc` at `$sp`, then the `argv`
+and `envp` pointer arrays, then the strings.  `$a0`, `$a1` and `$a2` carry
+`argc`, `argv` and `envp` on entry.  The fixed fixture uses `"hello"`,
+`"PATH=/"` and `"HOME=/"`.
+
+This is deliberately narrow: there is no process table, fd table, dynamic
+linker, o32 support, address-space teardown or libc.  The provisional syscalls
+are `write(fd, buffer, length)` and `exit(status)`; the kernel validates the
+write range against the loaded segments and stack before copying.  There is no
+fd table: fd 1 and 2 are accepted, the copied buffer is capped at 256 bytes, and
+the bytes go to the serial console for now.

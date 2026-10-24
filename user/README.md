@@ -8,10 +8,17 @@ compatibility binaries and they do not use a libc yet.
 `user/hello` is the ELF-loader smoke image.  It is linked at `0x1000_0000` and
 uses the provisional kernel syscall codes:
 
-| `$v0` | Meaning |
-|---|---|
-| 1 | write; the kernel reports it and returns to user |
-| 2 | exit; the kernel returns to the telnet console |
+| `$v0` | Arguments | Meaning |
+|---|---|---|
+| 1 | `$a0` fd, `$a1` buffer, `$a2` length | write; `$v0` returns the length or -1. The kernel copies from a recorded user range. |
+| 2 | `$a0` status | exit; the kernel returns to the telnet console |
+
+The loader builds the conventional initial stack: `argc` at `$sp`, followed by
+the `argv` and `envp` pointer arrays, with `"hello"`, `"PATH=/"` and `"HOME=/"`
+above them.  `$a0`, `$a1` and `$a2` hold `argc`, `argv` and `envp` on entry.
+`write` currently sends bytes to the serial console (visible through MCP
+`serial.read`); there is no fd table, only fd 1 and 2 are accepted, and the
+buffer is capped at 256 bytes.
 
 Build it from the repository root:
 

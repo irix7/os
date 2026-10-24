@@ -22,6 +22,10 @@ const STACK_TOP: u32 = STACK_BASE + STACK_PAGES as u32 * 4096;
 
 static mut ELF_BUF: [u8; ELF_SIZE] = [0; ELF_SIZE];
 
+const MAX_RANGES: usize = 8;
+static mut USER_RANGES: [(u32, u32); MAX_RANGES] = [(0, 0); MAX_RANGES];
+static mut USER_RANGE_COUNT: usize = 0;
+
 #[derive(Clone, Copy)]
 struct LoadedPair {
     vaddr: u32,
@@ -71,6 +75,9 @@ pub extern "C" fn user_elf() {
         }
     };
 
+    unsafe {
+        USER_RANGE_COUNT = 0;
+    }
     let mut pairs = [LoadedPair {
         vaddr: 0,
         even: 0,
@@ -83,6 +90,7 @@ pub extern "C" fn user_elf() {
             crate::println("userelf: segment address overflow");
             return;
         };
+        record_range(segment.load_address(), end);
         let start_page = page_of(segment.load_address());
         let end_page = page_of(end.saturating_add(0xFFF));
         for vaddr in (start_page..end_page).step_by(4096) {
@@ -112,12 +120,87 @@ pub extern "C" fn user_elf() {
             return;
         }
     }
+    record_range(STACK_BASE, STACK_TOP);
 
+    let (user_sp, argc, argv, envp) = initial_stack();
     crate::cache::sync();
     crate::print_str("userelf: entry=0x");
     crate::print_hex32(plan.entry());
     crate::println("");
-    traps::run_user(plan.entry(), STACK_TOP)
+    traps::run_user(plan.entry(), user_sp, argc, argv, envp)
+}
+
+/// Build the conventional initial stack:
+///
+/// ```text
+/// sp+0:  argc
+/// sp+4:  argv[0] ... argv[argc-1], NULL
+/// sp+..: envp[0] ... envp[n-1], NULL
+/// ```
+///
+/// The strings live above the pointer array.  The image is a fixed hello
+/// fixture, so the argument and environment contents are fixed for now.
+fn initial_stack() -> (u32, u32, u32, u32) {
+    let mut cursor = STACK_TOP;
+    let home = push_bytes(&mut cursor, b"HOME=/");
+    let path = push_bytes(&mut cursor, b"PATH=/");
+    let arg0 = push_bytes(&mut cursor, b"hello");
+
+    let argc: u32 = 1;
+    let envc: u32 = 2;
+    let pointer_words = 1 + argc + 1 + envc + 1;
+    let sp = (cursor & !7) - pointer_words * 4;
+    write_word(sp, argc);
+    write_word(sp + 4, arg0);
+    write_word(sp + 8, 0);
+    write_word(sp + 12, path);
+    write_word(sp + 16, home);
+    write_word(sp + 20, 0);
+    (sp, argc, sp + 4, sp + 12)
+}
+
+fn push_bytes(cursor: &mut u32, bytes: &[u8]) -> u32 {
+    *cursor -= bytes.len() as u32;
+    let start = *cursor;
+    for (offset, byte) in bytes.iter().enumerate() {
+        unsafe {
+            core::ptr::write_volatile((start as *mut u8).add(offset), *byte);
+        }
+    }
+    start
+}
+
+fn write_word(address: u32, value: u32) {
+    unsafe {
+        core::ptr::write_volatile(address as *mut u32, value);
+    }
+}
+
+fn record_range(start: u32, end: u32) {
+    unsafe {
+        let count = USER_RANGE_COUNT;
+        if count < MAX_RANGES {
+            USER_RANGES[count] = (start, end);
+            USER_RANGE_COUNT = count + 1;
+        }
+    }
+}
+
+/// Whether `[address, address + length)` is inside a loaded user range.
+///
+/// The syscall layer uses this before copying from user memory.  It is a
+/// range check, not a page-table walk: the loader records every host-mapped
+/// segment and the stack.
+pub fn range_ok(address: u32, length: u32) -> bool {
+    let Some(end) = address.checked_add(length) else {
+        return false;
+    };
+    unsafe {
+        let ranges = &*core::ptr::addr_of!(USER_RANGES);
+        ranges[..USER_RANGE_COUNT]
+            .iter()
+            .any(|&(start, stop)| address >= start && end <= stop)
+    }
 }
 
 /// Map and zero the even/odd pair containing `address`, then return the
