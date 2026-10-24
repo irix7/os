@@ -294,6 +294,30 @@ fn program_vc2_1280x1024() {
     wait_idle();
 }
 
+/// Clear the auxiliary (overlay/popup/CID) planes.
+///
+/// The REX3 RGB planes are initialised by the menu fill, but the auxiliary
+/// framebuffer powers up with undefined contents.  Its popup bits are checked
+/// by the display path before the main pixel, so leaving them random produces
+/// coloured snow over an otherwise correct RGB image.
+fn clear_aux_planes() {
+    for planes in [4u32, 5, 6] {
+        wait_idle();
+        reg(DRAWMODE1, (DM1_RGB24 & !0x7) | planes);
+        reg(WRMASK, 0x00FF_FFFF);
+        reg(COLORRED, 0);
+        reg(COLORGRN, 0);
+        reg(COLORBLUE, 0);
+        reg(COLORALPHA, 0);
+        reg(COLORVRAM, 0);
+        reg(XYENDI, xy(SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1));
+        reg(XYSTARTI, xy(0, 0));
+        reg_go(DRAWMODE0, DM0_BLOCK);
+    }
+    wait_idle();
+    reg(DRAWMODE1, DM1_RGB24);
+}
+
 /// Program both XMAP9s for 24-bit RGB on every display ID.
 ///
 /// The display path starts with XMAP mode 0, which is colour-indexed and reads
@@ -377,6 +401,7 @@ pub fn init() {
     reg(CLIPMODE, 0xF << 9);
     reg(STALL1, 0);
     reg(CONFIG, 0);
+    clear_aux_planes();
     program_vc2_1280x1024();
     program_xmap_rgb24();
     program_identity_gamma();
