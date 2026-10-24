@@ -17,11 +17,14 @@ kernel-module ABI); [`../plan/interfaces.md`](../plan/interfaces.md) (interface 
 §9.3; [`../research/rust-std-build-spike.md`](../research/rust-std-build-spike.md);
 ADR-0011 (native capability substrate) and ADR-0021 (native Rust `std`).
 
-> **This is a contract draft.**  It is **not** a frozen ABI, **not** a claim that a
-> native process works, and **not** a substitute for the M9 conformance tests.  No cell
-> loader, native libc or `std` PAL exists yet.  Every numeric value, size and offset is
-> provisional until the `native-abi` layout assertions, the C oracle and the M9 tests
-> land.  Open items are listed in §10; do not implement one as if it were settled.
+> **This is a contract draft.**  It is **not** a frozen ABI, **not** a claim that the
+> native capability ABI works, and **not** a substitute for the M9 conformance tests.
+> No native cell loader, production libc or `std` PAL exists yet.  A static `std` image
+> does run through the provisional syscall ABI and a 42-symbol shim, but that is a
+> bring-up path, not this contract; it uses a small kernel fd table, while this ABI
+> keeps the native fd table in libc.  Every numeric value, size and offset is provisional
+> until the `native-abi` layout assertions, the C oracle and the M9 tests land.  Open
+> items are listed in §10; do not implement one as if it were settled.
 
 ---
 
@@ -2310,7 +2313,9 @@ The first changes the M9 demo; the second is a wording fix in the libc spec.
 - [`../research/rust-std-irix7.md`](../research/rust-std-irix7.md) — the target matrix,
   §5.4 capability enforcement, §7.2–§7.5 the PAL and cell runtime, §9.3 the PR sequence.
 - [`../research/rust-std-build-spike.md`](../research/rust-std-build-spike.md) — the
-  compile-only `std` rlib and the patch set.
+  original compile-only `std` rlib and patch set.
+- [`../research/std-hello-bringup.md`](../research/std-hello-bringup.md) — the first
+  running static `std` image and the bring-up libc/fd/syscall additions.
 - [`../../crates/native-abi/README.md`](../../crates/native-abi/README.md) — the layout
   source and its provisional status.
 - [`../../kernel/src/capability.rs`](../../kernel/src/capability.rs),

@@ -34,7 +34,9 @@ stripped for the 256 KiB target-2 image.
 
 This is the **S1 gate** from the Rust `std` research: it proves the target,
 toolchain, libc ABI shim, loader and minimal syscall path. It is not a complete
-POSIX environment.
+POSIX environment.  The production C ABI layer is now the
+[relibc fork](https://github.com/irix7/relibc); its n32 Linux/QEMU gate passes
+([report](relibc-n32-bringup.md)).
 
 ## What was added
 
@@ -47,7 +49,7 @@ POSIX environment.
 - Kernel syscall cases for `open`, `close`, `fcntl`, `dup`, `getcwd`, `poll`,
   `signal`, `getentropy`, `clock_gettime`, `getpid`, `read`, `fstat` and `stat`.
 - A tiny bring-up fd table (`kernel/src/fd.rs`) for console, `/dev/null`, two
-  read-only ramfs files (`/hello.txt`, `/etc/motd`) and directory iteration.
+  ramfs files (`/hello.txt`, `/etc/motd`), directory iteration and `chdir`.
 - A 256 KiB loader image, a four-page user stack and 64 KiB SCSI read chunks.
 - A fixed 1 MiB heap backed by two 256 KiB page pairs, so std's allocator does
   not exhaust the 48-entry JTLB with 4 KiB mappings.
@@ -94,7 +96,7 @@ and attached at SCSI target 2.
 
 ## Next gates
 
-1. `std::fs` over a ramfs and `std::time` with real clocks.
+1. ~~`std::fs` over a ramfs and `std::time` with real clocks.~~ (bring-up done)
 2. `std::thread` with native threads/TLS.
 3. `std::process::Command` over `posix_spawn`.
 4. termios + poll + Reedline.

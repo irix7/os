@@ -48,9 +48,10 @@ request, because `main` is protected). The file supplies:
 
 The DS1386 environment may override the same two names for a local test rig; it is a
 hardware chip, not a release distribution channel. After DHCP and DNS are up, and before
-the boot menu is drawn, the kernel reads the configuration, zeroes the module area,
+the boot handoff, the kernel reads the configuration, zeroes the module area,
 fetches the image, verifies the digest and calls the entry. A failure prints
-`autoload: ...` and leaves the machine at the menu; it never runs an unverified image.
+`autoload: ...` and the boot continues with a `BOOT-NOT-READY` marker; it never runs
+an unverified image.
 
 At startup the kernel also validates the DS1386 environment and MAC. A blank or corrupt
 environment is repaired with a minimal default and a locally administered fallback MAC,

@@ -12,12 +12,12 @@ the PROM window at `0xBFC00000`) and the **IRIX 7 kernel** (n32/MIPS III). It de
 handoff registers, the `BootInfo` structure, the memory map, the CPU/cache state, validation
 and failure behaviour.
 
-The ROM is a stub, not a full firmware: it brings the machine up, copies the kernel image
-into RAM and jumps to it. Everything the machine does afterwards — including the telnet
+The ROM is a stub, not a full firmware: it brings the machine up, LZ4-decompresses the
+kernel image from PROM into RAM and jumps to it. Everything the machine does afterwards — including the telnet
 console and the network stack — is the kernel's.
 
 It does not define the kernel's own boot sequence, the boot bundle format or the root image;
-those are in [`image-format.md`](image-format.md) (planned) and `architecture.md` §10.
+those are in `image-format.md` (planned) and `architecture.md` §10.
 Loadable modules are specified in [`modules.md`](modules.md).
 
 ## 2. Handoff
@@ -29,7 +29,7 @@ The ROM:
    controller to map them at `LOMEM_BASE` (`0x0800_0000`);
 3. tests every byte of DRAM, still with no stack and no RAM-resident state of its own;
 4. initialises the serial console (the Z85C30 in the IOC);
-5. copies the kernel image out of PROM to `0x8804_0000`;
+5. LZ4-decompresses the embedded kernel payload from PROM to `0x8804_0000`;
 6. writes the boot flag and jumps to the kernel entry with the registers below.
 
 | Register | Value |
@@ -66,7 +66,8 @@ copied out of `BootInfo` first.
 ## 3. BootInfo layout
 
 `BootInfo` is a **binary contract**, not a Rust ABI. It is `#[repr(C, align(8))]`, 256 bytes,
-with fixed offsets. The o32 ROM and the n32 kernel must produce and consume the same bytes.
+with fixed offsets. The current assembly ROM does not emit it; when a loader does, that
+loader and the n32 kernel must produce and consume the same bytes.
 Compile-time assertions in both codebases check the size and offsets.
 
 | Offset | Size | Field | Notes |
@@ -124,9 +125,9 @@ hands over, so there is no ROM-resident console to poll. `console_poll` is 0 and
 does not call it.
 
 The ROM and the kernel are still one program at two link addresses, and the rule that the
-kernel must not re-create state the ROM initialised still holds — it simply has nothing to
-inherit yet. When the ROM grows a network stack, `net_state` and `seeq_state` will point at
-that live state and the kernel will drive it from its idle path.
+kernel must not re-create state the ROM initialised still holds — it simply has no network
+state to inherit. The `net_state` and `seeq_state` fields are reserved for a future boot
+loader; the current kernel initialises Seeq and smoltcp itself.
 
 ### 3.2 Flags
 
@@ -216,14 +217,15 @@ The ROM's own failure behaviour is:
 
 The ROM does not fetch anything: the kernel image is embedded in the PROM image, so
 there is no link to lose and no digest to check. The failure modes that used to belong
-here — no DHCP, DNS failure, HTTP errors — move to the kernel once it owns the network.
+here — no DHCP, DNS failure, HTTP errors — belong to the kernel's boot path, which owns
+the network.
 
 ## 8. Test plan
 
 - [x] iris: ROM → kernel → serial marker, with the RAM test reporting the whole machine.
-- [x] iris: ROM → kernel → graphical boot menu on the REX3 display.
+- [x] iris: ROM → kernel → full-screen boot log on the REX3 display.
 - [x] The PS/2 scancode decoder is unit-tested on the host (`kernel/tests/kbd.rs`).
-- [ ] `BootInfo` size/offset assertions in o32 and n32.
+- [ ] `BootInfo` size/offset assertions in the assembly ROM and n32 kernel.
 - [ ] CRC32C known-answer tests.
 - [ ] A stub kernel validates a synthetic `BootInfo` and prints the memory map.
 - [ ] iris: ROM → real kernel → M2 demo.
@@ -262,5 +264,7 @@ the machine is reset within the same second.  `reason` is one of `no-mcp-url`,
 `autoload-failed` or `network-down`.
 
 The marker is written through the console service, so it appears on serial, in
-the MCP serial ring and on a connected telnet session.  The boot menu is shown
-after the marker; a diagnostic menu does not affect readiness.
+the MCP serial ring and on a connected telnet session.  After the marker the
+kernel enters the native user image on SCSI target 2; if no image is attached,
+the loader error remains visible and the console continues.  There is no boot
+menu.

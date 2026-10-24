@@ -105,10 +105,11 @@ cd /mnt/europa/iris
 The serial console is SCC channel B and is exposed on TCP port **8881** (channel A is
 8880). `--serial-log` is the simplest way to capture it.
 
-The kernel puts a **graphical boot menu** on the REX3 (Newport) display: a framed
-panel with a title, a list of boot options and a status line, drawn with the PROM's
-own IRIS 10 raster font. The PS/2 keyboard drives it — arrow keys move the
-selection, a number selects that option, and Enter boots the highlighted one.
+The kernel paints the boot log full-screen on the REX3 (Newport) display using
+the PROM's own IRIS 10 raster font.  There is no boot menu: after the readiness
+marker the kernel enters the native n32 image on SCSI target 2.  The PS/2 keyboard
+is initialised for the local console, while diagnostics moved to the telnet
+console.
 
 The kernel programs the 1280x1024 VC2 timing table, XMAP9 RGB24 mode and an
 identity Bt445 gamma table itself.  The host preset still keeps the emulator
@@ -170,12 +171,12 @@ Commands:
 | `module [https://]<host>:<port><path> <sha256>` | fetch, verify and run a RAM module |
 | `http <host>:<port><path> [sha256] [range=start-end]` | fetch over HTTP, optionally verify or range |
 | `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify (no range) |
-| `boot` | leave the menu and continue booting |
+| `boot` | retry the target-2 userland image |
 | `reboot` | restart from the PROM |
 
 `http` and `https` print the status, body length and a streaming SHA-256 of the body,
 so a fetched image can be checked against the build host.  The clock is advanced from
-CP0 Count; the menu and idle loops execute `WAIT`, which lets iris park the vCPU.
+CP0 Count; the console and idle loops execute `WAIT`, which lets iris park the vCPU.
 
 ## Loadable modules
 
@@ -227,7 +228,7 @@ Without the scheme the command uses HTTPS, which is the normal module path.
 ### Boot autoload
 
 The kernel reads `mcp.url` and `mcp.sha256` from the DS1386 PROM environment after DHCP
-and DNS, before the menu. The environment starts at register offset `0x10` (the RTC
+and DNS, before the boot handoff. The environment starts at register offset `0x10` (the RTC
 registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane. For the iris
 rig, stop the emulator and write both strings into `nvram.bin` at offset `0x10`:
 
@@ -239,7 +240,8 @@ mcp.token=<shared secret>          (optional; requires Authorization: Bearer)
 
 On the next boot the serial log shows `autoload: fetching module`, the module prints
 `mcp: listening on port 80`, and the MCP endpoint is live without telnet. A missing or
-wrong digest prints `autoload: ...` and leaves the machine at the menu.
+wrong digest prints `autoload: ...` and the boot continues with a
+`BOOT-NOT-READY` marker.
 
 ### Screen capture
 
@@ -336,9 +338,10 @@ python3 -m unittest discover -s rom/tools -p 'test_*.py'
   before creating any RAM structures.
 - The real n32 kernel is linked at `0x88040000`, is copied there by the ROM, and
   prints `kernel: up`.
-- The kernel brings up the REX3 and shows a graphical boot menu, and reads the
-  PS/2 keyboard to drive it.  A telnet-visible `tlb`, `gfx`, `trap` and user
-  smoke path exercise the TLB refill, REX3 RGB24/FIFO contract and user exit.
+- The kernel brings up the REX3 and paints the boot log full-screen.  A
+  telnet-visible `tlb`, `gfx`, `trap` and user smoke path exercise the TLB refill,
+  REX3 RGB24/FIFO contract and user exit; the automatic handoff runs the std
+  bring-up image from SCSI target 2.
 - After RTC, network and MCP autoload, the kernel emits one
   `BOOT-READY v=1 boot=<id> kernel=up network=up mcp=listening` line (or a
   distinct `BOOT-NOT-READY` line with a reason).  Test tools poll this marker.

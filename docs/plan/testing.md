@@ -78,9 +78,17 @@
 | Boot | ROM stub, kernel stub, boot bundle | `test/boot/` |
 | X11 | X Test Suite subset, `xterm`, `twm` | `test/x11/` |
 | MCP | JSON-RPC frames, tool schemas | `test/mcp/` |
+| Native std | Static `std` image, args/time/sleep/fs/chdir fixture | `user/std-hello/` |
+| relibc n32 | `hello`, TLS, `setjmp`, pthread smoke tests | [`irix7/relibc`](https://github.com/irix7/relibc) |
 | Fuzz seeds | ELF, EROFS, XFS, 9P, HTTP, Git | `test/fuzz/` |
 
 Large binaries and images live in R2 or Git LFS, with a manifest and SHA-256 in the repo.
+
+The current bring-up gates are the static `std` image under `user/std-hello` (args,
+time, sleep, `std::fs` on a tiny ramfs, `chdir`) and the external
+[`irix7/relibc`](https://github.com/irix7/relibc) n32 gate (TLS, `setjmp`,
+pthreads).  Neither is a complete POSIX system; threads, spawn, signals, termios
+and sockets remain open.
 
 ## 4. CI
 
@@ -90,6 +98,8 @@ Large binaries and images live in R2 or Git LFS, with a manifest and SHA-256 in 
 | `clippy` | `cargo clippy -- -D warnings` | Yes |
 | `test` | host unit/integration | Yes |
 | `cross` | n32/o32 `-Z build-std` (M0 gate) | Yes once M0 is green |
+| `std` | static `std` image + native syscall fixture | Yes once std bring-up is in CI |
+| `relibc-n32` | external n32/QEMU relibc gate | Manual/nightly until linked |
 | `boot` | iris boot + smoke harness | Yes |
 | `mcp` | MCP conformance against a running iris instance | Yes once M3 is green |
 | `licence` | `cargo-deny`, REUSE, SBOM | Yes |

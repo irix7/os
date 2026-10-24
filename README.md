@@ -1,12 +1,14 @@
 # IRIX 7
 
-A Rust-native operating system for the SGI Indy (IP22, MIPS III), reimplementing
-everything on the IRIX discs clean-room in Rust. It runs existing IRIX 6.5
-application binaries unchanged and offers new Rust programs a native
-capability/object interface.
+A Rust-native operating system for the SGI Indy (IP22, MIPS III). The design
+target is to reimplement everything on the IRIX discs clean-room in Rust: run
+existing IRIX 6.5 application binaries unchanged and offer new Rust programs a
+native capability/object interface.
 
 > **[The Tree of IRIX 7](https://irix7.github.io/os/tree/)** — the living roadmap,
 > from the toolchain roots to the v1.0 canopy.
+
+Design targets:
 
 - Monolithic Rust kernel, n32/MIPS III, accepting both o32 and n32 user binaries.
 - Legacy ABI layer: ELF, the o32 and n32 ABIs (MIPS II/III), and the SGI libc
@@ -21,7 +23,7 @@ capability/object interface.
 The advanced architecture is in [`docs/spec/architecture.md`](docs/spec/architecture.md), with
 the evidence base in [`docs/research/`](docs/research/). It frames IRIX 7 as the successor SGI
 might have built: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace
-drivers, an R2-first boot, an in-OS MCP control plane, and a new IRIX-inspired desktop.
+drivers, a network-first boot (with an R2/EROFS root still planned), an in-OS MCP control plane, and a new IRIX-inspired desktop.
 
 The plan is in [`docs/plan/`](docs/plan/): milestones, GitHub, risks, interfaces, hardware lab,
 testing, security, release, legal, community and cost. Live tracking is the
@@ -45,10 +47,18 @@ module serves an MCP control plane (JSON-RPC `initialize`, `ping`, `tools/list`,
 tools.
 
 A native n32 ELF loader (`userelf`) maps a user image from SCSI target 2 into kuseg
-and enters it with an argc/argv/envp stack; the provisional syscall ABI has
-write(fd, buffer, length), exit and anonymous mmap, and `user/libc` is the
-first freestanding C ABI layer over it.  The loader is a
-bring-up path for the native process model, not an IRIX 6.5 compatibility container.
+and enters it with an argc/argv/envp stack.  A static Rust `std` image now runs
+there: it reads arguments, time, a small ramfs (`read`, `write`, `stat`,
+`read_dir`), `chdir`/relative paths and sleeps; the kernel has a provisional fd
+table and the matching syscalls.  The image is single-threaded and its filesystem
+is only the tiny ramfs: there is no process table, threads/TLS, termios, signals or
+sockets yet.  `user/libc` and `crates/irix7-libc` are bring-up C ABI shims.
+
+The production POSIX layer will be a fork of
+[`relibc`](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU gate has
+passed, including TLS, `setjmp` and pthreads.  The next IRIX step is replacing
+relibc's Linux syscall backend with the native PAL.  This is a bring-up path for
+the native process model, not an IRIX 6.5 compatibility container.
 
 The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
 tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).

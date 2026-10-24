@@ -85,11 +85,15 @@ reason to drop a feature; the missing OS service is the work item.
 ## Current status
 
 The kernel paints the boot log, hands over to the native ELF on SCSI target 2,
-and a static Rust `std` hello now prints, reads `argv`, and exits. The
-bring-up uses a provisional 42-symbol libc shim; the production POSIX/C ABI
-layer will be a relibc fork with an `irix7` backend and a 64-bit
-`time_t`/`off_t` n32 ABI.
+and a static Rust `std` image now runs with args, time, sleep, a small
+read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths.  The bring-up
+uses a provisional 42-symbol libc shim; the production POSIX/C ABI layer will be
+the [relibc fork](https://github.com/irix7/relibc), whose n32 big-endian
+Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).
 
-The next blockers are the real POSIX layers: a namespace/filesystem, threads
-and TLS, `posix_spawn`, signals, termios and sockets. See
-[`../research/std-hello-bringup.md`](../research/std-hello-bringup.md).
+The next blockers are the real POSIX layers: a general namespace/filesystem,
+threads and TLS, `posix_spawn`, signals, termios and sockets.  The kernel stack
+top is now `0x88300000`, with linker assertions preventing `.bss`/stack overlap;
+the loader uses 4 KiB pairs for image/stack and two 256 KiB pairs for a 1 MiB
+heap.  See [`../research/std-hello-bringup.md`](../research/std-hello-bringup.md)
+and [`../research/relibc-n32-bringup.md`](../research/relibc-n32-bringup.md).

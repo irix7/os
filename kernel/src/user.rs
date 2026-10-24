@@ -199,7 +199,7 @@ pub fn cleanup() {
 /// Map the zero-filled anonymous heap with 256 KiB pages.
 ///
 /// A 4 KiB mapping for every heap page exhausts the 48-entry JTLB once std's
-/// allocator and the ELF image are both resident.  The heap is a fixed 256 KiB
+/// allocator and the ELF image are both resident.  The heap is a fixed 1 MiB
 /// window backed by two 256 KiB page-pair entries; allocations are a bump
 /// within that window.
 fn map_heap() -> bool {

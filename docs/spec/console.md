@@ -42,10 +42,11 @@ teletype.
 
 ## 3. Native user output
 
-The provisional user ABI maps `write(1, ...)` and `write(2, ...)` to the same
-console service.  There is no fd table yet; only fd 1 and 2 are accepted and the
-copied buffer is capped at 256 bytes.  The bytes appear on serial, in the MCP
-ring and on a connected telnet session.
+The provisional user ABI now has a small fd table: console descriptors 0/1/2,
+`/dev/null`, a read/write ramfs fixture and read-only directory handles.  Writes
+to a console fd go through the same console service, so they appear on serial,
+in the MCP ring and on a connected telnet session.  The std bring-up image uses
+fd 1/2 for `println!`; the full POSIX fd table and VFS remain future work.
 
 ## 4. Boot readiness
 

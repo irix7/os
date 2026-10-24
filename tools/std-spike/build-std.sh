@@ -6,7 +6,9 @@
 #
 # This is the reproducible recipe behind docs/research/rust-std-build-spike.md.
 # It does **not** link or run anything: the product is an rlib.  The patched
-# `libc` module is compile-only scaffolding; see the report for the gaps.
+# `libc` module is compile-only scaffolding; see the report for the gaps.  The
+# first running std image and its separate build are documented in
+# user/std-hello/README.md.
 #
 # Usage:
 #   tools/std-spike/build-std.sh            # full clean build

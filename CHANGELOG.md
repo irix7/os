@@ -16,6 +16,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   a CP0 Count wait, and read the wall clock and monotonic clock.  The kernel
   stack top moved to `0x88300000` to stop boot-stack growth overlapping `.bss`.
   The temporary 42-symbol libc shim will be replaced by the relibc fork.
+- The relibc n32 big-endian Linux/QEMU gate passes: static `hello`/`printf`,
+  `__thread` TLS, `setjmp`/`longjmp` and `pthread_create`/`join` with per-thread
+  TLS.  The fork lives at <https://github.com/irix7/relibc> on `irix7-n32`; the
+  Linux `sc` backend still has to become the IRIX native PAL.
 - Unify kernel and native-user output through one console service: serial, the
   MCP serial ring and a queued telnet mirror.  Telnet output is drained outside
   the smoltcp borrow, so a user syscall can print while the console socket is
@@ -37,17 +41,18 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `malloc`/`calloc`/`realloc`/`free`, `mem*`, basic string functions,
   `memalign` up to 16 bytes and `__errno_location`.  `user/hello` now uses it.
 - The user loader now tracks its page pairs and frees the image, stack and heap
-  frames on exit or a failed load.  `mmap` maps zeroed anonymous heap pages from
-  `0x2000_0000` (128 KiB); `munmap` and `mprotect` are provisional no-ops.
-- The native user entry now builds the conventional `argc`/`argv`/`envp` initial
+  frames on exit or a failed load.  `mmap` maps a zeroed anonymous heap window
+  from `0x2000_0000` (1 MiB, with two 256 KiB page pairs); `munmap` and
+  `mprotect` are provisional no-ops.
+- The native user entry builds the conventional `argc`/`argv`/`envp` initial
   stack and passes them in `$a0`-`$a2`.  The provisional `write(fd, buffer, length)`
-  syscall validates a recorded user range, copies up to 256 bytes and returns the
-  length; `user/hello` prints its message, `argv[0]`, `PATH=/` and exits 42.
+  syscall validates a recorded user range and copies the bytes to the console.
+  `user/hello` prints its message, `argv[0]`, `PATH=/` and exits 42.
 - `userelf` loads a native n32 ELF from SCSI target 2.  The kernel reads up to
-  80 KiB, validates it with `irix-elf`, maps its `PT_LOAD` pages into kuseg, sets
-  a four-page user stack and enters through the provisional write/exit syscall ABI.
-  `user/hello` builds a minimal image with the native target; the telnet command
-  returns to the console after exit.
+  256 KiB, validates it with `irix-elf`, maps its `PT_LOAD` pages into kuseg, sets
+  a user stack and enters through the provisional syscall ABI.  The image is
+  attached at SCSI target 2; `user/hello` builds a minimal fixture and the
+  automatic handoff returns to the console after exit.
 - The kernel's HTTP `erofs` debug command is now behind the `erofs-debug` feature
   and off by default, keeping the PROM image small; the loadable `erofs` module is
   the normal filesystem path.
