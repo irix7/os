@@ -42,3 +42,4 @@
 - [Plan 9 in Rust](research/plan9-rust-research.md)
 - [Big-endian EROFS](research/erofs-big-endian-research.md)
 - [Rust OS design survey](research/rust-os-design-research.md)
+- [relibc n32 bring-up](research/relibc-n32-bringup.md)

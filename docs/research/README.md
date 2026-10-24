@@ -18,3 +18,4 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
+| [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the remaining Linux-to-IRIX PAL gap. |
