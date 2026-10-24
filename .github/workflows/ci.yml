@@ -60,7 +60,7 @@ jobs:
       - name: cargo test
         run: |
           if [ -f Cargo.toml ]; then
-            cargo test -p kernel -p kernel-test -p boot-protocol-tests -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf
+            cargo test -p kernel -p kernel-test -p boot-protocol-tests -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -145,7 +145,7 @@ jobs:
           # This is the hosted native target, not the kernel target: it must expose
           # target_os=irix7 and the unix family for the POSIX libc/std work.
           cargo build -Z build-std=core -Zjson-target-spec \
-            --target targets/mips3-sgi-irix7-native-n32.json -p irix-elf
+            --target targets/mips3-sgi-irix7-native-n32.json -p irix-elf -p native-abi
       - name: Build EROFS module (flat image)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
