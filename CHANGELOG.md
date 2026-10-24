@@ -10,10 +10,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 - A user-mode smoke test: maps a fixed code and stack page, enters KSU user, takes
   a write syscall through the general exception vector (returning to user), then an
-  exit syscall that switches back to a kernel continuation.  It uses a dedicated
-  trap stack and proves both user return and exit-to-kernel control flow.  The telnet
-  `user` command runs it; this is not a process model, ELF loader or full
-  return-to-command path yet.
+  exit syscall that returns through a kernel trampoline to the telnet command loop.
+  It uses a dedicated trap stack and restores the console's callee-saved registers.
+  The telnet `user` command runs it; this is not a process model, ELF loader or
+  general process return path yet.
 - A general MIPS III exception vector with a full register/CP0 frame, saving and
   restoring all caller-visible state, and `eret` return.  Timer interrupts keep a
   fast path that advances Compare and increments the tick counter.  The telnet

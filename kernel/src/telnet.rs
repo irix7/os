@@ -573,8 +573,14 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             });
         }
         b"user" => {
-            let _ = sock.send_slice(b"user: entering (one-way; reboot to recover)\r\n");
-            crate::traps::user_smoke();
+            let _ = sock.send_slice(b"user: entering (write returns, exit returns here)\r\n");
+            unsafe {
+                crate::traps::user_from_console();
+            }
+            // Drop the smoke-test mappings before returning to the command loop.
+            crate::tlb::invalidate_index(40);
+            crate::tlb::invalidate_index(41);
+            let _ = sock.send_slice(b"user: returned to console\r\n");
         }
         b"reboot" => {
             let _ = sock.send_slice(b"rebooting\r\n");

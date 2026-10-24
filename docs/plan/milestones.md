@@ -272,10 +272,10 @@ with status 0; the shell reports the exit status.
 
 **Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a
 user-mode smoke test now proves KSU user entry, user TLB mappings, a write syscall
-that returns to user mode, an exit syscall that switches back to a kernel
-continuation, the trap-stack switch and `eret`.  It runs a fixed seven-instruction
-image, then parks in the kernel continuation; there is no ELF process, argv/envp,
-libc or full return-to-command path yet.
+that returns to user mode, an exit syscall that returns to the console, the
+trap-stack switch and `eret`.  It runs a fixed seven-instruction image and restores
+the console's callee-saved registers; there is no ELF process, argv/envp, libc or
+general process return path yet.
 
 **Acceptance criteria:**
 
