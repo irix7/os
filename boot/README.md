@@ -16,9 +16,10 @@ mcp.url=https://raw.githubusercontent.com/irix7/os/main/boot/modules/v0.1.0/http
 mcp.sha256=<64 hex digits>
 ```
 
-The release workflow updates this file and adds the flat module under
-`boot/modules/<tag>/` after the GitHub Release is built.  The kernel verifies
-the module's SHA-256 before executing it.
+The release workflow builds the flat module under `boot/modules/<tag>/` and
+proposes an update to this file.  Because `main` is protected, that update is a
+pull request rather than a direct push; merge it after the release assets are
+public.  The kernel verifies the module's SHA-256 before executing it.
 
 The DS1386 NVRAM on a real Indy is a hardware chip, not a distribution
 channel.  A local test rig may still set `mcp.url`/`mcp.sha256` in its emulated
