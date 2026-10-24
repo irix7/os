@@ -19,6 +19,17 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - A one-entry software TLB-refill vector maps a private kernel test page through
   kuseg and returns through `eret`; the telnet `tlb` command exercises it.  A
   general page-table refill and user-mode versions remain open.
+- The draft native capability ABI: [`docs/spec/native-abi.md`](docs/spec/native-abi.md)
+  fixes the cell execution model, the 160-byte `CellStart` structure and its validation
+  rules, the 64-bit handle and rights model, the object and invocation tables, the
+  `syscall 0x1F7` gate and register convention, cell lifecycle, threads, TLS, signals,
+  the namespace and capability-backed fd table, versioning, quotas and the M9/M9.5
+  conformance slices.  It records the open questions with recommended defaults and the
+  conflicts with the existing architecture, libc, ELF and POSIX documents.  It is
+  **v0.1 draft** and explicitly not a frozen ABI; no cell loader or native process
+  exists.  The interface register moves the native capability ABI from `planned` to
+  `draft`.
+
 - `crates/native-abi`: provisional native n32 C types, public layouts and constants,
   with host layout tests and a native-target CI build.  It is the layout source for the
   native libc/std work; it is layout-only and not yet a frozen ABI.

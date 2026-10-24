@@ -4,7 +4,8 @@
 **Version:** 0.1
 **Owner:** ABI / libc
 **Related:** [`posix.md`](posix.md) (API baseline), [`architecture.md`](architecture.md) §5 (native ABI and
-process model) and §6 (compatibility container), [`elf.md`](elf.md) (ELF loader contract),
+process model) and §6 (compatibility container), [`native-abi.md`](native-abi.md) (the kernel capability ABI
+under this C ABI), [`elf.md`](elf.md) (ELF loader contract),
 [`driver-interface.md`](driver-interface.md) (`ctl`/`data`/`status` and `posix_devctl`),
 [`modules.md`](modules.md) (kernel modules are `no_std`), and the
 [`std` research report](../research/rust-std-irix7.md).
@@ -333,9 +334,9 @@ are 8 bytes each.
 - `__libc_start_main` is **not** part of the native contract; it is a glibc-shaped
   compatibility name and is marked `compat-only` in the manifest.
 - The loader passes a `CellStart` structure with at least: ABI version, `argc`, `argv`,
-  `envp`, `auxv`, the capability table, the namespace root, and the requested stack size.
-  The exact layout is open and belongs to the native ABI (`native-abi.md`); the libc must
-  not define a second copy.
+  `envp`, `auxv`, the capability table, the namespace root, the fd array and the requested
+  stack size.  The exact layout is defined in [`native-abi.md`](native-abi.md) §3; the
+  libc must not define a second copy.
 - Recommended `auxv` keys: `AT_PAGESZ`, `AT_ENTRY`, `AT_PHDR`, `AT_PHNUM`, `AT_BASE`
   (zero for a static cell), `AT_RANDOM`, `AT_EXECFN`, `AT_UID`, `AT_EUID`, `AT_GID`,
   `AT_EGID`, `AT_HWCAP`, `AT_NULL`.  The exact set is open.
@@ -346,13 +347,13 @@ are 8 bytes each.
 
 ### 4.6 Syscall and capability entry
 
-- Native code does **not** execute the IRIX `syscall` instruction.  The libc is the only
-  component that performs capability invocations, and it does so through the native ABI
-  crate (`native-abi`): typed `Channel` calls and object invocations with rights checks
-  (D11, D12).
-- The exact invocation numbers, register convention, blocking semantics and error model are
-  **open**; they are owned by `native-abi.md` (planned) and the M9 kernel work, not by this
-  document.  The libc must not expose raw invocation numbers to C or Rust callers.
+- Native code does **not** use the IRIX `syscall` convention or number space.  The libc
+  is the only POSIX component that performs capability invocations, and it does so
+  through the native ABI crate (`native-abi`): typed `Channel` calls and object
+  invocations with rights checks (D11, D12).
+- The invocation numbers, register convention, blocking semantics and error model are
+  defined in [`native-abi.md`](native-abi.md) §4–§5 and owned by the M9 kernel work, not
+  by this document.  The libc must not expose raw invocation numbers to C or Rust callers.
 - The libc maps a native error to `-1`/`errno` (or to a pthread error number).  A capability
   failure is `EPERM`, `EACCES` or `EBADF` as appropriate; it is never a silent success.
 - Blocking calls block the calling task on a `Port` or `Channel`.  The POSIX cancellation
@@ -711,8 +712,8 @@ should implement unless review says otherwise.
 | 2 | Static or shared native libc | static per cell for v1; shared `libc.so.0` later | ABI | v1 |
 | 3 | TLS model | pthread keys for v1 (`has-thread-local: false`); ELF TLS later | ABI / loader | v1 |
 | 4 | Floating point | soft-float for v1; hardware FP is a separate kernel decision | kernel | v1 |
-| 5 | Cell image format and `CellStart` | `#![no_main]` cell with an SDK `entry!`; exact layout in `native-abi` | kernel / ABI | M9 |
-| 6 | Capability invocation numbers, trap and error model | define in `native-abi.md`; never expose them to C | kernel | M9 |
+| 5 | Cell image format and `CellStart` | `#![no_main]` cell with an SDK `entry!`; exact layout in [`native-abi.md`](native-abi.md) §3 | kernel / ABI | M9 |
+| 6 | Capability invocation numbers, trap and error model | defined in [`native-abi.md`](native-abi.md) §4–§5; never expose them to C | kernel | M9 |
 | 7 | Numeric `errno` values | Linux/asm-generic values, with the POSIX aliases | ABI | before 1.0 |
 | 8 | Exact `struct stat`, `pthread_*`, `sigaction`, `siginfo_t`, `ucontext_t` sizes | pin with layout assertions; recommended sizes in §4.1 | ABI | before 1.0 |
 | 9 | Panic model | `abort` for the first cell; `unwind` with the `unwinding` crate in phase 2 | ABI / toolchain | M9.5 |
