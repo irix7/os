@@ -1,0 +1,1197 @@
+--- a/src/unix/mod.rs
++++ b/src/unix/mod.rs
+@@ -2514,6 +2514,11 @@
+     } else if #[cfg(target_os = "nuttx")] {
+         mod nuttx;
+         pub use self::nuttx::*;
++    } else if #[cfg(target_os = "irix7")] {
++        // SPIKE: native IRIX 7 bindings, added out of tree for the std build
++        // spike.  See src/unix/irix7/mod.rs.
++        mod irix7;
++        pub use self::irix7::*;
+     } else {
+         // Unknown target_os
+     }
+--- a/src/unix/irix7/mod.rs
++++ b/src/unix/irix7/mod.rs
+@@ -0,0 +1,1151 @@
++//! Definitions for the native IRIX 7 ABI (`target_os = "irix7"`).
++//!
++//! # SPIKE — compile-only scaffolding
++//!
++//! This module exists so that Rust `std` can be **compiled** for
++//! `targets/mips3-sgi-irix7-native-n32.json`.  It is not a working ABI
++//! binding and must not be presented as one:
++//!
++//! * Every function is an `extern "C"` declaration with no implementation.
++//!   Nothing here has been linked, run or checked against a real native libc.
++//! * The constants are **provisional**.  The native libc specification
++//!   (`docs/spec/native-libc.md`) intentionally leaves the numeric `errno`
++//!   values and most constant sets open; this file uses the Linux/asm-generic
++//!   values recommended by §4.3 of that document, plus clean, self-consistent
++//!   values for the file and socket flags.  They are placeholders for the M9
++//!   `native-abi` crate, not an ABI decision.
++//! * The public struct layouts follow §4.1 of the specification (n32,
++//!   big-endian, ILP32, 8-byte-aligned 64-bit fields).  A handful of types
++//!   that `std` never touches are omitted rather than guessed at; see the
++//!   "Deliberately absent" note at the end of the file.
++//! * `errno` values, signal numbers and `W*` encodings have never been
++//!   compared with a C implementation, because none exists yet.
++//!
++//! The intended path is that the M9 `native-abi` crate generates this module
++//! (research report §7.6: one source of truth).  Until then, this file is the
++//! evidence that the `std` Unix PAL for `irix7` can be type-checked.
++
++use crate::prelude::*;
++// Types that the shared `unix/mod.rs` defines once and re-exports through the
++// glob at the end of that module.  They must be imported here, not redefined.
++use crate::{
++    DIR, cc_t, gid_t, in6_addr, in_addr_t, in_port_t, iovec, pid_t, pollfd, sighandler_t, timespec,
++    uid_t,
++};
++
++/// MIPS/IRIX `wchar_t` is a signed 32-bit integer.
++pub type wchar_t = c_int;
++
++/// Opaque placeholder for `sem_t`; POSIX semaphores are optional and outside
++/// the v1 profile (spec §3.2, `[SEM]` = no).
++pub type sem_t = *mut c_void;
++
++// ---------------------------------------------------------------------------
++// Fundamental types (spec §4.1)
++// ---------------------------------------------------------------------------
++
++pub type dev_t = u64;
++pub type ino_t = u64;
++pub type mode_t = u32;
++pub type nlink_t = u32;
++pub type off_t = i64;
++pub type blkcnt_t = i64;
++pub type blksize_t = i32;
++pub type time_t = i64;
++pub type suseconds_t = i32;
++pub type clock_t = i64;
++pub type clockid_t = i32;
++pub type timer_t = *mut c_void;
++pub type socklen_t = u32;
++pub type sa_family_t = u16;
++pub type id_t = u32;
++pub type rlim_t = u64;
++pub type fsblkcnt_t = u64;
++pub type fsfilcnt_t = u64;
++pub type nfds_t = u32;
++
++// 64-bit source-compatibility aliases.  Native `off_t`/`ino_t` are already
++// 64-bit, so these are aliases only (spec §3.4).
++pub type off64_t = off_t;
++pub type ino64_t = ino_t;
++pub type blkcnt64_t = blkcnt_t;
++
++pub type pthread_t = usize;
++pub type pthread_key_t = u32;
++pub type pthread_once_t = i32;
++
++// ---------------------------------------------------------------------------
++// Structs
++// ---------------------------------------------------------------------------
++
++s! {
++    pub struct in_addr {
++        pub s_addr: in_addr_t,
++    }
++
++    pub struct ip_mreq {
++        pub imr_multiaddr: in_addr,
++        pub imr_interface: in_addr,
++    }
++
++    pub struct sockaddr {
++        pub sa_family: sa_family_t,
++        pub sa_data: [c_char; 14],
++    }
++
++    pub struct sockaddr_in {
++        pub sin_family: sa_family_t,
++        pub sin_port: in_port_t,
++        pub sin_addr: in_addr,
++        pub sin_zero: [u8; 8],
++    }
++
++    pub struct sockaddr_in6 {
++        pub sin6_family: sa_family_t,
++        pub sin6_port: in_port_t,
++        pub sin6_flowinfo: u32,
++        pub sin6_addr: in6_addr,
++        pub sin6_scope_id: u32,
++    }
++
++    #[repr(align(8))]
++    pub struct sockaddr_storage {
++        pub ss_family: sa_family_t,
++        pub __ss_pad1: [u8; 6],
++        pub __ss_align: i64,
++        pub __ss_pad2: [u8; 112],
++    }
++
++    pub struct sockaddr_un {
++        pub sun_family: sa_family_t,
++        pub sun_path: [c_char; 108],
++    }
++
++    pub struct addrinfo {
++        pub ai_flags: c_int,
++        pub ai_family: c_int,
++        pub ai_socktype: c_int,
++        pub ai_protocol: c_int,
++        pub ai_addrlen: socklen_t,
++        pub ai_addr: *mut sockaddr,
++        pub ai_canonname: *mut c_char,
++        pub ai_next: *mut addrinfo,
++    }
++
++    pub struct msghdr {
++        pub msg_name: *mut c_void,
++        pub msg_namelen: socklen_t,
++        pub msg_iov: *mut iovec,
++        pub msg_iovlen: size_t,
++        pub msg_control: *mut c_void,
++        pub msg_controllen: size_t,
++        pub msg_flags: c_int,
++    }
++
++    pub struct cmsghdr {
++        pub cmsg_len: size_t,
++        pub cmsg_level: c_int,
++        pub cmsg_type: c_int,
++    }
++
++    pub struct stat {
++        pub st_dev: dev_t,
++        pub st_ino: ino_t,
++        pub st_mode: mode_t,
++        pub st_nlink: nlink_t,
++        pub st_uid: uid_t,
++        pub st_gid: gid_t,
++        pub st_rdev: dev_t,
++        pub st_size: off_t,
++        pub st_blksize: blksize_t,
++        pub st_blocks: blkcnt_t,
++        pub st_atim: timespec,
++        pub st_mtim: timespec,
++        pub st_ctim: timespec,
++        /// Reserved so the structure can grow without breaking the ABI
++        /// (spec §8: append-only only inside reserved space).
++        pub __st_spare: [u8; 16],
++    }
++
++    pub struct statvfs {
++        pub f_bsize: c_ulong,
++        pub f_frsize: c_ulong,
++        pub f_blocks: fsblkcnt_t,
++        pub f_bfree: fsblkcnt_t,
++        pub f_bavail: fsblkcnt_t,
++        pub f_files: fsfilcnt_t,
++        pub f_ffree: fsfilcnt_t,
++        pub f_favail: fsfilcnt_t,
++        pub f_fsid: c_ulong,
++        pub f_flag: c_ulong,
++        pub f_namemax: c_ulong,
++        pub __f_spare: [c_int; 6],
++    }
++
++    pub struct dirent {
++        pub d_ino: ino_t,
++        pub d_off: off_t,
++        pub d_reclen: u16,
++        /// Documented extension: POSIX-2024 only guarantees `d_type` in
++        /// `posix_dent` (spec §3.4, §4.1).
++        pub d_type: u8,
++        pub d_name: [c_char; 256],
++    }
++
++    pub struct posix_dent {
++        pub d_ino: ino_t,
++        pub d_off: off_t,
++        pub d_reclen: u16,
++        pub d_type: u8,
++        pub d_name: [c_char; 256],
++    }
++
++    pub struct passwd {
++        pub pw_name: *mut c_char,
++        pub pw_passwd: *mut c_char,
++        pub pw_uid: uid_t,
++        pub pw_gid: gid_t,
++        pub pw_gecos: *mut c_char,
++        pub pw_dir: *mut c_char,
++        pub pw_shell: *mut c_char,
++    }
++
++    pub struct utsname {
++        pub sysname: [c_char; 65],
++        pub nodename: [c_char; 65],
++        pub release: [c_char; 65],
++        pub version: [c_char; 65],
++        pub machine: [c_char; 65],
++        pub domainname: [c_char; 65],
++    }
++
++    pub struct termios {
++        pub c_iflag: tcflag_t,
++        pub c_oflag: tcflag_t,
++        pub c_cflag: tcflag_t,
++        pub c_lflag: tcflag_t,
++        pub c_line: cc_t,
++        pub c_cc: [cc_t; 32],
++        pub c_ispeed: speed_t,
++        pub c_ospeed: speed_t,
++    }
++
++    pub struct sigset_t {
++        pub __val: [u64; 16],
++    }
++
++    pub struct sigaction {
++        pub sa_sigaction: sighandler_t,
++        pub sa_mask: sigset_t,
++        pub sa_flags: c_int,
++        pub sa_restorer: Option<extern "C" fn()>,
++    }
++
++    pub struct stack_t {
++        pub ss_sp: *mut c_void,
++        pub ss_flags: c_int,
++        pub ss_size: size_t,
++    }
++
++    /// Opaque placeholder.  The real layout is open in the specification
++    /// (§4.1, "open: the signal payload union") and is not needed to compile
++    /// `std`, which uses `handler_none` for stack-overflow detection.
++    #[repr(align(8))]
++    pub struct siginfo_t {
++        pub __opaque: [u8; 128],
++    }
++
++    pub struct fd_set {
++        pub fds_bits: [u64; 16],
++    }
++
++    pub struct linger {
++        pub l_onoff: c_int,
++        pub l_linger: c_int,
++    }
++
++    // pthread types: opaque storage with pointer alignment.  Sizes are the
++    // "recommended 32 bytes" from spec §4.1 and remain open until the M9
++    // `native-abi` crate pins them.
++    #[repr(align(8))]
++    pub struct pthread_attr_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_mutex_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_mutexattr_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_cond_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_condattr_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_rwlock_t {
++        pub __size: [u8; 32],
++    }
++
++    #[repr(align(8))]
++    pub struct pthread_rwlockattr_t {
++        pub __size: [u8; 32],
++    }
++
++    pub struct tm {
++        pub tm_sec: c_int,
++        pub tm_min: c_int,
++        pub tm_hour: c_int,
++        pub tm_mday: c_int,
++        pub tm_mon: c_int,
++        pub tm_year: c_int,
++        pub tm_wday: c_int,
++        pub tm_yday: c_int,
++        pub tm_isdst: c_int,
++        pub tm_gmtoff: c_long,
++        pub tm_zone: *const c_char,
++    }
++
++    pub struct lconv {
++        pub decimal_point: *const c_char,
++        pub thousands_sep: *const c_char,
++        pub grouping: *const c_char,
++        pub int_curr_symbol: *const c_char,
++        pub currency_symbol: *const c_char,
++        pub mon_decimal_point: *const c_char,
++        pub mon_thousands_sep: *const c_char,
++        pub mon_grouping: *const c_char,
++        pub positive_sign: *const c_char,
++        pub negative_sign: *const c_char,
++        pub int_frac_digits: i8,
++        pub frac_digits: i8,
++        pub p_cs_precedes: i8,
++        pub p_sep_by_space: i8,
++        pub n_cs_precedes: i8,
++        pub n_sep_by_space: i8,
++        pub p_sign_posn: i8,
++        pub n_sign_posn: i8,
++        pub int_n_cs_precedes: i8,
++        pub int_n_sep_by_space: i8,
++        pub int_n_sign_posn: i8,
++        pub int_p_cs_precedes: i8,
++        pub int_p_sep_by_space: i8,
++        pub int_p_sign_posn: i8,
++    }
++
++    /// `dladdr` result.  Dynamic loading is post-v1 (spec §4.8); the type is
++    /// declared only because the shared Unix declarations mention it.
++    pub struct Dl_info {
++        pub dli_fname: *const c_char,
++        pub dli_fbase: *mut c_void,
++        pub dli_sname: *const c_char,
++        pub dli_saddr: *mut c_void,
++    }
++}
++
++// `tcflag_t`/`speed_t` are used by `termios` above.
++pub type tcflag_t = u32;
++pub type speed_t = u32;
++
++// ---------------------------------------------------------------------------
++// Constants
++// ---------------------------------------------------------------------------
++
++// errno — provisional Linux/asm-generic values (spec §4.3).
++pub const EPERM: c_int = 1;
++pub const ENOENT: c_int = 2;
++pub const ESRCH: c_int = 3;
++pub const EINTR: c_int = 4;
++pub const EIO: c_int = 5;
++pub const ENXIO: c_int = 6;
++pub const E2BIG: c_int = 7;
++pub const ENOEXEC: c_int = 8;
++pub const EBADF: c_int = 9;
++pub const ECHILD: c_int = 10;
++pub const EAGAIN: c_int = 11;
++pub const EWOULDBLOCK: c_int = EAGAIN;
++pub const ENOMEM: c_int = 12;
++pub const EACCES: c_int = 13;
++pub const EFAULT: c_int = 14;
++pub const ENOTBLK: c_int = 15;
++pub const EBUSY: c_int = 16;
++pub const EEXIST: c_int = 17;
++pub const EXDEV: c_int = 18;
++pub const ENODEV: c_int = 19;
++pub const ENOTDIR: c_int = 20;
++pub const EISDIR: c_int = 21;
++pub const EINVAL: c_int = 22;
++pub const ENFILE: c_int = 23;
++pub const EMFILE: c_int = 24;
++pub const ENOTTY: c_int = 25;
++pub const ETXTBSY: c_int = 26;
++pub const EFBIG: c_int = 27;
++pub const ENOSPC: c_int = 28;
++pub const ESPIPE: c_int = 29;
++pub const EROFS: c_int = 30;
++pub const EMLINK: c_int = 31;
++pub const EPIPE: c_int = 32;
++pub const EDOM: c_int = 33;
++pub const ERANGE: c_int = 34;
++pub const EDEADLK: c_int = 35;
++pub const ENAMETOOLONG: c_int = 36;
++pub const ENOLCK: c_int = 37;
++pub const ENOSYS: c_int = 38;
++pub const ENOTEMPTY: c_int = 39;
++pub const ELOOP: c_int = 40;
++pub const ENOMSG: c_int = 42;
++pub const EIDRM: c_int = 43;
++pub const EOVERFLOW: c_int = 75;
++pub const EMSGSIZE: c_int = 90;
++pub const EPROTOTYPE: c_int = 91;
++pub const ENOPROTOOPT: c_int = 92;
++pub const EPROTONOSUPPORT: c_int = 93;
++pub const EOPNOTSUPP: c_int = 95;
++pub const ENOTSUP: c_int = EOPNOTSUPP;
++pub const EAFNOSUPPORT: c_int = 97;
++pub const EADDRINUSE: c_int = 98;
++pub const EADDRNOTAVAIL: c_int = 99;
++pub const ENETDOWN: c_int = 100;
++pub const ENETUNREACH: c_int = 101;
++pub const ENETRESET: c_int = 102;
++pub const ECONNABORTED: c_int = 103;
++pub const ECONNRESET: c_int = 104;
++pub const ENOBUFS: c_int = 105;
++pub const EISCONN: c_int = 106;
++pub const ENOTCONN: c_int = 107;
++pub const ETIMEDOUT: c_int = 110;
++pub const ECONNREFUSED: c_int = 111;
++pub const EHOSTDOWN: c_int = 112;
++pub const EHOSTUNREACH: c_int = 113;
++pub const EALREADY: c_int = 114;
++pub const EINPROGRESS: c_int = 115;
++pub const ESTALE: c_int = 116;
++pub const EDQUOT: c_int = 122;
++
++// open(2) / fcntl(2) — provisional, self-consistent values.  The specification
++// does not pin them; M9 must.
++pub const O_RDONLY: c_int = 0;
++pub const O_WRONLY: c_int = 1;
++pub const O_RDWR: c_int = 2;
++pub const O_ACCMODE: c_int = 0o3;
++pub const O_CREAT: c_int = 0o100;
++pub const O_EXCL: c_int = 0o200;
++pub const O_NOCTTY: c_int = 0o400;
++pub const O_TRUNC: c_int = 0o1000;
++pub const O_APPEND: c_int = 0o2000;
++pub const O_NONBLOCK: c_int = 0o4000;
++pub const O_DSYNC: c_int = 0o10000;
++pub const O_ASYNC: c_int = 0o20000;
++pub const O_DIRECT: c_int = 0o40000;
++pub const O_LARGEFILE: c_int = 0o100000;
++pub const O_DIRECTORY: c_int = 0o200000;
++pub const O_NOFOLLOW: c_int = 0o400000;
++pub const O_NOATIME: c_int = 0o1000000;
++pub const O_CLOEXEC: c_int = 0o2000000;
++/// POSIX-2024 `O_CLOFORK` (spec §5.1.2).
++pub const O_CLOFORK: c_int = 0o4000000;
++pub const O_SYNC: c_int = 0o4010000;
++pub const O_PATH: c_int = 0o10000000;
++
++pub const F_DUPFD: c_int = 0;
++pub const F_GETFD: c_int = 1;
++pub const F_SETFD: c_int = 2;
++pub const F_GETFL: c_int = 3;
++pub const F_SETFL: c_int = 4;
++pub const F_GETLK: c_int = 5;
++pub const F_SETLK: c_int = 6;
++pub const F_SETLKW: c_int = 7;
++pub const F_DUPFD_CLOEXEC: c_int = 1030;
++
++pub const FD_CLOEXEC: c_int = 1;
++pub const FD_CLOFORK: c_int = 2;
++
++pub const AT_FDCWD: c_int = -100;
++pub const AT_SYMLINK_NOFOLLOW: c_int = 0x100;
++pub const AT_REMOVEDIR: c_int = 0x200;
++pub const AT_SYMLINK_FOLLOW: c_int = 0x400;
++pub const AT_EACCESS: c_int = 0x200;
++pub const AT_EMPTY_PATH: c_int = 0x1000;
++
++pub const UTIME_NOW: c_long = (1 << 30) - 1;
++pub const UTIME_OMIT: c_long = (1 << 30) - 2;
++
++pub const SEEK_SET: c_int = 0;
++pub const SEEK_CUR: c_int = 1;
++pub const SEEK_END: c_int = 2;
++pub const SEEK_DATA: c_int = 3;
++pub const SEEK_HOLE: c_int = 4;
++
++pub const S_IFMT: mode_t = 0o170000;
++pub const S_IFREG: mode_t = 0o100000;
++pub const S_IFDIR: mode_t = 0o040000;
++pub const S_IFCHR: mode_t = 0o020000;
++pub const S_IFBLK: mode_t = 0o060000;
++pub const S_IFIFO: mode_t = 0o010000;
++pub const S_IFLNK: mode_t = 0o120000;
++pub const S_IFSOCK: mode_t = 0o140000;
++pub const S_IRWXU: mode_t = 0o700;
++pub const S_IRUSR: mode_t = 0o400;
++pub const S_IWUSR: mode_t = 0o200;
++pub const S_IXUSR: mode_t = 0o100;
++pub const S_IRWXG: mode_t = 0o070;
++pub const S_IRGRP: mode_t = 0o040;
++pub const S_IWGRP: mode_t = 0o020;
++pub const S_IXGRP: mode_t = 0o010;
++pub const S_IRWXO: mode_t = 0o007;
++pub const S_IROTH: mode_t = 0o004;
++pub const S_IWOTH: mode_t = 0o002;
++pub const S_IXOTH: mode_t = 0o001;
++
++pub const DT_UNKNOWN: u8 = 0;
++pub const DT_FIFO: u8 = 1;
++pub const DT_CHR: u8 = 2;
++pub const DT_DIR: u8 = 4;
++pub const DT_BLK: u8 = 6;
++pub const DT_REG: u8 = 8;
++pub const DT_LNK: u8 = 10;
++pub const DT_SOCK: u8 = 12;
++
++pub const STDIN_FILENO: c_int = 0;
++pub const STDOUT_FILENO: c_int = 1;
++pub const STDERR_FILENO: c_int = 2;
++
++pub const EXIT_FAILURE: c_int = 1;
++pub const EXIT_SUCCESS: c_int = 0;
++
++// ioctl requests used by std and by the `terminal_size` crate.  `ioctl` is a
++// documented extension in the native profile (spec §3.4); `posix_devctl` and
++// `tcgetwinsize` are the native calls.
++pub const FIOCLEX: c_ulong = 0x2000_0001;
++pub const FIONBIO: c_ulong = 0x2000_0002;
++pub const FIONCLEX: c_ulong = 0x2000_0003;
++pub const TIOCGWINSZ: c_ulong = 0x2000_0004;
++
++// Signals — provisional Linux/asm-generic numbers (the spec does not pin the
++// native signal numbers; they are open with the capability port model).
++pub const SIGHUP: c_int = 1;
++pub const SIGINT: c_int = 2;
++pub const SIGQUIT: c_int = 3;
++pub const SIGILL: c_int = 4;
++pub const SIGTRAP: c_int = 5;
++pub const SIGABRT: c_int = 6;
++pub const SIGBUS: c_int = 7;
++pub const SIGFPE: c_int = 8;
++pub const SIGKILL: c_int = 9;
++pub const SIGUSR1: c_int = 10;
++pub const SIGSEGV: c_int = 11;
++pub const SIGUSR2: c_int = 12;
++pub const SIGPIPE: c_int = 13;
++pub const SIGALRM: c_int = 14;
++pub const SIGTERM: c_int = 15;
++pub const SIGCHLD: c_int = 17;
++pub const SIGCONT: c_int = 18;
++pub const SIGSTOP: c_int = 19;
++pub const SIGTSTP: c_int = 20;
++pub const SIGTTIN: c_int = 21;
++pub const SIGTTOU: c_int = 22;
++pub const SIGURG: c_int = 23;
++pub const SIGXCPU: c_int = 24;
++pub const SIGXFSZ: c_int = 25;
++pub const SIGVTALRM: c_int = 26;
++pub const SIGPROF: c_int = 27;
++pub const SIGWINCH: c_int = 28;
++pub const SIGIO: c_int = 29;
++pub const SIGSYS: c_int = 31;
++
++pub const SA_NOCLDSTOP: c_int = 1;
++pub const SA_NOCLDWAIT: c_int = 2;
++pub const SA_SIGINFO: c_int = 4;
++pub const SA_ONSTACK: c_int = 0x0800_0000;
++pub const SA_RESTART: c_int = 0x1000_0000;
++pub const SA_NODEFER: c_int = 0x4000_0000;
++pub const SA_RESETHAND: c_int = 0x8000_0000;
++
++pub const SIG_BLOCK: c_int = 0;
++pub const SIG_UNBLOCK: c_int = 1;
++pub const SIG_SETMASK: c_int = 2;
++
++pub const SS_ONSTACK: c_int = 1;
++pub const SS_DISABLE: c_int = 2;
++
++pub const WNOHANG: c_int = 1;
++pub const WUNTRACED: c_int = 2;
++pub const WCONTINUED: c_int = 8;
++
++// waitpid/exit-status and signal encodings (spec: open; POSIX-shaped).
++safe_f! {
++    pub const safe fn WIFEXITED(status: c_int) -> bool {
++        (status & 0o177) == 0
++    }
++
++    pub const safe fn WEXITSTATUS(status: c_int) -> c_int {
++        (status >> 8) & 0xff
++    }
++
++    pub const safe fn WIFSIGNALED(status: c_int) -> bool {
++        (status & 0o177) != 0 && (status & 0o177) != 0o177
++    }
++
++    pub const safe fn WTERMSIG(status: c_int) -> c_int {
++        status & 0o177
++    }
++
++    pub const safe fn WCOREDUMP(status: c_int) -> bool {
++        (status & 0o200) != 0
++    }
++
++    pub const safe fn WIFSTOPPED(status: c_int) -> bool {
++        (status & 0xff) == 0o177
++    }
++
++    pub const safe fn WSTOPSIG(status: c_int) -> c_int {
++        WEXITSTATUS(status)
++    }
++
++    pub const safe fn WIFCONTINUED(status: c_int) -> bool {
++        status == 0xffff
++    }
++}
++
++// Clocks.
++pub const CLOCK_REALTIME: clockid_t = 0;
++pub const CLOCK_MONOTONIC: clockid_t = 1;
++pub const CLOCK_PROCESS_CPUTIME_ID: clockid_t = 2;
++pub const CLOCK_THREAD_CPUTIME_ID: clockid_t = 3;
++
++// Threads.
++pub const PTHREAD_MUTEX_NORMAL: c_int = 0;
++pub const PTHREAD_MUTEX_RECURSIVE: c_int = 1;
++pub const PTHREAD_MUTEX_ERRORCHECK: c_int = 2;
++pub const PTHREAD_MUTEX_INITIALIZER: pthread_mutex_t = pthread_mutex_t { __size: [0; 32] };
++pub const PTHREAD_COND_INITIALIZER: pthread_cond_t = pthread_cond_t { __size: [0; 32] };
++pub const PTHREAD_RWLOCK_INITIALIZER: pthread_rwlock_t = pthread_rwlock_t { __size: [0; 32] };
++pub const PTHREAD_STACK_MIN: size_t = 16384;
++pub const PTHREAD_KEYS_MAX: c_int = 128;
++
++// sysconf.
++pub const _SC_ARG_MAX: c_int = 0;
++pub const _SC_CHILD_MAX: c_int = 1;
++pub const _SC_CLK_TCK: c_int = 2;
++pub const _SC_OPEN_MAX: c_int = 4;
++pub const _SC_PAGESIZE: c_int = 30;
++pub const _SC_PAGE_SIZE: c_int = _SC_PAGESIZE;
++pub const _SC_NPROCESSORS_ONLN: c_int = 84;
++pub const _SC_HOST_NAME_MAX: c_int = 180;
++pub const _SC_GETPW_R_SIZE_MAX: c_int = 70;
++
++// Sockets.
++pub const AF_UNSPEC: c_int = 0;
++pub const AF_UNIX: c_int = 1;
++pub const AF_LOCAL: c_int = AF_UNIX;
++pub const AF_INET: c_int = 2;
++pub const AF_INET6: c_int = 10;
++
++pub const SOCK_STREAM: c_int = 1;
++pub const SOCK_DGRAM: c_int = 2;
++pub const SOCK_RAW: c_int = 3;
++pub const SOCK_SEQPACKET: c_int = 5;
++/// POSIX-2024 atomic-creation flags (spec §5.1.2).
++pub const SOCK_CLOEXEC: c_int = 0o2000000;
++pub const SOCK_CLOFORK: c_int = 0o4000000;
++pub const SOCK_NONBLOCK: c_int = 0o4000;
++
++pub const SOL_SOCKET: c_int = 1;
++pub const SO_DEBUG: c_int = 1;
++pub const SO_REUSEADDR: c_int = 2;
++pub const SO_TYPE: c_int = 3;
++pub const SO_ERROR: c_int = 4;
++pub const SO_DONTROUTE: c_int = 5;
++pub const SO_BROADCAST: c_int = 6;
++pub const SO_SNDBUF: c_int = 7;
++pub const SO_RCVBUF: c_int = 8;
++pub const SO_KEEPALIVE: c_int = 9;
++pub const SO_OOBINLINE: c_int = 10;
++pub const SO_LINGER: c_int = 13;
++pub const SO_REUSEPORT: c_int = 15;
++pub const SO_RCVTIMEO: c_int = 20;
++pub const SO_SNDTIMEO: c_int = 21;
++pub const SO_ACCEPTCONN: c_int = 30;
++
++pub const SOMAXCONN: c_int = 128;
++
++pub const MSG_OOB: c_int = 1;
++pub const MSG_PEEK: c_int = 2;
++pub const MSG_DONTROUTE: c_int = 4;
++pub const MSG_WAITALL: c_int = 0x100;
++pub const MSG_NOSIGNAL: c_int = 0x4000;
++pub const MSG_EOR: c_int = 0x80;
++pub const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
++
++pub const SHUT_RD: c_int = 0;
++pub const SHUT_WR: c_int = 1;
++pub const SHUT_RDWR: c_int = 2;
++
++pub const IPPROTO_IP: c_int = 0;
++pub const IPPROTO_TCP: c_int = 6;
++pub const IPPROTO_UDP: c_int = 17;
++pub const IPPROTO_IPV6: c_int = 41;
++
++pub const IP_TTL: c_int = 2;
++pub const IP_MULTICAST_IF: c_int = 32;
++pub const IP_MULTICAST_TTL: c_int = 33;
++pub const IP_MULTICAST_LOOP: c_int = 34;
++pub const IP_ADD_MEMBERSHIP: c_int = 35;
++pub const IP_DROP_MEMBERSHIP: c_int = 36;
++
++pub const IPV6_V6ONLY: c_int = 26;
++pub const IPV6_MULTICAST_LOOP: c_int = 19;
++// Aliases used by `std`'s generic socket-option path on Unix (Linux/BSD spelling).
++pub const IPV6_ADD_MEMBERSHIP: c_int = IPV6_JOIN_GROUP;
++pub const IPV6_DROP_MEMBERSHIP: c_int = IPV6_LEAVE_GROUP;
++pub const IPV6_MULTICAST_HOPS: c_int = 18;
++pub const IPV6_JOIN_GROUP: c_int = 20;
++pub const IPV6_LEAVE_GROUP: c_int = 21;
++
++pub const TCP_NODELAY: c_int = 1;
++
++pub const POLLIN: c_short = 0x001;
++pub const POLLPRI: c_short = 0x002;
++pub const POLLOUT: c_short = 0x004;
++pub const POLLERR: c_short = 0x008;
++pub const POLLHUP: c_short = 0x010;
++pub const POLLNVAL: c_short = 0x020;
++
++pub const EAI_AGAIN: c_int = -3;
++pub const EAI_BADFLAGS: c_int = -1;
++pub const EAI_FAIL: c_int = -4;
++pub const EAI_FAMILY: c_int = -6;
++pub const EAI_MEMORY: c_int = -10;
++pub const EAI_NONAME: c_int = -2;
++pub const EAI_SERVICE: c_int = -8;
++pub const EAI_SOCKTYPE: c_int = -7;
++pub const EAI_SYSTEM: c_int = -11;
++
++pub const RLIMIT_CPU: c_int = 0;
++pub const RLIMIT_FSIZE: c_int = 1;
++pub const RLIMIT_DATA: c_int = 2;
++pub const RLIMIT_STACK: c_int = 3;
++pub const RLIMIT_NOFILE: c_int = 7;
++pub const RLIM_INFINITY: rlim_t = !0;
++
++// mmap (used by the stack-overflow handler on other targets; declared here for
++// completeness, not reached by the current `std` build for `irix7`).
++pub const PROT_NONE: c_int = 0;
++pub const PROT_READ: c_int = 1;
++pub const PROT_WRITE: c_int = 2;
++pub const PROT_EXEC: c_int = 4;
++pub const MAP_SHARED: c_int = 1;
++pub const MAP_PRIVATE: c_int = 2;
++pub const MAP_FIXED: c_int = 0x10;
++pub const MAP_ANON: c_int = 0x20;
++pub const MAP_ANONYMOUS: c_int = MAP_ANON;
++pub const MAP_FAILED: *mut c_void = !0 as *mut c_void;
++
++// ---------------------------------------------------------------------------
++// Functions
++// ---------------------------------------------------------------------------
++
++extern "C" {
++    // errno.h
++    pub fn __errno_location() -> *mut c_int;
++
++    // string.h
++    pub fn strnlen(s: *const c_char, maxlen: size_t) -> size_t;
++    pub fn strerror(errnum: c_int) -> *mut c_char;
++    pub fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: size_t) -> c_int;
++
++    // stdlib.h
++    pub fn malloc(size: size_t) -> *mut c_void;
++    pub fn calloc(nmemb: size_t, size: size_t) -> *mut c_void;
++    pub fn realloc(ptr: *mut c_void, size: size_t) -> *mut c_void;
++    pub fn free(ptr: *mut c_void);
++    pub fn posix_memalign(memptr: *mut *mut c_void, align: size_t, size: size_t) -> c_int;
++    pub fn abort() -> !;
++    pub fn exit(status: c_int) -> !;
++    pub fn getenv(name: *const c_char) -> *mut c_char;
++    pub fn setenv(name: *const c_char, value: *const c_char, overwrite: c_int) -> c_int;
++    pub fn unsetenv(name: *const c_char) -> c_int;
++
++    // unistd.h
++    pub fn _exit(status: c_int) -> !;
++    pub fn read(fd: c_int, buf: *mut c_void, count: size_t) -> ssize_t;
++    pub fn write(fd: c_int, buf: *const c_void, count: size_t) -> ssize_t;
++    pub fn pread(fd: c_int, buf: *mut c_void, count: size_t, offset: off_t) -> ssize_t;
++    pub fn pwrite(fd: c_int, buf: *const c_void, count: size_t, offset: off_t) -> ssize_t;
++    pub fn readv(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
++    pub fn writev(fd: c_int, iov: *const iovec, iovcnt: c_int) -> ssize_t;
++    pub fn preadv(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
++    pub fn pwritev(fd: c_int, iov: *const iovec, iovcnt: c_int, offset: off_t) -> ssize_t;
++    pub fn close(fd: c_int) -> c_int;
++    pub fn posix_close(fd: c_int, flag: c_int) -> c_int;
++    pub fn dup(fd: c_int) -> c_int;
++    pub fn dup2(oldfd: c_int, newfd: c_int) -> c_int;
++    pub fn dup3(oldfd: c_int, newfd: c_int, flags: c_int) -> c_int;
++    pub fn lseek(fd: c_int, offset: off_t, whence: c_int) -> off_t;
++    pub fn fsync(fd: c_int) -> c_int;
++    pub fn fdatasync(fd: c_int) -> c_int;
++    pub fn ftruncate(fd: c_int, length: off_t) -> c_int;
++    pub fn getpid() -> pid_t;
++    pub fn getppid() -> pid_t;
++    pub fn getuid() -> uid_t;
++    pub fn geteuid() -> uid_t;
++    pub fn getgid() -> gid_t;
++    pub fn getegid() -> gid_t;
++    pub fn setuid(uid: uid_t) -> c_int;
++    pub fn setgid(gid: gid_t) -> c_int;
++    pub fn setgroups(ngroups: size_t, grouplist: *const gid_t) -> c_int;
++    pub fn fork() -> pid_t;
++    pub fn _Fork() -> pid_t;
++    pub fn execve(
++        path: *const c_char,
++        argv: *const *const c_char,
++        envp: *const *const c_char,
++    ) -> c_int;
++    pub fn execvp(file: *const c_char, argv: *const *const c_char) -> c_int;
++    pub fn pipe(fds: *mut c_int) -> c_int;
++    pub fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
++    pub fn isatty(fd: c_int) -> c_int;
++    pub fn ttyname(fd: c_int) -> *mut c_char;
++    pub fn sysconf(name: c_int) -> c_long;
++    pub fn getcwd(buf: *mut c_char, size: size_t) -> *mut c_char;
++    pub fn chdir(path: *const c_char) -> c_int;
++    pub fn fchdir(fd: c_int) -> c_int;
++    pub fn chroot(path: *const c_char) -> c_int;
++    pub fn getentropy(buf: *mut c_void, buflen: size_t) -> c_int;
++    pub fn gethostname(name: *mut c_char, len: size_t) -> c_int;
++    pub fn sched_yield() -> c_int;
++    pub fn nanosleep(req: *const timespec, rem: *mut timespec) -> c_int;
++    pub fn clock_gettime(clock_id: clockid_t, tp: *mut timespec) -> c_int;
++    pub fn clock_getres(clock_id: clockid_t, res: *mut timespec) -> c_int;
++    pub fn uname(buf: *mut utsname) -> c_int;
++
++    /// Documented extension (spec §3.4): the loader-provided executable path
++    /// used by `std::env::current_exe`; `/proc/self/exe` is not required.
++    pub fn getexecname() -> *const c_char;
++
++    // pwd.h
++    pub fn getpwuid_r(
++        uid: uid_t,
++        pwd: *mut passwd,
++        buf: *mut c_char,
++        buflen: size_t,
++        result: *mut *mut passwd,
++    ) -> c_int;
++
++    // fcntl.h
++    pub fn open(path: *const c_char, oflag: c_int, ...) -> c_int;
++    pub fn openat(dirfd: c_int, path: *const c_char, oflag: c_int, ...) -> c_int;
++    pub fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
++
++    // sys/stat.h
++    pub fn stat(path: *const c_char, buf: *mut stat) -> c_int;
++    pub fn fstat(fd: c_int, buf: *mut stat) -> c_int;
++    pub fn lstat(path: *const c_char, buf: *mut stat) -> c_int;
++    pub fn fstatat(dirfd: c_int, path: *const c_char, buf: *mut stat, flags: c_int) -> c_int;
++    pub fn chmod(path: *const c_char, mode: mode_t) -> c_int;
++    pub fn fchmod(fd: c_int, mode: mode_t) -> c_int;
++    pub fn fchmodat(dirfd: c_int, path: *const c_char, mode: mode_t, flags: c_int) -> c_int;
++    pub fn mkdir(path: *const c_char, mode: mode_t) -> c_int;
++    pub fn mkdirat(dirfd: c_int, path: *const c_char, mode: mode_t) -> c_int;
++    pub fn mkfifo(path: *const c_char, mode: mode_t) -> c_int;
++    pub fn umask(mask: mode_t) -> mode_t;
++    pub fn statvfs(path: *const c_char, buf: *mut statvfs) -> c_int;
++    pub fn fstatvfs(fd: c_int, buf: *mut statvfs) -> c_int;
++
++    // unistd / fcntl file operations
++    pub fn unlink(path: *const c_char) -> c_int;
++    pub fn unlinkat(dirfd: c_int, path: *const c_char, flags: c_int) -> c_int;
++    pub fn rmdir(path: *const c_char) -> c_int;
++    pub fn rename(old: *const c_char, new: *const c_char) -> c_int;
++    pub fn renameat(
++        olddirfd: c_int,
++        oldpath: *const c_char,
++        newdirfd: c_int,
++        newpath: *const c_char,
++    ) -> c_int;
++    pub fn link(old: *const c_char, new: *const c_char) -> c_int;
++    pub fn linkat(
++        olddirfd: c_int,
++        oldpath: *const c_char,
++        newdirfd: c_int,
++        newpath: *const c_char,
++        flags: c_int,
++    ) -> c_int;
++    pub fn symlink(target: *const c_char, linkpath: *const c_char) -> c_int;
++    pub fn symlinkat(target: *const c_char, newdirfd: c_int, linkpath: *const c_char) -> c_int;
++    pub fn readlink(path: *const c_char, buf: *mut c_char, bufsiz: size_t) -> ssize_t;
++    pub fn readlinkat(
++        dirfd: c_int,
++        path: *const c_char,
++        buf: *mut c_char,
++        bufsiz: size_t,
++    ) -> ssize_t;
++    pub fn chown(path: *const c_char, owner: uid_t, group: gid_t) -> c_int;
++    pub fn fchown(fd: c_int, owner: uid_t, group: gid_t) -> c_int;
++    pub fn lchown(path: *const c_char, owner: uid_t, group: gid_t) -> c_int;
++    pub fn fchownat(
++        dirfd: c_int,
++        path: *const c_char,
++        owner: uid_t,
++        group: gid_t,
++        flags: c_int,
++    ) -> c_int;
++    pub fn access(path: *const c_char, amode: c_int) -> c_int;
++    pub fn faccessat(dirfd: c_int, path: *const c_char, amode: c_int, flags: c_int) -> c_int;
++    pub fn realpath(path: *const c_char, resolved: *mut c_char) -> *mut c_char;
++    pub fn futimens(fd: c_int, times: *const timespec) -> c_int;
++    pub fn utimensat(
++        dirfd: c_int,
++        path: *const c_char,
++        times: *const timespec,
++        flags: c_int,
++    ) -> c_int;
++
++    // dirent.h
++    pub fn opendir(name: *const c_char) -> *mut DIR;
++    pub fn fdopendir(fd: c_int) -> *mut DIR;
++    pub fn dirfd(dirp: *mut DIR) -> c_int;
++    pub fn readdir(dirp: *mut DIR) -> *mut dirent;
++    pub fn readdir_r(
++        dirp: *mut DIR,
++        entry: *mut dirent,
++        result: *mut *mut dirent,
++    ) -> c_int;
++    pub fn closedir(dirp: *mut DIR) -> c_int;
++    pub fn posix_getdents(fd: c_int, buf: *mut c_void, len: size_t, flags: c_int) -> ssize_t;
++
++    // termios.h
++    pub fn tcgetattr(fd: c_int, termios_p: *mut termios) -> c_int;
++    pub fn tcsetattr(fd: c_int, optional_actions: c_int, termios_p: *const termios) -> c_int;
++
++    // ioctl — documented extension (spec §3.4)
++    pub fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
++
++    // signal.h
++    pub fn signal(sig: c_int, handler: sighandler_t) -> sighandler_t;
++    pub fn raise(sig: c_int) -> c_int;
++    pub fn kill(pid: pid_t, sig: c_int) -> c_int;
++    pub fn killpg(pgrp: pid_t, sig: c_int) -> c_int;
++    pub fn sigaction(sig: c_int, act: *const sigaction, oact: *mut sigaction) -> c_int;
++    pub fn sigemptyset(set: *mut sigset_t) -> c_int;
++    pub fn sigfillset(set: *mut sigset_t) -> c_int;
++    pub fn sigaddset(set: *mut sigset_t, sig: c_int) -> c_int;
++    pub fn sigdelset(set: *mut sigset_t, sig: c_int) -> c_int;
++    pub fn sigismember(set: *const sigset_t, sig: c_int) -> c_int;
++    pub fn sigprocmask(how: c_int, set: *const sigset_t, oset: *mut sigset_t) -> c_int;
++    pub fn sigaltstack(ss: *const stack_t, oss: *mut stack_t) -> c_int;
++
++    // sys/wait.h
++    pub fn wait(status: *mut c_int) -> pid_t;
++    pub fn waitpid(pid: pid_t, status: *mut c_int, options: c_int) -> pid_t;
++    pub fn waitid(idtype: u32, id: u32, infop: *mut siginfo_t, options: c_int) -> c_int;
++
++    // posix_spawn (spec §5.3; `[SPN]`)
++    pub fn posix_spawn(
++        pid: *mut pid_t,
++        path: *const c_char,
++        file_actions: *const c_void,
++        attrp: *const c_void,
++        argv: *const *const c_char,
++        envp: *const *const c_char,
++    ) -> c_int;
++    pub fn posix_spawnp(
++        pid: *mut pid_t,
++        file: *const c_char,
++        file_actions: *const c_void,
++        attrp: *const c_void,
++        argv: *const *const c_char,
++        envp: *const *const c_char,
++    ) -> c_int;
++
++    // pthread.h
++    pub fn pthread_create(
++        thread: *mut pthread_t,
++        attr: *const pthread_attr_t,
++        start_routine: extern "C" fn(*mut c_void) -> *mut c_void,
++        arg: *mut c_void,
++    ) -> c_int;
++    pub fn pthread_join(thread: pthread_t, retval: *mut *mut c_void) -> c_int;
++    pub fn pthread_detach(thread: pthread_t) -> c_int;
++    pub fn pthread_self() -> pthread_t;
++    pub fn pthread_equal(t1: pthread_t, t2: pthread_t) -> c_int;
++    pub fn pthread_exit(retval: *mut c_void) -> !;
++    pub fn pthread_attr_init(attr: *mut pthread_attr_t) -> c_int;
++    pub fn pthread_attr_destroy(attr: *mut pthread_attr_t) -> c_int;
++    pub fn pthread_attr_setstacksize(attr: *mut pthread_attr_t, stacksize: size_t) -> c_int;
++    pub fn pthread_attr_getstacksize(attr: *const pthread_attr_t, stacksize: *mut size_t) -> c_int;
++    pub fn pthread_attr_setguardsize(attr: *mut pthread_attr_t, guardsize: size_t) -> c_int;
++    pub fn pthread_attr_getguardsize(attr: *const pthread_attr_t, guardsize: *mut size_t) -> c_int;
++    pub fn pthread_attr_setdetachstate(attr: *mut pthread_attr_t, state: c_int) -> c_int;
++    pub fn pthread_key_create(
++        key: *mut pthread_key_t,
++        destructor: Option<extern "C" fn(*mut c_void)>,
++    ) -> c_int;
++    pub fn pthread_key_delete(key: pthread_key_t) -> c_int;
++    pub fn pthread_getspecific(key: pthread_key_t) -> *mut c_void;
++    pub fn pthread_setspecific(key: pthread_key_t, value: *const c_void) -> c_int;
++    pub fn pthread_mutex_init(mutex: *mut pthread_mutex_t, attr: *const pthread_mutexattr_t)
++        -> c_int;
++    pub fn pthread_mutex_destroy(mutex: *mut pthread_mutex_t) -> c_int;
++    pub fn pthread_mutex_lock(mutex: *mut pthread_mutex_t) -> c_int;
++    pub fn pthread_mutex_trylock(mutex: *mut pthread_mutex_t) -> c_int;
++    pub fn pthread_mutex_unlock(mutex: *mut pthread_mutex_t) -> c_int;
++    pub fn pthread_mutexattr_init(attr: *mut pthread_mutexattr_t) -> c_int;
++    pub fn pthread_mutexattr_destroy(attr: *mut pthread_mutexattr_t) -> c_int;
++    pub fn pthread_mutexattr_settype(attr: *mut pthread_mutexattr_t, kind: c_int) -> c_int;
++    pub fn pthread_cond_init(cond: *mut pthread_cond_t, attr: *const pthread_condattr_t) -> c_int;
++    pub fn pthread_cond_destroy(cond: *mut pthread_cond_t) -> c_int;
++    pub fn pthread_cond_signal(cond: *mut pthread_cond_t) -> c_int;
++    pub fn pthread_cond_broadcast(cond: *mut pthread_cond_t) -> c_int;
++    pub fn pthread_cond_wait(cond: *mut pthread_cond_t, mutex: *mut pthread_mutex_t) -> c_int;
++    pub fn pthread_cond_timedwait(
++        cond: *mut pthread_cond_t,
++        mutex: *mut pthread_mutex_t,
++        abstime: *const timespec,
++    ) -> c_int;
++    pub fn pthread_condattr_init(attr: *mut pthread_condattr_t) -> c_int;
++    pub fn pthread_condattr_destroy(attr: *mut pthread_condattr_t) -> c_int;
++    pub fn pthread_condattr_setclock(attr: *mut pthread_condattr_t, clock_id: clockid_t) -> c_int;
++    /// POSIX-2024 (research report §5.1.2); used by the recommended `std` patch.
++    pub fn pthread_cond_clockwait(
++        cond: *mut pthread_cond_t,
++        mutex: *mut pthread_mutex_t,
++        clock_id: clockid_t,
++        abstime: *const timespec,
++    ) -> c_int;
++    pub fn pthread_mutex_clocklock(
++        mutex: *mut pthread_mutex_t,
++        clock_id: clockid_t,
++        abstime: *const timespec,
++    ) -> c_int;
++    pub fn pthread_rwlock_init(lock: *mut pthread_rwlock_t, attr: *const pthread_rwlockattr_t)
++        -> c_int;
++    pub fn pthread_rwlock_destroy(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlock_rdlock(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlock_wrlock(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlock_tryrdlock(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlock_trywrlock(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlock_unlock(lock: *mut pthread_rwlock_t) -> c_int;
++    pub fn pthread_rwlockattr_init(attr: *mut pthread_rwlockattr_t) -> c_int;
++    pub fn pthread_rwlockattr_destroy(attr: *mut pthread_rwlockattr_t) -> c_int;
++    pub fn pthread_sigmask(how: c_int, set: *const sigset_t, oset: *mut sigset_t) -> c_int;
++    /// Documented extension (spec §3.4): current-thread stack bounds for the
++    /// signal stack-overflow handler.
++    pub fn pthread_getattr_np(thread: pthread_t, attr: *mut pthread_attr_t) -> c_int;
++    pub fn pthread_attr_getstack(
++        attr: *const pthread_attr_t,
++        stackaddr: *mut *mut c_void,
++        stacksize: *mut size_t,
++    ) -> c_int;
++    /// Documented extension (spec §3.4).
++    pub fn pthread_setname_np(thread: pthread_t, name: *const c_char) -> c_int;
++
++    // sys/mman.h
++    pub fn mmap(
++        addr: *mut c_void,
++        len: size_t,
++        prot: c_int,
++        flags: c_int,
++        fd: c_int,
++        offset: off_t,
++    ) -> *mut c_void;
++    pub fn munmap(addr: *mut c_void, len: size_t) -> c_int;
++    pub fn mprotect(addr: *mut c_void, len: size_t, prot: c_int) -> c_int;
++    pub fn msync(addr: *mut c_void, len: size_t, flags: c_int) -> c_int;
++
++    // sys/socket.h
++    pub fn socket(domain: c_int, ty: c_int, protocol: c_int) -> c_int;
++    pub fn socketpair(domain: c_int, ty: c_int, protocol: c_int, sv: *mut c_int) -> c_int;
++    pub fn bind(sockfd: c_int, addr: *const sockaddr, addrlen: socklen_t) -> c_int;
++    pub fn connect(sockfd: c_int, addr: *const sockaddr, addrlen: socklen_t) -> c_int;
++    pub fn listen(sockfd: c_int, backlog: c_int) -> c_int;
++    pub fn accept(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
++    /// POSIX-2024 (spec §5.1.2).
++    pub fn accept4(
++        sockfd: c_int,
++        addr: *mut sockaddr,
++        addrlen: *mut socklen_t,
++        flags: c_int,
++    ) -> c_int;
++    pub fn shutdown(sockfd: c_int, how: c_int) -> c_int;
++    pub fn send(sockfd: c_int, buf: *const c_void, len: size_t, flags: c_int) -> ssize_t;
++    pub fn recv(sockfd: c_int, buf: *mut c_void, len: size_t, flags: c_int) -> ssize_t;
++    pub fn sendto(
++        sockfd: c_int,
++        buf: *const c_void,
++        len: size_t,
++        flags: c_int,
++        addr: *const sockaddr,
++        addrlen: socklen_t,
++    ) -> ssize_t;
++    pub fn recvfrom(
++        sockfd: c_int,
++        buf: *mut c_void,
++        len: size_t,
++        flags: c_int,
++        addr: *mut sockaddr,
++        addrlen: *mut socklen_t,
++    ) -> ssize_t;
++    pub fn sendmsg(sockfd: c_int, msg: *const msghdr, flags: c_int) -> ssize_t;
++    pub fn recvmsg(sockfd: c_int, msg: *mut msghdr, flags: c_int) -> ssize_t;
++    pub fn setsockopt(
++        sockfd: c_int,
++        level: c_int,
++        optname: c_int,
++        optval: *const c_void,
++        optlen: socklen_t,
++    ) -> c_int;
++    pub fn getsockopt(
++        sockfd: c_int,
++        level: c_int,
++        optname: c_int,
++        optval: *mut c_void,
++        optlen: *mut socklen_t,
++    ) -> c_int;
++    pub fn getsockname(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
++    pub fn getpeername(sockfd: c_int, addr: *mut sockaddr, addrlen: *mut socklen_t) -> c_int;
++    pub fn poll(fds: *mut pollfd, nfds: nfds_t, timeout: c_int) -> c_int;
++
++    // netdb.h
++    pub fn getaddrinfo(
++        node: *const c_char,
++        service: *const c_char,
++        hints: *const addrinfo,
++        res: *mut *mut addrinfo,
++    ) -> c_int;
++    pub fn freeaddrinfo(res: *mut addrinfo);
++    pub fn gai_strerror(errcode: c_int) -> *const c_char;
++}
++
++// ---------------------------------------------------------------------------
++// Deliberately absent
++// ---------------------------------------------------------------------------
++//
++// The following names in `docs/spec/native-libc-symbols.json` are not declared
++// here because nothing in the `std` build for `irix7` reaches them, and guessing
++// their layouts would be worse than omitting them:
++//
++//   `ucontext_t`, `pthread_barrier_t`, `pthread_spinlock_t`, `sigevent`,
++//   `itimerspec`, `posix_spawn_file_actions_t`, `posix_spawnattr_t`,
++//   `DIR` contents and `FILE` contents (opaque in the ABI).
++//
++// `sem_t` is declared as an opaque pointer and `Dl_info` as a placeholder
++// struct; they exist only because the shared Unix declarations in
++// `src/unix/mod.rs` mention them.  Dynamic loading and POSIX semaphores are
++// post-v1 (specification §3.2 and §4.8).
++//
++// Several other names (`sigval`, `rusage`, `rlimit`, `iovec`, `pollfd`,
++// `winsize`, `timeval`, `timespec`, `in6_addr`, `ipv6_mreq`) are already
++// defined once in `src/unix/mod.rs` and are re-exported through the glob in
++// that module, so they must *not* be redefined here: a duplicate definition
++// would be shadowed by the module-level item and silently ignored.
+--- a/src/new/mod.rs
++++ b/src/new/mod.rs
+@@ -96,6 +96,10 @@
+     } else if #[cfg(any(target_os = "nto", target_os = "qnx"))] {
+         mod nto;
+         pub(crate) use nto::*;
++    } else if #[cfg(target_os = "irix7")] {
++        // SPIKE: see src/new/irix7/mod.rs.
++        mod irix7;
++        pub(crate) use irix7::*;
+     } else if #[cfg(target_os = "nuttx")] {
+         mod nuttx;
+         pub(crate) use nuttx::*;
+--- a/src/new/irix7/mod.rs
++++ b/src/new/irix7/mod.rs
+@@ -0,0 +1,7 @@
++//! IRIX 7 libc headers (SPIKE: only the `unistd.h` re-exports that the
++//! `new` module requires for a `target_family = "unix"` target).
++//!
++//! The bulk of the native definitions live in `crate::unix::irix7`; this
++//! module only satisfies `src/new/mod.rs`'s `pub use unistd::*` glob.
++
++pub(crate) mod unistd;
+--- a/src/new/irix7/unistd.rs
++++ b/src/new/irix7/unistd.rs
+@@ -0,0 +1,3 @@
++//! Header: `unistd.h` (SPIKE: standard descriptor constants only).
++
++pub use crate::new::common::posix::unistd::{STDERR_FILENO, STDIN_FILENO, STDOUT_FILENO};

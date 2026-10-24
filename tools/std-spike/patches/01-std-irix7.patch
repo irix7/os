@@ -1,0 +1,331 @@
+--- a/library/std/build.rs
++++ b/library/std/build.rs
+@@ -58,6 +58,7 @@
+         || target_os == "nuttx"
+         || target_os == "cygwin"
+         || target_os == "vexos"
++        || target_os == "irix7"
+ 
+         // See src/bootstrap/src/core/build_steps/synthetic_targets.rs
+         || env::var("RUSTC_BOOTSTRAP_SYNTHETIC_TARGET").is_ok()
+--- a/library/std/src/os/mod.rs
++++ b/library/std/src/os/mod.rs
+@@ -52,6 +52,9 @@
+         pub mod darwin;
+         #[cfg(target_os = "linux")]
+         pub mod linux;
++        #[cfg(target_os = "irix7")]
++        #[stable(feature = "rust1", since = "1.0.0")]
++        pub mod irix7;
+     }
+     target_family = "wasm" => {
+         #[cfg(any(target_env = "p1", target_env = "p2", target_env = "p3"))]
+--- a/library/std/src/os/unix/mod.rs
++++ b/library/std/src/os/unix/mod.rs
+@@ -64,6 +64,8 @@
+     pub use crate::os::hurd::*;
+     #[cfg(target_os = "illumos")]
+     pub use crate::os::illumos::*;
++    #[cfg(target_os = "irix7")]
++    pub use crate::os::irix7::*;
+     #[cfg(target_os = "l4re")]
+     pub use crate::os::l4re::*;
+     #[cfg(target_os = "linux")]
+--- a/library/std/src/os/irix7/mod.rs
++++ b/library/std/src/os/irix7/mod.rs
+@@ -0,0 +1,18 @@
++//! IRIX 7-specific extensions to primitives in the [`std`] crate.
++//!
++//! # SPIKE
++//!
++//! This module exists so that `std` can be compiled for
++//! `target_os = "irix7"` (the native IRIX 7 target).  It is deliberately
++//! small: it satisfies the two `platform` imports that `std::os::unix` makes
++//! (`fs::MetadataExt` and `raw` type aliases) and nothing else.  A native
++//! loader, a libc and a cell runtime do not exist yet, so none of this has
++//! been exercised.
++//!
++//! The real `os::irix7` surface should grow from
++//! `docs/spec/native-libc.md`, not from copying another platform's module.
++
++#[stable(feature = "rust1", since = "1.0.0")]
++pub mod fs;
++#[stable(feature = "rust1", since = "1.0.0")]
++pub mod raw;
+--- a/library/std/src/os/irix7/fs.rs
++++ b/library/std/src/os/irix7/fs.rs
+@@ -0,0 +1,134 @@
++//! IRIX 7-specific extensions to primitives in the [`std::fs`] module.
++//!
++//! # SPIKE
++//!
++//! `std::os::unix::fs` imports `platform::fs::MetadataExt` and uses it to
++//! provide the cross-Unix `MetadataExt` accessors.  This module supplies that
++//! trait for `target_os = "irix7"` using the POSIX `st_atim`/`st_mtim`/`st_ctim`
++//! fields of the native `struct stat` (see `docs/spec/native-libc.md` §4.1).
++//!
++//! Only the accessors that `std::os::unix::fs::MetadataExt` actually calls are
++//! declared.  The native `raw::stat` type, `as_raw_stat` and the platform
++//! specific extensions (`FileTypeExt`, `OpenOptionsExt`, …) are not part of
++//! this spike.
++
++use crate::fs::Metadata;
++use crate::sys::AsInner;
++
++/// OS-specific extensions to [`fs::Metadata`].
++///
++/// [`fs::Metadata`]: crate::fs::Metadata
++#[stable(feature = "metadata_ext", since = "1.1.0")]
++pub trait MetadataExt {
++    /// Returns the device ID on which this file resides.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_dev(&self) -> u64;
++    /// Returns the inode number.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ino(&self) -> u64;
++    /// Returns the file type and mode.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mode(&self) -> u32;
++    /// Returns the number of hard links pointing to this file.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_nlink(&self) -> u64;
++    /// Returns the user ID of the owner of this file.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_uid(&self) -> u32;
++    /// Returns the group ID of the owner of this file.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_gid(&self) -> u32;
++    /// Returns the device ID of this file (if it is a special one).
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_rdev(&self) -> u64;
++    /// Returns the total size of this file in bytes.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_size(&self) -> u64;
++    /// Returns the last access time of the file, in seconds since Unix Epoch.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_atime(&self) -> i64;
++    /// Returns the last access time of the file, in nanoseconds since
++    /// [`st_atime`].
++    ///
++    /// [`st_atime`]: Self::st_atime
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_atime_nsec(&self) -> i64;
++    /// Returns the last modification time of the file, in seconds since Unix
++    /// Epoch.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mtime(&self) -> i64;
++    /// Returns the last modification time of the file, in nanoseconds since
++    /// [`st_mtime`].
++    ///
++    /// [`st_mtime`]: Self::st_mtime
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_mtime_nsec(&self) -> i64;
++    /// Returns the last status change time of the file, in seconds since Unix
++    /// Epoch.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ctime(&self) -> i64;
++    /// Returns the last status change time of the file, in nanoseconds since
++    /// [`st_ctime`].
++    ///
++    /// [`st_ctime`]: Self::st_ctime
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_ctime_nsec(&self) -> i64;
++    /// Returns the block size for filesystem I/O.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_blksize(&self) -> u64;
++    /// Returns the number of blocks allocated to the file, in 512-byte units.
++    #[stable(feature = "metadata_ext2", since = "1.8.0")]
++    fn st_blocks(&self) -> u64;
++}
++
++#[stable(feature = "metadata_ext", since = "1.1.0")]
++impl MetadataExt for Metadata {
++    fn st_dev(&self) -> u64 {
++        self.as_inner().as_inner().st_dev as u64
++    }
++    fn st_ino(&self) -> u64 {
++        self.as_inner().as_inner().st_ino as u64
++    }
++    fn st_mode(&self) -> u32 {
++        self.as_inner().as_inner().st_mode as u32
++    }
++    fn st_nlink(&self) -> u64 {
++        self.as_inner().as_inner().st_nlink as u64
++    }
++    fn st_uid(&self) -> u32 {
++        self.as_inner().as_inner().st_uid as u32
++    }
++    fn st_gid(&self) -> u32 {
++        self.as_inner().as_inner().st_gid as u32
++    }
++    fn st_rdev(&self) -> u64 {
++        self.as_inner().as_inner().st_rdev as u64
++    }
++    fn st_size(&self) -> u64 {
++        self.as_inner().as_inner().st_size as u64
++    }
++    fn st_atime(&self) -> i64 {
++        self.as_inner().as_inner().st_atim.tv_sec as i64
++    }
++    fn st_atime_nsec(&self) -> i64 {
++        self.as_inner().as_inner().st_atim.tv_nsec as i64
++    }
++    fn st_mtime(&self) -> i64 {
++        self.as_inner().as_inner().st_mtim.tv_sec as i64
++    }
++    fn st_mtime_nsec(&self) -> i64 {
++        self.as_inner().as_inner().st_mtim.tv_nsec as i64
++    }
++    fn st_ctime(&self) -> i64 {
++        self.as_inner().as_inner().st_ctim.tv_sec as i64
++    }
++    fn st_ctime_nsec(&self) -> i64 {
++        self.as_inner().as_inner().st_ctim.tv_nsec as i64
++    }
++    fn st_blksize(&self) -> u64 {
++        self.as_inner().as_inner().st_blksize as u64
++    }
++    fn st_blocks(&self) -> u64 {
++        self.as_inner().as_inner().st_blocks as u64
++    }
++}
+--- a/library/std/src/os/irix7/raw.rs
++++ b/library/std/src/os/irix7/raw.rs
+@@ -0,0 +1,29 @@
++//! IRIX 7 raw type definitions.
++//!
++//! # SPIKE
++//!
++//! These aliases mirror the native n32 widths in `docs/spec/native-libc.md`
++//! §4.1.  They are re-exported by `std::os::unix::raw`, which only needs the
++//! nine types below.  `std::os::irix7::raw::stat` and the rest of the raw
++//! surface are left for the M9 `native-abi` crate.
++
++#![allow(deprecated)]
++
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type dev_t = u64;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type mode_t = u32;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type ino_t = u64;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type off_t = i64;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type blkcnt_t = i64;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type blksize_t = i32;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type nlink_t = u32;
++#[stable(feature = "raw_ext", since = "1.1.0")]
++pub type time_t = i64;
++#[stable(feature = "pthread_t", since = "1.8.0")]
++pub type pthread_t = usize;
+--- a/library/std/src/sys/args/unix.rs
++++ b/library/std/src/sys/args/unix.rs
+@@ -85,6 +85,7 @@
+     target_os = "hurd",
+     target_os = "rtems",
+     target_os = "nuttx",
++    target_os = "irix7",
+ ))]
+ mod imp {
+     use crate::ffi::c_char;
+--- a/library/std/src/sys/fs/unix.rs
++++ b/library/std/src/sys/fs/unix.rs
+@@ -583,6 +583,9 @@
+         target_os = "hurd",
+         target_os = "rtems",
+         target_os = "nuttx",
++        // `irix7` `struct stat` uses the POSIX `st_mtim`/`st_atim` fields
++        // (docs/spec/native-libc.md §4.1); it takes the arm below.
++        target_os = "irix7",
+     )))]
+     pub fn modified(&self) -> io::Result<SystemTime> {
+         #[cfg(target_pointer_width = "32")]
+@@ -609,6 +612,7 @@
+         target_os = "horizon",
+         target_os = "hurd",
+         target_os = "nuttx",
++        target_os = "irix7",
+         all(target_os = "vxworks", not(vxworks_lt_25_09))
+     ))]
+     pub fn modified(&self) -> io::Result<SystemTime> {
+@@ -623,6 +627,9 @@
+         target_os = "hurd",
+         target_os = "rtems",
+         target_os = "nuttx",
++        // `irix7` `struct stat` uses the POSIX `st_mtim`/`st_atim` fields
++        // (docs/spec/native-libc.md §4.1); it takes the arm below.
++        target_os = "irix7",
+     )))]
+     pub fn accessed(&self) -> io::Result<SystemTime> {
+         #[cfg(target_pointer_width = "32")]
+@@ -649,6 +656,7 @@
+         target_os = "horizon",
+         target_os = "hurd",
+         target_os = "nuttx",
++        target_os = "irix7",
+         all(target_os = "vxworks", not(vxworks_lt_25_09))
+     ))]
+     pub fn accessed(&self) -> io::Result<SystemTime> {
+--- a/library/std/src/sys/io/error/unix.rs
++++ b/library/std/src/sys/io/error/unix.rs
+@@ -18,6 +18,7 @@
+             target_os = "l4re",
+             target_os = "hurd",
+             target_os = "teeos",
++            target_os = "irix7",
+         ),
+         link_name = "__errno_location"
+     )]
+--- a/library/std/src/sys/paths/unix.rs
++++ b/library/std/src/sys/paths/unix.rs
+@@ -387,6 +387,23 @@
+     crate::fs::read_to_string("sys:exe").map(PathBuf::from)
+ }
+ 
++#[cfg(target_os = "irix7")]
++pub fn current_exe() -> io::Result<PathBuf> {
++    // The native cell loader supplies the image path through `getexecname`
++    // (a documented extension; spec §3.4).  `/proc/self/exe` is not a native
++    // requirement.
++    let ptr = unsafe { libc::getexecname() };
++    if ptr.is_null() {
++        Err(io::const_error!(
++            io::ErrorKind::Unsupported,
++            "the cell loader did not provide an executable path"
++        ))
++    } else {
++        let bytes = unsafe { CStr::from_ptr(ptr) }.to_bytes().to_vec();
++        Ok(PathBuf::from(OsString::from_vec(bytes)))
++    }
++}
++
+ #[cfg(target_os = "l4re")]
+ pub fn current_exe() -> io::Result<PathBuf> {
+     Err(io::const_error!(io::ErrorKind::Unsupported, "not yet implemented!"))
+--- a/library/std/src/sys/random/mod.rs
++++ b/library/std/src/sys/random/mod.rs
+@@ -28,7 +28,8 @@
+         mod arc4random;
+         pub use arc4random::fill_bytes;
+     }
+-    target_os = "emscripten" => {
++    any(target_os = "emscripten", target_os = "irix7") => {
++        // `irix7`: POSIX-2024 `getentropy` is the native backend (spec §5.8).
+         mod getentropy;
+         pub use getentropy::fill_bytes;
+     }
+--- a/library/std/src/sys/thread/unix.rs
++++ b/library/std/src/sys/thread/unix.rs
+@@ -445,7 +445,8 @@
+     target_os = "freebsd",
+     target_os = "dragonfly",
+     target_os = "nuttx",
+-    target_os = "cygwin"
++    target_os = "cygwin",
++    target_os = "irix7"
+ ))]
+ pub fn set_name(name: &CStr) {
+     unsafe {

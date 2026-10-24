@@ -1,0 +1,13 @@
+# Empty host crate whose only job is to give Cargo a manifest so that
+# `-Zbuild-std=std` builds the standard library for the native IRIX 7 target.
+# It is its own workspace so the repository workspace does not see it.
+[package]
+name = "std-build-probe"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[workspace]

@@ -402,8 +402,9 @@ with `std::thread`, runs a child with `std::process::Command`, connects with
 **Acceptance criteria:**
 
 - [ ] The native libc v0 and the POSIX.1-2024 profile are implemented and layout-tested.
-- [ ] A hosted n32 target (`os = "irix7"`, Unix family) builds `std` with `-Zbuild-std=std`;
-      it is not `restricted_std`.
+- [x] A hosted n32 target (`os = "irix7"`, Unix family) builds the `std` **rlib**
+      with `-Zbuild-std=std`, and it is not `restricted_std`.  This is compile-only
+      evidence ([spike](../research/rust-std-build-spike.md)); the runtime is still open.
 - [ ] `std::fs`, `std::thread`, `std::sync`, `std::process`, `std::net`, `std::env`,
       `std::time`, TLS and the `std::os::unix` traits work in a cell.
 - [ ] `catch_unwind` catches a panic at the cell boundary (or the phase-1 abort path is

@@ -119,6 +119,7 @@ default = true
 "HTTPS" = true
 "TLS" = true
 "MIPS" = true
+"nto" = true  # QNX Neutrino module name in the libc source
 "n32" = true
 "BootInfo" = true
 "kseg" = true
@@ -216,4 +217,5 @@ extend-exclude = [
     "target",
     ".git",
     "node_modules",
+    "tools/std-spike/patches",
 ]
