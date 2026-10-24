@@ -21,16 +21,16 @@ const C0_INDEX: u32 = 0;
 const C0_RANDOM: u32 = 1;
 
 const PAGE_SIZE_4K: u32 = 0x1000;
-const PAGE_MASK_MASK: u32 = 0x0000_fe00; // PageMask bits 12-23
+const PAGE_MASK_MASK: u32 = 0x01ff_e000; // PageMask bits 24:13
 
-// PageMask encodings (size = (1 << (12 + 2*n)) for n=0..7).
+// R4000 PageMask encodings (size = 1 << (12 + 2*n)).
 const PAGE_MASK_4K: u32 = 0x0000_0000;
-const PAGE_MASK_16K: u32 = 0x0000_0400;
-const PAGE_MASK_64K: u32 = 0x0000_0c00;
-const PAGE_MASK_256K: u32 = 0x0000_1400;
-const PAGE_MASK_1M: u32 = 0x0000_1c00;
-const PAGE_MASK_4M: u32 = 0x0000_2400;
-const PAGE_MASK_16M: u32 = 0x0000_2c00;
+const PAGE_MASK_16K: u32 = 0x0000_6000;
+const PAGE_MASK_64K: u32 = 0x0001_e000;
+pub const PAGE_MASK_256K: u32 = 0x0007_e000;
+const PAGE_MASK_1M: u32 = 0x001f_e000;
+const PAGE_MASK_4M: u32 = 0x007f_e000;
+const PAGE_MASK_16M: u32 = 0x01ff_e000;
 
 // EntryLo fields (R4400).
 const ENTRYLO_DIRTY: u32 = 0x0000_0004;
@@ -55,12 +55,9 @@ pub fn init() {
     // Clear PageMask.
     pagemask_write(0);
 
-    // Wire the first WIRED_COUNT entries for kseg2 (if used).
-    index_write(0);
-    // ... wire entries as needed.
-
-    // Invalidate all remaining entries by writing invalid EntryLo.
-    for i in WIRED_COUNT as usize..JTLB_ENTRIES {
+    // Invalidate every entry, including the entries the PROM may have left
+    // behind.  No wired kseg2 mappings exist yet.
+    for i in 0..JTLB_ENTRIES {
         index_write(i as u32);
         entrylo0_write(0);
         entrylo1_write(0);
@@ -193,7 +190,12 @@ mod tests {
     #[test]
     fn page_mask_encodings() {
         assert_eq!(PAGE_MASK_4K, 0x0000_0000);
-        assert_eq!(PAGE_MASK_16M, 0x0000_2c00);
+        assert_eq!(PAGE_MASK_16K, 0x0000_6000);
+        assert_eq!(PAGE_MASK_64K, 0x0001_e000);
+        assert_eq!(PAGE_MASK_256K, 0x0007_e000);
+        assert_eq!(PAGE_MASK_1M, 0x001f_e000);
+        assert_eq!(PAGE_MASK_4M, 0x007f_e000);
+        assert_eq!(PAGE_MASK_16M, 0x01ff_e000);
     }
 
     #[test]
@@ -203,4 +205,32 @@ mod tests {
         assert_ne!(a1, a2);
         assert_ne!(a1, 0); // ASID 0 reserved for kernel/native
     }
+}
+
+/// Map an even/odd page pair with an explicit PageMask at a fixed TLB index.
+///
+/// Used for the bring-up user heap, where a 16 KiB page pair keeps the whole
+/// heap inside a small number of JTLB entries.
+pub fn map_page_pair_mask(
+    vpn2: u32,
+    pfn_even: u32,
+    pfn_odd: u32,
+    asid: u32,
+    index: u32,
+    mask: u32,
+    cache: u32,
+    global: bool,
+) {
+    pagemask_write(mask);
+    let entryhi = (vpn2 & PAGE_MASK_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
+    entryhi_write(entryhi);
+    entrylo0_write(entrylo(pfn_even, cache, global));
+    entrylo1_write(entrylo(pfn_odd, cache, global));
+    index_write(index);
+    unsafe {
+        core::arch::asm!("tlbwi");
+        core::arch::asm!("nop");
+        core::arch::asm!("nop");
+    }
+    pagemask_write(0);
 }

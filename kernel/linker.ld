@@ -49,8 +49,12 @@ SECTIONS
     __bss_end = .;
   }
 
-  /* Kernel entry stack, above the image and below the ROM's BootInfo. */
-  __stack_top = 0x88200000;
+  /* Kernel entry stack, above the image and below the module area. */
+  __stack_top = 0x88300000;
+
+  /* A boot stack that grows into .bss corrupts statics.  Keep a real gap. */
+  ASSERT(__bss_end < __stack_top, "kernel .bss overlaps the boot stack")
+  ASSERT(__stack_top <= 0x88400000, "kernel stack overlaps the module area")
 
   /DISCARD/ : {
     *(.MIPS.abiflags)

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Hardware and kernel inventory for the boot menu's diagnostics entry.
+//! Hardware and kernel inventory for the telnet diagnostics command.
 
 use crate::{frames, idle, net, print_hex32, print_str, println};
 

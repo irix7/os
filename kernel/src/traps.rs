@@ -46,11 +46,12 @@ const C0_ERROR_EPC: u32 = 30;
 const STATUS_IE: u32 = 0x0000_0001; // Interrupt Enable
 const STATUS_EXL: u32 = 0x0000_0002; // Exception Level
 const STATUS_ERL: u32 = 0x0000_0004; // Error Level
-const STATUS_KSU_MASK: u32 = 0x0000_0030; // KSU (mode) field
+const STATUS_KSU_MASK: u32 = 0x0000_0018; // KSU (mode) field: bits 4:3
 const STATUS_KSU_KERNEL: u32 = 0x0000_0000; // Kernel mode
-const STATUS_KSU_SUPERVISOR: u32 = 0x0000_0010; // Supervisor mode
-const STATUS_KSU_USER: u32 = 0x0000_0020; // User mode
-const STATUS_BEV: u32 = 0x0000_0040; // Bootstrap Exception Vector
+const STATUS_KSU_SUPERVISOR: u32 = 0x0000_0008; // Supervisor mode
+const STATUS_KSU_USER: u32 = 0x0000_0010; // User mode
+const STATUS_UX: u32 = 0x0000_0020; // User 64-bit addressing
+const STATUS_BEV: u32 = 0x0040_0000; // Bootstrap Exception Vector
 const STATUS_TS: u32 = 0x0000_0080; // TLB Shutdown
 const STATUS_PE: u32 = 0x0000_0100; // Parity Enable
 const STATUS_CM: u32 = 0x0000_0200; // Cache Parity Enable
@@ -58,11 +59,11 @@ const STATUS_CP0: u32 = 0x0000_1000; // Coprocessor 0 usable
 const STATUS_CP1: u32 = 0x0000_2000; // Coprocessor 1 usable (FPU)
 const STATUS_CP2: u32 = 0x0000_4000; // Coprocessor 2 usable
 const STATUS_CP3: u32 = 0x0000_8000; // Coprocessor 3 usable
-const STATUS_IM_MASK: u32 = 0xff00_0000; // Interrupt Mask (bits 8-15)
+const STATUS_IM_MASK: u32 = 0x0000_ff00; // Interrupt Mask (bits 8-15)
 
 // Cause register fields.
 const CAUSE_EXC_MASK: u32 = 0x0000_007c; // Exception Code (bits 2-6)
-const CAUSE_IP_MASK: u32 = 0xff00_0000; // Interrupt Pending (bits 8-15)
+const CAUSE_IP_MASK: u32 = 0x0000_ff00; // Interrupt Pending (bits 8-15)
 const CAUSE_BD: u32 = 0x8000_0000; // Branch Delay slot
 
 // Exception codes.
@@ -84,16 +85,43 @@ const EXC_FPE: u32 = 15; // Floating point
 const EXC_WATCH: u32 = 23; // Reference to watchpoint address
 
 /// Saved register context on the trap stack.
+///
+/// n32 has 64-bit GPRs even though pointers are 32-bit.  The frame is 320
+/// bytes; `trap_entry` uses the same offsets and a compile-time size check
+/// below keeps the two definitions in step.
 #[repr(C)]
 #[derive(Debug)]
 pub struct TrapFrame {
-    pub regs: [u32; 32], // $0..$31
-    pub lo: u32,
-    pub hi: u32,
-    pub epc: u32,
-    pub badvaddr: u32,
-    pub cause: u32,
-    pub status: u32,
+    pub regs: [u64; 32], // $0..$31
+    pub hi: u64,
+    pub lo: u64,
+    pub epc: u64,
+    pub badvaddr: u64,
+    pub cause: u64,
+    pub status: u64,
+    pub entryhi: u64,
+    pub pagemask: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<TrapFrame>() == 0x140);
+
+impl TrapFrame {
+    /// Low 32 bits of a saved GPR (the n32 syscall ABI uses 32-bit words).
+    #[inline]
+    pub fn arg(&self, index: usize) -> u32 {
+        self.regs[index] as u32
+    }
+
+    /// Set the syscall result register, zero-extending into the 64-bit GPR.
+    #[inline]
+    pub fn set_result(&mut self, value: u32) {
+        self.regs[2] = value as u64;
+    }
+
+    #[inline]
+    pub fn advance_epc(&mut self) {
+        self.epc = self.epc.wrapping_add(4);
+    }
 }
 
 /// The single kernel-mode trap frame used by the exception vector.
@@ -103,13 +131,20 @@ pub struct TrapFrame {
 #[no_mangle]
 static mut TRAP_FRAME: TrapFrame = TrapFrame {
     regs: [0; 32],
-    lo: 0,
     hi: 0,
+    lo: 0,
     epc: 0,
     badvaddr: 0,
     cause: 0,
     status: 0,
+    entryhi: 0,
+    pagemask: 0,
 };
+
+/// A cacheable kernel word used to clear the per-processor LL bit on every
+/// trap.  `sc` clears LL even when its store fails.
+#[no_mangle]
+static mut LL_SCRATCH: u64 = 0;
 
 /// Separate kernel stack for the exception handler.  A user exception may
 /// arrive with an untrusted `$sp`; the handler must not run on it.
@@ -294,6 +329,11 @@ trap_vector:
     lw      $k1, 0($k0)
     addiu   $k1, $k1, 1
     sw      $k1, 0($k0)
+
+    /* A timer trap also clears LL; a preempted CAS must retry. */
+    lui     $k0, %hi(LL_SCRATCH)
+    addiu   $k0, $k0, %lo(LL_SCRATCH)
+    sc      $zero, 0($k0)
     eret
     nop
 
@@ -343,50 +383,61 @@ tlb_refill_vector_end:
 trap_entry:
     lui     $k0, %hi(TRAP_FRAME)
     addiu   $k0, $k0, %lo(TRAP_FRAME)
-    sw      $1, 4($k0)
-    sw      $2, 8($k0)
-    sw      $3, 12($k0)
-    sw      $4, 16($k0)
-    sw      $5, 20($k0)
-    sw      $6, 24($k0)
-    sw      $7, 28($k0)
-    sw      $8, 32($k0)
-    sw      $9, 36($k0)
-    sw      $10, 40($k0)
-    sw      $11, 44($k0)
-    sw      $12, 48($k0)
-    sw      $13, 52($k0)
-    sw      $14, 56($k0)
-    sw      $15, 60($k0)
-    sw      $16, 64($k0)
-    sw      $17, 68($k0)
-    sw      $18, 72($k0)
-    sw      $19, 76($k0)
-    sw      $20, 80($k0)
-    sw      $21, 84($k0)
-    sw      $22, 88($k0)
-    sw      $23, 92($k0)
-    sw      $24, 96($k0)
-    sw      $25, 100($k0)
-    sw      $28, 112($k0)
-    sw      $29, 116($k0)
-    sw      $30, 120($k0)
-    sw      $31, 124($k0)
+    sd      $1, 8($k0)
+    sd      $2, 16($k0)
+    sd      $3, 24($k0)
+    sd      $4, 32($k0)
+    sd      $5, 40($k0)
+    sd      $6, 48($k0)
+    sd      $7, 56($k0)
+    sd      $8, 64($k0)
+    sd      $9, 72($k0)
+    sd      $10, 80($k0)
+    sd      $11, 88($k0)
+    sd      $12, 96($k0)
+    sd      $13, 104($k0)
+    sd      $14, 112($k0)
+    sd      $15, 120($k0)
+    sd      $16, 128($k0)
+    sd      $17, 136($k0)
+    sd      $18, 144($k0)
+    sd      $19, 152($k0)
+    sd      $20, 160($k0)
+    sd      $21, 168($k0)
+    sd      $22, 176($k0)
+    sd      $23, 184($k0)
+    sd      $24, 192($k0)
+    sd      $25, 200($k0)
+    sd      $28, 224($k0)
+    sd      $29, 232($k0)
+    sd      $30, 240($k0)
+    sd      $31, 248($k0)
 
     mfhi    $t0
-    sw      $t0, 128($k0)
+    sd      $t0, 256($k0)
     mflo    $t0
-    sw      $t0, 132($k0)
+    sd      $t0, 264($k0)
     mfc0    $t0, $14
-    sw      $t0, 136($k0)
+    sd      $t0, 272($k0)
     mfc0    $t0, $8
-    sw      $t0, 140($k0)
+    sd      $t0, 280($k0)
     mfc0    $t0, $13
-    sw      $t0, 144($k0)
+    sd      $t0, 288($k0)
     mfc0    $t0, $12
-    sw      $t0, 148($k0)
+    sd      $t0, 296($k0)
+    mfc0    $t0, $10
+    sd      $t0, 304($k0)
+    mfc0    $t0, $5
+    sd      $t0, 312($k0)
 
-    /* Switch to the dedicated trap stack; the saved user/kernel $sp is in
+    /* Clear the per-processor LL bit.  SC clears it whether the store
+       succeeds or fails, so a preempted CAS retries instead of falsely
+       succeeding. */
+    lui     $k1, %hi(LL_SCRATCH)
+    addiu   $k1, $k1, %lo(LL_SCRATCH)
+    sc      $zero, 0($k1)
+
+    /* Switch to the dedicated trap stack.  The saved user/kernel $sp is in
        the frame and is restored below. */
     lui     $sp, %hi(TRAP_STACK)
     addiu   $sp, $sp, %lo(TRAP_STACK)
@@ -398,49 +449,57 @@ trap_entry:
 
     lui     $k0, %hi(TRAP_FRAME)
     addiu   $k0, $k0, %lo(TRAP_FRAME)
-    lw      $1, 4($k0)
-    lw      $2, 8($k0)
-    lw      $3, 12($k0)
-    lw      $4, 16($k0)
-    lw      $5, 20($k0)
-    lw      $6, 24($k0)
-    lw      $7, 28($k0)
-    lw      $8, 32($k0)
-    lw      $9, 36($k0)
-    lw      $10, 40($k0)
-    lw      $11, 44($k0)
-    lw      $12, 48($k0)
-    lw      $13, 52($k0)
-    lw      $14, 56($k0)
-    lw      $15, 60($k0)
-    lw      $16, 64($k0)
-    lw      $17, 68($k0)
-    lw      $18, 72($k0)
-    lw      $19, 76($k0)
-    lw      $20, 80($k0)
-    lw      $21, 84($k0)
-    lw      $22, 88($k0)
-    lw      $23, 92($k0)
-    lw      $24, 96($k0)
-    lw      $25, 100($k0)
-    lw      $28, 112($k0)
-    lw      $29, 116($k0)
-    lw      $30, 120($k0)
-    lw      $31, 124($k0)
-
-    lw      $t0, 128($k0)
+    ld      $t0, 256($k0)
     mthi    $t0
-    lw      $t0, 132($k0)
+    ld      $t0, 264($k0)
     mtlo    $t0
-    lw      $t0, 136($k0)
+    ld      $t0, 304($k0)
+    mtc0    $t0, $10
+    ld      $t0, 312($k0)
+    mtc0    $t0, $5
+    ld      $t0, 272($k0)
     mtc0    $t0, $14
-    /* Return status: keep EXL set until eret clears it.  The handler may
-       switch KSU for a user exit. */
-    lw      $t0, 148($k0)
-    ori     $t0, $t0, 0x2
-    mtc0    $t0, $12
+
+    /* Restore the GPRs after CP0 state.  $k0/$k1 are scratch and are not
+       part of the user context. */
+    ld      $1, 8($k0)
+    ld      $2, 16($k0)
+    ld      $3, 24($k0)
+    ld      $4, 32($k0)
+    ld      $5, 40($k0)
+    ld      $6, 48($k0)
+    ld      $7, 56($k0)
+    ld      $8, 64($k0)
+    ld      $9, 72($k0)
+    ld      $10, 80($k0)
+    ld      $11, 88($k0)
+    ld      $12, 96($k0)
+    ld      $13, 104($k0)
+    ld      $14, 112($k0)
+    ld      $15, 120($k0)
+    ld      $16, 128($k0)
+    ld      $17, 136($k0)
+    ld      $18, 144($k0)
+    ld      $19, 152($k0)
+    ld      $20, 160($k0)
+    ld      $21, 168($k0)
+    ld      $22, 176($k0)
+    ld      $23, 184($k0)
+    ld      $24, 192($k0)
+    ld      $25, 200($k0)
+    ld      $28, 224($k0)
+    ld      $29, 232($k0)
+    ld      $30, 240($k0)
+    ld      $31, 248($k0)
+
+    lui     $k0, %hi(TRAP_FRAME)
+    addiu   $k0, $k0, %lo(TRAP_FRAME)
+    ld      $k0, 296($k0)
+    ori     $k0, $k0, 0x2
+    mtc0    $k0, $12
     eret
     nop
+
 "#
 );
 
@@ -638,79 +697,119 @@ pub fn badvaddr_read() -> u32 {
 /// other non-interrupt exception is fatal for now.
 #[no_mangle]
 pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
-    let cause = tf.cause;
+    let cause = tf.cause as u32;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
     // User-mode syscall smoke test.  Code 1 is a console write and returns to
     // user mode; code 2 exits to a kernel continuation.  This is deliberately
     // a fixed ABI for the smoke test, not the native syscall ABI.
-    if exc_code == EXC_SYS && tf.status & STATUS_KSU_MASK == STATUS_KSU_USER {
-        match tf.regs[2] {
+    if exc_code == EXC_SYS && tf.status as u32 & STATUS_KSU_MASK == STATUS_KSU_USER {
+        match tf.arg(2) {
             1 => {
-                let fd = tf.regs[4];
-                let address = tf.regs[5];
-                let length = tf.regs[6];
-                if address == 0 && length == 0 {
-                    // The fixed smoke image uses write with no arguments.
-                    crate::println("user: write syscall (returning to user)");
-                    tf.regs[2] = 0;
-                } else if fd != 1 && fd != 2 {
-                    tf.regs[2] = u32::MAX;
-                } else if length > 256 || !crate::user::range_ok(address, length) {
-                    tf.regs[2] = u32::MAX;
-                } else {
-                    let mut buffer = [0u8; 256];
-                    for (index, byte) in buffer[..length as usize].iter_mut().enumerate() {
-                        *byte =
-                            unsafe { core::ptr::read_volatile((address as *const u8).add(index)) };
-                    }
-                    match core::str::from_utf8(&buffer[..length as usize]) {
-                        Ok(text) => {
-                            crate::print_str(text);
-                            tf.regs[2] = length;
-                        }
-                        Err(_) => {
-                            crate::println("user: write is not valid UTF-8");
-                            tf.regs[2] = u32::MAX;
-                        }
-                    }
-                }
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.set_result(crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6)) as u32);
+                tf.advance_epc();
             }
             3 => {
                 // Provisional anonymous mmap(addr, length, prot, flags):
                 // the address, protection and flags are ignored in v0.
-                tf.regs[2] = crate::user::mmap(tf.regs[5]);
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.set_result(crate::user::mmap(tf.arg(5)) as u32);
+                tf.advance_epc();
             }
             4 => {
                 // munmap: the v0 heap is one-way; mappings are released at exit.
-                tf.regs[2] = 0;
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.set_result(0);
+                tf.advance_epc();
             }
             5 => {
                 // mprotect: every user page is already read/write.
-                tf.regs[2] = 0;
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.set_result(0);
+                tf.advance_epc();
+            }
+            6 => {
+                tf.set_result(crate::user::open_path(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            7 => {
+                tf.set_result(crate::fd::close(tf.arg(4) as i32) as u32);
+                tf.advance_epc();
+            }
+            8 => {
+                tf.set_result(0);
+                tf.advance_epc();
+            }
+            9 => {
+                tf.set_result(crate::fd::dup(tf.arg(4) as i32) as u32);
+                tf.advance_epc();
+            }
+            10 => {
+                tf.set_result(crate::user::getcwd_text(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            11 => {
+                tf.set_result(crate::user::poll_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            12 => {
+                // signal(SIGPIPE, SIG_IGN): no signal machinery yet.
+                tf.set_result(0);
+                tf.advance_epc();
+            }
+            13 => {
+                tf.set_result(crate::user::entropy_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            14 => {
+                tf.set_result(crate::user::clock_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            15 => {
+                tf.set_result(1);
+                tf.advance_epc();
+            }
+            16 => {
+                tf.set_result(crate::user::read_fd(tf.arg(4), tf.arg(5), tf.arg(6)) as u32);
+                tf.advance_epc();
+            }
+            17 => {
+                tf.set_result(crate::user::fstat_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            18 => {
+                tf.set_result(crate::user::stat_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.advance_epc();
+            }
+            19 => {
+                tf.set_result(
+                    crate::user::readdir_user(tf.arg(4), tf.arg(5), tf.arg(6), tf.arg(7)) as u32,
+                );
+                tf.advance_epc();
+            }
+            20 => {
+                tf.set_result(crate::user::sleep_user(tf.arg(4)) as u32);
+                tf.advance_epc();
+            }
+            21 => {
+                tf.set_result(crate::user::chdir_user(tf.arg(4)) as u32);
+                tf.advance_epc();
             }
             2 => {
-                let code = tf.regs[4];
+                let code = tf.arg(4);
                 crate::user::cleanup();
                 crate::print_str("user: exit syscall code=0x");
                 crate::print_hex32(code);
                 crate::println("");
-                tf.epc = user_return_trampoline as usize as u32;
-                tf.regs[4] = code;
+                tf.epc = user_return_trampoline as usize as u64;
+                tf.regs[4] = code as u64;
                 let saved =
                     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(USER_RETURN_REGS)) };
                 for (index, value) in saved[..8].iter().enumerate() {
-                    tf.regs[16 + index] = *value;
+                    tf.regs[16 + index] = *value as u64;
                 }
-                tf.regs[30] = saved[8];
-                tf.regs[28] = unsafe { USER_KERNEL_GP };
-                tf.regs[29] = unsafe { USER_RETURN_SP };
-                tf.regs[31] = unsafe { USER_RETURN_RA };
-                tf.status &= !STATUS_KSU_MASK; // return to kernel mode
+                tf.regs[30] = saved[8] as u64;
+                tf.regs[28] = unsafe { USER_KERNEL_GP } as u64;
+                tf.regs[29] = unsafe { USER_RETURN_SP } as u64;
+                tf.regs[31] = unsafe { USER_RETURN_RA } as u64;
+                tf.status &= !((STATUS_KSU_MASK | STATUS_UX) as u64); // return to kernel mode
             }
             _ => fatal_trap(tf, exc_code),
         }
@@ -721,11 +820,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
         EXC_BP => {
             // Only the console's `break 7` self-test is handled.  Every other
             // break is a real fault and must not be swallowed.
-            if self_test_instruction(tf.epc, 7, 16) {
+            if self_test_instruction(tf.epc as u32, 7, 16) {
                 unsafe {
                     BREAKS = BREAKS.wrapping_add(1);
                 }
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.advance_epc();
             } else {
                 fatal_trap(tf, exc_code);
             }
@@ -733,11 +832,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
         EXC_SYS => {
             // Only the console's `syscall 7` self-test is handled here.  A
             // user syscall has no ABI yet and must not be silently skipped.
-            if self_test_instruction(tf.epc, 7, 6) {
+            if self_test_instruction(tf.epc as u32, 7, 6) {
                 unsafe {
                     SYSCALLS = SYSCALLS.wrapping_add(1);
                 }
-                tf.epc = tf.epc.wrapping_add(4);
+                tf.advance_epc();
             } else {
                 fatal_trap(tf, exc_code);
             }
@@ -795,21 +894,21 @@ fn self_test_instruction(epc: u32, code: u32, shift: u32) -> bool {
 fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
     crate::println("trap:");
     crate::print_str("  cause=0x");
-    print_hex8((tf.cause >> 24) as u8);
-    print_hex8((tf.cause >> 16) as u8);
-    print_hex8((tf.cause >> 8) as u8);
+    print_hex8(((tf.cause as u32) >> 24) as u8);
+    print_hex8(((tf.cause as u32) >> 16) as u8);
+    print_hex8(((tf.cause as u32) >> 8) as u8);
     print_hex8(tf.cause as u8);
     crate::print_str(" exc=");
     print_hex8(exc_code as u8);
     crate::print_str(" epc=0x");
-    print_hex8((tf.epc >> 24) as u8);
-    print_hex8((tf.epc >> 16) as u8);
-    print_hex8((tf.epc >> 8) as u8);
+    print_hex8(((tf.epc as u32) >> 24) as u8);
+    print_hex8(((tf.epc as u32) >> 16) as u8);
+    print_hex8(((tf.epc as u32) >> 8) as u8);
     print_hex8(tf.epc as u8);
     crate::print_str(" badvaddr=0x");
-    print_hex8((tf.badvaddr >> 24) as u8);
-    print_hex8((tf.badvaddr >> 16) as u8);
-    print_hex8((tf.badvaddr >> 8) as u8);
+    print_hex8(((tf.badvaddr as u32) >> 24) as u8);
+    print_hex8(((tf.badvaddr as u32) >> 16) as u8);
+    print_hex8(((tf.badvaddr as u32) >> 8) as u8);
     print_hex8(tf.badvaddr as u8);
     crate::println("");
     loop {
@@ -917,13 +1016,18 @@ pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! 
         USER_KERNEL_GP = kernel_gp;
     }
 
+    // Set up the user entry with interrupts masked by EXL.  If IE is enabled
+    // before EPC is set, a timer interrupt can overwrite EPC; the following
+    // `eret` then returns to the interrupted kernel PC instead of userland.
     let mut status = status_read();
-    status &= !(STATUS_KSU_MASK | STATUS_EXL | STATUS_ERL);
-    status |= STATUS_KSU_USER | STATUS_IE | (1 << 15);
+    status &= !(STATUS_KSU_MASK | STATUS_ERL | STATUS_IE);
+    status_write(status);
     epc_write(entry);
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15) | STATUS_EXL;
     status_write(status);
 
     crate::println("user: entering user mode");
+    crate::graphics_console::flush();
     unsafe { user_eret(user_sp, argc, argv, envp) }
 }
 
@@ -975,6 +1079,7 @@ pub fn install_vectors() {
 
     const GENERAL_VECTOR: *mut u8 = 0x8000_0180 as *mut u8;
     const TLB_VECTOR: *mut u8 = 0x8000_0000 as *mut u8;
+    const XTLB_VECTOR: *mut u8 = 0x8000_0080 as *mut u8;
 
     let (general_src, general_len) = unsafe {
         let src = &trap_vector as *const u8;
@@ -1006,6 +1111,8 @@ pub fn install_vectors() {
         // SAFETY: both ranges are in the kernel's direct-mapped window.
         unsafe {
             core::ptr::write_volatile(TLB_VECTOR.add(i), core::ptr::read_volatile(tlb_src.add(i)));
+            // With UX=1 the CPU uses the 64-bit XTLB refill vector at 0x80.
+            core::ptr::write_volatile(XTLB_VECTOR.add(i), core::ptr::read_volatile(tlb_src.add(i)));
         }
     }
 
@@ -1013,6 +1120,8 @@ pub fn install_vectors() {
     crate::cache::icache_invalidate(GENERAL_VECTOR as usize, general_len);
     crate::cache::dcache_writeback_invalidate(TLB_VECTOR as usize, tlb_len);
     crate::cache::icache_invalidate(TLB_VECTOR as usize, tlb_len);
+    crate::cache::dcache_writeback_invalidate(XTLB_VECTOR as usize, tlb_len);
+    crate::cache::icache_invalidate(XTLB_VECTOR as usize, tlb_len);
     crate::cache::sync();
 
     // The vectors above are the BEV=0 table.
@@ -1038,4 +1147,33 @@ pub fn calibrate_timer() {
     // interval. The exact method is in the hardware report §14.2.
     // For now, assume 100 MHz.
     crate::println("timer: assuming 100 MHz (calibration pending)");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::mem::{offset_of, size_of};
+
+    #[test]
+    fn trap_frame_layout() {
+        assert_eq!(size_of::<TrapFrame>(), 0x140);
+        assert_eq!(offset_of!(TrapFrame, regs), 0x000);
+        assert_eq!(offset_of!(TrapFrame, hi), 0x100);
+        assert_eq!(offset_of!(TrapFrame, lo), 0x108);
+        assert_eq!(offset_of!(TrapFrame, epc), 0x110);
+        assert_eq!(offset_of!(TrapFrame, badvaddr), 0x118);
+        assert_eq!(offset_of!(TrapFrame, cause), 0x120);
+        assert_eq!(offset_of!(TrapFrame, status), 0x128);
+        assert_eq!(offset_of!(TrapFrame, entryhi), 0x130);
+        assert_eq!(offset_of!(TrapFrame, pagemask), 0x138);
+    }
+
+    #[test]
+    fn status_mode_bits() {
+        assert_eq!(STATUS_KSU_MASK, 0x18);
+        assert_eq!(STATUS_KSU_USER, 0x10);
+        assert_eq!(STATUS_UX, 0x20);
+        assert_eq!(STATUS_BEV, 0x0040_0000);
+        assert_eq!(STATUS_IM_MASK, 0x0000_ff00);
+    }
 }

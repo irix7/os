@@ -56,7 +56,7 @@ inside the 512 KiB PROM window but with little headroom.
 | `0xBFC00000` | ROM text/rodata, executed in place |
 | `0xBFC00000`+ | kernel payload (compressed or not), copied to RAM at boot |
 | `0x08040000` | kernel image (`0x88040000` kseg0) |
-| `0x08200000` | kernel stack top (`0x88200000` kseg0) |
+| `0x08300000` | kernel stack top (`0x88300000` kseg0) |
 | `0x08400000` | module load area, 2 MiB (`0x88400000` kseg0) |
 | `0x08600000` | Seeq device DMA descriptors and buffers (`0xA8600000` kseg1, uncached) |
 | `0x08700000` | framebuffer shadow, 1280×1024 BGR (`0x88700000` kseg0, CPU-only) |

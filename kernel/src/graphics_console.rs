@@ -3,20 +3,18 @@
 //!
 //! The serial console remains the primary sink, but a machine with no serial
 //! terminal attached should still show what the kernel is doing.  This module
-//! keeps a small text screen buffer, mirrors every console byte into it, and
-//! paints the visible window below the boot menu.  Drawing is deferred and
-//! batched: early boot output is buffered before REX3 is initialised, and the
-//! idle loop flushes at most one redraw per batch of output.
+//! keeps a text screen buffer, mirrors every console byte into it, and paints
+//! the whole display as a boot-log console.  Drawing is deferred and batched:
+//! early boot output is buffered before REX3 is initialised, and each flush
+//! repaints the complete screen from the retained lines.
 
 use crate::gfx;
 
 const COLS: usize = 120;
-const ROWS: usize = 18;
+const ROWS: usize = 60;
 const LINE_HEIGHT: i32 = 16;
-const PANE_X: i32 = 32;
-const PANE_Y: i32 = 700;
-const PANE_W: i32 = COLS as i32 * 9 + 16;
-const PANE_H: i32 = ROWS as i32 * LINE_HEIGHT + 28;
+const TEXT_X: i32 = 92;
+const TEXT_Y: i32 = 36;
 
 const BG: (u32, u32, u32) = (0x08, 0x0C, 0x14);
 const LABEL: (u32, u32, u32) = (0x60, 0xC0, 0xFF);
@@ -112,7 +110,7 @@ fn newline(lines: &mut [[u8; COLS]; ROWS]) {
     }
 }
 
-/// Redraw the console pane if output has arrived since the last flush.
+/// Redraw the console if output has arrived since the last flush.
 pub fn flush() {
     // SAFETY: single-threaded kernel; `gfx` makes no console calls.
     unsafe {
@@ -122,27 +120,23 @@ pub fn flush() {
         DIRTY = false;
         let lines = &*core::ptr::addr_of!(LINES);
 
+        // Repaint the whole display, not just the text area: the firmware's
+        // power-on framebuffer contents are undefined, and there is no boot
+        // menu covering them any more.
         gfx::fill_rect(
-            PANE_X - 8,
-            PANE_Y - 28,
-            PANE_X + PANE_W,
-            PANE_Y + PANE_H,
+            0,
+            0,
+            gfx::SCREEN_WIDTH - 1,
+            gfx::SCREEN_HEIGHT - 1,
             BG.0,
             BG.1,
             BG.2,
         );
-        gfx::draw_str(
-            PANE_X,
-            PANE_Y - 22,
-            "kernel console",
-            LABEL.0,
-            LABEL.1,
-            LABEL.2,
-        );
+        gfx::draw_str(TEXT_X, 12, "IRIX 7 console", LABEL.0, LABEL.1, LABEL.2);
         gfx::hline(
-            PANE_X,
-            PANE_X + PANE_W - 16,
-            PANE_Y - 4,
+            TEXT_X,
+            TEXT_X + COLS as i32 * 9 - 1,
+            30,
             LABEL.0,
             LABEL.1,
             LABEL.2,
@@ -158,8 +152,8 @@ pub fn flush() {
             }
             let text = core::str::from_utf8_unchecked(&line[..len]);
             gfx::draw_str(
-                PANE_X,
-                PANE_Y + row as i32 * LINE_HEIGHT,
+                TEXT_X,
+                TEXT_Y + row as i32 * LINE_HEIGHT,
                 text,
                 TEXT.0,
                 TEXT.1,
