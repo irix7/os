@@ -26,7 +26,7 @@ uses the provisional kernel syscall codes:
 
 The hello ELF is built at `-O1` because the n32 backend currently
 miscompiles this libc write/exit flow at `-Oz` (the post-write continuation can
-be replaced by a break).  The image remains under the loader's 80 KiB limit.
+be replaced by a break).  The image remains under the loader's 256 KiB limit.
 
 The loader builds the conventional initial stack: `argc` at `$sp`, followed by
 the `argv` and `envp` pointer arrays, with `"hello"`, `"PATH=/"` and `"HOME=/"`
@@ -48,10 +48,10 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_NATIVE_N32_RUSTFLAGS="-Clink-arg=-T$PWD/linker.ld" 
 ```
 
 The resulting ELF is `$CARGO_TARGET_DIR/mips3-sgi-irix7-native-n32/release/hello`.
-`tools/build-user-hello.sh` does the same build and also creates an 80 KiB
+`tools/build-user-hello.sh` does the same build and also creates a 256 KiB
 raw SCSI image.
 To run it on iris, place it at LBA 0 of a raw SCSI disk image and attach that
 image as SCSI target 2, then use the telnet `userelf` command.
 
-The kernel reads up to 80 KiB from target 2, so the raw image can be padded to
-80 KiB; the loader does not use a filesystem yet.
+The kernel reads up to 256 KiB from target 2, so the raw image can be padded to
+256 KiB; the loader does not use a filesystem yet.

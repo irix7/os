@@ -8,6 +8,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- A static Rust `std` hello runs on the native n32 target: it prints through the
+  kernel console, reads its initial `argv`, and exits.  This is the first
+  end-to-end target/libc/loader gate.  It can also read a ramfs fixture through
+  the provisional `std::fs` path, stat/write and list the root directory, use
+  `chdir`/relative paths, sleep via
+  a CP0 Count wait, and read the wall clock and monotonic clock.  The kernel
+  stack top moved to `0x88300000` to stop boot-stack growth overlapping `.bss`.
+  The temporary 42-symbol libc shim will be replaced by the relibc fork.
 - Unify kernel and native-user output through one console service: serial, the
   MCP serial ring and a queued telnet mirror.  Telnet output is drained outside
   the smoltcp borrow, so a user syscall can print while the console socket is

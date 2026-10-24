@@ -204,3 +204,31 @@ mod tests {
         assert_ne!(a1, 0); // ASID 0 reserved for kernel/native
     }
 }
+
+/// Map an even/odd page pair with an explicit PageMask at a fixed TLB index.
+///
+/// Used for the bring-up user heap, where a 16 KiB page pair keeps the whole
+/// heap inside a small number of JTLB entries.
+pub fn map_page_pair_mask(
+    vpn2: u32,
+    pfn_even: u32,
+    pfn_odd: u32,
+    asid: u32,
+    index: u32,
+    mask: u32,
+    cache: u32,
+    global: bool,
+) {
+    pagemask_write(mask);
+    let entryhi = (vpn2 & PAGE_MASK_VPN2_MASK) | (asid & ENTRYHI_ASID_MASK);
+    entryhi_write(entryhi);
+    entrylo0_write(entrylo(pfn_even, cache, global));
+    entrylo1_write(entrylo(pfn_odd, cache, global));
+    index_write(index);
+    unsafe {
+        core::arch::asm!("tlbwi");
+        core::arch::asm!("nop");
+        core::arch::asm!("nop");
+    }
+    pagemask_write(0);
+}

@@ -10,19 +10,22 @@ use irix_elf::{Abi, Elf};
 
 use crate::{frames, scsi, tlb, traps};
 
-/// Enough for the small hello fixture and its section table.
-const ELF_SIZE: usize = 80 * 1024;
+/// Enough for the static `std` bring-up image and its section table.
+const ELF_SIZE: usize = 256 * 1024;
 const TARGET: u8 = 2;
 /// One TLB index maps an even/odd 4 KiB pair.  Indices 8-47 are available;
 /// the loader uses four for the image and stack and the rest for the heap.
-const MAX_PAIRS: usize = 40;
-const FIRST_TLB: u32 = 8;
+const MAX_PAIRS: usize = 44;
+const FIRST_TLB: u32 = 4;
 const STACK_BASE: u32 = 0x7FF0_0000;
 const STACK_PAGES: usize = 4;
 const STACK_TOP: u32 = STACK_BASE + STACK_PAGES as u32 * 4096;
 
 const HEAP_BASE: u32 = 0x2000_0000;
-const HEAP_LIMIT: u32 = HEAP_BASE + 128 * 1024;
+const HEAP_LIMIT: u32 = HEAP_BASE + 1024 * 1024;
+const HEAP_PAGE_MASK_256K: u32 = 0x1400;
+const HEAP_PAGE_SIZE: u32 = 256 * 1024;
+const HEAP_TLB_PAGES: usize = 2;
 
 static mut ELF_BUF: [u8; ELF_SIZE] = [0; ELF_SIZE];
 
@@ -44,6 +47,9 @@ static mut USER_PAGES: [LoadedPair; MAX_PAIRS] = [LoadedPair {
 }; MAX_PAIRS];
 static mut USER_PAIR_COUNT: usize = 0;
 static mut HEAP_NEXT: u32 = HEAP_BASE;
+static mut HEAP_MAPPED: bool = false;
+static mut HEAP_TLB_START: u32 = 0;
+static mut HEAP_PHYS: u64 = 0;
 
 fn page_of(address: u32) -> u32 {
     address & !0xFFF
@@ -61,10 +67,21 @@ fn pair_of(address: u32) -> u32 {
 pub extern "C" fn user_elf() {
     cleanup();
     let image = unsafe { &mut *core::ptr::addr_of_mut!(ELF_BUF) };
-    if let Err(error) = scsi::read_blocks(TARGET, 0, image) {
-        crate::print_str("userelf: read failed: ");
-        crate::println(error);
-        return;
+    // The WD33C93 READ(6) path used by the bring-up SCSI driver is limited to
+    // 255 sectors, so pull the image in 64 KiB chunks.
+    let mut offset = 0usize;
+    while offset < image.len() {
+        let chunk = (image.len() - offset).min(64 * 1024);
+        if let Err(error) = scsi::read_blocks(
+            TARGET,
+            (offset / 512) as u32,
+            &mut image[offset..offset + chunk],
+        ) {
+            crate::print_str("userelf: read failed: ");
+            crate::println(error);
+            return;
+        }
+        offset += chunk;
     }
 
     let elf = match Elf::parse(image) {
@@ -89,6 +106,16 @@ pub extern "C" fn user_elf() {
     };
 
     unsafe {
+        if HEAP_MAPPED {
+            for index in 0..HEAP_TLB_PAGES {
+                tlb::invalidate_index(HEAP_TLB_START + index as u32);
+            }
+            for index in 0..HEAP_TLB_PAGES * 128 {
+                frames::free_frame(HEAP_PHYS + index as u64 * 4096);
+            }
+            HEAP_MAPPED = false;
+            HEAP_PHYS = 0;
+        }
         USER_PAIR_COUNT = 0;
         USER_RANGE_COUNT = 0;
         HEAP_NEXT = HEAP_BASE;
@@ -133,7 +160,7 @@ pub extern "C" fn user_elf() {
         );
     }
 
-    // A fixed four-page user stack, separate from the loaded image.
+    // A fixed user stack, separate from the loaded image.
     for index in 0..STACK_PAGES {
         let address = STACK_BASE + index as u32 * 4096;
         if ensure_page(address).is_none() {
@@ -155,6 +182,7 @@ pub extern "C" fn user_elf() {
 /// The exit trap calls this before returning to the console; the telnet
 /// command calls it again after a load failure.  It is idempotent.
 pub fn cleanup() {
+    crate::fd::reset();
     unsafe {
         let pages = &*core::ptr::addr_of!(USER_PAGES);
         for index in 0..USER_PAIR_COUNT {
@@ -168,38 +196,77 @@ pub fn cleanup() {
     }
 }
 
-/// Map zero-filled anonymous pages below [`HEAP_LIMIT`].
+/// Map the zero-filled anonymous heap with 256 KiB pages.
 ///
-/// The provisional syscall ignores the requested address, protection and
-/// flags; page-aligned, read-write, uncached memory is the only kind it
-/// returns.  Repeated allocations are contiguous and merge into one range.
+/// A 4 KiB mapping for every heap page exhausts the 48-entry JTLB once std's
+/// allocator and the ELF image are both resident.  The heap is a fixed 256 KiB
+/// window backed by two 256 KiB page-pair entries; allocations are a bump
+/// within that window.
+fn map_heap() -> bool {
+    unsafe {
+        if HEAP_MAPPED {
+            return true;
+        }
+        let Some(base) = frames::alloc_frames(HEAP_TLB_PAGES * 128 + 128) else {
+            return false;
+        };
+        // The allocator is first-fit, not aligned.  Take an aligned 1 MiB
+        // window inside a slightly larger run and leave the unused frames
+        // allocated; this is a bring-up allocator, not the final VM.
+        let phys = (base + 0x3FFFF) & !0x3FFFF;
+        if phys + (HEAP_TLB_PAGES as u64 * 2 * HEAP_PAGE_SIZE as u64) > base + 0x160000 {
+            return false;
+        }
+        HEAP_PHYS = phys;
+        HEAP_TLB_START = FIRST_TLB + USER_PAIR_COUNT as u32;
+        if USER_PAIR_COUNT + HEAP_TLB_PAGES > MAX_PAIRS {
+            return false;
+        }
+        for index in 0..HEAP_TLB_PAGES {
+            let vaddr = HEAP_BASE + index as u32 * (2 * HEAP_PAGE_SIZE);
+            let paddr = phys as u32 + index as u32 * (2 * HEAP_PAGE_SIZE);
+            tlb::map_page_pair_mask(
+                vaddr,
+                paddr,
+                paddr + HEAP_PAGE_SIZE,
+                0,
+                HEAP_TLB_START + index as u32,
+                HEAP_PAGE_MASK_256K,
+                0,
+                true,
+            );
+        }
+        HEAP_NEXT = HEAP_BASE;
+        HEAP_MAPPED = true;
+        true
+    }
+}
+
+/// Allocate zero-filled anonymous memory from the fixed heap window.
 pub fn mmap(length: u32) -> u32 {
+    if !map_heap() {
+        return u32::MAX;
+    }
     let Some(length) = length.checked_add(0xFFF).map(|value| value & !0xFFF) else {
         return u32::MAX;
     };
     if length == 0 {
         return u32::MAX;
     }
-    let start = unsafe { HEAP_NEXT };
-    let Some(end) = start.checked_add(length) else {
-        return u32::MAX;
-    };
-    if end > HEAP_LIMIT {
-        return u32::MAX;
-    }
-    for address in (start..end).step_by(4096) {
-        if ensure_page(address).is_none() {
+    unsafe {
+        let start = HEAP_NEXT;
+        let Some(end) = start.checked_add(length) else {
+            return u32::MAX;
+        };
+        if end > HEAP_LIMIT {
             return u32::MAX;
         }
-    }
-    if !record_range(start, end) {
-        crate::println("userelf: too many user ranges");
-        return u32::MAX;
-    }
-    unsafe {
+        if !record_range(start, end) {
+            return u32::MAX;
+        }
         HEAP_NEXT = end;
+        start
     }
-    start
 }
 
 /// Build the conventional initial stack:
@@ -214,9 +281,9 @@ pub fn mmap(length: u32) -> u32 {
 /// fixture, so the argument and environment contents are fixed for now.
 fn initial_stack() -> (u32, u32, u32, u32) {
     let mut cursor = STACK_TOP;
-    let home = push_bytes(&mut cursor, b"HOME=/");
-    let path = push_bytes(&mut cursor, b"PATH=/");
-    let arg0 = push_bytes(&mut cursor, b"hello");
+    let home = push_bytes(&mut cursor, b"HOME=/\0");
+    let path = push_bytes(&mut cursor, b"PATH=/\0");
+    let arg0 = push_bytes(&mut cursor, b"hello\0");
 
     let argc: u32 = 1;
     let envc: u32 = 2;
@@ -311,7 +378,7 @@ fn ensure_page(address: u32) -> Option<u32> {
                 pair.odd
             });
         }
-        if count == MAX_PAIRS {
+        if count >= MAX_PAIRS {
             crate::println("userelf: too many page pairs");
             return None;
         }
@@ -349,4 +416,345 @@ fn error_text(error: irix_elf::Error) -> &'static str {
         irix_elf::Error::NoLoadableSegments => "no loadable segments",
         _ => "invalid ELF",
     }
+}
+
+/// Copy a NUL-terminated path out of user memory.
+fn read_path(address: u32) -> Option<([u8; 64], usize)> {
+    let mut path = [0u8; 64];
+    let mut length = 0;
+    while length < path.len() {
+        if !range_ok(address + length as u32, 1) {
+            return None;
+        }
+        let byte = unsafe { core::ptr::read_volatile((address as *const u8).add(length)) };
+        if byte == 0 {
+            return Some((path, length));
+        }
+        path[length] = byte;
+        length += 1;
+    }
+    None
+}
+
+/// Open a path in the tiny bring-up namespace.
+pub fn open_path(address: u32, flags: u32) -> i32 {
+    let Some((path, length)) = read_path(address) else {
+        return -1;
+    };
+    crate::fd::open_path(&path[..length], flags)
+}
+
+/// Copy up to `limit` bytes from a validated user range.
+pub fn read_user(address: u32, length: u32, buffer: &mut [u8]) -> Option<usize> {
+    let count = (length as usize).min(buffer.len());
+    if !range_ok(address, count as u32) {
+        return None;
+    }
+    for (index, byte) in buffer[..count].iter_mut().enumerate() {
+        *byte = unsafe { core::ptr::read_volatile((address as *const u8).add(index)) };
+    }
+    Some(count)
+}
+
+/// Write to a bring-up descriptor.  `Console` goes to the serial/graphics
+/// console; `Null` accepts and discards.
+pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
+    let kind = crate::fd::kind(fd as i32);
+    match kind {
+        crate::fd::Kind::Console => {
+            let mut buffer = [0u8; 512];
+            let mut done = 0usize;
+            while done < length as usize {
+                let chunk = (length as usize - done).min(buffer.len());
+                if !range_ok(address + done as u32, chunk as u32) {
+                    return u32::MAX;
+                }
+                for (index, byte) in buffer[..chunk].iter_mut().enumerate() {
+                    *byte = unsafe {
+                        core::ptr::read_volatile((address as *const u8).add(done + index))
+                    };
+                }
+                crate::write_bytes(&buffer[..chunk]);
+                done += chunk;
+            }
+            crate::graphics_console::flush();
+            length
+        }
+        crate::fd::Kind::Null => length,
+        crate::fd::Kind::File(_) => {
+            let mut buffer = [0u8; 512];
+            let mut done = 0usize;
+            while done < length as usize {
+                let chunk = (length as usize - done).min(buffer.len());
+                if !range_ok(address + done as u32, chunk as u32) {
+                    return u32::MAX;
+                }
+                for (index, byte) in buffer[..chunk].iter_mut().enumerate() {
+                    *byte = unsafe {
+                        core::ptr::read_volatile((address as *const u8).add(done + index))
+                    };
+                }
+                let count = crate::fd::write(fd as i32, &buffer[..chunk]);
+                if count < 0 {
+                    return u32::MAX;
+                }
+                done += count as usize;
+                if (count as usize) < chunk {
+                    break;
+                }
+            }
+            done as u32
+        }
+        crate::fd::Kind::Dir(_) => u32::MAX,
+        crate::fd::Kind::Closed => u32::MAX,
+    }
+}
+
+#[repr(C)]
+struct UserPollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+
+/// A tiny poll implementation: console and null descriptors are always ready.
+pub fn poll_user(address: u32, count: u32) -> u32 {
+    let bytes = count as usize * core::mem::size_of::<UserPollFd>();
+    if !range_ok(address, bytes as u32) {
+        return u32::MAX;
+    }
+    let mut ready = 0u32;
+    for index in 0..count as usize {
+        let base = address + (index * core::mem::size_of::<UserPollFd>()) as u32;
+        let fd = unsafe { core::ptr::read_volatile(base as *const i32) };
+        let events = unsafe { core::ptr::read_volatile((base + 4) as *const i16) };
+        let revents = if crate::fd::kind(fd) == crate::fd::Kind::Closed {
+            0x20 // POLLNVAL
+        } else {
+            ready += 1;
+            events
+        };
+        unsafe {
+            core::ptr::write_volatile((base + 6) as *mut i16, revents);
+        }
+    }
+    ready
+}
+
+pub fn getcwd_user(address: u32, size: u32) -> u32 {
+    if size < 2 || !range_ok(address, 2) {
+        return u32::MAX;
+    }
+    unsafe {
+        core::ptr::write_volatile(address as *mut u8, b'/');
+        core::ptr::write_volatile((address + 1) as *mut u8, 0);
+    }
+    0
+}
+
+pub fn clock_user(clock: u32, address: u32) -> u32 {
+    if !range_ok(address, 16) {
+        return u32::MAX;
+    }
+    let (seconds, nanos) = match clock {
+        // CLOCK_REALTIME: the RTC/NTP wall clock.
+        0 => (crate::ntp::now_unix().unwrap_or(0), 0),
+        // CLOCK_MONOTONIC: CP0 Count at the Indy's 33 MHz rate.
+        _ => {
+            let count = crate::traps::count_read() as u64;
+            (
+                count / 33_000_000,
+                (count % 33_000_000) * 1_000_000_000 / 33_000_000,
+            )
+        }
+    };
+    unsafe {
+        core::ptr::write_volatile(address as *mut u64, seconds);
+        core::ptr::write_volatile((address + 8) as *mut i32, nanos as i32);
+        core::ptr::write_volatile((address + 12) as *mut u32, 0);
+    }
+    0
+}
+
+pub fn entropy_user(address: u32, length: u32) -> u32 {
+    if !range_ok(address, length) {
+        return u32::MAX;
+    }
+    for index in 0..length as usize {
+        unsafe {
+            core::ptr::write_volatile((address as *mut u8).add(index), 0);
+        }
+    }
+    0
+}
+
+/// Copy file contents from a descriptor into a validated user buffer.
+pub fn read_fd(fd: u32, address: u32, length: u32) -> u32 {
+    if !range_ok(address, length) {
+        return u32::MAX;
+    }
+    let mut buffer = [0u8; 512];
+    let mut total = 0usize;
+    while total < length as usize {
+        let chunk = (length as usize - total).min(buffer.len());
+        let count = crate::fd::read(fd as i32, &mut buffer[..chunk]);
+        if count < 0 {
+            return u32::MAX;
+        }
+        if count == 0 {
+            break;
+        }
+        for (index, byte) in buffer[..count as usize].iter().enumerate() {
+            unsafe {
+                core::ptr::write_volatile((address as *mut u8).add(total + index), *byte);
+            }
+        }
+        total += count as usize;
+        if (count as usize) < chunk {
+            break;
+        }
+    }
+    total as u32
+}
+
+/// Native n32 `struct stat`, matching the ABI used by the std spike.
+#[repr(C)]
+struct KernelStat {
+    st_dev: u64,
+    st_ino: u64,
+    st_mode: u32,
+    st_nlink: u32,
+    st_uid: u32,
+    st_gid: u32,
+    st_rdev: u64,
+    st_size: i64,
+    st_blksize: i32,
+    _pad: u32,
+    st_blocks: i64,
+    st_atim: [i64; 2],
+    st_mtim: [i64; 2],
+    st_ctim: [i64; 2],
+    spare: [u8; 16],
+}
+
+fn fill_stat(address: u32, mode: u32, size: i64) -> u32 {
+    if !range_ok(address, core::mem::size_of::<KernelStat>() as u32) {
+        return u32::MAX;
+    }
+    let stat = KernelStat {
+        st_dev: 0,
+        st_ino: 1,
+        st_mode: mode,
+        st_nlink: 1,
+        st_uid: 0,
+        st_gid: 0,
+        st_rdev: 0,
+        st_size: size,
+        st_blksize: 4096,
+        _pad: 0,
+        st_blocks: (size + 511) / 512,
+        st_atim: [0; 2],
+        st_mtim: [0; 2],
+        st_ctim: [0; 2],
+        spare: [0; 16],
+    };
+    let source = &stat as *const KernelStat as *const u8;
+    for index in 0..core::mem::size_of::<KernelStat>() {
+        unsafe {
+            core::ptr::write_volatile(
+                (address as *mut u8).add(index),
+                core::ptr::read_volatile(source.add(index)),
+            );
+        }
+    }
+    0
+}
+
+pub fn fstat_user(fd: u32, address: u32) -> u32 {
+    match crate::fd::metadata(fd as i32) {
+        Some((mode, size)) => fill_stat(address, mode, size),
+        None => u32::MAX,
+    }
+}
+
+pub fn stat_user(path_address: u32, stat_address: u32) -> u32 {
+    let Some((path, length)) = read_path(path_address) else {
+        return u32::MAX;
+    };
+    match crate::fd::metadata_path(&path[..length]) {
+        Some((mode, size)) => fill_stat(stat_address, mode, size),
+        None => u32::MAX,
+    }
+}
+
+/// Copy one static directory entry into a user buffer.  Returns the dirent
+/// type (4 directory, 8 regular file, 2 device) or zero at end of directory.
+pub fn readdir_user(fd: u32, index: u32, address: u32, length: u32) -> u32 {
+    if !range_ok(address, length) {
+        return u32::MAX;
+    }
+    let mut buffer = [0u8; 256];
+    let Some((kind, _)) = crate::fd::readdir(fd as i32, index as usize, &mut buffer) else {
+        return 0;
+    };
+    let name_len = buffer.iter().position(|byte| *byte == 0).unwrap_or(0);
+    if name_len + 1 > length as usize {
+        return u32::MAX;
+    }
+    for index in 0..=name_len {
+        unsafe {
+            core::ptr::write_volatile((address as *mut u8).add(index), buffer[index]);
+        }
+    }
+    kind as u32
+}
+
+/// Busy-wait for a user `timespec`.  The syscall path runs with interrupts
+/// masked by EXL, so CP0 Count keeps advancing while no timer interrupt can
+/// preempt the wait.  This is a bring-up sleep, not the scheduler.
+pub fn sleep_user(address: u32) -> u32 {
+    if !range_ok(address, 16) {
+        return u32::MAX;
+    }
+    let seconds = unsafe { core::ptr::read_volatile(address as *const i64) }.max(0) as u64;
+    let nanos = unsafe { core::ptr::read_volatile((address + 8) as *const i32) }.max(0) as u64;
+    let ticks = seconds
+        .saturating_mul(33_000_000)
+        .saturating_add(nanos.saturating_mul(33) / 1_000);
+    let start = crate::traps::count_read();
+    let mut elapsed = 0u64;
+    while elapsed < ticks {
+        let now = crate::traps::count_read();
+        elapsed = now.wrapping_sub(start) as u64;
+        core::hint::spin_loop();
+    }
+    0
+}
+
+pub fn chdir_user(address: u32) -> u32 {
+    let Some((path, length)) = read_path(address) else {
+        return u32::MAX;
+    };
+    if crate::fd::set_cwd(&path[..length]) {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
+pub fn getcwd_text(address: u32, size: u32) -> u32 {
+    let mut path = [0u8; 64];
+    let length = crate::fd::copy_cwd(&mut path);
+    if size as usize <= length || !range_ok(address, (length + 1) as u32) {
+        return u32::MAX;
+    }
+    for index in 0..length {
+        unsafe {
+            core::ptr::write_volatile((address as *mut u8).add(index), path[index]);
+        }
+    }
+    unsafe {
+        core::ptr::write_volatile((address as *mut u8).add(length), 0);
+    }
+    0
 }

@@ -82,9 +82,14 @@ Every dependency is recorded with its licence, platform assumptions, build
 requirements and port/replacement strategy. A dependency being large is not a
 reason to drop a feature; the missing OS service is the work item.
 
-## Current blockers
+## Current status
 
-The kernel now paints the boot log and hands over to the native ELF on SCSI
-target 2. The first test image enters user mode but produces no output yet, so
-the loader/user-mode path must be fixed before any userland shell can run.
-This is the immediate blocker, ahead of shell work.
+The kernel paints the boot log, hands over to the native ELF on SCSI target 2,
+and a static Rust `std` hello now prints, reads `argv`, and exits. The
+bring-up uses a provisional 42-symbol libc shim; the production POSIX/C ABI
+layer will be a relibc fork with an `irix7` backend and a 64-bit
+`time_t`/`off_t` n32 ABI.
+
+The next blockers are the real POSIX layers: a namespace/filesystem, threads
+and TLS, `posix_spawn`, signals, termios and sockets. See
+[`../research/std-hello-bringup.md`](../research/std-hello-bringup.md).

@@ -1,0 +1,14 @@
+[package]
+name = "irix7-libc"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+name = "irix7c"
+crate-type = ["rlib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
