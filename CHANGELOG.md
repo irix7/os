@@ -388,6 +388,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   table itself, and XMAP9 plus the Bt445 gamma table are programmed for
   24-bit RGB.  The Newport display now comes up even when the host has not
   preselected a mode.
+- The REX3 auxiliary (overlay/popup/CID) planes are cleared before drawing.
+  Their power-on contents are undefined, and random popup bits made the
+  composited display look like coloured snow over otherwise correct RGB.
 - The IRIS 10 font converter now strips the source's `/* char 0xNN */`
   comments before collecting glyph words; the previous output embedded those
   hex values as extra rows and misaligned every glyph after the first comment.
