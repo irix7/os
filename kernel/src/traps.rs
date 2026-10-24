@@ -698,7 +698,7 @@ fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
 /// the test virtual page absent, then reads it through kuseg.  The refill
 /// vector maps it uncached and returns through `eret`.
 pub fn tlb_self_test() -> bool {
-    let virt = 0x2000_0000u32;
+    let virt = 0x1000_0000u32;
     let page = core::ptr::addr_of_mut!(TLB_TEST_PAGE) as u32;
     let phys32 = page.wrapping_sub(0x8000_0000);
     let alias = page;
