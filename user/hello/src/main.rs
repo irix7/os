@@ -1,13 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Minimal native IRIX 7 user smoke image.
 //!
-//! It is linked at 0x1000_0000 and uses the provisional syscall codes:
-//! `v0 = 1` write (`a0` fd, `a1` buffer, `a2` length), `v0 = 2` exit.
-//! This is a loader/syscall test, not a libc or a general user ABI.
+//! It is linked at 0x1000_0000 and uses the provisional kernel syscall ABI
+//! through the v0 native libc.  This is a loader/libc test, not a POSIX
+//! application environment yet.
 
 #![no_std]
 #![no_main]
 #![feature(asm_experimental_arch)]
+
+use core::ffi::c_void;
+use native_libc::{_exit, calloc, free, malloc, memalign, memcmp, memcpy, realloc, strlen, write};
 
 /// Forces the loader to map and zero a BSS range beyond the file data.
 #[no_mangle]
@@ -42,43 +45,83 @@ pub extern "C" fn _start() -> ! {
         exit(43);
     }
 
-    if write(1, MESSAGE.as_ptr(), MESSAGE.len() as u32) != MESSAGE.len() as u32 {
+    if !write_bytes(MESSAGE) {
         exit(44);
     }
 
     // The kernel places argv[0] ("hello") on the initial stack.
     let arg0 = unsafe { core::ptr::read_volatile(argv as *const u32) };
-    if arg0 == 0 || write(1, arg0 as *const u8, 5) != 5 {
+    if arg0 == 0 || !write_user(arg0, 5) {
         exit(45);
     }
-    if write(1, b"\n".as_ptr(), 1) != 1 {
+    if !write_bytes(b"\n") {
         exit(46);
     }
 
     // The kernel places PATH=/ and HOME=/ on the initial environment.
     let env0 = unsafe { core::ptr::read_volatile(envp as *const u32) };
-    if env0 == 0 || write(1, env0 as *const u8, 6) != 6 {
+    if env0 == 0 {
         exit(48);
     }
-    if write(1, b"\n".as_ptr(), 1) != 1 {
-        exit(49);
+    let mut env_line = [0u8; 7];
+    unsafe {
+        core::ptr::copy_nonoverlapping(env0 as *const u8, env_line.as_mut_ptr(), 6);
     }
+    env_line[6] = b'\n';
+    // The path/argv checks above already exercise the write return; do not
+    // fold this one into another conditional in the smoke image.
+    let _ = write_bytes(&env_line);
 
-    // Anonymous mmap(8192) returns zeroed heap pages at 0x2000_0000.
-    let heap = mmap(8192);
-    if heap == u32::MAX || heap == 0 {
+    // libc malloc maps anonymous pages; check zeroing and copy bytes into it.
+    let heap = unsafe { malloc(8192) };
+    if heap.is_null() {
         exit(50);
     }
-    if unsafe { core::ptr::read_volatile(heap as *const u8) } != 0 {
+    if unsafe { memcmp(heap, b"\0".as_ptr() as *const c_void, 1) } != 0 {
         exit(51);
     }
     let heap_message = b"heap\n";
     unsafe {
-        core::ptr::copy_nonoverlapping(heap_message.as_ptr(), heap as *mut u8, heap_message.len());
+        memcpy(
+            heap,
+            heap_message.as_ptr() as *const c_void,
+            heap_message.len(),
+        );
     }
-    if write(1, heap as *const u8, heap_message.len() as u32) != heap_message.len() as u32 {
+    if !write_user(heap as u32, heap_message.len() as u32) {
         exit(52);
     }
+    unsafe {
+        free(heap);
+    }
+
+    // Exercise the remaining v0 libc primitives.
+    let zeroed = unsafe { calloc(4, 4) };
+    if zeroed.is_null() {
+        exit(53);
+    }
+    if unsafe { memcmp(zeroed, b"\0".as_ptr() as *const c_void, 1) } != 0 {
+        exit(54);
+    }
+    unsafe { free(zeroed) };
+
+    let resized = unsafe { realloc(heap, 16) };
+    if resized.is_null() {
+        exit(55);
+    }
+    if unsafe { memcmp(resized, b"heap\n\0".as_ptr() as *const c_void, 5) } != 0 {
+        exit(56);
+    }
+    unsafe { free(resized) };
+
+    if unsafe { strlen(b"hello\0".as_ptr() as *const core::ffi::c_char) } != 5 {
+        exit(57);
+    }
+    let aligned = unsafe { memalign(16, 32) };
+    if aligned.is_null() || (aligned as usize) & 15 != 0 {
+        exit(58);
+    }
+    unsafe { free(aligned) };
 
     unsafe {
         // Exercise the highest mapped stack page.
@@ -87,75 +130,24 @@ pub extern "C" fn _start() -> ! {
     exit(42)
 }
 
-core::arch::global_asm!(
-    r#"
-    .set noreorder
-    .set mips3
-    .section .text.user_write, "ax", @progbits
-    .align 2
-    .globl user_write
-user_write:
-    li      $v0, 1
-    syscall
-    jr      $ra
-    nop
-"#
-);
-
-core::arch::global_asm!(
-    r#"
-    .set noreorder
-    .set mips3
-    .section .text.user_mmap, "ax", @progbits
-    .align 2
-    .globl user_mmap
-user_mmap:
-    move    $a1, $4
-    move    $a0, $zero
-    li      $a2, 3
-    li      $a3, 0x22
-    li      $v0, 3
-    syscall
-    jr      $ra
-    nop
-"#
-);
-
-extern "C" {
-    /// The n32 C ABI already places fd/buffer/length in $a0/$a1/$a2.
-    fn user_write(fd: u32, buffer: *const u8, length: u32) -> u32;
-    fn user_mmap(length: u32) -> u32;
+fn write_bytes(bytes: &[u8]) -> bool {
+    let pointer = core::hint::black_box(bytes.as_ptr()) as *const c_void;
+    let length = core::hint::black_box(bytes.len());
+    unsafe { write(1, pointer, length) == length as isize }
 }
 
-#[inline(never)]
-fn write(fd: u32, buffer: *const u8, length: u32) -> u32 {
-    unsafe { user_write(fd, buffer, length) }
+fn write_user(address: u32, length: u32) -> bool {
+    let pointer = core::hint::black_box(address) as *const c_void;
+    let length = core::hint::black_box(length) as usize;
+    unsafe { write(1, pointer, length) == length as isize }
 }
 
-#[inline(never)]
-fn mmap(length: u32) -> u32 {
-    unsafe { user_mmap(length) }
-}
-
-fn exit(code: u32) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "move $a0, {code}",
-            "li $v0, 2",
-            "syscall",
-            "2:",
-            "b 2b",
-            "nop",
-            code = in(reg) code,
-            options(noreturn)
-        );
-    }
+fn exit(status: u32) -> ! {
+    unsafe { _exit(status as i32) }
 }
 
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
-    loop {
-        core::hint::spin_loop();
-    }
+    exit(134)
 }

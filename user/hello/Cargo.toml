@@ -11,7 +11,13 @@ path = "src/main.rs"
 
 [workspace]
 
+[dependencies]
+native-libc = { path = "../libc" }
+
 [profile.release]
 panic = "abort"
-opt-level = "z"
-lto = true
+# The n32 LLVM backend miscompiles the libc write/exit flow at -Oz: it
+# drops the post-write continuation.  Keep the smoke image at -O1 until the
+# codegen issue is isolated.
+opt-level = 1
+lto = false

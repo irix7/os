@@ -405,6 +405,11 @@ prints `hello from a cell`; `fork`/`exec` on a small cell works.
 
 **Dependencies:** M2, M3, M4.
 
+**v0 bring-up (2026-10-24):** `user/libc` provides the freestanding C ABI subset
+needed by the ELF smoke image: memory/string primitives, `write`, `_exit`,
+anonymous `mmap` and a one-way `malloc`.  File descriptors, the capability table,
+IPC and process creation remain open.
+
 **Estimate:** 8–12 weeks.
 
 **Risks:** `fork` in a SAS kernel; cell relocation; capability/namespace impedance.

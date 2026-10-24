@@ -46,7 +46,8 @@ tools.
 
 A native n32 ELF loader (`userelf`) maps a user image from SCSI target 2 into kuseg
 and enters it with an argc/argv/envp stack; the provisional syscall ABI has
-write(fd, buffer, length), exit and anonymous mmap.  The loader is a
+write(fd, buffer, length), exit and anonymous mmap, and `user/libc` is the
+first freestanding C ABI layer over it.  The loader is a
 bring-up path for the native process model, not an IRIX 6.5 compatibility container.
 
 The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
