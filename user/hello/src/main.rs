@@ -10,6 +10,7 @@
 #![feature(asm_experimental_arch)]
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicU32, Ordering};
 use native_libc::{_exit, calloc, free, malloc, memalign, memcmp, memcpy, realloc, strlen, write};
 
 /// Forces the loader to map and zero a BSS range beyond the file data.
@@ -17,6 +18,7 @@ use native_libc::{_exit, calloc, free, malloc, memalign, memcmp, memcpy, realloc
 static mut BSS_PAGE: [u8; 8192] = [0; 8192];
 
 const MESSAGE: &[u8] = b"hello from user\n";
+static ATOMIC: AtomicU32 = AtomicU32::new(0);
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
@@ -93,6 +95,39 @@ pub extern "C" fn _start() -> ! {
     }
     unsafe {
         free(heap);
+    }
+
+    // Touch the whole 1 MiB anonymous heap window.  This checks the 256 KiB
+    // PageMask pairs and that the mappings are cacheable.
+    let large = unsafe { malloc(900 * 1024) };
+    if large.is_null() {
+        exit(70);
+    }
+    for offset in 0..(900 * 1024) {
+        let byte = unsafe { core::ptr::read_volatile((large as *const u8).add(offset)) };
+        if byte != 0 {
+            exit(71);
+        }
+    }
+    for offset in (0..(900 * 1024)).step_by(4096) {
+        unsafe { core::ptr::write_volatile((large as *mut u8).add(offset), 0x5a) };
+    }
+    for offset in (0..(900 * 1024)).step_by(4096) {
+        let byte = unsafe { core::ptr::read_volatile((large as *const u8).add(offset)) };
+        if byte != 0x5a {
+            exit(72);
+        }
+    }
+
+    // LL/SC is only defined on cacheable pages.
+    if ATOMIC
+        .compare_exchange(0, 1, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        exit(73);
+    }
+    if ATOMIC.compare_exchange(1, 2, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        exit(74);
     }
 
     // Exercise the remaining v0 libc primitives.

@@ -23,7 +23,7 @@ const STACK_TOP: u32 = STACK_BASE + STACK_PAGES as u32 * 4096;
 
 const HEAP_BASE: u32 = 0x2000_0000;
 const HEAP_LIMIT: u32 = HEAP_BASE + 1024 * 1024;
-const HEAP_PAGE_MASK_256K: u32 = 0x1400;
+const HEAP_PAGE_MASK_256K: u32 = crate::tlb::PAGE_MASK_256K;
 const HEAP_PAGE_SIZE: u32 = 256 * 1024;
 const HEAP_TLB_PAGES: usize = 2;
 
@@ -137,17 +137,14 @@ pub extern "C" fn user_elf() {
 
         for (offset, byte) in segment.file_data().iter().enumerate() {
             let address = segment.load_address().wrapping_add(offset as u32);
-            let Some(phys) = ensure_page(address) else {
+            if ensure_page(address).is_none() {
                 return;
-            };
-            // The code and data land in cacheable kseg0 if written through the
-            // 0x8 alias.  Use the uncached kseg1 alias so the bytes are in RAM
-            // before the instruction cache is invalidated below.
+            }
+            // Write through the same cached user alias that the program will
+            // use.  A second cached alias would require cache-index care on
+            // the R4000; the kseg1 alias is deliberately not used here.
             unsafe {
-                core::ptr::write_volatile(
-                    ((phys | 0xA000_0000) as *mut u8).add((address & 0xFFF) as usize),
-                    *byte,
-                );
+                core::ptr::write_volatile(address as *mut u8, *byte);
             }
         }
 
@@ -199,7 +196,7 @@ pub fn cleanup() {
 /// Map the zero-filled anonymous heap with 256 KiB pages.
 ///
 /// A 4 KiB mapping for every heap page exhausts the 48-entry JTLB once std's
-/// allocator and the ELF image are both resident.  The heap is a fixed 256 KiB
+/// allocator and the ELF image are both resident.  The heap is a fixed 1 MiB
 /// window backed by two 256 KiB page-pair entries; allocations are a bump
 /// within that window.
 fn map_heap() -> bool {
@@ -232,9 +229,16 @@ fn map_heap() -> bool {
                 0,
                 HEAP_TLB_START + index as u32,
                 HEAP_PAGE_MASK_256K,
-                0,
+                3,
                 true,
             );
+        }
+        // Anonymous memory must read as zero.  The page frames may have been
+        // used by the kernel before this mapping.
+        for offset in 0..(HEAP_TLB_PAGES as u32 * 2 * HEAP_PAGE_SIZE) {
+            unsafe {
+                core::ptr::write_volatile((HEAP_BASE + offset) as *mut u8, 0);
+            }
         }
         HEAP_NEXT = HEAP_BASE;
         HEAP_MAPPED = true;
@@ -392,20 +396,23 @@ fn ensure_page(address: u32) -> Option<u32> {
         };
         let even = even as u32;
         let odd = odd as u32;
-        zero_page(even);
-        zero_page(odd);
-        tlb::map_page_pair(vaddr, even, odd, 0, FIRST_TLB + count as u32, 0, true);
+        tlb::map_page_pair(vaddr, even, odd, 0, FIRST_TLB + count as u32, 3, true);
+        // Write through the user virtual address after mapping.  This keeps
+        // the cached user alias authoritative and avoids writing through the
+        // uncached kseg1 alias while the user alias is cached.
+        zero_user_page(vaddr);
+        zero_user_page(vaddr + 4096);
         pages[count] = LoadedPair { vaddr, even, odd };
         USER_PAIR_COUNT = count + 1;
         Some(if address & 0x1000 == 0 { even } else { odd })
     }
 }
 
-fn zero_page(phys: u32) {
-    let alias = (phys | 0x8000_0000) as *mut u8;
+fn zero_user_page(vaddr: u32) {
+    let page = vaddr as *mut u8;
     for offset in 0..4096 {
         unsafe {
-            core::ptr::write_volatile(alias.add(offset), 0);
+            core::ptr::write_volatile(page.add(offset), 0);
         }
     }
 }
