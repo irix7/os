@@ -116,6 +116,18 @@ static mut BREAKS: u32 = 0;
 /// Number of self-test syscall exceptions handled.
 static mut SYSCALLS: u32 = 0;
 
+/// One-entry software TLB refill mapping used by the kernel self-test.
+#[no_mangle]
+static mut TLB_TEST_VPN: u32 = 0;
+#[no_mangle]
+static mut TLB_TEST_ENTRYLO: u32 = 0;
+
+#[repr(C, align(4096))]
+struct TlbTestPage([u8; 4096]);
+
+#[no_mangle]
+static mut TLB_TEST_PAGE: TlbTestPage = TlbTestPage([0; 4096]);
+
 core::arch::global_asm!(
     r#"
     .set noreorder
@@ -153,13 +165,36 @@ trap_vector:
     .globl trap_vector_end
 trap_vector_end:
 
-    /* TLB refill vector, copied to 0x8000_0000.  It reports and parks until
-       the software refill path lands. */
+    /* TLB refill vector, copied to 0x8000_0000.  This is a one-entry
+       software refill used by the kernel self-test; unexpected faults fall
+       through to the Rust reporter.  It must fit before 0x8000_0080. */
     .section .text.tlb_refill_vector, "ax", @progbits
     .align 4
     .globl tlb_refill_vector
 tlb_refill_vector:
-    j       trap_tlb_refill
+    mfc0    $k0, $8
+    lui     $k1, 0xffff
+    ori     $k1, $k1, 0xe000
+    and     $k0, $k0, $k1
+    lui     $k1, %hi(TLB_TEST_VPN)
+    lw      $k1, %lo(TLB_TEST_VPN)($k1)
+    bne     $k0, $k1, 9f
+    nop
+    mfc0    $k0, $8
+    lui     $k1, 0xffff
+    ori     $k1, $k1, 0xe000
+    and     $k0, $k0, $k1
+    mtc0    $k0, $10
+    lui     $k1, %hi(TLB_TEST_ENTRYLO)
+    lw      $k1, %lo(TLB_TEST_ENTRYLO)($k1)
+    beqz    $k1, 9f
+    nop
+    mtc0    $k1, $2
+    mtc0    $k1, $3
+    tlbwr
+    eret
+    nop
+9:  j       trap_tlb_refill
     nop
     .globl tlb_refill_vector_end
 tlb_refill_vector_end:
@@ -540,6 +575,49 @@ fn fatal_trap(tf: &TrapFrame, exc_code: u32) -> ! {
     loop {
         core::hint::spin_loop();
     }
+}
+
+/// Exercise the software TLB-refill vector with one private mapping.
+///
+/// The test allocates a frame, writes a word through the kseg0 alias, makes
+/// the test virtual page absent, then reads it through kuseg.  The refill
+/// vector maps it uncached and returns through `eret`.
+pub fn tlb_self_test() -> bool {
+    let virt = 0x1000_0000u32;
+    let page = core::ptr::addr_of_mut!(TLB_TEST_PAGE) as u32;
+    let phys32 = page.wrapping_sub(0x8000_0000);
+    let alias = page;
+    let entrylo = ((phys32 >> 12) << 6) | 0x7; // D | V | G, uncached
+    let value = 0x5a17_c0deu32;
+
+    // Publish the one-entry mapping before touching the page.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_VPN), virt);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_ENTRYLO), entrylo);
+    }
+    crate::cache::sync();
+
+    // Write through the cached kseg0 alias, then flush before the uncached
+    // virtual read.  The test page is private to this self-test.
+    unsafe {
+        core::ptr::write_volatile(alias as *mut u32, value);
+    }
+    crate::cache::dcache_writeback_invalidate(alias as usize, 4);
+    crate::cache::sync();
+
+    let observed = unsafe { core::ptr::read_volatile(virt as *const u32) };
+
+    // Drop the test mapping so a later unexpected access is still fatal.
+    unsafe {
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_VPN), 0);
+        core::ptr::write_volatile(core::ptr::addr_of_mut!(TLB_TEST_ENTRYLO), 0);
+    }
+    crate::cache::sync();
+
+    crate::print_str("tlb: self-test value=");
+    crate::print_hex32(observed);
+    crate::println("");
+    observed == value
 }
 
 /// Exercise the general exception vector, frame save/restore and `eret`.

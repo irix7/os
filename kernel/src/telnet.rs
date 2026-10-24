@@ -470,6 +470,7 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 boot          continue booting\r\n\
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
+                  \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
                   \x20 reboot        restart from the PROM\r\n",
             );
         }
@@ -560,6 +561,14 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 b"trap: self-test ok\r\n".as_slice()
             } else {
                 b"trap: self-test FAILED\r\n".as_slice()
+            });
+        }
+        b"tlb" => {
+            let ok = crate::traps::tlb_self_test();
+            let _ = sock.send_slice(if ok {
+                b"tlb: self-test ok\r\n".as_slice()
+            } else {
+                b"tlb: self-test FAILED\r\n".as_slice()
             });
         }
         b"reboot" => {
