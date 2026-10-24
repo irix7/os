@@ -442,8 +442,9 @@ with `std::thread`, runs a child with `std::process::Command`, connects with
       ([bring-up](../research/std-hello-bringup.md)).  This uses a 42-symbol
       shim, not the final libc.
 - [x] The relibc n32 big-endian Linux/QEMU gate passes TLS, `setjmp`/`longjmp`
-      and pthread/TLS smoke tests ([report](../research/relibc-n32-bringup.md));
-      the Linux backend still has to become the IRIX PAL.
+      and pthread/TLS smoke tests ([report](../research/relibc-n32-bringup.md)).
+      A provisional `irix7-pal` scaffold builds and links C probes, but has not
+      run on IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
 - [ ] `std::fs`, `std::thread`, `std::sync`, `std::process`, `std::net`, `std::env`,
       `std::time`, TLS and the `std::os::unix` traits work on the real libc.
 - [ ] `catch_unwind` catches a panic at the cell boundary (or the phase-1 abort path is

@@ -35,8 +35,9 @@ Consequences:
 
 - The production C/POSIX layer is the clean-room [relibc fork](https://github.com/irix7/relibc)
   on `irix7-n32`: n32, big-endian, 64-bit `time_t`/`off_t`, and POSIX.1-2024 as the
-  userland contract.  Its Linux/QEMU gate passes TLS, `setjmp` and pthreads; the Linux
-  syscall backend still has to become the IRIX PAL.
+  userland contract.  Its Linux/QEMU gate passes TLS, `setjmp` and pthreads.  A
+  provisional `irix7-pal` scaffold builds and links C probes, but it has not run on
+  IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
 - The current running user image is a static Rust `std` probe.  It uses the 42-symbol
   `crates/irix7-libc` shim and provisional kernel syscalls, a small console/ramfs fd
   table, a 1 MiB 256 KiB-page heap, and a four-page stack.  It is single-threaded and

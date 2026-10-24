@@ -16,7 +16,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`rust-std-irix7.md`](rust-std-irix7.md) | What `std` for IRIX 7 means, the native-vs-compat split, the POSIX.1-2024 native libc ABI it requires, and the implementation and PR plan. |
 | [`rust-std-build-spike.md`](rust-std-build-spike.md) | The measured spike: build the `std` rlib for the native n32 target from a patched `rust-src` and libc, the exact method and patch set, the result, and the remaining runtime gaps. |
 | [`std-hello-bringup.md`](std-hello-bringup.md) | The first linked and running static `std` image: the 42-symbol shim, kernel syscall additions, loader fixes, output and remaining POSIX gaps. |
-| [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the remaining Linux-to-IRIX PAL gap. |
+| [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional (linked, not booted) IRIX PAL scaffold. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.

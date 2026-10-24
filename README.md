@@ -56,9 +56,11 @@ sockets yet.  `user/libc` and `crates/irix7-libc` are bring-up C ABI shims.
 
 The production POSIX layer will be a fork of
 [`relibc`](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU gate has
-passed, including TLS, `setjmp` and pthreads.  The next IRIX step is replacing
-relibc's Linux syscall backend with the native PAL.  This is a bring-up path for
-the native process model, not an IRIX 6.5 compatibility container.
+passed, including TLS, `setjmp` and pthreads.  A provisional IRIX PAL scaffold
+(`irix7-pal`) now builds and links C probes, but it has not been booted on IRIX 7
+and the kernel's error channel, TLS and `stat` ABI still need work.  This is a
+bring-up path for the native process model, not an IRIX 6.5 compatibility
+container.
 
 The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
 tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).

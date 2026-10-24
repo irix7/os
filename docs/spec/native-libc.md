@@ -30,7 +30,9 @@ libc exists yet.  The current `crates/irix7-libc` is a 42-symbol bring-up shim,
 and a static Rust `std` image runs on top of it with args, time, sleep and a tiny
 read/write ramfs.  The production C ABI layer will be the
 [`relibc` fork](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU
-gate passes, but the Linux syscall backend still has to become the IRIX PAL.
+gate passes.  A provisional `irix7-pal` scaffold builds and links C probes, but
+it has not run on IRIX 7 and the kernel error channel, TLS and `stat` ABI remain
+to be settled.
 M9 builds the full POSIX libc and M9.5 the first native `std` subset
 ([`../plan/milestones.md`](../plan/milestones.md)).  Every statement below is a
 requirement on that work, not a report of shipped behaviour.

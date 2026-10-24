@@ -89,7 +89,9 @@ and a static Rust `std` image now runs with args, time, sleep, a small
 read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths.  The bring-up
 uses a provisional 42-symbol libc shim; the production POSIX/C ABI layer will be
 the [relibc fork](https://github.com/irix7/relibc), whose n32 big-endian
-Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).
+Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).  A provisional IRIX PAL
+scaffold builds and links C probes but has not been booted; the kernel error
+channel, TLS and `stat` ABI are still open.
 
 The next blockers are the real POSIX layers: a general namespace/filesystem,
 threads and TLS, `posix_spawn`, signals, termios and sockets.  The kernel stack

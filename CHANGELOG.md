@@ -18,8 +18,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   The temporary 42-symbol libc shim will be replaced by the relibc fork.
 - The relibc n32 big-endian Linux/QEMU gate passes: static `hello`/`printf`,
   `__thread` TLS, `setjmp`/`longjmp` and `pthread_create`/`join` with per-thread
-  TLS.  The fork lives at <https://github.com/irix7/relibc> on `irix7-n32`; the
-  Linux `sc` backend still has to become the IRIX native PAL.
+  TLS.  The fork lives at <https://github.com/irix7/relibc> on `irix7-n32`; a
+  provisional `irix7-pal` scaffold also builds and links C probes, but has not run
+  on IRIX 7.
 - Unify kernel and native-user output through one console service: serial, the
   MCP serial ring and a queued telnet mirror.  Telnet output is drained outside
   the smoltcp borrow, so a user syscall can print while the console socket is

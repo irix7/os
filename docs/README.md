@@ -29,8 +29,9 @@ target 2.  That image exercises args, time, sleep, a small read/write ramfs, `st
 `read_dir`, `chdir` and relative paths through a provisional syscall ABI and a
 42-symbol C shim.
 
-The relibc n32 big-endian Linux/QEMU gate has passed (TLS, `setjmp`, pthreads); the
-production path replaces relibc's Linux syscall backend with the native IRIX PAL.
+The relibc n32 big-endian Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).
+A provisional IRIX PAL scaffold builds and links C probes, but it has not been
+booted on IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
 There is no process table, real threads/TLS, `posix_spawn`, signal delivery, termios
 or socket API yet.  See [`install.md`](install.md) and
 [`research/std-hello-bringup.md`](research/std-hello-bringup.md).
