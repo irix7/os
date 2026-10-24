@@ -1,5 +1,8 @@
 * text=auto eol=lf
 
+# Patch files carry unified-diff context lines that begin with a space.
+*.patch -whitespace
+
 *.png binary
 *.jpg binary
 *.jpeg binary

@@ -333,6 +333,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Changed
 
+- `crates/native-abi`: corrected the provisional `sockaddr_storage` 8-byte
+  alignment, modelled `sockaddr_in`/`sockaddr_in6` with 4-byte-aligned
+  `in_addr`/`in6_addr`, and removed an unnecessary `msghdr` pad (32 to 28
+  bytes).  The `std` build spike now copies the crate into its scratch tree and
+  asserts the `libc` `irix7` layouts against it at compile time.
 - The ROM is now a **pure MIPS III assembly stub**. Everything Rust that used to live
   in it — the smoltcp stack, DHCP, NTP, the HTTP fetch, the telnet console and its
   Lip Gloss UI — has moved to the kernel, which now runs from RAM at `0x8804_0000`. The
