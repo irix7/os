@@ -1,0 +1,9 @@
+[package]
+name = "guest-abi"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "WebAssembly import surface exposed by an IRIX 7 shim"
+
+[lib]
+path = "src/lib.rs"
