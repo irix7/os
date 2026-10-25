@@ -744,6 +744,10 @@ impl Host {
 mod tests {
     use super::*;
 
+    fn wasm(wat: &str) -> Vec<u8> {
+        wat::parse_str(wat).expect("WAT")
+    }
+
     const VERSION_WAT: &str = r#"
         (module
           (import "i7host" "host_version" (func $version (result i32)))
@@ -768,7 +772,7 @@ mod tests {
     fn host_version_is_available() {
         let host = Host::new().expect("host");
         assert_eq!(
-            host.run_i32(VERSION_WAT.as_bytes(), "run", 1_000).unwrap(),
+            host.run_i32(&wasm(VERSION_WAT), "run", 1_000).unwrap(),
             1
         );
     }
@@ -777,21 +781,21 @@ mod tests {
     fn submissions_return_tokens() {
         let host = Host::new().expect("host");
         assert_eq!(
-            host.run_i64(SUBMIT_WAT.as_bytes(), "run", 1_000).unwrap(),
+            host.run_i64(&wasm(SUBMIT_WAT), "run", 1_000).unwrap(),
             1
         );
     }
 
     #[test]
     fn fuel_exhaustion_is_an_error() {
-        let wasm = br#"
+        let wasm = wasm(r#"
             (module
               (func (export "run") (result i32)
                 (loop $l (br $l))
                 i32.const 0))
-        "#;
+        "#);
         let host = Host::new().expect("host");
-        assert!(host.run_i32(wasm, "run", 100).is_err());
+        assert!(host.run_i32(&wasm, "run", 100).is_err());
     }
     const POLL_WAT: &str = r#"
         (module
@@ -816,7 +820,7 @@ mod tests {
     #[test]
     fn poll_delivers_a_completion_to_guest_memory() {
         let host = Host::new().expect("host");
-        assert_eq!(host.run_i32(POLL_WAT.as_bytes(), "run", 10_000).unwrap(), 1);
+        assert_eq!(host.run_i32(&wasm(POLL_WAT), "run", 10_000).unwrap(), 1);
     }
 
     #[test]

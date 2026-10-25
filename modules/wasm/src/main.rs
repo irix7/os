@@ -99,7 +99,7 @@ fn services() -> Option<&'static Services> {
 
 fn kernel_clock_ms() -> u64 {
     services()
-        .map(|services| (services.clock_ms)() as u64)
+        .map(|services| (services.clock_ms)())
         .unwrap_or(0)
 }
 

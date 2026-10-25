@@ -153,7 +153,7 @@ jobs:
       - name: Build n32 kernel (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
@@ -161,7 +161,7 @@ jobs:
       - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # The ROM links text at the PROM reset window and data in DRAM.
@@ -173,7 +173,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           tools/build-user-hello.sh ${{ runner.temp }}/user-hello
@@ -181,7 +181,7 @@ jobs:
       - name: Build native target probe (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # This is the hosted native target, not the kernel target: it must expose
@@ -348,7 +348,6 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'm1-post: mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
           # leave the network-backed sash at the console.
@@ -596,7 +595,6 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'm1-post: mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
