@@ -205,7 +205,7 @@ jobs:
   boot:
     name: Boot (iris)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install rustup
@@ -277,6 +277,15 @@ jobs:
           size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
           echo "wasm.module: $size bytes"
           test "$size" -le 1572864
+
+      - name: Build static std hello
+        timeout-minutes: 20
+        env:
+          STD_SPIKE_WORK: ${{ runner.temp }}/std-spike
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/std-spike/build-std.sh
+          tools/build-std-hello.sh "$RUNNER_TEMP/std-hello"
 
       - name: Setup IRIS
         id: iris
@@ -528,6 +537,63 @@ jobs:
           iris-ci --socket "$socket" quit
           wait "$pid"
 
+      - name: Boot static std image
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-std"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$work/nvram.bin" <<'PY'
+          import sys
+
+          image = bytearray(8192)
+          env = b"net=off\0console=serial0\0\0"
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$RUNNER_TEMP/std-hello/std-hello.raw" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18890 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -80 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'hello from std' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
+          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
       - name: Boot ROM and user hello
         env:
           IRIS_NO_IDLE: "1"
@@ -698,6 +764,8 @@ jobs:
             ${{ runner.temp }}/iris-offline-no-module/iris.out
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
+            ${{ runner.temp }}/iris-std/serial.log
+            ${{ runner.temp }}/iris-std/iris.out
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
 

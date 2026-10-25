@@ -96,7 +96,8 @@ loads that module from the local SCSI target through an `mcp.local` NVRAM record
 with `net=off`, so the boot uses no network, and checks the policy and ticks on
 every pull request. The static Rust `std` image also boots in that no-network
 local-module configuration and exits 0; the CI boot gate uses the smaller native
-hello until the std image is a build artifact. The kernel now starts the local
+hello; the std image is built and booted in the same CI job. The kernel now
+starts the local
 namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
 remains the module probe. The slot-B Wasm module now runs the local policy
 from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses

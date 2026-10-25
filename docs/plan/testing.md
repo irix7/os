@@ -190,11 +190,11 @@ then uploads the serial transcript.  The action's release build needs
 The serial waits follow log order because the default `iris-ci` consumer cursor
 is forward-only ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
-The same no-network local-module image also boots the static Rust `std` image
-on the same kernel and exits 0, with `hello from std`, time, ramfs writes,
-`stat`, `read_dir`, `chdir` and the relative path checks.  That run is recorded
-locally but is not yet a CI artifact because the std image build needs the
-patched rust-src tree; the CI boot gate uses the smaller native hello.
+The `boot` job also builds the patched Rust `std` rlib and the static
+`user/std-hello` image, strips and pads it to target 2, and boots it with
+`net=off`. It asserts `hello from std`, the ramfs/stat/read_dir/chdir checks,
+exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. This is now a CI
+artifact rather than a local-only run.
 
 The CI boot gate also builds `user/o32-hello`, rewrites its `e_flags` to
 `EF_MIPS_ABI_O32`, and boots it with the same local logical module and

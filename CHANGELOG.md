@@ -52,6 +52,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   timing/cache behaviour is unvalidated. The M1 result is an iris gate with
   that limitation recorded, not a claim of a real-Indy pass; the follow-up is
   #16.
+- The CI boot gate now builds the patched static Rust `std` image and boots it
+  with `net=off`, asserting `hello from std`, the ramfs/stat/read_dir/chdir
+  checks and exit 0. The earlier local-only std evidence is now a CI artifact.
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
 
