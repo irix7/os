@@ -210,7 +210,8 @@ jobs:
           while read -r module package build_std; do
             echo "=== $module ($package, build-std=$build_std) ==="
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/$module/linker.ld" \
-              cargo build --release -Z "build-std=$build_std" -Zjson-target-spec \
+              cargo build --release -Z "build-std=$build_std" \
+                -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
                 --target "$TARGET" -p "$package"
             "$LLVM_OBJCOPY" -O binary "target/mips3-sgi-irix7-n32/release/$package" "$OUT/$module.module"
             printf '%s\t%s\t%s\t%s\n' \
@@ -222,6 +223,7 @@ jobs:
           block  block-module  core
           mcp    mcp-module    core,alloc
           erofs  erofs-module  core,alloc
+          logical logical-module core,alloc
           EOF
 
           echo "=== Module image sizes (limit $LIMIT bytes) ==="

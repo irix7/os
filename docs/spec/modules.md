@@ -182,6 +182,15 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
 table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for five seconds
 and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
 
+`modules/logical` is the M1 single-node policy probe. It links the architecture
+crates into a module (so the compressed PROM does not grow), builds a local
+membership view from the `info` MAC, stores an `/etc/motd` object in the CAS
+namespace, spawns and queues an actor, and signs and verifies a 1-of-1
+capability over the root directory. It prints `logical: root=... actor=...
+cap=ok` and ticks three times. Build it with `-Z
+build-std-features=compiler-builtins-mem`; the B-tree and compare operations
+need the compiler-builtins memory routines on MIPS.
+
 `modules/mcp` is the TCP reference. It listens on guest port 80, answers one request per
 connection, and alternates its two TCP slots so a back-to-back client does not hit the
 close handshake. `GET /` returns a status page; `POST /mcp` speaks the prototype MCP
