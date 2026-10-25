@@ -134,19 +134,23 @@ time, sleep, `std::fs` on a tiny ramfs, `chdir`) and the external
 pthreads).  Neither is a complete POSIX system; threads, spawn, signals, termios
 and sockets remain open.
 
-The CI `boot` job builds the release kernel and ROM, wraps `user/hello` as a
-256 KiB SCSI target-2 image, and appends the `logical` module to the same disk.
-It writes an `mcp.local` NVRAM record so the kernel loads the module from the
-local SCSI bus, sets `net=off` so the boot uses no network, installs the
-published IRIS release through `irix7/iris/.github/actions/setup-iris`, and
-boots with `iris-ci`.  It waits for the module's `cap=ok` line, `BOOT-READY`
-with `network=off` and `mcp=local`, `hello from user`, `pipe=ok`,
-`winsize=100x40`, the exit marker and `logical: tick 3`, then uploads the
-serial transcript.  The action's release
-build needs `IRIS_NO_IDLE=1`; `docs/ci.md` in the IRIS repository documents that
-limitation.  The serial waits follow log order because the default `iris-ci`
-consumer cursor is forward-only
-([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
+The CI `boot` job builds the release kernel and ROM and installs the published
+IRIS release through `irix7/iris/.github/actions/setup-iris`.  Its first boot
+**attaches no SCSI disk at all**: DHCP and the GitHub autoload path bring up the
+network, the target-2 loader fails cleanly, local and telnet sash come up, and
+the test runs `packages` and `packages install mcp` against the GitHub index.
+This is the primary diskless gate; a SCSI disk is not a boot, discovery or
+module prerequisite.
+
+The same job then runs the offline recovery image.  It wraps `user/hello` as a
+256 KiB SCSI target-2 image and appends the `logical` module to the same disk,
+writes an `mcp.local` NVRAM record, sets `net=off`, and waits for the module's
+`cap=ok` line, `BOOT-READY` with `network=off` and `mcp=local`, `hello from
+user`, `pipe=ok`, `winsize=100x40`, the exit marker and `logical: tick 3`,
+then uploads the serial transcript.  The action's release build needs
+`IRIS_NO_IDLE=1`; `docs/ci.md` in the IRIS repository documents that limitation.
+The serial waits follow log order because the default `iris-ci` consumer cursor
+is forward-only ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
 The same no-network local-module image also boots the static Rust `std` image
 on the same kernel and exits 0, with `hello from std`, time, ramfs writes,
