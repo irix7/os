@@ -17,7 +17,7 @@ support and release checklists.
 
 ### 1.1 Wasm/mesh release line
 
-The native **v0.1.2** image remains the last shipped release. The Wasm/mesh line is
+The native **v0.1.3** image remains the last shipped release. The Wasm/mesh line is
 not releasable until the M1 (single node) and M2 (two node) gates pass.
 
 Wasm/mesh artefacts are added alongside, not instead of, the native artefacts:

@@ -6,6 +6,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-10-25
+
 ### Added
 
 - A HACS-style, git-hosted package index at `packages/` lists digest-pinned
