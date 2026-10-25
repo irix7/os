@@ -170,6 +170,12 @@ objects whose winner changes.
 - Replication defaults are policy: boot-critical images two copies, actor
   snapshots three during migration, ordinary blobs one. GC is home-owned and
   pin-aware.
+- Distribution is network-first. A plain-text, git-hosted package index lists
+  modules and userland images by immutable HTTPS URL and SHA-256 digest. A
+  SCSI disk is optional: no disk is required to boot, discover, verify or load
+  a module. If a reserved writable target exists it may cache verified
+  downloads, but the cache is never authoritative and bytes are re-verified on
+  use. The current bring-up uses RAM for the cache window.
 
 ## 7. Scheduling and devices
 

@@ -487,6 +487,8 @@ jobs:
           name: iris-boot
           if-no-files-found: warn
           path: |
+            ${{ runner.temp }}/iris-diskless/serial.log
+            ${{ runner.temp }}/iris-diskless/iris.out
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
             ${{ runner.temp }}/iris-o32/serial.log
