@@ -281,9 +281,167 @@ impl CompletionBuffer {
     }
 }
 
+/// A bounded set of cancelled request tags.
+#[derive(Debug, Default)]
+pub struct CancelSet {
+    tags: BTreeSet<u32>,
+}
+
+impl CancelSet {
+    /// Create an empty set.
+    pub const fn new() -> Self {
+        Self {
+            tags: BTreeSet::new(),
+        }
+    }
+
+    /// Record a cancellation. Returns false if it was already present.
+    pub fn cancel(&mut self, tag: Tag) -> bool {
+        self.tags.insert(tag.0)
+    }
+
+    /// Whether a tag was cancelled.
+    pub fn is_cancelled(&self, tag: Tag) -> bool {
+        self.tags.contains(&tag.0)
+    }
+
+    /// Remove a cancellation after its completion is delivered.
+    pub fn clear(&mut self, tag: Tag) -> bool {
+        self.tags.remove(&tag.0)
+    }
+
+    /// Number of outstanding cancellations.
+    pub fn len(&self) -> usize {
+        self.tags.len()
+    }
+
+    /// Whether no cancellation is outstanding.
+    pub fn is_empty(&self) -> bool {
+        self.tags.is_empty()
+    }
+}
+
+/// Failure while linking a wait dependency.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GraphError {
+    /// A request cannot depend on itself.
+    SelfLink,
+    /// The child already has a parent.
+    Duplicate,
+    /// The dependency chain would exceed the protocol depth.
+    TooDeep,
+    /// The link would create a cycle.
+    Cycle,
+}
+
+/// Parent/child completion dependencies, bounded to keep failure propagation
+/// finite.
+#[derive(Debug, Default)]
+pub struct WaitGraph {
+    parents: BTreeMap<u32, u32>,
+    children: BTreeMap<u32, BTreeSet<u32>>,
+}
+
+impl WaitGraph {
+    /// Maximum ancestor or descendant depth.
+    pub const MAX_DEPTH: usize = 8;
+
+    /// Create an empty graph.
+    pub const fn new() -> Self {
+        Self {
+            parents: BTreeMap::new(),
+            children: BTreeMap::new(),
+        }
+    }
+
+    /// Link a parent to a child. The child may have only one parent.
+    pub fn link(&mut self, parent: Tag, child: Tag) -> Result<(), GraphError> {
+        if parent == child {
+            return Err(GraphError::SelfLink);
+        }
+        if self.parents.contains_key(&child.0) {
+            return Err(GraphError::Duplicate);
+        }
+        let mut cursor = parent.0;
+        let mut depth = 0usize;
+        loop {
+            if cursor == child.0 {
+                return Err(GraphError::Cycle);
+            }
+            let Some(&next) = self.parents.get(&cursor) else {
+                break;
+            };
+            cursor = next;
+            depth += 1;
+            if depth > Self::MAX_DEPTH {
+                return Err(GraphError::TooDeep);
+            }
+        }
+        if depth + 1 + self.descendant_depth(child) > Self::MAX_DEPTH {
+            return Err(GraphError::TooDeep);
+        }
+        self.parents.insert(child.0, parent.0);
+        self.children.entry(parent.0).or_default().insert(child.0);
+        Ok(())
+    }
+
+    fn descendant_depth(&self, tag: Tag) -> usize {
+        let mut best = 0usize;
+        let mut stack = alloc::vec![(tag.0, 0usize)];
+        while let Some((current, depth)) = stack.pop() {
+            best = best.max(depth);
+            if let Some(children) = self.children.get(&current) {
+                for child in children {
+                    stack.push((*child, depth + 1));
+                }
+            }
+        }
+        best
+    }
+
+    /// Direct children of a tag.
+    pub fn children(&self, parent: Tag) -> impl Iterator<Item = Tag> + '_ {
+        self.children
+            .get(&parent.0)
+            .into_iter()
+            .flat_map(|set| set.iter().copied().map(Tag))
+    }
+
+    /// Parent of a tag, if linked.
+    pub fn parent(&self, child: Tag) -> Option<Tag> {
+        self.parents.get(&child.0).copied().map(Tag)
+    }
+
+    /// Remove a child link after completion.
+    pub fn unlink(&mut self, child: Tag) -> bool {
+        let Some(parent) = self.parents.remove(&child.0) else {
+            return false;
+        };
+        if let Some(set) = self.children.get_mut(&parent) {
+            set.remove(&child.0);
+            if set.is_empty() {
+                self.children.remove(&parent);
+            }
+        }
+        true
+    }
+
+    /// Number of linked children.
+    pub fn len(&self) -> usize {
+        self.parents.len()
+    }
+
+    /// Whether no links exist.
+    pub fn is_empty(&self) -> bool {
+        self.parents.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
+    use alloc::vec::Vec;
     use sys_primitives::{CompletionId, CompletionKind, Status};
 
     fn completion(tag: u32) -> Completion {
@@ -350,5 +508,38 @@ mod tests {
         assert_eq!(buffer.pop().expect("second").tag, Tag(2));
         assert!(buffer.pop().is_none());
         assert!(buffer.is_empty());
+    }
+    #[test]
+    fn cancel_set_marks_and_clears() {
+        let mut cancels = CancelSet::new();
+        assert!(cancels.cancel(Tag(7)));
+        assert!(!cancels.cancel(Tag(7)));
+        assert!(cancels.is_cancelled(Tag(7)));
+        assert!(cancels.clear(Tag(7)));
+        assert!(cancels.is_empty());
+    }
+
+    #[test]
+    fn wait_graph_links_and_unlinks() {
+        let mut graph = WaitGraph::new();
+        graph.link(Tag(1), Tag(2)).expect("link 1->2");
+        graph.link(Tag(2), Tag(3)).expect("link 2->3");
+        assert_eq!(graph.parent(Tag(3)), Some(Tag(2)));
+        assert_eq!(graph.children(Tag(1)).collect::<Vec<_>>(), vec![Tag(2)]);
+        assert!(graph.unlink(Tag(2)));
+        assert!(graph.parent(Tag(2)).is_none());
+    }
+
+    #[test]
+    fn wait_graph_rejects_cycles_duplicates_and_depth() {
+        let mut graph = WaitGraph::new();
+        assert_eq!(graph.link(Tag(1), Tag(1)), Err(GraphError::SelfLink));
+        graph.link(Tag(1), Tag(2)).expect("link");
+        assert_eq!(graph.link(Tag(3), Tag(2)), Err(GraphError::Duplicate));
+        assert_eq!(graph.link(Tag(2), Tag(1)), Err(GraphError::Cycle));
+        for i in 0..8u32 {
+            graph.link(Tag(100 + i), Tag(101 + i)).expect("chain");
+        }
+        assert_eq!(graph.link(Tag(200), Tag(100)), Err(GraphError::TooDeep));
     }
 }
