@@ -180,7 +180,7 @@ pub fn poll() {
                         let _ = write!(w, "{}: {}\r\n", scheme, err);
                     }
                 }
-                let _ = w.sock.send_slice(b"kernel> ");
+                let _ = w.sock.send_slice(b"sash> ");
             });
         }
     }
@@ -198,7 +198,7 @@ pub fn poll() {
                 net::sockets_with(|sockets| {
                     let sock = sockets.get_mut::<TcpSocket>(handle);
                     let _ = sock.send_slice(output.as_bytes());
-                    let _ = sock.send_slice(b"kernel> ");
+                    let _ = sock.send_slice(b"sash> ");
                 });
             }
         }
@@ -228,7 +228,7 @@ pub fn poll() {
                         let _ = w.write_str("ntp: unknown host\r\n");
                     }
                 }
-                let _ = w.sock.send_slice(b"kernel> ");
+                let _ = w.sock.send_slice(b"sash> ");
             });
         }
     }
@@ -258,7 +258,7 @@ pub fn poll() {
                         let _ = w.write_str("ping: unknown host\r\n");
                     }
                 }
-                let _ = w.sock.send_slice(b"kernel> ");
+                let _ = w.sock.send_slice(b"sash> ");
             });
         }
     }
@@ -316,7 +316,7 @@ pub fn poll() {
                         let _ = write!(w, "module: {}\r\n", err);
                     }
                 }
-                let _ = w.sock.send_slice(b"kernel> ");
+                let _ = w.sock.send_slice(b"sash> ");
             });
         }
     }
