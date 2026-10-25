@@ -31,7 +31,7 @@ jobs:
     name: ${{ inputs.machine }} / ${{ inputs.suite }}
     runs-on: [self-hosted, indy]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run the hardware suite
         env:
           INDY_MACHINE: ${{ inputs.machine }}
