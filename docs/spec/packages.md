@@ -17,6 +17,8 @@ than to a package manager with a solver.  There is no central service.
 ```text
 packages/
   index.conf          canonical catalog
+  modules/            module binaries
+  userland/           userland images
   README.md
 ```
 
@@ -43,9 +45,9 @@ client; a future format version is not guessed.
 
 Sash fetches the index over the kernel TLS client, lists entries, and on
 `packages install NAME` selects the newest exact version.  A module is verified
-and loaded through the existing module path.  A userland image is verified
-before a future install/cache layer runs it.  No entry is executed if the
-digest does not match.
+and loaded through the existing module path.  Userland records are listed but
+are not executed by `packages install` yet; the diskless run/cache layer is the
+next storage slice.  No entry is executed if the digest does not match.
 
 ## 5. SCSI cache policy
 

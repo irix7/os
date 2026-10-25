@@ -61,7 +61,7 @@ The clean-room command set is:
 | `status`, `net`, `mem`, `time` | Kernel, network, RAM and clock summaries |
 | `hinv` | CPU, memory and network inventory |
 | `packages` | List the GitHub package index |
-| `packages install NAME` | Verify and load a module from the index |
+| `packages install NAME` | Verify and load a module from the index (userland records are listed only) |
 | `mount URL [...]` | Inspect EROFS over HTTPS Range |
 | `boot` | Retry the target-2 user image |
 | `reboot` | Restart from the PROM |

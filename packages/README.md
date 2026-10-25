@@ -15,6 +15,10 @@ kind name version url sha256 description...
 - `sha256` covers the exact bytes served at `url`.
 - `description` is free text to the end of the line.
 
+The catalog includes module binaries under `modules/` and userland images under
+`userland/`; both are served as immutable raw files for the version recorded in
+the index.  A separate `irix7/packages` repository can host the same tree.
+
 The kernel's `sash` fetches this file from:
 
 ```text
@@ -22,8 +26,8 @@ https://raw.githubusercontent.com/irix7/os/main/packages/index.conf
 ```
 
 `packages` lists the index.  `packages install NAME` currently loads a module
-record; a userland record will be installable once the persistent disk/cache
-path exists.  A SCSI disk is never required: if one is present it is an
+record; userland records are listed but their install/run path is the next
+layer.  A SCSI disk is never required: if one is present it is an
 opportunistic cache, not a dependency.
 
 The index can move to a separate `irix7/packages` repository without changing
