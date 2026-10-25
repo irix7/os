@@ -240,6 +240,94 @@ jobs:
         uses: irix7/iris/.github/actions/setup-iris@4b00413663a979d15b7ef8cd2208d95a030796a4
         with:
           version: v0.1.6+irix7
+      - name: Boot ROM diskless and discover packages
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-diskless"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+
+          [[port_forward]]
+          proto = "tcp"
+          host_port = 2324
+          guest_port = 23
+          bind = "localhost"
+          EOF
+
+          python3 - "$work/nvram.bin" <<'PY'
+          import sys
+
+          image = bytearray(8192)
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18887 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -50 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
+          # No SCSI target is attached: the user loader must fail cleanly and
+          # leave the network-backed sash at the console.
+          iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
+
+          python3 - <<'PY'
+          import socket
+
+          def read_until(sock, marker, timeout=30):
+              sock.settimeout(timeout)
+              data = b""
+              while marker not in data:
+                  chunk = sock.recv(8192)
+                  if not chunk:
+                      break
+                  data += chunk
+              return data
+
+          with socket.create_connection(("127.0.0.1", 2324), timeout=10) as sock:
+              read_until(sock, b"sash> ")
+              sock.sendall(b"packages\r\n")
+              listing = read_until(sock, b"sash> ")
+              if b"module mcp v0.1.2" not in listing:
+                  raise SystemExit("package index did not list mcp: %r" % listing)
+              sock.sendall(b"packages install mcp\r\n")
+              installed = read_until(sock, b"sash> ", timeout=60)
+              if b"packages: module loaded" not in installed:
+                  raise SystemExit("package install failed: %r" % installed)
+              print("diskless packages: ok")
+          PY
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
       - name: Boot ROM and user hello
         env:
           IRIS_NO_IDLE: "1"
