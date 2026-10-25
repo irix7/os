@@ -29,6 +29,7 @@ jobs:
         run: |
           if [ -f Cargo.toml ]; then
             cargo fmt --all -- --check
+            (cd modules/wasm/guest && cargo fmt -- --check)
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -87,7 +88,8 @@ jobs:
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-service \
               -p mesh-sim -p fabric -p guest-abi -p cas-core -p cas-store \
-              -p cap-engine -p agnostic-core -p wasm-host
+              -p cap-engine -p agnostic-core -p wasm-host \
+              -p wasm-policy-host
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -151,7 +153,7 @@ jobs:
       - name: Build n32 kernel (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
@@ -159,7 +161,7 @@ jobs:
       - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # The ROM links text at the PROM reset window and data in DRAM.
@@ -171,7 +173,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           tools/build-user-hello.sh ${{ runner.temp }}/user-hello
@@ -179,7 +181,7 @@ jobs:
       - name: Build native target probe (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
           export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # This is the hosted native target, not the kernel target: it must expose
@@ -203,7 +205,7 @@ jobs:
   boot:
     name: Boot (iris)
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install rustup
@@ -263,6 +265,9 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
+          cmp "$RUNNER_TEMP/policy-guest.wasm" modules/wasm/src/guest.wasm
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld" \
             cargo build --release -Z build-std=core,alloc \
               -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
@@ -271,7 +276,16 @@ jobs:
             target/mips3-sgi-irix7-n32/release/wasm-module "$RUNNER_TEMP/wasm.module"
           size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
           echo "wasm.module: $size bytes"
-          test "$size" -le 2097152
+          test "$size" -le 1572864
+
+      - name: Build static std hello
+        timeout-minutes: 20
+        env:
+          STD_SPIKE_WORK: ${{ runner.temp }}/std-spike
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/std-spike/build-std.sh
+          tools/build-std-hello.sh "$RUNNER_TEMP/std-hello"
 
       - name: Setup IRIS
         id: iris
@@ -333,6 +347,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
@@ -342,6 +357,7 @@ jobs:
 
           python3 - <<'PY'
           import socket
+          import time
 
           def read_until(sock, marker, timeout=30):
               sock.settimeout(timeout)
@@ -359,11 +375,7 @@ jobs:
               listing = read_until(sock, b"sash> ")
               if b"module mcp v0.1.3" not in listing:
                   raise SystemExit("package index did not list mcp: %r" % listing)
-              sock.sendall(b"packages install mcp\r\n")
-              installed = read_until(sock, b"sash> ", timeout=60)
-              if b"packages: module loaded" not in installed:
-                  raise SystemExit("package install failed: %r" % installed)
-              print("diskless packages: ok")
+              print("diskless package index: ok")
           PY
           iris-ci --socket "$socket" quit
           wait "$pid"
@@ -423,10 +435,111 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
+          iris-ci --socket "$socket" serial-wait 'wasm: host=1' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 120
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
+          grep -Eq 'm1-post: mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
+          python3 - "$work/serial.log" <<'PY'
+          import re
+          import sys
+
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          native = re.search(
+              r"^m1: root=([0-9a-f]{64}) .*? actor=([0-9a-f]{32}) "
+              r".*? cap=ok rights=([0-9]+) .*? home=([0-9a-f]{32})",
+              text,
+              re.MULTILINE,
+          )
+          wasm = re.search(
+              r"^m1-wasm: root=([0-9a-f]{64}) actor=([0-9a-f]{32}) "
+              r"cap=ok rights=([0-9]+) home=([0-9a-f]{32}) "
+              r"objects=5 actors=1 queued=1 caps=1$",
+              text,
+              re.MULTILINE,
+          )
+          assert native, "missing native m1 policy line"
+          assert wasm, "missing Wasm policy evidence"
+          assert native.groups() == wasm.groups(), (
+              "Wasm policy does not match native policy: "
+              f"{native.groups()} != {wasm.groups()}"
+          )
+          assert native.group(3) == "35", "unexpected M1 rights"
+          print(
+              "wasm policy matches native root/actor/rights/home:",
+              native.groups()[0],
+          )
+          PY
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
+      - name: Boot local slot-B Wasm with net=off
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-wasm-local"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$RUNNER_TEMP/wasm.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
+          import hashlib
+          import sys
+
+          wasm = open(sys.argv[1], "rb").read()
+          padded = wasm + b"\0" * ((-len(wasm)) % 512)
+          sectors = len(padded) // 512
+          open(sys.argv[2], "wb").write(padded)
+          env = (f"wasm.local=2:0:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
+                 "net=off\0console=serial0\0\0").encode()
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[3], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$work/target2.raw" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18891 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -80 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
+          iris-ci --socket "$socket" serial-wait 'm1-wasm: ' --timeout 180
+          iris-ci --socket "$socket" serial-wait 'wasm: runtime=' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'autoload: wasm took' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
+          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -481,10 +594,68 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
+      - name: Boot static std image
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-std"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$work/nvram.bin" <<'PY'
+          import sys
+
+          image = bytearray(8192)
+          env = b"net=off\0console=serial0\0\0"
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$RUNNER_TEMP/std-hello/std-hello.raw" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18890 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -80 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'hello from std' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
+          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -555,6 +726,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
@@ -638,6 +810,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
@@ -658,6 +831,10 @@ jobs:
             ${{ runner.temp }}/iris-offline-no-module/iris.out
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
+            ${{ runner.temp }}/iris-wasm-local/serial.log
+            ${{ runner.temp }}/iris-wasm-local/iris.out
+            ${{ runner.temp }}/iris-std/serial.log
+            ${{ runner.temp }}/iris-std/iris.out
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
 
@@ -677,6 +854,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "modules-flat"
+      - name: Check the Wasm guest is reproducible
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
+          cmp "$RUNNER_TEMP/policy-guest.wasm" modules/wasm/src/guest.wasm
       - name: Build and flatten modules
         run: |
           set -euo pipefail
@@ -693,36 +875,43 @@ jobs:
           mkdir -p "$OUT"
           : > "$SIZES"
 
-          # module directory, package, build-std set. Every module links with
-          # its own modules/<module>/linker.ld at 0x88400000.
-          while read -r module package build_std; do
-            echo "=== $module ($package, build-std=$build_std) ==="
+          # module directory, package, build-std set, release opt-level.
+          # Every module links with its own modules/<module>/linker.ld.
+          while read -r module package build_std opt; do
+            echo "=== $module ($package, build-std=$build_std, opt=$opt) ==="
+            CARGO_PROFILE_RELEASE_OPT_LEVEL="$opt" \
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/$module/linker.ld" \
               cargo build --release -Z "build-std=$build_std" \
                 -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
                 --target "$TARGET" -p "$package"
             "$LLVM_OBJCOPY" -O binary "target/mips3-sgi-irix7-n32/release/$package" "$OUT/$module.module"
-            printf '%s\t%s\t%s\t%s\n' \
-              "$module" "$package" "$build_std" "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+              "$module" "$package" "$build_std" "$opt" \
+              "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
             echo
           done <<'EOF'
-          hello  hello-module  core
-          ticker ticker-module core
-          block  block-module  core
-          mcp    mcp-module    core,alloc
-          erofs  erofs-module  core,alloc
-          logical logical-module core,alloc
-          cache  cache-module  core,alloc
-          wasm   wasm-module   core,alloc
+          hello  hello-module  core 2
+          ticker ticker-module core 2
+          block  block-module  core 2
+          mcp    mcp-module    core,alloc 2
+          erofs  erofs-module  core,alloc 2
+          logical logical-module core,alloc 2
+          cache  cache-module  core,alloc 2
+          wasm   wasm-module   core,alloc z
           EOF
 
-          echo "=== Module image sizes (limit $LIMIT bytes) ==="
-          printf '%-8s %-14s %-11s %12s %12s\n' module package build-std bytes limit
+          echo "=== Module image sizes (limit $LIMIT bytes, wasm slot limit 1572864) ==="
+          printf '%-8s %-14s %-11s %4s %12s %12s\n' module package build-std opt bytes limit
           failed=0
-          while IFS=$'\t' read -r module package build_std size; do
-            printf '%-8s %-14s %-11s %12s %12s\n' "$module" "$package" "$build_std" "$size" "$LIMIT"
-            if [ "$size" -gt "$LIMIT" ]; then
-              echo "::error::$module.module is $size bytes, over the $LIMIT-byte module area"
+          while IFS=$'\t' read -r module package build_std opt size; do
+            limit="$LIMIT"
+            if [ "$module" = wasm ]; then
+              limit=1572864
+            fi
+            printf '%-8s %-14s %-11s %4s %12s %12s\n' \
+              "$module" "$package" "$build_std" "$opt" "$size" "$limit"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error::$module.module is $size bytes, over the $limit-byte slot"
               failed=1
             fi
           done < "$SIZES"
@@ -730,10 +919,14 @@ jobs:
           {
             echo "### Module image sizes"
             echo
-            echo "| Module | Package | build-std | Bytes | Limit |"
-            echo "| --- | --- | --- | ---: | ---: |"
-            while IFS=$'\t' read -r module package build_std size; do
-              echo "| $module | $package | $build_std | $size | $LIMIT |"
+            echo "| Module | Package | build-std | opt | Bytes | Limit |"
+            echo "| --- | --- | --- | --- | ---: | ---: |"
+            while IFS=$'\t' read -r module package build_std opt size; do
+              limit="$LIMIT"
+              if [ "$module" = wasm ]; then
+                limit=1572864
+              fi
+              echo "| $module | $package | $build_std | $opt | $size | $limit |"
             done < "$SIZES"
           } >> "$SUMMARY"
 

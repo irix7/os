@@ -22,7 +22,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 519,480 bytes, leaving 4,808 bytes under the PROM limit; the
+  policy image is 521,320 bytes, leaving 2,968 bytes under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
   wasmi module. Loading the Wasm probe with `module b` leaves MCP running.
@@ -31,8 +31,35 @@ All notable changes to IRIX 7 are recorded here. The format follows
   counter surface.
 - A `net=off` boot with no local module now reports `BOOT-READY` with
   `mcp=disabled`; it runs no module and leaves sash usable.
-- `modules/wasm` is a wasmi runtime probe: it compiles and runs an embedded
-  Wasm module on iris and prints `wasm: run=42`. It is not the policy core.
+- `modules/wasm` is the slot-B Wasm core for M1. The guest drives a staged
+  local namespace/CAS, actor table and capability policy, and prints
+  `wasm: host=1`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...` and
+  `wasm: run=42`. The evidence matches the native `m1:` root, actor, rights and home;
+  the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
+  A failed or trapped guest aborts the stage, so no partial object, actor or
+  capability is published. The module is about 1.34 MiB (1,345,976 bytes in
+  the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
+  remains 521,320 bytes (2,968 free).
+- The M1 software path now boots both the no-network/no-module path and the
+  slot-B Wasm-policy path on iris, with zero mesh traffic and MCP still live
+  in slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The optional
+  Wasm probe starts after `BOOT-READY`; MCP-only readiness measured 7.3–7.7 s.
+  The readiness budget excludes the optional probe; the instrumented run
+  reports `autoload: wasm took 2140 ms` over local HTTP or 1600 ms from the
+  local SCSI cache, and `wasm: runtime=0 ms`; fetch/copy dominate. The
+  network-off/local-SCSI boot also runs the Wasm policy with `mcp=disabled`.
+  The optional full path is accepted as a post-readiness diagnostic waiver
+  under #214; it does not delay readiness. The live Wasm-policy bridge is
+  deferred to Phase 5; M1 keeps the native kernel policy and uses the Wasm
+  policy as a boot-time proof.
+  Real-Indy hardware execution was not available: no physical Indy IP24 or
+  lab runner was attached, so real SCC, Seeq DMA, SCSI, REX3 and DS1386
+  timing/cache behaviour is unvalidated. The M1 result is an iris gate with
+  that limitation recorded, not a claim of a real-Indy pass; the follow-up is
+  #16.
+- The CI boot gate now builds the patched static Rust `std` image and boots it
+  with `net=off`, asserting `hello from std`, the ramfs/stat/read_dir/chdir
+  checks and exit 0. The earlier local-only std evidence is now a CI artifact.
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
 

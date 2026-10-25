@@ -148,6 +148,11 @@ impl ActorTable {
         Ok(self.actors.remove(&id).expect("checked above"))
     }
 
+    /// Iterate over the retained actor identifiers.
+    pub fn ids(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.actors.keys().copied()
+    }
+
     /// Number of retained actors.
     pub fn len(&self) -> usize {
         self.actors.len()
@@ -264,6 +269,11 @@ impl RunQueue {
             }
         }
         Ok(())
+    }
+
+    /// Whether the actor is currently queued.
+    pub fn contains(&self, actor: &ActorId) -> bool {
+        self.classes.contains_key(actor)
     }
 
     /// Number of queued actors.

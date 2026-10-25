@@ -26,9 +26,11 @@ constructs no fabric frame. The loadable `logical` module runs the same policy
 on iris outside the compressed PROM; it prints its local root, actor and
 verified 1-of-1 capability, then ticks. The kernel now starts a local
 namespace/CAS, actor and capability policy at boot as well; the module remains
-the signed 1-of-1 probe. A wasmi runtime probe runs as a module; the Wasm
-policy core and module multiplexer are still missing. Mesh traffic is now
-instrumented and asserted zero on the M1 line. The fabric, capability, CAS and Wasm host crates have host tests;
+the signed 1-of-1 probe. The slot-B Wasm module now runs the local policy from
+a Rust guest through the staged `i7host` surface and prints evidence matching
+the native `m1:` line; the general module multiplexer is still missing. Mesh
+traffic is now instrumented and asserted zero on the M1 line. The fabric,
+capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:
@@ -141,19 +143,48 @@ The CI `boot` job builds the release kernel and ROM and installs the published
 IRIS release through `irix7/iris/.github/actions/setup-iris`.  Its first boot
 **attaches no SCSI disk at all**: DHCP and the GitHub autoload path bring up the
 network, the target-2 loader fails cleanly, local and telnet sash come up, and
-the test runs `packages` and `packages install mcp` against the GitHub index.
-This is the primary diskless gate; a SCSI disk is not a boot, discovery or
-module prerequisite.
+the test runs `packages` against the GitHub index and checks the v0.1.3 MCP
+record. This is the primary diskless gate; a SCSI disk is not a boot, discovery
+or module prerequisite. Package installation from GitHub is exercised
+separately because its release/TLS path is not part of the M1 boot gate.
 
-A slot-B boot serves a 1.45 MiB wasm module over local HTTP, sets `wasm.url` and
-`wasm.sha256` in NVRAM, and asserts `wasm: run=42`, `m1: ... mesh=0/0/0` and
-`BOOT-READY` with MCP still listening. This is the Wasm-runtime boot evidence;
-it is not yet the policy core.
+A slot-B boot serves a 1,345,976-byte wasm module over local HTTP, sets
+`wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
+`wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
+`m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
+`BOOT-READY` with MCP still listening. A second local boot uses `wasm.local`
+on SCSI target 2 with `net=off`, so the same boot asserts
+`BOOT-READY network=off mcp=disabled` and the Wasm policy evidence. The CI
+compares the `m1-wasm` root, actor, rights and home against the native `m1:` line
+and checks `objects=5 actors=1 queued=1 caps=1`. The guest drives the
+namespace, actor and capability choice; the host supplies only staged
+CAS/table primitives. A failed or trapped guest aborts the stage, so no
+partial policy is published. The image must stay within the
+1,572,864-byte slot-B limit.
+
+The no-network and slot-B policy boots are both part of the same `boot` CI
+job. The M1 software path is reproducible from a clean checkout on iris. **No
+physical Indy was available in this workspace: the real-Indy execution gate
+is not claimed, and is recorded as the hardware limitation in §5.**
+The policy guest is a boot-time proof, not yet a resident or multiplexed
+policy service.
+
+**Readiness and optional Wasm are measured separately.** With the local MCP
+fixture, MCP-only boots reached `BOOT-READY` in 7.3–7.7 s. The optional slot-B
+Wasm probe starts after `BOOT-READY`; the instrumented run reports
+`autoload: wasm took 2140 ms` over HTTP and 1600 ms from the local SCSI cache,
+with `wasm: runtime=0 ms`, so fetch/copy (not the guest policy) dominate. The
+full path is accepted as a post-readiness diagnostic waiver under #214: it does
+not delay `BOOT-READY`, and the local cache is the preferred optional source. The
+M1 readiness budget does not include that optional probe, so readiness is not
+regressed by Wasm. The full slot-B path is recorded under #214; it is not a
+claim that the Wasm policy is cheap to load on the R4600.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
-It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, `BOOT-READY`
-with `network=off` and `mcp=disabled`, the expected target-2 load failure and
-the sash prompt. This is the M1 no-network, no-module boot.
+It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, the
+post-smoke `m1-post: mesh=0/0/0` line, `BOOT-READY` with `network=off` and
+`mcp=disabled`, the expected target-2 load failure and the sash prompt. This is
+the M1 no-network, no-module boot.
 
 The same job then runs the offline recovery image.  It wraps `user/hello` as a
 256 KiB SCSI target-2 image and appends the `logical` module to the same disk,
@@ -165,11 +196,11 @@ then uploads the serial transcript.  The action's release build needs
 The serial waits follow log order because the default `iris-ci` consumer cursor
 is forward-only ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
-The same no-network local-module image also boots the static Rust `std` image
-on the same kernel and exits 0, with `hello from std`, time, ramfs writes,
-`stat`, `read_dir`, `chdir` and the relative path checks.  That run is recorded
-locally but is not yet a CI artifact because the std image build needs the
-patched rust-src tree; the CI boot gate uses the smaller native hello.
+The `boot` job also builds the patched Rust `std` rlib and the static
+`user/std-hello` image, strips and pads it to target 2, and boots it with
+`net=off`. It asserts `hello from std`, the ramfs/stat/read_dir/chdir checks,
+exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. This is now a CI
+artifact rather than a local-only run.
 
 The CI boot gate also builds `user/o32-hello`, rewrites its `e_flags` to
 `EF_MIPS_ABI_O32`, and boots it with the same local logical module and
@@ -202,7 +233,8 @@ The CI must be reproducible from a clean checkout; no manual steps.
 
 - **iris** is the first test target; every demo must run there.
 - **Real Indy** is the second target; the milestone is not done until it runs there (or the
-  limitation is recorded).
+  limitation is recorded). The M1 gate currently has no physical Indy IP24 or lab runner, so
+  real SCC, Seeq DMA, SCSI, REX3 and DS1386 timing/cache behaviour is unvalidated; see #16.
 - **Differential testing**: run the same test on iris and the real Indy; compare serial,
   screen and block hashes.
 - **Snapshots**: iris snapshots make long tests resumable; record the snapshot hash.

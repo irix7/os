@@ -1,28 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Minimal Wasm core probe for M1.
+//! Slot-B Wasm core probe that runs the M1 local policy.
 //!
-//! Loads a tiny embedded module through wasmi, runs its exported `run`
-//! function and prints the result.  This is the first Wasm-on-iris proof, not
-//! the final policy core.
+//! The embedded guest owns the policy: it chooses the local namespace layout,
+//! object contents, actor identity, capability rights and the order of every
+//! validation.  This module supplies the native primitives behind the
+//! `i7host` surface: a staged CAS/namespace, the actor directory and run
+//! queue, a generation-checked capability table, the clock and the console.
+//! It does not let the guest read the kernel service table or an ambient
+//! pointer.
+//!
+//! On success the guest prints `wasm: host=1` and
+//! `m1-wasm: root=... actor=... cap=ok rights=35 home=...`; this module prints
+//! `wasm: run=42`.  A guest trap or a non-42 result aborts the stage, so no
+//! partial object, actor or capability is published.  The kernel's native
+//! `m1:` policy remains the fallback and is not modified by this module.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+use alloc::boxed::Box;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use module_abi::{ModuleVtable, Services};
-use wasmi::{Config, Engine, Linker, Module, Store};
+use sys_primitives::{ActorId, NodeId};
+use wasm_host::{Host, HostHooks, PolicyHooks};
+use wasm_policy_host::Policy;
 
-/// `(module (func (export "run") (result i32) i32.const 42))` in binary form.
-const RUN_WASM: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03,
-    0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04,
-    0x00, 0x41, 0x2a, 0x0b,
-];
+/// The policy guest is generated from `guest/` and embedded here.
+const GUEST: &[u8] = include_bytes!("guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
 
@@ -60,6 +69,247 @@ fn log(services: &Services, text: &[u8]) {
     (services.write)(text.as_ptr(), text.len());
 }
 
+fn write_dec(services: &Services, mut value: u64) {
+    let mut buf = [0u8; 20];
+    let mut len = 0;
+    if value == 0 {
+        (services.write)(b"0".as_ptr(), 1);
+        return;
+    }
+    while value > 0 && len < buf.len() {
+        buf[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        (services.write)(&buf[len], 1);
+    }
+}
+
+fn services() -> Option<&'static Services> {
+    let ptr = SERVICES.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: the table lives for the kernel lifetime.
+        Some(unsafe { &*ptr })
+    }
+}
+
+fn kernel_clock_ms() -> u64 {
+    services()
+        .map(|services| (services.clock_ms)())
+        .unwrap_or(0)
+}
+
+fn kernel_console_write(bytes: &[u8]) {
+    if let Some(services) = services() {
+        (services.write)(bytes.as_ptr(), bytes.len());
+    }
+}
+
+fn policy(context: usize) -> Option<&'static mut Policy> {
+    if context == 0 {
+        return None;
+    }
+    // SAFETY: the module owns this allocation for its lifetime and all host
+    // callbacks are synchronous on the single kernel thread.
+    Some(unsafe { &mut *(context as *mut Policy) })
+}
+
+fn hook_node_id(context: usize, out: &mut [u8; 16]) -> i32 {
+    match policy(context) {
+        Some(policy) => {
+            out.copy_from_slice(policy.node().as_bytes());
+            0
+        }
+        None => -1,
+    }
+}
+
+fn hook_begin(context: usize) -> i32 {
+    match policy(context).map(Policy::begin) {
+        Some(Ok(())) => 0,
+        _ => -1,
+    }
+}
+
+fn hook_abort(context: usize) {
+    if let Some(policy) = policy(context) {
+        policy.abort();
+    }
+}
+
+fn hook_commit(context: usize) -> i32 {
+    match policy(context).map(Policy::commit) {
+        Some(Ok(_)) => 0,
+        _ => -1,
+    }
+}
+
+fn hook_mkdir(context: usize, path: &str, out: &mut [u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.mkdir(path) {
+        Ok(oid) => {
+            out.copy_from_slice(oid.as_bytes());
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+fn hook_put(context: usize, path: &str, kind: u8, bytes: &[u8], out: &mut [u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.put(path, kind, bytes) {
+        Ok(oid) => {
+            out.copy_from_slice(oid.as_bytes());
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+fn hook_lookup(context: usize, path: &str, out: &mut [u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.lookup(path) {
+        Ok(oid) => {
+            out.copy_from_slice(oid.as_bytes());
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+fn hook_get(context: usize, oid: &[u8; 32], kind: &mut i32, out: &mut [u8; 512]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    let object = sys_primitives::ObjectId(*oid);
+    match policy.get(&object) {
+        Ok((object_kind, bytes)) => {
+            if bytes.len() > out.len() {
+                return -1;
+            }
+            out[..bytes.len()].copy_from_slice(bytes);
+            *kind = object_kind as i32;
+            bytes.len() as i32
+        }
+        Err(_) => -1,
+    }
+}
+
+fn hook_root(context: usize, out: &mut [u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.root() {
+        Ok(oid) => {
+            out.copy_from_slice(oid.as_bytes());
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+fn hook_home(context: usize, oid: &[u8; 32], out: &mut [u8; 16]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.home(&sys_primitives::ObjectId(*oid)) {
+        Some(node) => {
+            out.copy_from_slice(node.as_bytes());
+            0
+        }
+        None => -1,
+    }
+}
+
+fn hook_actor_spawn(context: usize, id: &[u8; 16]) -> i32 {
+    match policy(context).map(|policy| policy.actor_spawn(ActorId(*id))) {
+        Some(Ok(())) => 0,
+        _ => -1,
+    }
+}
+
+fn hook_actor_place(context: usize, id: &[u8; 16], host: &[u8; 16]) -> i32 {
+    match policy(context).map(|policy| policy.actor_place(ActorId(*id), NodeId(*host))) {
+        Some(Ok(())) => 0,
+        _ => -1,
+    }
+}
+
+fn hook_actor_queue(context: usize, id: &[u8; 16]) -> i32 {
+    match policy(context).map(|policy| policy.actor_queue(ActorId(*id))) {
+        Some(Ok(())) => 0,
+        _ => -1,
+    }
+}
+
+fn hook_cap_issue(
+    context: usize,
+    object: &[u8; 32],
+    rights: u32,
+    subject: &[u8; 32],
+    home: &[u8; 16],
+) -> i64 {
+    let Some(policy) = policy(context) else {
+        return 0;
+    };
+    match policy.cap_issue(
+        sys_primitives::ObjectId(*object),
+        rights,
+        *subject,
+        NodeId(*home),
+    ) {
+        Ok(handle) => handle as i64,
+        Err(_) => 0,
+    }
+}
+
+fn hook_cap_check(context: usize, handle: u64, rights: u32, object: &[u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    if policy.cap_check(handle, rights, &sys_primitives::ObjectId(*object)) {
+        0
+    } else {
+        -1
+    }
+}
+
+fn hook_cap_rights(context: usize, handle: u64, object: &[u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.cap_rights(handle, &sys_primitives::ObjectId(*object)) {
+        Some(rights) => rights as i32,
+        None => -1,
+    }
+}
+
+fn hook_stats(context: usize, out: &mut [u32; 4]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.stats() {
+        Ok(stats) => {
+            out[0] = stats.objects;
+            out[1] = stats.actors;
+            out[2] = stats.queued;
+            out[3] = stats.caps;
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
 /// # Safety
 /// `services` must point to a valid v11 kernel service table.
 #[no_mangle]
@@ -75,50 +325,107 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
         services as *const Services as *mut Services,
         Ordering::Release,
     );
-
-    let mut config = Config::default();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config);
-    let module = match Module::new(&engine, RUN_WASM) {
-        Ok(module) => module,
-        Err(_) => {
-            log(services, b"wasm: compile failed\n");
-            return &BAD;
-        }
-    };
-    let linker = Linker::<()>::new(&engine);
-    let mut store = Store::new(&engine, ());
-    if store.set_fuel(1_000_000).is_err() {
-        log(services, b"wasm: fuel setup failed\n");
+    let Some(node) = node_id(services) else {
+        log(services, b"wasm: no local node\n");
         return &BAD;
-    }
-    let instance = match linker.instantiate_and_start(&mut store, &module) {
-        Ok(instance) => instance,
+    };
+
+    let policy = Box::into_raw(Box::new(Policy::new(node, (services.clock_ms)())));
+    let hooks = HostHooks {
+        clock_ms: kernel_clock_ms,
+        console_write: kernel_console_write,
+        policy: PolicyHooks {
+            context: policy as usize,
+            node_id: hook_node_id,
+            begin: hook_begin,
+            abort: hook_abort,
+            commit: hook_commit,
+            mkdir: hook_mkdir,
+            put: hook_put,
+            lookup: hook_lookup,
+            get: hook_get,
+            root: hook_root,
+            home: hook_home,
+            actor_spawn: hook_actor_spawn,
+            actor_place: hook_actor_place,
+            actor_queue: hook_actor_queue,
+            cap_issue: hook_cap_issue,
+            cap_check: hook_cap_check,
+            cap_rights: hook_cap_rights,
+            stats: hook_stats,
+        },
+    };
+    let host = match Host::with_hooks(hooks) {
+        Ok(host) => host,
         Err(_) => {
-            log(services, b"wasm: instantiate failed\n");
+            // SAFETY: the allocation is owned by this module and not published.
+            unsafe { (*policy).abort() };
+            log(services, b"wasm: host setup failed\n");
             return &BAD;
         }
     };
-    let function = match instance.get_typed_func::<(), i32>(&store, "run") {
-        Ok(function) => function,
-        Err(_) => {
-            log(services, b"wasm: run export missing\n");
-            return &BAD;
-        }
-    };
-    match function.call(&mut store, ()) {
+    let started = (services.clock_ms)();
+    let result = host.run_i32(GUEST, "run", 10_000_000);
+    let elapsed = (services.clock_ms)().saturating_sub(started);
+    log(services, b"wasm: runtime=");
+    write_dec(services, elapsed);
+    log(services, b" ms\n");
+    match result {
         Ok(42) => {
+            // SAFETY: the module owns this allocation; guest callbacks are done.
+            if !unsafe { (*policy).is_committed() } {
+                // SAFETY: the module owns this allocation and the guest has returned.
+                unsafe { (*policy).abort() };
+                log(services, b"wasm: policy not committed\n");
+                return &BAD;
+            }
             log(services, b"wasm: run=42\n");
             &OK
         }
         Ok(_) => {
+            // SAFETY: the module owns this allocation and the guest has returned.
+            unsafe { (*policy).abort() };
             log(services, b"wasm: wrong result\n");
             &BAD
         }
         Err(_) => {
+            // SAFETY: the module owns this allocation and the guest has returned.
+            unsafe { (*policy).abort() };
             log(services, b"wasm: run failed\n");
             &BAD
         }
+    }
+}
+
+fn node_id(services: &Services) -> Option<NodeId> {
+    let mut text = [0u8; 256];
+    // SAFETY: the service writes at most `text.len()` bytes into the buffer and
+    // returns the number of bytes written.
+    let n = unsafe { (services.info)(1, text.as_mut_ptr(), text.len()) };
+    if n <= 0 {
+        return None;
+    }
+    let text = core::str::from_utf8(&text[..n as usize]).ok()?;
+    let mac = &text[text.find("mac: ")? + 5..];
+    let bytes = mac.as_bytes();
+    if bytes.len() < 17 {
+        return None;
+    }
+    let mut node = [0u8; 16];
+    for i in 0..6 {
+        let hi = hex_nibble(bytes[i * 3])?;
+        let lo = hex_nibble(bytes[i * 3 + 1])?;
+        node[i] = (hi << 4) | lo;
+    }
+    Some(NodeId(node))
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 

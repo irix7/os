@@ -9,5 +9,8 @@ description = "Host-side wasmi lifecycle and i7host functions for IRIX 7"
 path = "src/lib.rs"
 
 [dependencies]
-wasmi = { version = "2.0", default-features = false, features = ["std", "deterministic", "validate", "wat"] }
+wasmi = { version = "2.0", default-features = false, features = ["deterministic", "validate"] }
 sys-primitives = { path = "../sys-primitives" }
+
+[dev-dependencies]
+wat = "1"

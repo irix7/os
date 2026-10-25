@@ -44,7 +44,7 @@ teletype.
 
 The kernel console is the standalone shell, `sash`.  The same command parser
 serves telnet and the local PS/2 keyboard/display; the local path is independent
-of the network and works with `net=off`.  The prompt is `sash> `.
+of the network and works with `net=off`.  The prompt is `sash>`.
 
 The clean-room command set is:
 

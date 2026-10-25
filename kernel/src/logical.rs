@@ -107,6 +107,8 @@ fn report(local: &Local) {
     out.dec(local.queue.len());
     out.str(b" cap=");
     out.str(if local.verified { b"ok" } else { b"FAILED" });
+    out.str(b" rights=");
+    out.dec(local.cap.rights().0 as usize);
     out.str(b" caps=");
     out.dec(local.caps.count());
     out.str(b" mesh=");
