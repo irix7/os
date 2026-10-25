@@ -101,8 +101,10 @@ delivery, termios or socket API yet.
 - `fabric` — tag allocation, stream flow control, cancellation and bounded
   completion/wait dependencies.
 - `guest-abi` — OS re-export of the SDK `wasm-abi` v0.5.0 host-call surface.
-- `cas-core` — BLAKE3 OIDs, canonical chunk manifests and verification.
-- `cas-store` — host-checkable put/fetch/pin policy for immutable objects.
+- `cas-core` — BLAKE3 OIDs, canonical chunk manifests, directory objects and
+  verification.
+- `cas-store` — host-checkable put/fetch/pin policy and a single-node namespace
+  tree over immutable directory objects.
 - `agnostic-core` — portable actor identity, home/host placement and lifecycle.
 - `cap-engine` — Ed25519 trust store, capability signing/verification, threshold
   root manifests and signed home certificates.
