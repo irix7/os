@@ -87,7 +87,9 @@ enters the static Rust `std` image on SCSI target 2.
 
 **Native bring-up:** the `std` image exercises args, time, sleep, a small
 read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths through the 42-
-symbol C shim.  The native user hello also exercises a small in-kernel pipe
+symbol C shim.  The kernel console is the clean-room `sash` recovery shell over
+telnet and the local keyboard/display (`help`, `ls`, `cat`, `pwd`, `cd`,
+`printenv`, `status`, `hinv`, `boot`, `reboot`).  The native user hello also exercises a small in-kernel pipe
 ring (read/write descriptors and `pipe=ok`) and POSIX-2024
 `tcgetwinsize`/`tcsetwinsize` (`winsize=100x40`).  A separate synthetic o32
 probe exercises the first legacy loader/syscall path and reads `/hello.txt`

@@ -309,6 +309,18 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
+
+          # The local keyboard/display sash must also work with net=off.
+          python3 - <<'PY'
+          import socket
+          import time
+
+          with socket.create_connection(("127.0.0.1", 18888), timeout=5) as monitor:
+              monitor.sendall(b"ps2 type help\r\n")
+              time.sleep(0.2)
+              monitor.sendall(b"ps2 enter\r\n")
+          PY
+          iris-ci --socket "$socket" serial-wait 'sash commands' --timeout 30
           iris-ci --socket "$socket" quit
           wait "$pid"
       - name: Boot the o32 probe

@@ -123,6 +123,11 @@ and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.
 
 Large binaries and images live in R2 or Git LFS, with a manifest and SHA-256 in the repo.
 
+The kernel `sash` is exercised manually on both transports: telnet `help`,
+`pwd`, `ls` and `cat /hello.txt`, and the local keyboard/display after the
+target-2 image returns.  The local path uses the same parser but writes through
+the console byte stream, so it works with `net=off`.
+
 The current bring-up gates are the static `std` image under `user/std-hello` (args,
 time, sleep, `std::fs` on a tiny ramfs, `chdir`) and the external
 [`irix7/relibc`](https://github.com/irix7/relibc) n32 gate (TLS, `setjmp`,

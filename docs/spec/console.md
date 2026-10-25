@@ -26,7 +26,7 @@ same serial ring as before; it does not consume the telnet queue.
 The telnet console has two writers with separate framing:
 
 - **Console output** from `write_bytes` is queued and drained by
-  `telnet::poll` and at the end of each command, before the next `kernel>`
+  `telnet::poll` and at the end of each command, before the next `sash>`
   prompt.  This is why a user syscall can print while the socket set is already
   borrowed without re-entering smoltcp.  If the transmit window is full the
   queue retains the bytes; when the queue itself is full the oldest bytes are
@@ -40,7 +40,39 @@ new console output from that point; use MCP `serial.read` for the boot
 transcript.  Bare LF in user output is expanded to CRLF before it reaches the
 teletype.
 
-## 3. Native user output
+## 3. Sash
+
+The kernel console is the standalone shell, `sash`.  The same command parser
+serves telnet and the local PS/2 keyboard/display; the local path is independent
+of the network and works with `net=off`.  The prompt is `sash> `.
+
+The clean-room command set is:
+
+| Command | Meaning |
+|---|---|
+| `help`, `?` | Command list |
+| `version` | Sash and kernel identity |
+| `pwd` | Current bring-up directory |
+| `cd DIRECTORY` | Change directory |
+| `ls [DIRECTORY]` | List the ramfs namespace |
+| `cat FILE` | Write a file to the console |
+| `printenv NAME` | Read a PROM environment value |
+| `echo TEXT` | Echo the argument |
+| `status`, `net`, `mem`, `time` | Kernel, network, RAM and clock summaries |
+| `hinv` | CPU, memory and network inventory |
+| `boot` | Retry the target-2 user image |
+| `reboot` | Restart from the PROM |
+
+Telnet additionally retains the kernel-only commands `diagnostics`, `scsi`,
+`http`, `https`, `ntp`, `ping`, `module`, `user`, `userelf`, `panic`, `trap`,
+`tlb` and `gfx`; local sash deliberately does not expose network fetches or
+test hooks.  Sash has no userland, process table or job control dependency.
+
+The local prompt is printed when the target-2 user image returns, or when no
+image is attached.  A user image that never returns therefore keeps the local
+console; telnet sash remains independently available whenever networking is up.
+
+## 4. Native user output
 
 The provisional user ABI now has a small fd table: console descriptors 0/1/2,
 `/dev/null`, a read/write ramfs fixture and read-only directory handles.  Writes
@@ -48,7 +80,7 @@ to a console fd go through the same console service, so they appear on serial,
 in the MCP ring and on a connected telnet session.  The std bring-up image uses
 fd 1/2 for `println!`; the full POSIX fd table and VFS remain future work.
 
-## 4. Boot readiness
+## 5. Boot readiness
 
 The kernel emits one `BOOT-READY` or `BOOT-NOT-READY` line after the RTC, network
 and module autoload have run (see
