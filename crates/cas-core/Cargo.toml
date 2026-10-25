@@ -1,0 +1,13 @@
+[package]
+name = "cas-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Content-addressed object identities and manifests for IRIX 7"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sys-primitives = { path = "../sys-primitives" }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
