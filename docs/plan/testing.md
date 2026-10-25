@@ -22,10 +22,11 @@ prints its single-node identity and initialises the same membership policy at
 boot; this is M1 boot evidence, not a mesh. A host integration test,
 `crates/mesh-sim/tests/single_node.rs`, joins the real membership table,
 namespace/CAS, actor directory/run queue and capability engine on one node and
-constructs no fabric frame. It is local-policy evidence only; the kernel does
-not start that policy yet. The fabric, capability, CAS and Wasm host crates
-have host tests; the 128-node execution gate requires the native shim and
-transport work.
+constructs no fabric frame. The loadable `logical` module runs the same policy
+on iris outside the compressed PROM; it prints its local root, actor and
+verified 1-of-1 capability, then ticks. The kernel itself does not start that
+policy yet. The fabric, capability, CAS and Wasm host crates have host tests;
+the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:
 

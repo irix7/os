@@ -114,15 +114,18 @@ delivery, termios or socket API yet.
   root manifests and signed home certificates.
 - `wasm-host` — deterministic wasmi lifecycle prototype with fuel metering and
   the `i7host` import surface; it runs a WAT module, not the kernel core.
+- `logical` module — runs the local namespace/CAS, actor directory/run queue
+  and a verified 1-of-1 capability on iris, outside the compressed PROM.
 
 The kernel now initialises the one-node membership view from the DS1386 MAC and
 resolves local object homes through the shared rendezvous policy. A first Indy
 `PlatformShim` slice covers physical pages, the kseg0 direct map, DMA cache
 maintenance, console/keyboard, the DS1386 clock and boot entropy; asynchronous
 device submission still belongs to the polled native path. The single-node
-policy also has a combined host gate for membership, namespace/CAS, actors and
-capabilities. The kernel does not yet run that policy, the Wasm core or a mesh;
-M1 is partial and M2 is still ahead.
+policy has a combined host gate and now runs on iris in the loadable `logical`
+module, including a verified local capability; the kernel itself does not start
+it yet. The kernel also does not run the Wasm core or a mesh; M1 is partial and
+M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
 user SDK and `wasm-abi` v1. The production POSIX layer is the

@@ -1,0 +1,29 @@
+[package]
+license = "GPL-3.0-only"
+name = "logical-module"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "logical-module"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[dependencies]
+module-abi.workspace = true
+agnostic-core = { path = "../../crates/agnostic-core" }
+cap-engine = { path = "../../crates/cap-engine" }
+cas-core = { path = "../../crates/cas-core" }
+cas-store = { path = "../../crates/cas-store" }
+mesh-core = { path = "../../crates/mesh-core" }
+mesh-service = { path = "../../crates/mesh-service" }
+sys-primitives = { path = "../../crates/sys-primitives" }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }
+ed25519-dalek = { version = "2.1", default-features = false }
