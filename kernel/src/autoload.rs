@@ -5,11 +5,14 @@
 //! to bring it back without a human at the telnet console.  The kernel fetches
 //! `boot/config.conf` from the repository, reads `mcp.url` and `mcp.sha256`,
 //! then fetches the image over HTTPS, checks the digest, and runs it in place.
-//! A local test rig can override the two keys in the DS1386 environment.
+//! A local test rig can override the two keys in the DS1386 environment.  A
+//! recovery or offline image can instead use `mcp.local`, a target:LBA:sectors
+//! record with the same SHA-256 digest; it is read from the local SCSI bus
+//! before the network path.
 
 use crate::nvram;
 use crate::sha256::Sha256;
-use crate::{console_println, http, module, tls};
+use crate::{console_println, http, module, scsi, tls};
 
 /// Outcome of the boot-time module autoload.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -24,12 +27,19 @@ pub enum Status {
 
 /// Load and run the configured module, if any.
 ///
-/// Local NVRAM `mcp.url`/`mcp.sha256` wins when present, because the test rig
-/// uses it to point at a temporary HTTP fixture.  Otherwise the kernel reads
-/// the repository boot configuration, which the release workflow updates with
-/// raw GitHub URLs for the published module.  A normal Indy never needs the
-/// NVRAM override; the chip is validated and repaired at startup.
+/// Local NVRAM `mcp.local` wins when present: it names a SCSI target, LBA and
+/// sector count, and is used by the offline/recovery boot.  Otherwise local
+/// NVRAM `mcp.url`/`mcp.sha256` wins, because the test rig uses it to point at
+/// a temporary HTTP fixture.  Otherwise the kernel reads the repository boot
+/// configuration, which the release workflow updates with raw GitHub URLs for
+/// the published module.  A normal Indy never needs the NVRAM override; the
+/// chip is validated and repaired at startup.
 pub fn boot() -> Status {
+    let mut local = [0u8; 160];
+    if let Some(n) = nvram::get("mcp.local", &mut local) {
+        return finish(load_local(&local[..n]));
+    }
+
     let mut url = [0u8; 192];
     if let Some(n) = nvram::get("mcp.url", &mut url) {
         return boot_nvram(&url[..n]);
@@ -61,6 +71,62 @@ fn boot_nvram(url: &[u8]) -> Status {
         return Status::Failed;
     };
     finish(run(url, &digest))
+}
+
+/// Load a module from a local SCSI target and run it in place.
+///
+/// The NVRAM record is `<target>:<lba>:<sectors>:<sha256>`.  The image is read
+/// in 255-sector chunks because the bring-up READ(6) path cannot cross that
+/// boundary, then verified before the entry call.
+fn load_local(record: &[u8]) -> Result<i32, &'static str> {
+    let text = core::str::from_utf8(record).map_err(|_| "autoload: mcp.local is not UTF-8")?;
+    let mut fields = text.split(':');
+    let target = parse_u32(fields.next().ok_or("autoload: mcp.local target missing")?)?;
+    let lba = parse_u32(fields.next().ok_or("autoload: mcp.local LBA missing")?)?;
+    let sectors = parse_u32(fields.next().ok_or("autoload: mcp.local sectors missing")?)?;
+    let digest = parse_digest(
+        fields
+            .next()
+            .ok_or("autoload: mcp.local digest missing")?
+            .as_bytes(),
+    )
+    .ok_or("autoload: mcp.local digest is not 64 hex digits")?;
+    if fields.next().is_some() {
+        return Err("autoload: mcp.local has extra fields");
+    }
+    if target >= 7 {
+        return Err("autoload: mcp.local target must be 0..6");
+    }
+    let len = (sectors as usize)
+        .checked_mul(512)
+        .ok_or("autoload: mcp.local length overflow")?;
+    if len == 0 || len > module::MODULE_MAX {
+        return Err("autoload: mcp.local does not fit the module area");
+    }
+    if lba.checked_add(sectors).is_none() {
+        return Err("autoload: mcp.local LBA overflow");
+    }
+
+    console_println("autoload: loading local module");
+    module::clear();
+    let area = module::area();
+    let mut done = 0usize;
+    while done < len {
+        let count = ((len - done) / 512).min(255);
+        let start_lba = lba + (done / 512) as u32;
+        scsi::read_blocks(target as u8, start_lba, &mut area[done..done + count * 512])?;
+        done += count * 512;
+    }
+    if !Sha256::digest(&area[..len]).eq_digest(&digest) {
+        return Err("autoload: local module hash mismatch");
+    }
+    // SAFETY: the image fits and its hash matched.
+    unsafe { Ok(module::call_entry(len)) }
+}
+
+fn parse_u32(text: &str) -> Result<u32, &'static str> {
+    text.parse::<u32>()
+        .map_err(|_| "autoload: mcp.local field is not a decimal integer")
 }
 
 fn finish(result: Result<i32, &'static str>) -> Status {

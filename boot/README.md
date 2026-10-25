@@ -26,6 +26,7 @@ public.  The kernel verifies the module's SHA-256 before executing it.
 
 The DS1386 NVRAM on a real Indy is a hardware chip, not a distribution
 channel.  A local test rig may still set `mcp.url`/`mcp.sha256` in its emulated
-NVRAM to override this public configuration for a temporary HTTP fixture; that
-is a development-only override.  Release machines should leave it unset and
-use this file.
+NVRAM to override this public configuration for a temporary HTTP fixture, or
+set `mcp.local=<target>:<lba>:<sectors>:<sha256>` to load the module from the
+local SCSI bus.  Both are development/recovery overrides.  Release machines
+should leave them unset and use this file.

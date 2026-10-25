@@ -29,6 +29,13 @@ module command uses HTTPS by default.
 The body is downloaded, not buffered elsewhere, so a module is limited only by the module
 area (2 MiB) and the network.
 
+For an offline or recovery boot, the DS1386 environment may instead carry
+`mcp.local=<target>:<lba>:<sectors>:<sha256>`.  The kernel checks it before
+`mcp.url`, reads the flat image directly from SCSI targets 0–6 in 255-sector
+chunks, verifies the digest over the whole padded image and runs it in place.
+A present but invalid `mcp.local` fails closed; it does not fall back to the
+network.  The record is a local hardware override, not a release channel.
+
 ## 2.1 Boot autoload
 
 A machine that reboots must bring the control plane back without a human at the console.

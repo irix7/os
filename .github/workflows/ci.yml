@@ -249,51 +249,44 @@ jobs:
           [scsi]
           EOF
 
-          # Serve the logical module from the host gateway; the guest's NAT
-          # gateway is 192.168.0.1. This exercises module autoload and the M1
-          # local policy without depending on GitHub raw content.
-          cp "$RUNNER_TEMP/logical.module" "$work/logical.module"
-          python3 -m http.server 18080 --bind 0.0.0.0 --directory "$work" \
-            >"$work/http.log" 2>&1 &
-          http_pid=$!
-          for _ in $(seq 1 50); do
-            if python3 -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 0.2)' 2>/dev/null; then
-              break
-            fi
-            sleep 0.1
-          done
-          python3 - "$work/logical.module" "$work/nvram.bin" <<'PY'
+          # Put the module after the 256 KiB user image on the same SCSI
+          # target and point mcp.local at it. This exercises the offline
+          # module source and the M1 local policy without a network fetch.
+          python3 - "$RUNNER_TEMP/user-hello/hello-disk.raw" \
+            "$RUNNER_TEMP/logical.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
           import hashlib
           import sys
 
-          module = open(sys.argv[1], "rb").read()
-          env = (b"mcp.url=http://192.168.0.1:18080/logical.module\0"
-                 b"mcp.sha256=" + hashlib.sha256(module).hexdigest().encode() + b"\0"
-                 b"console=serial0\0\0")
+          user = open(sys.argv[1], "rb").read()
+          module = open(sys.argv[2], "rb").read()
+          padded = module + b"\0" * ((-len(module)) % 512)
+          lba = len(user) // 512
+          sectors = len(padded) // 512
+          open(sys.argv[3], "wb").write(user + padded)
+          env = (f"mcp.local=2:{lba}:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
+                 "console=serial0\0\0").encode()
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[2], "wb").write(image)
+          open(sys.argv[4], "wb").write(image)
           PY
 
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --scsi2 "$RUNNER_TEMP/user-hello/hello-disk.raw" \
+            --scsi2 "$work/target2.raw" \
             --nvram "$work/nvram.bin" \
             --ci-socket "$socket" --monitor-port 18888 \
             --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
           pid=$!
           cleanup() {
             status=$?
-            kill "$pid" "$http_pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
             if [ "$status" -ne 0 ]; then
               echo "--- iris output (tail)"
               tail -50 "$work/iris.out" || true
               echo "--- serial log (tail)"
               tail -50 "$work/serial.log" 2>/dev/null || true
-              echo "--- http log (tail)"
-              tail -20 "$work/http.log" || true
             fi
           }
           trap cleanup EXIT
