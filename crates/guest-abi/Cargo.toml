@@ -7,3 +7,6 @@ description = "WebAssembly import surface exposed by an IRIX 7 shim"
 
 [lib]
 path = "src/lib.rs"
+
+[dependencies]
+wasm-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.5.0", package = "wasm-abi" }
