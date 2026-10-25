@@ -631,9 +631,12 @@ dependencies = [
  "erofs",
  "hpc3",
  "irix-elf",
+ "mesh-core",
+ "mesh-service",
  "module-abi",
  "rand_core",
  "smoltcp",
+ "sys-primitives",
  "x509-cert",
 ]
 

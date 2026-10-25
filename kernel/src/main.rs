@@ -39,6 +39,7 @@ pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
+pub mod mesh;
 pub mod module;
 pub mod net;
 pub mod ntp;
@@ -601,6 +602,7 @@ pub extern "C" fn _start_rust() -> ! {
     kbd::init();
     net::init();
     telnet::init();
+    mesh::init();
 
     // The DS1386 keeps the time across a power cycle; seed the wall clock
     // before any NTP query so status reports a real date.
