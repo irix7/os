@@ -143,6 +143,12 @@ limitation.  The serial waits follow log order because the default `iris-ci`
 consumer cursor is forward-only
 ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
+The same no-network local-module image also boots the static Rust `std` image
+on the same kernel and exits 0, with `hello from std`, time, ramfs writes,
+`stat`, `read_dir`, `chdir` and the relative path checks.  That run is recorded
+locally but is not yet a CI artifact because the std image build needs the
+patched rust-src tree; the CI boot gate uses the smaller native hello.
+
 ## 4. CI
 
 | Job | What | Required |

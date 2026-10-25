@@ -86,7 +86,10 @@ loadable `logical` module, which autoloads on iris, prints its root/motd/actor
 and verified 1-of-1 capability, and ticks three times. The CI boot gate now
 loads that module from the local SCSI target through an `mcp.local` NVRAM record
 with `net=off`, so the boot uses no network, and checks the policy and ticks on
-every pull request. The kernel itself does not start that policy yet.
+every pull request. The static Rust `std` image also boots in that no-network
+local-module configuration and exits 0; the CI boot gate uses the smaller native
+hello until the std image is a build artifact. The kernel itself does not start
+that policy yet.
 
 **PROM budget finding:** the first shim slice leaves the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
