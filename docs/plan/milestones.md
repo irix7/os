@@ -105,6 +105,12 @@ Range image is 520,840 bytes (3,448 free). Runtime policy, modules and userland
 software must ship in the package index or a separate core image; they cannot
 grow the fixed bootstrap.
 
+The optional SCSI write cache is deliberately a module, not PROM code: verified
+downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
+a cache-owned range during its idle tick.  It lands after the network/RAM path
+is stable and needs an appended `block_write` ABI service plus a module
+multiplexer while the module area has one slot.
+
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
 budgets.

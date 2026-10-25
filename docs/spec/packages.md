@@ -61,7 +61,28 @@ The current bring-up uses the existing 256 KiB RAM read-ahead window.  The
 SCSI write-cache path is the next storage slice; `sash` and `mount` must not
 assume a disk is present.
 
-## 6. Non-goals
+## 6. Optional SCSI cache module
+
+The cache is not part of the compressed PROM and is not a boot prerequisite.
+It is a loadable kernel module (or a component of the resident policy module
+while there is only one module slot) with a tick callback.  The verified
+download path places each blob in a bounded RAM queue keyed by its SHA-256;
+the module drains that queue only from its idle tick, writes the bytes to a
+**cache-owned** SCSI range through a future append-only `block_write` service,
+and records the digest.  A cache hit is re-verified against the digest before
+use.  A power loss may leave a partial record; the next boot ignores it and
+re-fetches.
+
+The module never writes a data disk.  A target/range is used only when it
+carries an `I7CACHE` reservation or is explicitly configured as cache.  A
+missing, read-only or failed disk leaves the network/RAM path untouched.
+
+The current implementation has the RAM window only.  `block_write` and the
+cache queue are not in ABI v10; the SDK will append them with a version bump.
+The one-slot module area also means the cache cannot coexist with the MCP
+module until a multiplexer or merged policy module lands.
+
+## 7. Non-goals
 
 Dependency solving, binary deltas, per-package signing keys, central accounts
 and automatic execution without digest verification are out of scope for v1.

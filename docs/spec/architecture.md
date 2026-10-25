@@ -214,7 +214,7 @@ normative for this spec.
 |---|---|---|
 | D20 | **Minimal assembly ROM; kernel-owned network and HTTPS modules** | The ROM only sizes DRAM, brings up serial, decompresses the kernel and jumps; the kernel owns Seeq, TLS, module fetch and the boot bundle later |
 | D21 | **Root image: standard little-endian EROFS + byte-order codec** | No fork; keeps Linux/`fsck`/`dump` as an independent oracle |
-| D22 | **Network-first boot; optional local cache** | Boot config and modules arrive over HTTPS; an R2/EROFS root and local block cache are later work |
+| D22 | **Network-first boot; optional local cache** | Boot config and modules arrive over HTTPS; an R2/EROFS root and local block cache are later work.  The cache is an idle-flushed module keyed by digest, never a boot prerequisite |
 | D23 | **XFS compatibility server read-only first; native FS (I7FS preferred, RedoxFS fallback) decided later** | XFS read-only is tractable; write is the long pole; the native FS choice can wait |
 | D24 | **User data: periodic batched Git commits (small) + R2 (large)** | Git's strengths for versioned text; object storage for media |
 | D25 | **Networking: Seeq 8003 + smoltcp; `/net` tree; optional 9P** | One owner, dual-stack, scriptable |

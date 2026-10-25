@@ -118,7 +118,9 @@ link that one crate, and compile-time assertions pin these offsets for the n32 t
 the table is 0x50 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
-that needs a newer table can reject an older core by checking `version`.
+that needs a newer table can reject an older core by checking `version`.  The optional
+SCSI cache module will need an appended `block_write` service and a bounded cache queue;
+neither is present in ABI v10.
 
 ### TCP slots
 
