@@ -132,10 +132,11 @@ and sockets remain open.
 The CI `boot` job builds the release kernel and ROM, wraps `user/hello` as a
 256 KiB SCSI target-2 image, and appends the `logical` module to the same disk.
 It writes an `mcp.local` NVRAM record so the kernel loads the module from the
-local SCSI bus, installs the published IRIS release through
-`irix7/iris/.github/actions/setup-iris`, and boots with `iris-ci`.  It waits for
-the module's `cap=ok` line, `BOOT-READY`, `hello from user`, the exit marker and
-`logical: tick 3`, then uploads the serial transcript.  The action's release
+local SCSI bus, sets `net=off` so the boot uses no network, installs the
+published IRIS release through `irix7/iris/.github/actions/setup-iris`, and
+boots with `iris-ci`.  It waits for the module's `cap=ok` line, `BOOT-READY`,
+`hello from user`, the exit marker and `logical: tick 3`, then uploads the
+serial transcript.  The action's release
 build needs `IRIS_NO_IDLE=1`; `docs/ci.md` in the IRIS repository documents that
 limitation.  The serial waits follow log order because the default `iris-ci`
 consumer cursor is forward-only

@@ -120,6 +120,26 @@ fn read_nvram_mac() -> [u8; 6] {
 /// descriptor forces a stop/re-arm cycle and drops frames on bulk transfers.
 const RX_RING: usize = 8;
 
+/// Set when the DS1386 environment disables networking for an offline boot.
+static mut NETWORK_OFF: bool = false;
+
+/// Whether networking was deliberately disabled at boot.
+pub fn disabled() -> bool {
+    // SAFETY: single-threaded kernel; written once by init().
+    unsafe { NETWORK_OFF }
+}
+
+fn configured_off() -> bool {
+    let mut value = [0u8; 8];
+    match crate::nvram::get("net", &mut value) {
+        Some(n) => match &value[..n] {
+            b"off" | b"none" | b"0" => true,
+            _ => false,
+        },
+        None => false,
+    }
+}
+
 /// The Seeq device as a smoltcp `Device`.
 pub struct SeeqDevice {
     mac: EthernetAddress,
@@ -487,6 +507,15 @@ fn seeq() -> Option<&'static mut SeeqDevice> {
 
 /// Bring up the Seeq, run DHCP and publish the live stack.
 pub fn init() {
+    if configured_off() {
+        // SAFETY: single-threaded boot; this is the only writer.
+        unsafe {
+            NETWORK_OFF = true;
+        }
+        crate::println("network: disabled by environment");
+        return;
+    }
+
     let dev = match SeeqDevice::new() {
         Some(d) => d,
         None => {
@@ -664,15 +693,23 @@ pub unsafe fn poll_raw(
 }
 
 /// The Seeq station address.
+///
+/// Before the Seeq is brought up, or when `net=off` disables it, fall back to
+/// the station address in NVRAM so the node identity remains stable.
 pub fn mac_address() -> [u8; 6] {
-    {
-        match seeq() {
-            Some(dev) => {
-                let mut mac = [0u8; 6];
-                mac.copy_from_slice(dev.mac_address().as_bytes());
+    match seeq() {
+        Some(dev) => {
+            let mut mac = [0u8; 6];
+            mac.copy_from_slice(dev.mac_address().as_bytes());
+            mac
+        }
+        None => {
+            let mac = read_nvram_mac();
+            if mac == [0; 6] || mac == [0xFF; 6] {
+                FALLBACK_MAC
+            } else {
                 mac
             }
-            None => FALLBACK_MAC,
         }
     }
 }

@@ -123,9 +123,10 @@ resolves local object homes through the shared rendezvous policy. A first Indy
 maintenance, console/keyboard, the DS1386 clock and boot entropy; asynchronous
 device submission still belongs to the polled native path. The single-node
 policy has a combined host gate and now runs on iris in the loadable `logical`
-module, including a verified local capability; the kernel itself does not start
-it yet. The kernel also does not run the Wasm core or a mesh; M1 is partial and
-M2 is still ahead.
+module, including a verified local capability; the CI boot gate loads it from
+local SCSI with `net=off`, so the single-node path has no network dependency.
+The kernel itself does not start the policy yet, and it does not run the Wasm
+core or a mesh; M1 is partial and M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
 user SDK and `wasm-abi` v1. The production POSIX layer is the
