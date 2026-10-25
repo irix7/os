@@ -699,7 +699,8 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
 fn announce_boot(autoload: autoload::Status) {
     let boot_id = crate::ntp::now_unix().unwrap_or(0);
     let network_up = crate::net::ip_addr().is_some();
-    let ready = autoload == autoload::Status::Loaded && network_up;
+    let network_off = crate::net::disabled();
+    let ready = autoload == autoload::Status::Loaded && (network_up || network_off);
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {
@@ -707,7 +708,13 @@ fn announce_boot(autoload: autoload::Status) {
     });
     write_u64_dec(boot_id);
     console_write(" kernel=up network=");
-    console_write(if network_up { "up" } else { "down" });
+    console_write(if network_off {
+        "off"
+    } else if network_up {
+        "up"
+    } else {
+        "down"
+    });
     console_write(" mcp=");
     match autoload {
         autoload::Status::Loaded => console_write("listening"),
@@ -724,7 +731,7 @@ fn announce_boot(autoload: autoload::Status) {
         console_println("");
     } else {
         console_write(" reason=");
-        console_println(if !network_up {
+        console_println(if !network_up && !network_off {
             "network-down"
         } else if autoload == autoload::Status::Disabled {
             "no-mcp-url"

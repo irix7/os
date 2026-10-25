@@ -264,7 +264,7 @@ jobs:
           sectors = len(padded) // 512
           open(sys.argv[3], "wb").write(user + padded)
           env = (f"mcp.local=2:{lba}:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
-                 "console=serial0\0\0").encode()
+                 "net=off\0console=serial0\0\0").encode()
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])

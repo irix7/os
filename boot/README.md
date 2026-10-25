@@ -28,5 +28,6 @@ The DS1386 NVRAM on a real Indy is a hardware chip, not a distribution
 channel.  A local test rig may still set `mcp.url`/`mcp.sha256` in its emulated
 NVRAM to override this public configuration for a temporary HTTP fixture, or
 set `mcp.local=<target>:<lba>:<sectors>:<sha256>` to load the module from the
-local SCSI bus.  Both are development/recovery overrides.  Release machines
-should leave them unset and use this file.
+local SCSI bus, and `net=off` to skip DHCP and the network stack entirely.
+Both are development/recovery overrides.  Release machines should leave them
+unset and use this file.
