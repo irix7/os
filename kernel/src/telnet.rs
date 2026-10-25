@@ -48,6 +48,8 @@ struct Console {
     pending_ping: Option<PingRequest>,
     /// A deferred module fetch and run.
     pending_module: Option<HttpRequest>,
+    /// Slot for the pending module request.
+    pending_module_slot: crate::module::Slot,
     /// A deferred sash package/mount request.
     pending_sash: Option<crate::sash::Deferred>,
     #[cfg(feature = "erofs-debug")]
@@ -120,6 +122,7 @@ pub fn init() {
                 pending_ntp: None,
                 pending_ping: None,
                 pending_module: None,
+                pending_module_slot: crate::module::Slot::A,
                 pending_sash: None,
                 #[cfg(feature = "erofs-debug")]
                 pending_erofs: None,
@@ -268,16 +271,18 @@ pub fn poll() {
 
     // Run a deferred module fetch.  The image is downloaded straight into the
     // reserved module area and executed only after its hash checks out.
-    let module_request =
-        unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_module.take());
-    if let Some(req) = module_request {
+    let module_request = unsafe { CONSOLE.as_mut() }.and_then(|console| {
+        let request = console.pending_module.take()?;
+        Some((request, console.pending_module_slot))
+    });
+    if let Some((req, slot)) = module_request {
         let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
         let outcome: Result<i32, &'static str> = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
                 // Zero the area first: the flat image does not include .bss.
-                crate::module::clear();
-                let area = crate::module::area();
+                crate::module::clear(slot);
+                let area = crate::module::area(slot);
                 let fetched = if req.tls {
                     crate::tls::get_to(ip, req.port, host, path, area)
                 } else {
@@ -293,7 +298,7 @@ pub fn poll() {
                                     if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) =>
                                 {
                                     // SAFETY: the image fits and its hash matched.
-                                    unsafe { Ok(crate::module::call_entry(captured)) }
+                                    unsafe { Ok(crate::module::call_entry(slot, captured)) }
                                 }
                                 Some(_) => Err("module hash mismatch"),
                                 None => Err("module needs a sha256"),
@@ -745,7 +750,13 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             }
         },
         _ if line.starts_with(b"module ") => {
-            let arg = trim(&line[7..]);
+            let mut arg = trim(&line[7..]);
+            let slot = if let Some(rest) = arg.strip_prefix(b"b ") {
+                arg = trim(rest);
+                crate::module::Slot::B
+            } else {
+                crate::module::Slot::A
+            };
             let (arg, tls) = if let Some(rest) = arg.strip_prefix(b"https://") {
                 (rest, true)
             } else if let Some(rest) = arg.strip_prefix(b"http://") {
@@ -758,9 +769,11 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                 Some(request) => {
                     let _ = sock.send_slice(b"module: fetching\r\n");
                     console.pending_module = Some(request);
+                    console.pending_module_slot = slot;
                 }
                 None => {
-                    let _ = sock.send_slice(b"usage: module [https://]host:port/path <sha256>\r\n");
+                    let _ =
+                        sock.send_slice(b"usage: module [b] [https://]host:port/path <sha256>\r\n");
                 }
             }
         }

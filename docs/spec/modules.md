@@ -21,13 +21,13 @@ module command uses HTTPS by default.
    `module [https://]<host>:<port><path> <sha256-hex>`.
    Without a scheme it uses HTTPS through the core TLS client with certificate-chain
    verification. `http://` exists only for the local iris rig.
-2. The response body is streamed straight into the module area while being hashed.
+2. The response body is streamed straight into the selected module slot while being hashed.
 3. The entry is called only if the whole body fits and its SHA-256 matches the argument.
    A mismatch, a short capture, a TLS failure or a DNS failure leaves the area untouched
    and executes nothing.
 
-The body is downloaded, not buffered elsewhere, so a module is limited only by the module
-area (2 MiB) and the network.
+The body is downloaded, not buffered elsewhere, so a module is limited by its slot and
+the network.
 
 For an offline or recovery boot, the DS1386 environment may instead carry
 `mcp.local=<target>:<lba>:<sectors>:<sha256>`.  The kernel checks it before
@@ -55,7 +55,7 @@ request, because `main` is protected). The file supplies:
 
 The DS1386 environment may override the same two names for a local test rig; it is a
 hardware chip, not a release distribution channel. After DHCP and DNS are up, and before
-the boot handoff, the kernel reads the configuration, zeroes the module area,
+the boot handoff, the kernel reads the configuration, zeroes module slot A,
 fetches the image, verifies the digest and calls the entry. A failure prints
 `autoload: ...` and the boot continues with a `BOOT-NOT-READY` marker; it never runs
 an unverified image.
@@ -71,12 +71,14 @@ environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), o
 | Property | Value |
 |---|---|
 | Load virtual address (kseg0) | `0x8840_0000` (physical `0x0840_0000`) |
-| Maximum size | 2 MiB (`0x0020_0000`) |
+| Slot A | 512 KiB at `0x8840_0000`; default control/probe slot |
+| Slot B | 1.5 MiB at `0x8848_0000`; Wasm/large module slot |
+| Total area | 2 MiB (`0x0020_0000`) |
 | Placement | inside the reserved low window, above the kernel stack top (`0x8830_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
 | Image format | flat binary, entry at offset 0 |
 | Cache | kseg0 is cacheable; the loader must write back the data cache and invalidate the instruction cache before the call |
 
-The module is linked for that exact address by its own linker script; there is no
+A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by its own linker script. There is no general relocation;
 relocation at load time. The Seeq device's uncached DMA structures start at physical
 `0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
 
@@ -151,8 +153,10 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
 
 ## 5. Lifecycle
 
-- One module slot. Loading a second image overwrites the first, clears its `.bss`, and
-  drops any previous tick callback; there is no unload and no destructor.
+- Two fixed slots. Loading into a slot overwrites that slot, clears its `.bss`, and
+  drops that slot's tick callback; the other slot keeps running. Slot A holds MCP and
+  small probes; slot B holds the 1.45 MiB wasmi probe. There is no general relocatable
+  multiplexer, unload or destructor.
 - The loader is synchronous: the console is blocked for the duration of the fetch and the
   entry call. The tick callback runs on the idle loop, so it must be quick.
 - The flat image contains `.text`, `.rodata` and `.data`, not `.bss`. The loader zeroes the
@@ -168,7 +172,8 @@ macros, the n32 target and flat linker, a copyable template, a hello example and
 `tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
 `v0.6.0` tag, so the contract has one source of truth.
 
-A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
+A module built with the SDK is still a flat image linked at its slot base (`0x88400000`
+for A, `0x88480000` for B), fetched over
 HTTPS, digest-checked and called through this table. The SDK changes none of the contract
 below.
 
@@ -196,9 +201,10 @@ and returns non-zero to unregister. Swap `hello` for `ticker` in the two command
 hashes it with BLAKE3, and during idle ticks writes an `I7CACHE1` header and the sector
 to target 3, then verifies the readback. It is a probe, not the final package cache.
 
-`modules/wasm` is the first wasmi probe. It embeds a tiny Wasm module, instantiates it
-with the no_std interpreter, runs its `run` export and prints `wasm: run=42`. It is a
-runtime proof, not the policy core or the final shim integration.
+`modules/wasm` is the first wasmi probe. It is linked for slot B, embeds a tiny Wasm
+module, instantiates it with the no_std interpreter, runs its `run` export and prints
+`wasm: run=42`. Load it with `module b ...`; slot A (MCP) remains live. It is a runtime
+proof, not the policy core or the final shim integration.
 
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local
@@ -227,7 +233,7 @@ curl -s http://127.0.0.1:8088/
 prints the module's uptime. Build it by swapping `hello` for `mcp` in the commands above;
 it links the same flat image.
 
-The CI `modules` job builds every reference module (`hello`, `ticker`, `block`, `mcp` and
+The CI `modules` job builds every reference module (`hello`, `ticker`, `block`, `mcp`,
 `erofs`) in release with the pinned nightly, each with its own linker script, flattens the
 ELF with `llvm-objcopy -O binary` and fails if any image exceeds the 2 MiB module area. It
 uses `build-std=core` for `hello`, `ticker` and `block`, and `build-std=core,alloc` for
@@ -237,6 +243,7 @@ Serve a module and load it:
 
 ```text
 module http://10.1.1.3:18080/ticker.module <sha256 of ticker.module>
+module b http://10.1.1.3:18080/wasm.module <sha256 of wasm.module>
 ticker: alloc ok
 module: returned 0
 ticker: tick
@@ -258,6 +265,7 @@ These are additive to the version 2 table.
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
-- Multiple concurrent modules or dependency resolution.
+- More than two fixed slots or a relocatable multiplexer.
+- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or dependency resolution.
 - Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.

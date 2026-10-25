@@ -139,8 +139,9 @@ local SCSI with `net=off`, so the single-node path has no network dependency.
 The static Rust `std` image also boots in that configuration and exits 0. The
 kernel starts the local namespace/CAS, actor and capability policy at boot. A
 wasmi Wasm runtime probe also runs as a loadable module, but the Wasm policy
-core, module multiplexer and mesh are not integrated; M1 is partial and M2 is
-still ahead.
+core and mesh are not integrated; a fixed two-slot module area lets MCP and the
+Wasm probe coexist, but a general multiplexer is still missing. M1 is partial
+and M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 11,
 user SDK and `wasm-abi` v1. The production POSIX layer is the

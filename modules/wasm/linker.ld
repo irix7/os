@@ -9,7 +9,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x88400000;
+  . = 0x88480000;
 
   .text : {
     KEEP(*(.text._start))

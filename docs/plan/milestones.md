@@ -97,7 +97,8 @@ local-module configuration and exits 0; the CI boot gate uses the smaller native
 hello until the std image is a build artifact. The kernel now starts the local
 namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
 remains the module probe. A wasmi runtime probe runs as a module; the Wasm
-policy core and module multiplexer are still missing. Zero mesh traffic is now
+policy core and general module multiplexer are still missing; a fixed A/B slot
+layout lets MCP and the Wasm probe coexist. Zero mesh traffic is now
 instrumented and asserted on the M1 line.
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
@@ -105,8 +106,8 @@ instrumented and asserted on the M1 line.
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 519,692 bytes
-(4,596 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy and fat LTO is 519,916 bytes
+(4,372 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
