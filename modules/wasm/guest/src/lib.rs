@@ -150,10 +150,7 @@ pub extern "C" fn run() -> i32 {
     }
 
     let mut dev = [0u8; 32];
-    if unsafe {
-        host_ns_mkdir(DEV.as_ptr() as i32, DEV.len() as i32, address_mut(&mut dev))
-    } != 0
-    {
+    if unsafe { host_ns_mkdir(DEV.as_ptr() as i32, DEV.len() as i32, address_mut(&mut dev)) } != 0 {
         return fail(30);
     }
     let mut dev_null = [0u8; 32];
