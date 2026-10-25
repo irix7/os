@@ -98,12 +98,14 @@ delivery, termios or socket API yet.
   suspect/failed state and deterministic snapshots.
 - `mesh-sim` — 1/2/8/128-node host gates for load bounds, deterministic homes
   and failed-node exclusion.
-- `fabric` — tag allocation, stream flow control and bounded completion
-  buffering.
+- `fabric` — tag allocation, stream flow control, cancellation and bounded
+  completion/wait dependencies.
 - `guest-abi` — OS re-export of the SDK `wasm-abi` v0.5.0 host-call surface.
 - `cas-core` — BLAKE3 OIDs, canonical chunk manifests and verification.
-- `cap-engine` — Ed25519 trust store, capability signing/verification and
-  threshold root manifests.
+- `cas-store` — host-checkable put/fetch/pin policy for immutable objects.
+- `agnostic-core` — portable actor identity, home/host placement and lifecycle.
+- `cap-engine` — Ed25519 trust store, capability signing/verification, threshold
+  root manifests and signed home certificates.
 - `wasm-host` — deterministic wasmi lifecycle prototype with fuel metering and
   the `i7host` import surface; it runs a WAT module, not the kernel core.
 

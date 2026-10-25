@@ -55,10 +55,11 @@ Add `sys-primitives`, `mesh-core`, `platform-api`, `fabric`, `guest-abi`,
 
 **Status (2026-10-25):** merged. `sys-primitives` has wire round-trips;
 `mesh-core` uses BLAKE3 rendezvous, leases and GPU placement; `mesh-service`
-covers membership and failure state; `fabric` covers tags, streams and
-completions; `cas-core` covers OIDs/manifests; `cap-engine` covers Ed25519,
-trust and threshold roots; `wasm-host` runs an `i7host` WAT module; `mesh-sim`
-passes 1/2/8/128 policy gates. The native kernel still boots unchanged.
+covers membership and failure state; `fabric` covers tags, streams, cancellation and wait dependencies; `cas-core`
+covers OIDs/manifests and `cas-store` covers put/pin policy; `cap-engine`
+covers Ed25519, trust, threshold roots and home certificates; `agnostic-core`
+covers actor home/host/lifecycle; `wasm-host` runs an `i7host` WAT module;
+`mesh-sim` passes 1/2/8/128 policy gates. The native kernel still boots unchanged.
 
 **Exit:** native image boots; new crates host-tested and wasm32-checked where
 applicable; clippy/deny clean; no existing public API changes.
