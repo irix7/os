@@ -18,17 +18,19 @@ jobs:
         with:
           components: rust-src
       - uses: Swatinem/rust-cache@v2
-      - name: Build
+      - name: Host build
         run: |
           if [ -f Cargo.toml ]; then
-            cargo build --workspace
+            # The default members exclude the target-only kernel/ROM/flat
+            # modules, which cannot link as host binaries.
+            cargo build
           else
             echo "No Rust workspace yet; skipping."
           fi
-      - name: Tests
+      - name: Host tests
         run: |
           if [ -f Cargo.toml ]; then
-            cargo test --workspace
+            cargo test
           else
             echo "No Rust workspace yet; skipping."
           fi
