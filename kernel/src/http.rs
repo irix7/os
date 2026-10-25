@@ -228,7 +228,7 @@ fn get_inner(
     }
 
     // Read the response: headers into a small buffer, body counted.
-    let mut headers = [0u8; 1024];
+    let mut headers = [0u8; 4096];
     let mut header_len = 0usize;
     let mut headers_done = false;
     let mut status = 0u16;
