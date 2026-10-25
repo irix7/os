@@ -13,7 +13,7 @@ jobs:
     name: Nightly build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
@@ -41,7 +41,7 @@ jobs:
     if: ${{ vars.NIGHTLY_HARDWARE == 'true' }}
     runs-on: [self-hosted, indy]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Run smoke
         env:
           INDY_MACHINE: indy-a

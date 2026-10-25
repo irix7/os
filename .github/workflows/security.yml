@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for a workspace
         id: workspace
         run: echo "exists=$(test -f Cargo.toml && echo yes || echo no)" >> "$GITHUB_OUTPUT"
@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check for a lockfile
         id: lock
         run: echo "exists=$(test -f Cargo.lock && echo yes || echo no)" >> "$GITHUB_OUTPUT"
