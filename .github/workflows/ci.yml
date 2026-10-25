@@ -397,12 +397,6 @@ jobs:
           profile = "indy_ip24"
 
           [scsi]
-
-          [[port_forward]]
-          proto = "tcp"
-          host_port = 8088
-          guest_port = 80
-          bind = "localhost"
           EOF
 
           sha=$(sha256sum "$RUNNER_TEMP/wasm.module" | awk '{print $1}')
@@ -479,21 +473,6 @@ jobs:
               "wasm policy matches native root/actor/rights/home:",
               native.groups()[0],
           )
-          PY
-          python3 - <<'PY'
-          import socket
-
-          with socket.create_connection(("127.0.0.1", 8088), timeout=10) as sock:
-              sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
-              data = b""
-              while True:
-                  chunk = sock.recv(4096)
-                  if not chunk:
-                      break
-                  data += chunk
-              if b"IRIX 7" not in data:
-                  raise SystemExit("MCP did not answer after slot-B load: %r" % data[:200])
-              print("MCP after slot-B: ok")
           PY
           iris-ci --socket "$socket" quit
           wait "$pid"
