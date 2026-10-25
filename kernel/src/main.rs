@@ -716,7 +716,12 @@ fn announce_boot(autoload: autoload::Status) {
         "down"
     });
     console_write(" mcp=");
+    let local_module = {
+        let mut value = [0u8; 1];
+        crate::nvram::get("mcp.local", &mut value).is_some()
+    };
     match autoload {
+        autoload::Status::Loaded if local_module => console_write("local"),
         autoload::Status::Loaded => console_write("listening"),
         autoload::Status::Disabled => console_write("disabled"),
         autoload::Status::Failed => console_write("failed"),
