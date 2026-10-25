@@ -12,10 +12,9 @@
 //! live in the native shim and the mesh service; this crate is the policy that
 //! must be identical on every node.
 //!
-//! The sketch uses a deterministic 64-bit mixer for rendezvous scores. The
-//! production implementation replaces it with `BLAKE3-64("I7-HOME-v1" || oid ||
-//! node || vnode)`; the algorithm and its properties are the same. The mixer is
-//! host-checked and has no cryptographic claim.
+//! Rendezvous scores are the first 64 bits of
+//! `BLAKE3("IRIX7-HOME-v1" || oid || node || vnode)`, as specified in
+//! `MESH.md`. The hash is deterministic on every node and target.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -31,7 +30,7 @@ use sys_primitives::{ActorId, NodeId, ObjectId};
 pub const MAX_NODES: usize = 128;
 
 /// Virtual nodes per physical node for rendezvous balance.
-pub const VIRTUAL_NODES: u32 = 32;
+pub const VIRTUAL_NODES: u32 = 1;
 
 /// A membership snapshot.  It is immutable; a new epoch is a new value.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,25 +304,19 @@ impl PlacementView {
     }
 }
 
-/// A deterministic 64-bit score for the host-checked sketch.  Production uses
-/// BLAKE3-64 with a domain separator; see the module docs.
+/// Deterministic 64-bit rendezvous score: the first 64 bits of BLAKE3 over a
+/// domain separator, identity, node and virtual-node index.
 fn rendezvous_score(identity: &[u8], node: &[u8; 16], vnode: u32) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for byte in b"I7-HOME-v1"
-        .iter()
-        .chain(identity.iter())
-        .chain(node.iter())
-    {
-        h ^= *byte as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h ^= vnode as u64;
-    h = h.wrapping_mul(0x9e37_79b9_7f4a_7c15);
-    h ^= h >> 30;
-    h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
-    h ^= h >> 27;
-    h = h.wrapping_mul(0x94d0_49bb_1331_11eb);
-    h ^ (h >> 31)
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"IRIX7-HOME-v1");
+    hasher.update(identity);
+    hasher.update(node);
+    hasher.update(&vnode.to_le_bytes());
+    let hash = hasher.finalize();
+    let bytes = hash.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
 }
 
 #[cfg(test)]
