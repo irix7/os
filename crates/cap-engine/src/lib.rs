@@ -13,9 +13,10 @@
 extern crate alloc;
 
 use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 use core::fmt;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sys_primitives::{Capability, NodeKey, SignatureVerifier};
+use sys_primitives::{Capability, NodeKey, ObjectId, SignatureVerifier};
 
 /// Trust-store construction or signature failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub enum KeyError {
     Untrusted,
     /// The signature did not verify.
     BadSignature,
+    /// The requested operation or manifest slot is unsupported.
+    Unsupported,
 }
 
 impl fmt::Display for KeyError {
@@ -34,6 +37,7 @@ impl fmt::Display for KeyError {
             Self::InvalidKey => f.write_str("invalid Ed25519 key"),
             Self::Untrusted => f.write_str("untrusted capability issuer"),
             Self::BadSignature => f.write_str("bad capability signature"),
+            Self::Unsupported => f.write_str("unsupported operation"),
         }
     }
 }
@@ -125,6 +129,121 @@ pub fn verify_capability(store: &TrustStore, capability: &Capability) -> Result<
     )
 }
 
+/// Maximum authority keys in one root manifest.
+pub const MAX_AUTHORITY: usize = 7;
+
+/// A threshold-signed root authority manifest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RootManifest {
+    /// Manifest format version.
+    pub version: u32,
+    /// Authority epoch.
+    pub epoch: u32,
+    /// Required valid signatures.
+    pub threshold: u8,
+    /// Number of valid authority slots.
+    pub count: u8,
+    /// Authority public keys, with unused slots zeroed.
+    pub authorities: [NodeKey; MAX_AUTHORITY],
+    /// Previous manifest OID, or zero for genesis.
+    pub previous: ObjectId,
+    /// Signature per authority slot; unused and unsigned slots are `None`.
+    pub signatures: [Option<[u8; 64]>; MAX_AUTHORITY],
+}
+
+impl RootManifest {
+    /// Manifest format version understood by this crate.
+    pub const VERSION: u32 = 1;
+
+    /// Build a manifest. Authority keys must be non-zero and unique.
+    pub fn new(
+        epoch: u32,
+        threshold: u8,
+        authorities: &[NodeKey],
+        previous: ObjectId,
+    ) -> Result<Self, KeyError> {
+        if authorities.is_empty() || authorities.len() > MAX_AUTHORITY {
+            return Err(KeyError::InvalidKey);
+        }
+        if threshold == 0 || threshold as usize > authorities.len() {
+            return Err(KeyError::InvalidKey);
+        }
+        let mut keys = [NodeKey([0; 32]); MAX_AUTHORITY];
+        for (index, key) in authorities.iter().enumerate() {
+            if key.0.iter().all(|&byte| byte == 0) {
+                return Err(KeyError::InvalidKey);
+            }
+            for earlier in &keys[..index] {
+                if earlier == key {
+                    return Err(KeyError::InvalidKey);
+                }
+            }
+            keys[index] = *key;
+        }
+        Ok(Self {
+            version: Self::VERSION,
+            epoch,
+            threshold,
+            count: authorities.len() as u8,
+            authorities: keys,
+            previous,
+            signatures: [None; MAX_AUTHORITY],
+        })
+    }
+
+    /// Canonical bytes covered by the threshold signatures.
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + 4 + 1 + 1 + MAX_AUTHORITY * 32 + 32);
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.push(self.threshold);
+        out.push(self.count);
+        for key in &self.authorities {
+            out.extend_from_slice(&key.0);
+        }
+        out.extend_from_slice(self.previous.as_bytes());
+        out
+    }
+
+    /// Sign one authority slot with its key.
+    pub fn sign(&mut self, index: usize, signing: &SigningKey) -> Result<(), KeyError> {
+        if index >= self.count as usize {
+            return Err(KeyError::Unsupported);
+        }
+        if signing.verifying_key().to_bytes() != self.authorities[index].0 {
+            return Err(KeyError::InvalidKey);
+        }
+        let signature = signing.sign(&self.signed_bytes());
+        self.signatures[index] = Some(signature.to_bytes());
+        Ok(())
+    }
+
+    /// Verify the threshold of signatures over the manifest.
+    pub fn verify(&self) -> Result<(), KeyError> {
+        if self.version != Self::VERSION || self.count as usize > MAX_AUTHORITY {
+            return Err(KeyError::InvalidKey);
+        }
+        if self.threshold == 0 || self.threshold > self.count {
+            return Err(KeyError::InvalidKey);
+        }
+        let message = self.signed_bytes();
+        let mut valid = 0u8;
+        for index in 0..self.count as usize {
+            if let Some(signature) = self.signatures[index] {
+                if verify(&self.authorities[index], &message, &signature).is_ok() {
+                    valid = valid.saturating_add(1);
+                } else {
+                    return Err(KeyError::BadSignature);
+                }
+            }
+        }
+        if valid < self.threshold {
+            return Err(KeyError::BadSignature);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +327,55 @@ mod tests {
         assert!(store.contains(&public));
         assert!(store.remove(&public));
         assert!(store.is_empty());
+    }
+
+    fn authority(i: u8) -> SigningKey {
+        SigningKey::from_bytes(&[i + 1; 32])
+    }
+
+    fn authorities() -> [NodeKey; 5] {
+        [
+            node_key(&authority(0)),
+            node_key(&authority(1)),
+            node_key(&authority(2)),
+            node_key(&authority(3)),
+            node_key(&authority(4)),
+        ]
+    }
+
+    #[test]
+    fn threshold_root_manifest() {
+        let keys = authorities();
+        let mut manifest = RootManifest::new(1, 3, &keys, ObjectId::ZERO).expect("manifest");
+        manifest.sign(0, &authority(0)).expect("sign 0");
+        manifest.sign(2, &authority(2)).expect("sign 2");
+        manifest.sign(4, &authority(4)).expect("sign 4");
+        assert!(manifest.verify().is_ok());
+
+        let mut weak = manifest.clone();
+        weak.signatures[4] = None;
+        assert_eq!(weak.verify(), Err(KeyError::BadSignature));
+
+        let mut tampered = manifest.clone();
+        tampered.epoch += 1;
+        assert_eq!(tampered.verify(), Err(KeyError::BadSignature));
+    }
+
+    #[test]
+    fn root_manifest_rejects_bad_shapes() {
+        let keys = authorities();
+        assert_eq!(
+            RootManifest::new(1, 6, &keys, ObjectId::ZERO),
+            Err(KeyError::InvalidKey)
+        );
+        assert_eq!(
+            RootManifest::new(1, 0, &keys, ObjectId::ZERO),
+            Err(KeyError::InvalidKey)
+        );
+        let duplicate = [keys[0], keys[0]];
+        assert_eq!(
+            RootManifest::new(1, 1, &duplicate, ObjectId::ZERO),
+            Err(KeyError::InvalidKey)
+        );
     }
 }
