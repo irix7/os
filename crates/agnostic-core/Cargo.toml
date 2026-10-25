@@ -1,0 +1,13 @@
+[package]
+name = "agnostic-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Architecture-independent actor table and placement state for IRIX 7"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+sys-primitives = { path = "../sys-primitives" }
