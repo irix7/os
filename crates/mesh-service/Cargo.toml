@@ -1,0 +1,13 @@
+[package]
+name = "mesh-service"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Membership and failure-detection state for the IRIX 7 1-128-node logical computer"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+sys-primitives = { path = "../sys-primitives" }

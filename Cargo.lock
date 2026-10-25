@@ -499,6 +499,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-service"
+version = "0.1.0"
+dependencies = [
+ "mesh-core",
+ "sys-primitives",
+]
+
+[[package]]
 name = "module-abi"
 version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.3.0#9e27368d8ea5f1f7937fd19d60129420b0fbf914"
