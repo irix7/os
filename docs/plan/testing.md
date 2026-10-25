@@ -129,6 +129,13 @@ time, sleep, `std::fs` on a tiny ramfs, `chdir`) and the external
 pthreads).  Neither is a complete POSIX system; threads, spawn, signals, termios
 and sockets remain open.
 
+The CI `boot` job builds the release kernel and ROM, wraps `user/hello` as a
+256 KiB SCSI target-2 image, installs the published IRIS release through
+`irix7/iris/.github/actions/setup-iris`, and boots it with `iris-ci`.  It waits
+for `BOOT-READY`, `hello from user` and the exit marker, then uploads the serial
+transcript.  The action's release build needs `IRIS_NO_IDLE=1`; `docs/ci.md` in
+the IRIS repository documents that limitation.
+
 ## 4. CI
 
 | Job | What | Required |
@@ -139,7 +146,7 @@ and sockets remain open.
 | `cross` | n32/o32 `-Z build-std` (toolchain gate) | Yes |
 | `std` | static `std` image + native syscall fixture | Yes once std bring-up is in CI |
 | `relibc-n32` | external n32/QEMU relibc gate | Manual/nightly until linked |
-| `boot` | iris boot + smoke harness | Yes |
+| `boot` | Release PROM + user hello under the published IRIS action | Yes |
 | `mcp` | MCP conformance against a running iris instance | Yes once P3 is green |
 | `licence` | `cargo-deny`, REUSE, SBOM | Yes |
 | `security` | CodeQL, dependency review, `cargo-audit` | Yes |
