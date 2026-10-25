@@ -175,7 +175,7 @@ objects whose winner changes.
   scheduler.
 - Devices are global objects with homes. `GpuDevice` is a normal example: the
   Indy resolves the object, submits offscreen command buffers/fences over the
-  fabric, and receives CAS/compressed results. It never maps remote BARs.
+  fabric, and receives CAS/compressed results. It never maps remote base-address registers.
   An actor may instead migrate to the GPU node.
 
 ## 8. Migration and endianness
