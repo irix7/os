@@ -160,7 +160,13 @@ objects whose winner changes.
 - The global namespace is a tree of directory objects. Every directory has a
   home; path lookup follows directory entries and is not a global snapshot.
   Cross-home rename is `EXDEV`/`NotSupported` in v1 rather than a hidden global
-  transaction.
+  transaction. A directory object is canonical little-endian data: the magic
+  `I7DR`, version 1, the `Tree` kind, a reserved zero halfword, a 32-bit entry
+  count, then sorted entries of `u16` name length, a reserved zero halfword,
+  the target OID and a UTF-8 name of 1–255 bytes. Names are non-empty, cannot
+  be `.`/`..` or contain `/` or NUL, and the decoder rejects unsorted or
+  non-canonical records. The target's kind comes from the CAS record, not the
+  directory entry.
 - Replication defaults are policy: boot-critical images two copies, actor
   snapshots three during migration, ordinary blobs one. GC is home-owned and
   pin-aware.
