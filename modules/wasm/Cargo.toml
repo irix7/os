@@ -18,6 +18,7 @@ opt-level = 2
 
 [dependencies]
 module-abi.workspace = true
+wasm-host = { path = "../../crates/wasm-host", default-features = false }
 wasmi = { version = "2.0", default-features = false, features = [
     "deterministic",
     "libm",

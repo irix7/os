@@ -1248,6 +1248,7 @@ name = "wasm-module"
 version = "0.1.0"
 dependencies = [
  "module-abi",
+ "wasm-host",
  "wasmi",
 ]
 

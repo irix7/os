@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Minimal Wasm core probe for M1.
 //!
-//! Loads a tiny embedded module through wasmi, runs its exported `run`
-//! function and prints the result.  This is the first Wasm-on-iris proof, not
-//! the final policy core.
+//! Loads a tiny embedded module through the no_std `wasm-host` surface, runs
+//! its exported `run` function and prints the result. This is the first
+//! Wasm-on-iris proof, not the final policy core.
 
 #![no_std]
 #![no_main]
@@ -15,14 +15,10 @@ use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use module_abi::{ModuleVtable, Services};
-use wasmi::{Config, Engine, Linker, Module, Store};
+use wasm_host::{Host, HostHooks};
 
-/// `(module (func (export "run") (result i32) i32.const 42))` in binary form.
-const RUN_WASM: &[u8] = &[
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03,
-    0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x72, 0x75, 0x6e, 0x00, 0x00, 0x0a, 0x06, 0x01, 0x04,
-    0x00, 0x41, 0x2a, 0x0b,
-];
+/// Guest source is in `guest.wat`; this is the flattened binary.
+const RUN_WASM: &[u8] = include_bytes!("guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
 
@@ -60,6 +56,39 @@ fn log(services: &Services, text: &[u8]) {
     (services.write)(text.as_ptr(), text.len());
 }
 
+fn services() -> Option<&'static Services> {
+    let ptr = SERVICES.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: the table lives for the kernel lifetime.
+        Some(unsafe { &*ptr })
+    }
+}
+
+fn kernel_clock_ms() -> u64 {
+    services()
+        .map(|services| (services.clock_ms)() as u64)
+        .unwrap_or(0)
+}
+
+fn kernel_console_write(bytes: &[u8]) {
+    if let Some(services) = services() {
+        (services.write)(bytes.as_ptr(), bytes.len());
+    }
+}
+
+fn kernel_cap_check(_handle: i64, _rights: i32, _object: i32) -> i32 {
+    // The M1 probe has one implicitly granted root capability.
+    0
+}
+
+static HOST_HOOKS: HostHooks = HostHooks {
+    clock_ms: kernel_clock_ms,
+    console_write: kernel_console_write,
+    cap_check: kernel_cap_check,
+};
+
 /// # Safety
 /// `services` must point to a valid v11 kernel service table.
 #[no_mangle]
@@ -76,37 +105,14 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
         Ordering::Release,
     );
 
-    let mut config = Config::default();
-    config.consume_fuel(true);
-    let engine = Engine::new(&config);
-    let module = match Module::new(&engine, RUN_WASM) {
-        Ok(module) => module,
+    let host = match Host::with_hooks(HOST_HOOKS) {
+        Ok(host) => host,
         Err(_) => {
-            log(services, b"wasm: compile failed\n");
+            log(services, b"wasm: host setup failed\n");
             return &BAD;
         }
     };
-    let linker = Linker::<()>::new(&engine);
-    let mut store = Store::new(&engine, ());
-    if store.set_fuel(1_000_000).is_err() {
-        log(services, b"wasm: fuel setup failed\n");
-        return &BAD;
-    }
-    let instance = match linker.instantiate_and_start(&mut store, &module) {
-        Ok(instance) => instance,
-        Err(_) => {
-            log(services, b"wasm: instantiate failed\n");
-            return &BAD;
-        }
-    };
-    let function = match instance.get_typed_func::<(), i32>(&store, "run") {
-        Ok(function) => function,
-        Err(_) => {
-            log(services, b"wasm: run export missing\n");
-            return &BAD;
-        }
-    };
-    match function.call(&mut store, ()) {
+    match host.run_i32(RUN_WASM, "run", 1_000_000) {
         Ok(42) => {
             log(services, b"wasm: run=42\n");
             &OK

@@ -3,18 +3,56 @@
 //!
 //! This is a workstation prototype for the host ABI, not the kernel host. It
 //! configures deterministic fuel metering, installs the `i7host` functions and
-//! runs a small module. The kernel implementation will keep the same guest
-//! surface but use the native shim for time, memory, capabilities and devices.
+//! runs a small module. The kernel implementation keeps the same guest surface
+//! and supplies the native shim through [`HostHooks`].
 
+#![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use std::collections::VecDeque;
+extern crate alloc;
+
+use alloc::collections::VecDeque;
 use sys_primitives::{Completion, CompletionId, CompletionKind, Status, Tag};
 use wasmi::{Caller, Config, Engine, Extern, Linker, Module, Store};
 
 /// The current host ABI version.
 pub const HOST_ABI_VERSION: i32 = 1;
+
+/// Callbacks from the host ABI into the native shim.
+///
+/// The default is deliberately inert: it is suitable for the workstation
+/// tests. The kernel module installs functions that reach the service table.
+#[derive(Clone, Copy, Debug)]
+pub struct HostHooks {
+    /// Monotonic clock in milliseconds.
+    pub clock_ms: fn() -> u64,
+    /// Write guest console bytes to the native console.
+    pub console_write: fn(&[u8]),
+    /// Check a capability handle against an object.
+    pub cap_check: fn(i64, i32, i32) -> i32,
+}
+
+fn zero_clock() -> u64 {
+    0
+}
+
+fn discard_console(_bytes: &[u8]) {}
+
+fn allow_capability(_handle: i64, _rights: i32, _object: i32) -> i32 {
+    0
+}
+
+impl HostHooks {
+    /// An inert hook set.
+    pub const fn empty() -> Self {
+        Self {
+            clock_ms: zero_clock,
+            console_write: discard_console,
+            cap_check: allow_capability,
+        }
+    }
+}
 
 /// State shared by all host functions in this store.
 #[derive(Debug)]
@@ -29,21 +67,28 @@ pub struct HostState {
     pub exit_status: Option<i32>,
     /// Completions waiting for the guest to poll.
     pub completions: VecDeque<Completion>,
+    /// Native shim callbacks.
+    pub hooks: HostHooks,
 }
 
 impl Default for HostState {
     fn default() -> Self {
+        Self::new(HostHooks::empty())
+    }
+}
+
+impl HostState {
+    fn new(hooks: HostHooks) -> Self {
         Self {
             next_event: 1,
             submissions: 0,
             console_writes: 0,
             exit_status: None,
             completions: VecDeque::new(),
+            hooks,
         }
     }
-}
 
-impl HostState {
     fn next_event(&mut self) -> u64 {
         let event = self.next_event;
         self.next_event = self.next_event.wrapping_add(1).max(1);
@@ -55,11 +100,17 @@ impl HostState {
 pub struct Host {
     engine: Engine,
     linker: Linker<HostState>,
+    hooks: HostHooks,
 }
 
 impl Host {
     /// Build an engine with fuel metering and the host functions.
     pub fn new() -> Result<Self, wasmi::Error> {
+        Self::with_hooks(HostHooks::empty())
+    }
+
+    /// Build an engine with native shim callbacks.
+    pub fn with_hooks(hooks: HostHooks) -> Result<Self, wasmi::Error> {
         let mut config = Config::default();
         config.consume_fuel(true);
         let engine = Engine::new(&config);
@@ -76,10 +127,7 @@ impl Host {
         linker.func_wrap(
             "i7host",
             "host_now",
-            |caller: Caller<'_, HostState>| -> i64 {
-                let _ = caller;
-                0
-            },
+            |caller: Caller<'_, HostState>| -> i64 { (caller.data().hooks.clock_ms)() as i64 },
         )?;
         linker.func_wrap(
             "i7host",
@@ -145,15 +193,30 @@ impl Host {
         linker.func_wrap(
             "i7host",
             "host_cap_check",
-            |caller: Caller<'_, HostState>, _handle: i64, _rights: i32, _object: i32| -> i32 {
-                let _ = caller;
-                0
+            |caller: Caller<'_, HostState>, handle: i64, rights: i32, object: i32| -> i32 {
+                (caller.data().hooks.cap_check)(handle, rights, object)
             },
         )?;
         linker.func_wrap(
             "i7host",
             "host_console_write",
-            |mut caller: Caller<'_, HostState>, _ptr: i32, _len: i32| {
+            |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
+                let hooks = caller.data().hooks;
+                let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return;
+                };
+                let len = len.max(0) as usize;
+                if len == 0 || len > 256 {
+                    return;
+                }
+                let mut buffer = [0u8; 256];
+                if memory
+                    .read(&caller, ptr.max(0) as usize, &mut buffer[..len])
+                    .is_err()
+                {
+                    return;
+                }
+                (hooks.console_write)(&buffer[..len]);
                 caller.data_mut().console_writes += 1;
             },
         )?;
@@ -168,13 +231,17 @@ impl Host {
             let _ = caller;
         })?;
 
-        Ok(Self { engine, linker })
+        Ok(Self {
+            engine,
+            linker,
+            hooks,
+        })
     }
 
     /// Instantiate a module, start it and call a no-argument `i32` function.
     pub fn run_i32(&self, wasm: &[u8], function: &str, fuel: u64) -> Result<i32, wasmi::Error> {
         let module = Module::new(&self.engine, wasm)?;
-        let mut store = Store::new(&self.engine, HostState::default());
+        let mut store = Store::new(&self.engine, HostState::new(self.hooks));
         store.set_fuel(fuel)?;
         let instance = self.linker.instantiate_and_start(&mut store, &module)?;
         let function = instance.get_typed_func::<(), i32>(&store, function)?;
@@ -184,7 +251,7 @@ impl Host {
     /// Instantiate a module, start it and call a no-argument `i64` function.
     pub fn run_i64(&self, wasm: &[u8], function: &str, fuel: u64) -> Result<i64, wasmi::Error> {
         let module = Module::new(&self.engine, wasm)?;
-        let mut store = Store::new(&self.engine, HostState::default());
+        let mut store = Store::new(&self.engine, HostState::new(self.hooks));
         store.set_fuel(fuel)?;
         let instance = self.linker.instantiate_and_start(&mut store, &module)?;
         let function = instance.get_typed_func::<(), i64>(&store, function)?;

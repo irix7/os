@@ -206,8 +206,12 @@ to target 3, then verifies the readback. It is a probe, not the final package ca
 
 `modules/wasm` is the first wasmi probe. It is linked for slot B, embeds a tiny Wasm
 module, instantiates it with the no_std interpreter, runs its `run` export and prints
-`wasm: run=42`. Load it with `module b ...`; slot A (MCP) remains live. It is a runtime
-proof, not the policy core or the final shim integration.
+`wasm: host=1` / `wasm: run=42`. The guest calls the `i7host` version, clock, submit,
+poll, cancel, capability-check, console-write and yield imports through the no_std
+`wasm-host` crate. Its `HostHooks` bridge the clock and console to the kernel, and the
+guest checks that its submission produced a completion before returning. Load it with
+`module b ...`; slot A (MCP) remains live. It is a runtime and host-ABI proof, not the
+policy core or the final shim integration.
 
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local

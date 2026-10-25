@@ -146,9 +146,9 @@ This is the primary diskless gate; a SCSI disk is not a boot, discovery or
 module prerequisite.
 
 A slot-B boot serves a 1.45 MiB wasm module over local HTTP, sets `wasm.url` and
-`wasm.sha256` in NVRAM, and asserts `wasm: run=42`, `m1: ... mesh=0/0/0` and
-`BOOT-READY` with MCP still listening. This is the Wasm-runtime boot evidence;
-it is not yet the policy core.
+`wasm.sha256` in NVRAM, and asserts `wasm: host=1`, `wasm: run=42`,
+`m1: ... mesh=0/0/0` and `BOOT-READY` with MCP still listening. This is the
+Wasm-runtime and host-ABI boot evidence; it is not yet the policy core.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
 It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, `BOOT-READY`
