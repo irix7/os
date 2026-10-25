@@ -1244,6 +1244,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-module"
+version = "0.1.0"
+dependencies = [
+ "module-abi",
+ "wasmi",
+]
+
+[[package]]
 name = "wasmi"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -96,8 +96,9 @@ every pull request. The static Rust `std` image also boots in that no-network
 local-module configuration and exits 0; the CI boot gate uses the smaller native
 hello until the std image is a build artifact. The kernel now starts the local
 namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
-remains the module probe. The Wasm core, zero-mesh instrumentation and module
-multiplexer are still missing.
+remains the module probe. A wasmi runtime probe runs as a module; the Wasm
+policy core and module multiplexer are still missing. Zero mesh traffic is now
+instrumented and asserted on the M1 line.
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
