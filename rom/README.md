@@ -97,10 +97,15 @@ The raw `rom.bin` is what the PROM socket and iris `--prom` expect.
 
 ```bash
 cd /mnt/europa/iris
-./target/release/iris --prom /path/to/rom.bin \
+./target/launcher/bin/iris --prom /path/to/rom.bin \
   --bank0 32 --bank1 0 \
   --monitor-port 9998 --serial-log serial.log
 ```
+
+Use iris `0.1.3+irix7` (2026-10-24) or later. The launcher carries the flake's runtime
+library path, so it needs no `LD_LIBRARY_PATH`; build it once with
+`nix develop --command cargo build --release --features lightning,gpujit`, which installs
+`target/launcher/bin/iris` alongside the raw `target/release/iris`.
 
 The serial console is SCC channel B and is exposed on TCP port **8881** (channel A is
 8880). `--serial-log` is the simplest way to capture it.
@@ -135,9 +140,8 @@ mode the window is hidden but the REX3 keeps rendering to an offscreen buffer, w
 telnet console:
 
 ```bash
-export LD_LIBRARY_PATH=/nix/store/...-libglvnd/lib:/nix/store/...-alsa-lib/lib:/nix/store/...-gcc-lib/lib
 python3 rom/tools/smoke.py \
-  --iris /path/to/iris --prom /tmp/rom.bin \
+  --iris /mnt/europa/iris/target/launcher/bin/iris --prom /tmp/rom.bin \
   --cwd /mnt/europa/iris --commands "status,mem,ping 10.1.1.3"
 ```
 
@@ -299,7 +303,7 @@ To start and stop its own guest, give it `--iris`, `--prom` and either
 `--erofs-image` (the fixture to attach at SCSI ID 2) or `--scsi2` (a raw image):
 
 ```bash
-rom/tools/mcp-smoke.py --iris /mnt/europa/iris/target/release/iris \
+rom/tools/mcp-smoke.py --iris /mnt/europa/iris/target/launcher/bin/iris \
   --prom /tmp/rom.bin --cwd /mnt/europa/iris \
   --erofs-image crates/erofs/tests/fixtures/root.erofs \
   --token secret-token
