@@ -318,6 +318,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
           # leave the network-backed sash at the console.
@@ -403,6 +404,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
@@ -476,6 +478,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'winsize=100x40' --timeout 30

@@ -109,6 +109,12 @@ fn report(local: &Local) {
     out.str(if local.verified { b"ok" } else { b"FAILED" });
     out.str(b" caps=");
     out.dec(local.caps.count());
+    out.str(b" mesh=");
+    out.dec(crate::mesh::frames() as usize);
+    out.str(b"/");
+    out.dec(crate::mesh::rpcs() as usize);
+    out.str(b"/");
+    out.dec(crate::mesh::envelopes() as usize);
     out.str(b" home=");
     out.hex(crate::mesh::node_id().as_bytes());
     out.str(b"\n");
