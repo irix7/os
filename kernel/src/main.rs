@@ -705,7 +705,12 @@ fn announce_boot(autoload: autoload::Status) {
     let boot_id = crate::ntp::now_unix().unwrap_or(0);
     let network_up = crate::net::ip_addr().is_some();
     let network_off = crate::net::disabled();
-    let ready = autoload == autoload::Status::Loaded && (network_up || network_off);
+    let ready = match autoload {
+        autoload::Status::Loaded => network_up || network_off,
+        // M1 explicitly permits a network-off boot with no module.
+        autoload::Status::Disabled => network_off,
+        autoload::Status::Failed => false,
+    };
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {
