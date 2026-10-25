@@ -60,7 +60,11 @@ jobs:
       - name: cargo test
         run: |
           if [ -f Cargo.toml ]; then
-            cargo test -p kernel -p kernel-test -p boot-protocol-tests -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi
+            cargo test -p kernel -p kernel-test -p boot-protocol-tests \
+              -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
+              -p sys-primitives -p platform-api -p mesh-core -p mesh-service \
+              -p mesh-sim -p fabric -p guest-abi -p cas-core -p cas-store \
+              -p cap-engine -p agnostic-core -p wasm-host
           else
             echo "No Rust workspace yet; skipping."
           fi
