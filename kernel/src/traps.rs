@@ -64,6 +64,24 @@ const STATUS_IM_MASK: u32 = 0x0000_ff00; // Interrupt Mask (bits 8-15)
 // Cause register fields.
 const CAUSE_EXC_MASK: u32 = 0x0000_007c; // Exception Code (bits 2-6)
 const CAUSE_IP_MASK: u32 = 0x0000_ff00; // Interrupt Pending (bits 8-15)
+/// The user ABI currently executing.  n32 is the native bring-up ABI; o32 is
+/// the first legacy-container slice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserAbi {
+    /// Native n32.
+    N32,
+    /// IRIX o32 (legacy).
+    O32,
+}
+
+static mut USER_ABI: UserAbi = UserAbi::N32;
+
+/// The current user ABI, or n32 before the loader has entered a user image.
+pub fn user_abi() -> UserAbi {
+    // SAFETY: single-threaded kernel; written at user entry.
+    unsafe { USER_ABI }
+}
+
 const CAUSE_BD: u32 = 0x8000_0000; // Branch Delay slot
 
 // Exception codes.
@@ -690,6 +708,25 @@ pub fn badvaddr_read() -> u32 {
     v
 }
 
+/// Return from a user exit syscall to the kernel console trampoline.
+fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
+    crate::user::cleanup();
+    crate::print_str("user: exit syscall code=0x");
+    crate::print_hex32(code);
+    crate::println("");
+    tf.epc = user_return_trampoline as usize as u64;
+    tf.regs[4] = code as u64;
+    let saved = unsafe { core::ptr::read_volatile(core::ptr::addr_of!(USER_RETURN_REGS)) };
+    for (index, value) in saved[..8].iter().enumerate() {
+        tf.regs[16 + index] = *value as u64;
+    }
+    tf.regs[30] = saved[8] as u64;
+    tf.regs[28] = unsafe { USER_KERNEL_GP } as u64;
+    tf.regs[29] = unsafe { USER_RETURN_SP } as u64;
+    tf.regs[31] = unsafe { USER_RETURN_RA } as u64;
+    tf.status &= !((STATUS_KSU_MASK | STATUS_UX) as u64); // return to kernel mode
+}
+
 /// Trap the current exception into the trap frame.
 ///
 /// The assembly vector has already saved every general register and the CP0
@@ -704,6 +741,33 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     // user mode; code 2 exits to a kernel continuation.  This is deliberately
     // a fixed ABI for the smoke test, not the native syscall ABI.
     if exc_code == EXC_SYS && tf.status as u32 & STATUS_KSU_MASK == STATUS_KSU_USER {
+        if user_abi() == UserAbi::O32 {
+            match tf.arg(2) {
+                1 => {
+                    finish_user_exit(tf, tf.arg(4));
+                    return;
+                }
+                4 => {
+                    let result = crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6));
+                    tf.set_result(result);
+                    tf.regs[7] = if result == u32::MAX { 1 } else { 0 };
+                    tf.advance_epc();
+                    return;
+                }
+                20 => {
+                    tf.set_result(1);
+                    tf.regs[7] = 0;
+                    tf.advance_epc();
+                    return;
+                }
+                _ => {
+                    tf.set_result(u32::MAX);
+                    tf.regs[7] = 1;
+                    tf.advance_epc();
+                    return;
+                }
+            }
+        }
         match tf.arg(2) {
             1 => {
                 tf.set_result(crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6)) as u32);
@@ -804,25 +868,7 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.set_result(crate::user::tcsetwinsize_user(tf.arg(4), tf.arg(5)) as u32);
                 tf.advance_epc();
             }
-            2 => {
-                let code = tf.arg(4);
-                crate::user::cleanup();
-                crate::print_str("user: exit syscall code=0x");
-                crate::print_hex32(code);
-                crate::println("");
-                tf.epc = user_return_trampoline as usize as u64;
-                tf.regs[4] = code as u64;
-                let saved =
-                    unsafe { core::ptr::read_volatile(core::ptr::addr_of!(USER_RETURN_REGS)) };
-                for (index, value) in saved[..8].iter().enumerate() {
-                    tf.regs[16 + index] = *value as u64;
-                }
-                tf.regs[30] = saved[8] as u64;
-                tf.regs[28] = unsafe { USER_KERNEL_GP } as u64;
-                tf.regs[29] = unsafe { USER_RETURN_SP } as u64;
-                tf.regs[31] = unsafe { USER_RETURN_RA } as u64;
-                tf.status &= !((STATUS_KSU_MASK | STATUS_UX) as u64); // return to kernel mode
-            }
+            2 => finish_user_exit(tf, tf.arg(4)),
             _ => fatal_trap(tf, exc_code),
         }
         return;
@@ -1021,7 +1067,18 @@ pub extern "C" fn user_smoke() -> ! {
 }
 
 /// Enter user mode at `entry` with `user_sp`, `argc`, `argv` and `envp`.
+///
+/// This is the native n32 entry; the legacy loader uses [`run_user_abi`].
 pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! {
+    run_user_abi(UserAbi::N32, entry, user_sp, argc, argv, envp)
+}
+
+/// Enter user mode with an explicit ABI.
+pub fn run_user_abi(abi: UserAbi, entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! {
+    // SAFETY: single-threaded kernel; the trap handler reads this.
+    unsafe {
+        USER_ABI = abi;
+    }
     let kernel_gp: u32;
     unsafe {
         core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);

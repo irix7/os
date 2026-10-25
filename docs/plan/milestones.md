@@ -67,6 +67,11 @@ and exercises local home policy; it does not yet construct a mesh frame.
 **Exit:** native image boots; new crates host-tested and wasm32-checked where
 applicable; clippy/deny clean; no existing public API changes.
 
+The native compatibility workstream now has a minimal o32 loader/syscall probe:
+`user/o32-hello` is loaded with `EF_MIPS_ABI_O32`, calls classic `write(4)` and
+`exit(1)`, and is CI-booted alongside the local logical module.  It is not an
+IRIX 6.5 binary; the libc/`rld`/`sproc`/signal container is still ahead.
+
 ### Phase 2 — Indy shim and single-node kernel
 
 Implement `PlatformShim` for the Indy behind the existing kernel: pages, MMU,

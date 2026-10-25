@@ -149,6 +149,12 @@ on the same kernel and exits 0, with `hello from std`, time, ramfs writes,
 locally but is not yet a CI artifact because the std image build needs the
 patched rust-src tree; the CI boot gate uses the smaller native hello.
 
+The CI boot gate also builds `user/o32-hello`, rewrites its `e_flags` to
+`EF_MIPS_ABI_O32`, and boots it with the same local logical module and
+`net=off`.  It checks `hello from o32` and exit 42.  This is a synthetic loader
+and syscall-personality probe, not an IRIX 6.5 binary; the IRIX libc, `rld`,
+`sproc`, signals and full decoder remain future work.
+
 ## 4. CI
 
 | Job | What | Required |

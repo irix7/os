@@ -215,6 +215,12 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/build-user-hello.sh "$RUNNER_TEMP/user-hello"
+      - name: Build o32 probe
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/o32-hello-target
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/build-o32-hello.sh "$RUNNER_TEMP/o32-hello"
       - name: Build logical module
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -305,6 +311,72 @@ jobs:
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
           iris-ci --socket "$socket" quit
           wait "$pid"
+      - name: Boot the o32 probe
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-o32"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$RUNNER_TEMP/o32-hello/o32-hello.raw" \
+            "$RUNNER_TEMP/logical.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
+          import hashlib
+          import sys
+
+          user = open(sys.argv[1], "rb").read()
+          module = open(sys.argv[2], "rb").read()
+          padded = module + b"\0" * ((-len(module)) % 512)
+          lba = len(user) // 512
+          sectors = len(padded) // 512
+          open(sys.argv[3], "wb").write(user + padded)
+          env = (f"mcp.local=2:{lba}:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
+                 "net=off\0console=serial0\0\0").encode()
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[4], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$work/target2.raw" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18889 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -50 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
+          grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
+          iris-ci --socket "$socket" quit
+          wait "$pid"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -313,6 +385,8 @@ jobs:
           path: |
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
+            ${{ runner.temp }}/iris-o32/serial.log
+            ${{ runner.temp }}/iris-o32/iris.out
 
   modules:
     name: Modules (flat images, 2 MiB limit)
