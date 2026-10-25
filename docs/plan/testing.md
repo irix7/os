@@ -174,11 +174,11 @@ fixture, MCP-only boots reached `BOOT-READY` in 7.3–7.7 s. The optional slot-B
 Wasm probe starts after `BOOT-READY`; the instrumented run reports
 `autoload: wasm took 2140 ms` over HTTP and 1600 ms from the local SCSI cache,
 with `wasm: runtime=0 ms`, so fetch/copy (not the guest policy) dominate. The
-full path is accepted as a post-readiness diagnostic waiver under #214: it does
-not delay `BOOT-READY`, and the local cache is the preferred optional source. The
-M1 readiness budget does not include that optional probe, so readiness is not
-regressed by Wasm. The full slot-B path is recorded under #214; it is not a
-claim that the Wasm policy is cheap to load on the R4600.
+full-path load time is recorded as an observation under #214; it is not a gate,
+does not delay `BOOT-READY`, and the local cache is the preferred optional
+source. The M1 readiness budget does not include that optional probe, so
+readiness is not regressed by Wasm. The observation is not a claim that the
+Wasm policy is cheap to load on the R4600.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
 It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, the
