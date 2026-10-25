@@ -1,9 +1,13 @@
 # IRIX 7
 
-IRIX 7 is a Rust-native operating system for the SGI Indy (IP22, MIPS III), and
-for x86_64 PCs and KVM/VirtIO cloud machines. The design target is bigger than
-a single workstation: **one logical computer built from 1 to 128 kernel
-replicas**.
+IRIX 7 is a Rust-native operating system that runs existing IRIX 6.5
+application binaries through a legacy ABI layer. It inherits the IRIX 6.5
+compatibility mandate without forward compatibility: IRIX 6.5 applications run
+on IRIX 7, but IRIX 7-native binaries are not promised on IRIX 6.5.
+
+The first hardware target is the SGI Indy (IP22, MIPS III); x86_64 PCs and
+KVM/VirtIO cloud machines follow. The design target is bigger than a single
+workstation: **one logical computer built from 1 to 128 kernel replicas**.
 
 Each replica runs the same architecture-independent Wasm core on a
 target-specific native shim. Objects, actors, capabilities, namespaces,
