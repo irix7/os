@@ -488,7 +488,7 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
             length
         }
         crate::fd::Kind::Null => length,
-        crate::fd::Kind::File(_) => {
+        crate::fd::Kind::File(_) | crate::fd::Kind::PipeWrite(_) => {
             let mut buffer = [0u8; 512];
             let mut done = 0usize;
             while done < length as usize {
@@ -512,7 +512,7 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
             }
             done as u32
         }
-        crate::fd::Kind::Dir(_) => u32::MAX,
+        crate::fd::Kind::Dir(_) | crate::fd::Kind::PipeRead(_) => u32::MAX,
         crate::fd::Kind::Closed => u32::MAX,
     }
 }
@@ -591,6 +591,22 @@ pub fn entropy_user(address: u32, length: u32) -> u32 {
         unsafe {
             core::ptr::write_volatile((address as *mut u8).add(index), 0);
         }
+    }
+    0
+}
+
+/// Create a pipe and write `[read_fd, write_fd]` to the user buffer.
+pub fn pipe_user(address: u32) -> u32 {
+    if !range_ok(address, 8) {
+        return u32::MAX;
+    }
+    let (read, write) = crate::fd::pipe();
+    if read < 0 || write < 0 {
+        return u32::MAX;
+    }
+    unsafe {
+        core::ptr::write_volatile(address as *mut i32, read);
+        core::ptr::write_volatile((address + 4) as *mut i32, write);
     }
     0
 }

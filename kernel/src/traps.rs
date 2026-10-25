@@ -792,6 +792,10 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.set_result(crate::user::chdir_user(tf.arg(4)) as u32);
                 tf.advance_epc();
             }
+            22 => {
+                tf.set_result(crate::user::pipe_user(tf.arg(4)) as u32);
+                tf.advance_epc();
+            }
             2 => {
                 let code = tf.arg(4);
                 crate::user::cleanup();

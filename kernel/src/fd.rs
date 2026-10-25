@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Minimal per-process descriptor table for the bring-up userland.
 //!
-//! Console, `/dev/null`, two small mutable ramfs files and a directory table.
-//! This is a bring-up namespace, not the capability-backed VFS.
+//! Console, `/dev/null`, two small mutable ramfs files, a directory table and
+//! a small pipe ring. This is a bring-up namespace, not the capability-backed
+//! VFS.
 
 pub const MAX_FDS: usize = 16;
 const FILE_CAPACITY: usize = 512;
 const O_TRUNC: u32 = 0o1000;
+const MAX_PIPES: usize = 8;
+const PIPE_CAPACITY: usize = 4096;
 
 pub struct FileEntry {
     pub path: &'static [u8],
@@ -21,6 +24,10 @@ static FILES: [FileEntry; 2] = [
 const INITIAL: [&[u8]; 2] = [b"hello from the IRIX 7 ramfs\n", b"Welcome to IRIX 7.\n"];
 static mut FILE_DATA: [[u8; FILE_CAPACITY]; 2] = [[0; FILE_CAPACITY]; 2];
 static mut FILE_LEN: [usize; 2] = [0; 2];
+static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MAX_PIPES];
+static mut PIPE_HEAD: [usize; MAX_PIPES] = [0; MAX_PIPES];
+static mut PIPE_LEN: [usize; MAX_PIPES] = [0; MAX_PIPES];
+static mut PIPE_USED: [bool; MAX_PIPES] = [false; MAX_PIPES];
 
 struct DirEntry {
     name: &'static [u8],
@@ -90,6 +97,8 @@ pub enum Kind {
     Null,
     File(u32),
     Dir(u32),
+    PipeRead(u32),
+    PipeWrite(u32),
 }
 
 static mut TABLE: [Kind; MAX_FDS] = [
@@ -131,6 +140,9 @@ pub fn reset() {
         }
         CWD[0] = b'/';
         CWD_LEN = 1;
+        PIPE_HEAD = [0; MAX_PIPES];
+        PIPE_LEN = [0; MAX_PIPES];
+        PIPE_USED = [false; MAX_PIPES];
     }
 }
 
@@ -152,6 +164,44 @@ fn install(kind: Kind) -> i32 {
         }
     }
     -1
+}
+
+/// Create a pipe. Returns `(read_fd, write_fd)` or `(-1, -1)` when the table
+/// or pipe pool is full.
+pub fn pipe() -> (i32, i32) {
+    unsafe {
+        let Some(index) = (0..MAX_PIPES).find(|index| !PIPE_USED[*index]) else {
+            return (-1, -1);
+        };
+        PIPE_USED[index] = true;
+        PIPE_HEAD[index] = 0;
+        PIPE_LEN[index] = 0;
+        let read = install(Kind::PipeRead(index as u32));
+        if read < 0 {
+            PIPE_USED[index] = false;
+            return (-1, -1);
+        }
+        let write = install(Kind::PipeWrite(index as u32));
+        if write < 0 {
+            TABLE[read as usize] = Kind::Closed;
+            PIPE_USED[index] = false;
+            return (-1, -1);
+        }
+        (read, write)
+    }
+}
+
+fn release_pipe(index: usize) {
+    unsafe {
+        let still_open = TABLE.iter().any(|kind| {
+            matches!(kind, Kind::PipeRead(other) | Kind::PipeWrite(other) if *other as usize == index)
+        });
+        if !still_open && index < MAX_PIPES {
+            PIPE_USED[index] = false;
+            PIPE_HEAD[index] = 0;
+            PIPE_LEN[index] = 0;
+        }
+    }
 }
 
 /// Resolve a path against the current working directory.
@@ -261,9 +311,13 @@ pub fn close(fd: i32) -> i32 {
     if fd < 0 || fd as usize >= MAX_FDS {
         return -1;
     }
+    let old = kind(fd);
     unsafe {
         TABLE[fd as usize] = Kind::Closed;
         OFFSET[fd as usize] = 0;
+    }
+    if let Kind::PipeRead(index) | Kind::PipeWrite(index) = old {
+        release_pipe(index as usize);
     }
     0
 }
@@ -298,7 +352,25 @@ pub fn read(fd: i32, buffer: &mut [u8]) -> isize {
             }
             count as isize
         }
+        Kind::PipeRead(index) => {
+            let index = index as usize;
+            let len = unsafe { PIPE_LEN[index] };
+            if len == 0 {
+                return 0;
+            }
+            let count = buffer.len().min(len);
+            let head = unsafe { PIPE_HEAD[index] };
+            for (offset, slot) in buffer[..count].iter_mut().enumerate() {
+                *slot = unsafe { PIPE_DATA[index][(head + offset) % PIPE_CAPACITY] };
+            }
+            unsafe {
+                PIPE_HEAD[index] = (head + count) % PIPE_CAPACITY;
+                PIPE_LEN[index] = len - count;
+            }
+            count as isize
+        }
         Kind::Console | Kind::Null | Kind::Dir(_) => 0,
+        Kind::PipeWrite(_) => -1,
         Kind::Closed => -1,
     }
 }
@@ -320,7 +392,26 @@ pub fn write(fd: i32, buffer: &[u8]) -> isize {
             count as isize
         }
         Kind::Null => buffer.len() as isize,
-        Kind::Console | Kind::Dir(_) => -1,
+        Kind::PipeWrite(index) => {
+            let index = index as usize;
+            let len = unsafe { PIPE_LEN[index] };
+            let free = PIPE_CAPACITY.saturating_sub(len);
+            let count = buffer.len().min(free);
+            if count == 0 {
+                return 0;
+            }
+            let head = unsafe { PIPE_HEAD[index] };
+            for (offset, byte) in buffer[..count].iter().enumerate() {
+                unsafe {
+                    PIPE_DATA[index][(head + len + offset) % PIPE_CAPACITY] = *byte;
+                }
+            }
+            unsafe {
+                PIPE_LEN[index] = len + count;
+            }
+            count as isize
+        }
+        Kind::Console | Kind::Dir(_) | Kind::PipeRead(_) => -1,
         Kind::Closed => -1,
     }
 }
@@ -330,6 +421,7 @@ pub fn metadata(fd: i32) -> Option<(u32, i64)> {
         Kind::File(index) => Some((0o100644, unsafe { FILE_LEN[index as usize] } as i64)),
         Kind::Console | Kind::Null => Some((0o020666, 0)),
         Kind::Dir(_) => Some((0o040755, 0)),
+        Kind::PipeRead(_) | Kind::PipeWrite(_) => Some((0o010600, 0)),
         Kind::Closed => None,
     }
 }
