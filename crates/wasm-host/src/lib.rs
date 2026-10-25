@@ -771,29 +771,25 @@ mod tests {
     #[test]
     fn host_version_is_available() {
         let host = Host::new().expect("host");
-        assert_eq!(
-            host.run_i32(&wasm(VERSION_WAT), "run", 1_000).unwrap(),
-            1
-        );
+        assert_eq!(host.run_i32(&wasm(VERSION_WAT), "run", 1_000).unwrap(), 1);
     }
 
     #[test]
     fn submissions_return_tokens() {
         let host = Host::new().expect("host");
-        assert_eq!(
-            host.run_i64(&wasm(SUBMIT_WAT), "run", 1_000).unwrap(),
-            1
-        );
+        assert_eq!(host.run_i64(&wasm(SUBMIT_WAT), "run", 1_000).unwrap(), 1);
     }
 
     #[test]
     fn fuel_exhaustion_is_an_error() {
-        let wasm = wasm(r#"
+        let wasm = wasm(
+            r#"
             (module
               (func (export "run") (result i32)
                 (loop $l (br $l))
                 i32.const 0))
-        "#);
+        "#,
+        );
         let host = Host::new().expect("host");
         assert!(host.run_i32(&wasm, "run", 100).is_err());
     }
