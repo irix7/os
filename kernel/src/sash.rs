@@ -44,6 +44,13 @@ pub enum Deferred {
         /// Valid bytes in `name`.
         len: u8,
     },
+    /// Fetch a userland package and run it from RAM.
+    Run {
+        /// Name copied from the command line.
+        name: [u8; 32],
+        /// Valid bytes in `name`.
+        len: u8,
+    },
     /// Mount or inspect an EROFS image over HTTPS.
     Mount {
         /// Command argument copied from the line.
@@ -201,8 +208,20 @@ pub fn execute(line: &[u8], out: &mut dyn Sink) -> Outcome {
                     name: buffer,
                     len: name.len() as u8,
                 })
+            } else if let Some(name) = argument.strip_prefix(b"run ") {
+                let name = trim(name);
+                if name.is_empty() || name.len() > 32 || !name.is_ascii() {
+                    out.write(b"packages: invalid name\r\n");
+                    return Outcome::Handled;
+                }
+                let mut buffer = [0u8; 32];
+                buffer[..name.len()].copy_from_slice(name);
+                Outcome::Deferred(Deferred::Run {
+                    name: buffer,
+                    len: name.len() as u8,
+                })
             } else {
-                out.write(b"usage: packages [install NAME]\r\n");
+                out.write(b"usage: packages [install|run NAME]\r\n");
                 Outcome::Handled
             }
         }
@@ -240,6 +259,7 @@ pub fn run_deferred(request: Deferred) -> &'static [u8] {
     match request {
         Deferred::Packages => packages(&mut sink),
         Deferred::Install { name, len } => install(&mut sink, &name[..len as usize]),
+        Deferred::Run { name, len } => run_userland(&mut sink, &name[..len as usize]),
         Deferred::Mount { argument, len } => mount(&mut sink, &argument[..len as usize]),
     }
     unsafe { &RESULT[..RESULT_LEN] }
@@ -385,6 +405,71 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
     out.write(b"packages: not found\r\n");
 }
 
+fn run_userland(out: &mut dyn Sink, name: &[u8]) {
+    let Some(index) = fetch_index() else {
+        out.write(b"packages: index fetch failed\r\n");
+        return;
+    };
+    for line in index.split(|byte| *byte == b'\n') {
+        let line = trim(line);
+        let mut fields = line.split(|byte| *byte == b' ');
+        let Some(kind) = fields.next() else { continue };
+        let Some(record_name) = fields.next() else {
+            continue;
+        };
+        if record_name != name {
+            continue;
+        }
+        if kind == b"module" {
+            out.write(b"packages: use packages install for a module\r\n");
+            return;
+        }
+        if kind != b"userland" {
+            continue;
+        }
+        let Some(_version) = fields.next() else {
+            continue;
+        };
+        let Some(url) = fields.next() else { continue };
+        let Some(digest_text) = fields.next() else {
+            continue;
+        };
+        let Ok(url) = core::str::from_utf8(url) else {
+            out.write(b"packages: URL is not UTF-8\r\n");
+            return;
+        };
+        let Some(digest) =
+            crate::telnet::parse_sha256_hex(core::str::from_utf8(digest_text).unwrap_or(""))
+        else {
+            out.write(b"packages: bad sha256\r\n");
+            return;
+        };
+        let image = crate::user::image_buffer();
+        let len = match fetch_package(url, image) {
+            Ok(len) => len,
+            Err(error) => {
+                let _ = write!(ResultSinkWriter { out }, "packages: {error}\r\n");
+                return;
+            }
+        };
+        let expected = crate::sha256::Sha256(digest);
+        if !crate::sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
+            out.write(b"packages: userland digest mismatch\r\n");
+            return;
+        }
+        if len == 0 || len > image.len() {
+            out.write(b"packages: userland image is empty\r\n");
+            return;
+        }
+        // SAFETY: the console owns the machine and the staging buffer is
+        // resident; the assembly wrapper restores this caller on exit.
+        unsafe { crate::traps::user_from_console_loaded() };
+        out.write(b"packages: userland returned\r\n");
+        return;
+    }
+    out.write(b"packages: not found\r\n");
+}
+
 struct ResultSinkWriter<'a> {
     out: &'a mut dyn Sink,
 }
@@ -523,7 +608,8 @@ fn help(out: &mut dyn Sink) {
           \x20 time                 uptime and RTC time\r\n\
           \x20 hinv                 CPU, memory and network inventory\r\n\
           \x20 packages             list the GitHub package index\r\n\
-          \x20 packages install N   verify and load a module\r\n\
+          \x20 packages install N   verify and install a module or userland\r\n\
+          \x20 packages run N       run a userland image from RAM\r\n\
           \x20 mount URL [...]      inspect EROFS over HTTPS Range\r\n\
           \x20 boot                 retry the target-2 user image\r\n\
           \x20 reboot               restart from the PROM\r\n\

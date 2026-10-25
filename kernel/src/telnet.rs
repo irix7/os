@@ -332,6 +332,10 @@ pub fn poll() {
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
         if let Some(handle) = handle {
             net::sockets_with(|sockets| {
+                // A userland run may have queued console output while the
+                // socket was not borrowed.  Deliver it before the command's
+                // result and the next prompt.
+                drain_output(sockets, handle);
                 let sock = sockets.get_mut::<TcpSocket>(handle);
                 let _ = sock.send_slice(output);
                 let _ = sock.send_slice(b"sash> ");

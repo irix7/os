@@ -62,6 +62,7 @@ The clean-room command set is:
 | `hinv` | CPU, memory and network inventory |
 | `packages` | List the GitHub package index |
 | `packages install NAME` | Verify and load a module, or write a verified userland image to SCSI target 2 |
+| `packages run NAME` | Fetch, verify and run a userland image from RAM |
 | `mount URL [...]` | Inspect EROFS over HTTPS Range |
 | `boot` | Retry the target-2 user image |
 | `reboot` | Restart from the PROM |

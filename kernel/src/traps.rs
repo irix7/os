@@ -184,6 +184,7 @@ static mut USER_RETURN_REGS: [u32; 9] = [0; 9];
 extern "C" {
     pub fn user_from_console();
     pub fn user_from_console_elf();
+    pub fn user_from_console_loaded();
     pub fn user_return_trampoline();
     fn user_eret(user_sp: u32, argc: u32, argv: u32, envp: u32) -> !;
 }
@@ -254,6 +255,53 @@ user_from_console_elf:
     nop
     /* The loader returns only on a load failure; restore the console caller.
        A successful user image exits through user_return_trampoline instead. */
+    lui     $t1, %hi(USER_RETURN_REGS)
+    addiu   $t1, $t1, %lo(USER_RETURN_REGS)
+    lw      $16, 0($t1)
+    lw      $17, 4($t1)
+    lw      $18, 8($t1)
+    lw      $19, 12($t1)
+    lw      $20, 16($t1)
+    lw      $21, 20($t1)
+    lw      $22, 24($t1)
+    lw      $23, 28($t1)
+    lw      $30, 32($t1)
+    lui     $t1, %hi(USER_RETURN_RA)
+    addiu   $t1, $t1, %lo(USER_RETURN_RA)
+    lw      $ra, 0($t1)
+    lui     $t1, %hi(USER_RETURN_SP)
+    addiu   $t1, $t1, %lo(USER_RETURN_SP)
+    lw      $sp, 0($t1)
+    jr      $ra
+    nop
+
+    .section .text.user_from_console_loaded, "ax", @progbits
+    .align 4
+    .globl user_from_console_loaded
+user_from_console_loaded:
+    addiu   $sp, $sp, -16
+    sw      $ra, 12($sp)
+    addiu   $t0, $sp, 16
+    lui     $t1, %hi(USER_RETURN_SP)
+    addiu   $t1, $t1, %lo(USER_RETURN_SP)
+    sw      $t0, 0($t1)
+    lui     $t1, %hi(USER_RETURN_RA)
+    addiu   $t1, $t1, %lo(USER_RETURN_RA)
+    sw      $ra, 0($t1)
+    lui     $t1, %hi(USER_RETURN_REGS)
+    addiu   $t1, $t1, %lo(USER_RETURN_REGS)
+    sw      $16, 0($t1)
+    sw      $17, 4($t1)
+    sw      $18, 8($t1)
+    sw      $19, 12($t1)
+    sw      $20, 16($t1)
+    sw      $21, 20($t1)
+    sw      $22, 24($t1)
+    sw      $23, 28($t1)
+    sw      $30, 32($t1)
+    jal     user_loaded
+    nop
+    /* The loader returns only on a load failure; restore the console caller. */
     lui     $t1, %hi(USER_RETURN_REGS)
     addiu   $t1, $t1, %lo(USER_RETURN_REGS)
     lw      $16, 0($t1)

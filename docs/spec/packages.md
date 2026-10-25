@@ -50,8 +50,9 @@ Sash fetches the index over the kernel TLS client, lists entries, and on
 `packages install NAME` selects the first (newest) exact version.  A module is
 verified and loaded through the existing module path.  A userland record is
 fetched into the 256 KiB loader buffer, verified, and written to SCSI target 2;
-`reboot` then starts it.  The diskless run path is still to come.  No entry is
-executed if the digest does not match.
+`reboot` then starts it.  `packages run NAME` instead fetches and verifies the
+image in RAM and enters it without a disk.  No entry is executed if the digest
+does not match.
 
 ## 5. SCSI cache policy
 
