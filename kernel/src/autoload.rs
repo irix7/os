@@ -108,16 +108,16 @@ fn load_local(record: &[u8]) -> Result<i32, &'static str> {
     let len = (sectors as usize)
         .checked_mul(512)
         .ok_or("autoload: mcp.local length overflow")?;
-    if len == 0 || len > module::MODULE_MAX {
-        return Err("autoload: mcp.local does not fit the module area");
+    if len == 0 || len > module::slot_size(module::Slot::A) {
+        return Err("autoload: mcp.local does not fit module slot A");
     }
     if lba.checked_add(sectors).is_none() {
         return Err("autoload: mcp.local LBA overflow");
     }
 
     console_println("autoload: loading local module");
-    module::clear();
-    let area = module::area();
+    module::clear(module::Slot::A);
+    let area = module::area(module::Slot::A);
     let mut done = 0usize;
     while done < len {
         let count = ((len - done) / 512).min(255);
@@ -129,7 +129,7 @@ fn load_local(record: &[u8]) -> Result<i32, &'static str> {
         return Err("autoload: local module hash mismatch");
     }
     // SAFETY: the image fits and its hash matched.
-    unsafe { Ok(module::call_entry(len)) }
+    unsafe { Ok(module::call_entry(module::Slot::A, len)) }
 }
 
 fn parse_u32(text: &str) -> Result<u32, &'static str> {
@@ -225,8 +225,8 @@ fn fetch_once(url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
     let ip = crate::telnet::resolve_host(host.as_bytes()).ok_or("autoload: unknown host")?;
 
     console_println("autoload: fetching module");
-    module::clear();
-    let area = module::area();
+    module::clear(module::Slot::A);
+    let area = module::area(module::Slot::A);
     let (summary, captured) = if secure {
         tls::get_to(ip, port, host, path, area)?
     } else {
@@ -249,7 +249,12 @@ fn fetch_once(url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
         return Err("autoload: module hash mismatch");
     }
     // SAFETY: the image fits and its hash matched.
-    unsafe { Ok(FetchResult::Loaded(module::call_entry(captured))) }
+    unsafe {
+        Ok(FetchResult::Loaded(module::call_entry(
+            module::Slot::A,
+            captured,
+        )))
+    }
 }
 
 fn parse_digest(hex: &[u8]) -> Option<Sha256> {

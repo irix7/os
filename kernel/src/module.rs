@@ -20,6 +20,36 @@ pub use module_abi::{ModuleVtable, Services, ABI_VERSION, MODULE_BASE, MODULE_MA
 /// A module entry point.
 pub type Entry = unsafe extern "C" fn(*const Services) -> *const ModuleVtable;
 
+/// Fixed module slots in the 2 MiB module area.
+///
+/// Slot A keeps the resident/control module (MCP and the small probes).
+/// Slot B is large enough for the wasmi runtime probe.  Modules are linked at
+/// their slot base, so this is a fixed two-slot layout, not a relocatable
+/// multiplexer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    /// 512 KiB at `0x8840_0000`.
+    A,
+    /// 1.5 MiB at `0x8848_0000`.
+    B,
+}
+
+/// Base address of a module slot.
+pub const fn slot_base(slot: Slot) -> usize {
+    match slot {
+        Slot::A => MODULE_BASE,
+        Slot::B => MODULE_BASE + 0x0008_0000,
+    }
+}
+
+/// Capacity of a module slot.
+pub const fn slot_size(slot: Slot) -> usize {
+    match slot {
+        Slot::A => 0x0008_0000,
+        Slot::B => 0x0018_0000,
+    }
+}
+
 static SERVICES: Services = Services {
     version: ABI_VERSION,
     write: service_write,
@@ -44,64 +74,66 @@ static SERVICES: Services = Services {
     block_write: service_block_write,
 };
 
-/// The periodic callback of the loaded module, if it registered one.
-static mut TICK: Option<unsafe extern "C" fn(*const Services) -> i32> = None;
-static mut LAST_TICK: u64 = 0;
+/// Periodic callbacks for the two slots.
+static mut TICKS: [Option<unsafe extern "C" fn(*const Services) -> i32>; 2] = [None; 2];
+static mut LAST_TICKS: [u64; 2] = [0; 2];
 
-/// The module area as a writable slice, for downloading straight into place.
-pub fn area() -> &'static mut [u8] {
+/// A module slot as a writable slice, for downloading straight into place.
+pub fn area(slot: Slot) -> &'static mut [u8] {
     // SAFETY: the region is reserved for exactly this purpose; the kernel is
-    // single-threaded and only one module runs at a time.
-    unsafe { core::slice::from_raw_parts_mut(MODULE_BASE as *mut u8, MODULE_MAX) }
+    // single-threaded and only the selected slot is used at a time.
+    unsafe { core::slice::from_raw_parts_mut(slot_base(slot) as *mut u8, slot_size(slot)) }
 }
 
-/// Zero the module area before a download.
-///
-/// The flat image contains `.text`, `.rodata` and `.data` but not `.bss`, so
-/// zeroing the area gives the module's `.bss` a defined initial value and
-/// discards the previous module's code.
-pub fn clear() {
+/// Zero one module slot before a download.
+pub fn clear(slot: Slot) {
     // SAFETY: the region is reserved for modules and is not aliased.
     unsafe {
-        core::ptr::write_bytes(MODULE_BASE as *mut u8, 0, MODULE_MAX);
+        core::ptr::write_bytes(slot_base(slot) as *mut u8, 0, slot_size(slot));
     }
-    crate::cache::dcache_writeback_invalidate(MODULE_BASE, MODULE_MAX);
+    crate::cache::dcache_writeback_invalidate(slot_base(slot), slot_size(slot));
     crate::cache::sync();
 }
 
-fn vtable_in_area(p: *const ModuleVtable) -> bool {
+fn vtable_in_slot(p: *const ModuleVtable, slot: Slot) -> bool {
     let a = p as usize;
-    if a < MODULE_BASE || a % align_of::<ModuleVtable>() != 0 {
+    let base = slot_base(slot);
+    if a < base || a % align_of::<ModuleVtable>() != 0 {
         return false;
     }
     match a.checked_add(size_of::<ModuleVtable>()) {
-        Some(end) => end <= MODULE_BASE + MODULE_MAX,
+        Some(end) => end <= base + slot_size(slot),
         None => false,
     }
 }
 
-/// Call the module currently loaded at [`MODULE_BASE`].
+/// Call the module currently loaded in `slot`.
 ///
 /// # Safety
 /// The caller must have verified the image and its hash; arbitrary code runs
 /// in kernel mode from here.
-pub unsafe fn call_entry(len: usize) -> i32 {
+pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
+    let base = slot_base(slot);
+    let index = slot as usize;
+    if len == 0 || len > slot_size(slot) {
+        return -1;
+    }
     // The image was written through the cacheable kseg0 mapping.  Write the
     // data cache back to RAM and invalidate stale instruction lines before the
     // first fetch of module code.
-    crate::cache::dcache_writeback_invalidate(MODULE_BASE, len);
-    crate::cache::icache_invalidate(MODULE_BASE, len);
+    crate::cache::dcache_writeback_invalidate(base, len);
+    crate::cache::icache_invalidate(base, len);
     crate::cache::sync();
 
-    // A new image replaces any previous callback.
-    TICK = None;
+    // A new image replaces any previous callback in this slot.
+    TICKS[index] = None;
 
-    let entry: Entry = core::mem::transmute(MODULE_BASE);
+    let entry: Entry = core::mem::transmute(base);
     let vtable = entry(&SERVICES);
     if vtable.is_null() {
         return 0;
     }
-    if !vtable_in_area(vtable) {
+    if !vtable_in_slot(vtable, slot) {
         return -1;
     }
     // The vtable lives inside the verified image; read it directly.
@@ -111,32 +143,34 @@ pub unsafe fn call_entry(len: usize) -> i32 {
     }
     let tick = core::ptr::read(vtable).tick;
     if let Some(tick) = tick {
-        LAST_TICK = service_clock_ms();
-        TICK = Some(tick);
+        LAST_TICKS[index] = service_clock_ms();
+        TICKS[index] = Some(tick);
     }
     0
 }
 
-/// Run the loaded module's periodic callback, if any.
+/// Run the periodic callbacks of both slots, if registered.
 pub fn poll() {
-    // SAFETY: single-threaded kernel; TICK is only written here and in
-    // call_entry, which is not re-entered.
-    let tick = unsafe { TICK };
-    let Some(tick) = tick else {
-        return;
-    };
     let now = service_clock_ms();
-    let last = unsafe { LAST_TICK };
-    if now.saturating_sub(last) < 10 {
-        return;
-    }
-    unsafe {
-        LAST_TICK = now;
-    }
-    let status = unsafe { tick(&SERVICES) };
-    if status != 0 {
+    for index in 0..2 {
+        // SAFETY: single-threaded kernel; slot arrays are only written here
+        // and in call_entry, which is not re-entered.
+        let tick = unsafe { TICKS[index] };
+        let Some(tick) = tick else {
+            continue;
+        };
+        let last = unsafe { LAST_TICKS[index] };
+        if now.saturating_sub(last) < 10 {
+            continue;
+        }
         unsafe {
-            TICK = None;
+            LAST_TICKS[index] = now;
+        }
+        let status = unsafe { tick(&SERVICES) };
+        if status != 0 {
+            unsafe {
+                TICKS[index] = None;
+            }
         }
     }
 }
