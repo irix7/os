@@ -6,7 +6,7 @@
  * the R4000 starts after reset.  They are never copied to RAM, so the RAM
  * test can run without overwriting the code that is doing the testing.
  *
- * Writable data lives in DRAM at 7 MiB, matching the original IP22 PROM's
+ * Writable data lives in DRAM at 7 MiB, matching the original IP24 PROM's
  * BSSADDR 0xA8700000, with a 2 MiB heap.  The stack top is 10 MiB, leaving a
  * gap above the heap.
  */

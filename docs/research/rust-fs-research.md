@@ -6,7 +6,7 @@
 
 **Date:** 2026-10-20.
 
-**Scope.** IRIX 7 is a clean-room, GPL-3.0, Rust-native operating system for the SGI Indy (IP22, MIPS III R4400, big-endian, 32–128 MB RAM, narrow SCSI-2). It must read legacy IRIX 6.5 XFS volumes and eventually write them. All drivers, including SCSI and block, run in userspace cells; the kernel brokers MMIO, DMA buffers and interrupts. Native storage may use a different format. No SGI source and no GPL-2.0-only code may be incorporated.
+**Scope.** IRIX 7 is a clean-room, GPL-3.0, Rust-native operating system for the SGI Indy (IP24, MIPS III R4400, big-endian, 32–128 MB RAM, narrow SCSI-2). It must read legacy IRIX 6.5 XFS volumes and eventually write them. All drivers, including SCSI and block, run in userspace cells; the kernel brokers MMIO, DMA buffers and interrupts. Native storage may use a different format. No SGI source and no GPL-2.0-only code may be incorporated.
 
 **Method.** Claims are traced to primary sources: source repositories, crate manifests, on-disk-format documents, kernel documentation, hardware datasheets, and the licences themselves. Repository and crate metadata were read on 2026-10-20 and will drift. Where a project's README makes a capability claim that I did not independently exercise, I say so (for example, "claimed"). The 2026 generation of pure-Rust XFS crates is very new; their existence is a fact, their maturity is not yet a fact.
 

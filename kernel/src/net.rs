@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Kernel network stack — Seeq 8003 + HPC3 PDMA with smoltcp.
 //!
-//! Register and descriptor layout follows the original IP22 ARCS PROM driver
+//! Register and descriptor layout follows the original Indy ARCS PROM driver
 //! (`stand/arcs/lib/libsk/net/if_ec2.c`, `include/net/seeq.h`):
 //!
 //! - Seeq 8003 at kseg1 `0xBFBD_4000`, registers at byte lane 0
@@ -9,7 +9,7 @@
 //!   register 6 is RX command/status and register 7 is TX command/status.
 //! - HPC3 enet RX engine at `0xBFB9_4000`, TX engine at `0xBFB9_6000`:
 //!   CBP = 0x000, NBDP = 0x004, CTRL = 0x1004; ACTIVE = bit 9.
-//! - PDMA descriptor (IP22 layout, 16 bytes): word 0 is the buffer physical
+//! - PDMA descriptor (Indy layout, 16 bytes): word 0 is the buffer physical
 //!   address, word 1 is EOX(31) | EOP(30) | XIE(29) | ... | ROWN(14) | byte
 //!   count(13:0), word 2 is the next descriptor's physical address.
 //! - RX buffer layout: two pad bytes, the Ethernet frame, one SEEQ status
@@ -50,7 +50,7 @@ const ENET_NBDP: usize = 0x0004;
 const ENET_CTRL: usize = 0x1004;
 const ENET_CTRL_ACTIVE: u32 = 1 << 9;
 
-/// PDMA descriptor flags, from IP22 `struct xd` / `struct rd`.
+/// PDMA descriptor flags, from the Indy PROM `struct xd` / `struct rd`.
 const DESC_EOX: u32 = 0x8000_0000; // end of ring
 const DESC_EOP: u32 = 0x4000_0000; // end of packet
 const DESC_ROWN: u32 = 0x0000_4000; // RX: HPC3 owns the buffer
@@ -95,7 +95,7 @@ fn phys<T>(p: *const T) -> u32 {
     (p as u32) & 0x1FFF_FFFF
 }
 
-/// HPC3 PDMA descriptor (IP22 layout).
+/// HPC3 PDMA descriptor (Indy layout).
 #[repr(C, align(16))]
 #[derive(Clone, Copy)]
 struct DmaDesc {

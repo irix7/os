@@ -1,6 +1,6 @@
 # Plan 9, Rust, and IRIX 7
 
-**Deep research on Plan 9-like designs and implementations in Rust, for a clean-room GPL-3.0 Rust OS on the SGI Indy (IP22, MIPS III, big-endian, 10 Mbit Ethernet, 32–128 MB RAM).**
+**Deep research on Plan 9-like designs and implementations in Rust, for a clean-room GPL-3.0 Rust OS on the SGI Indy (IP24, MIPS III, big-endian, 10 Mbit Ethernet, 32–128 MB RAM).**
 
 **Date:** 2026-10-20.
 **Status:** research input to the IRIX 7 architecture (ADR-0010/0011/0017) and to the proposed root-image, user-data and MCP control planes.

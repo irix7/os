@@ -1,4 +1,4 @@
-# Forking EROFS to big-endian for IRIX 7 (SGI Indy, IP22)
+# Forking EROFS to big-endian for IRIX 7 (SGI Indy, IP24)
 
 **Question.** Can EROFS be forked to a big-endian (BE) on-disk format for IRIX 7 — a
 clean-room GPL-3.0 Rust OS on an R4400 (MIPS III, big-endian, 32–128 MB RAM, 10 Mbit

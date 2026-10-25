@@ -1,4 +1,4 @@
-# Native window system for IRIX 7 (SGI Indy, IP22)
+# Native window system for IRIX 7 (SGI Indy, IP24)
 
 **Decision research.** Which native window system / display architecture should IRIX 7 adopt for
 Rust-native software, given GR1/GR2 Newport 2D graphics (REX3 blitter, no 3D), 32–128 MB RAM,
@@ -1506,7 +1506,7 @@ not a published document but is included because the hardware numbers in this re
 
 | Tag | Source |
 |---|---|
-| [H] | *SGI Indy (IP22 / "Guinness") hardware reference*, local research note, `/tmp/opencode/indy-hardware.md`, §2, §3, §9, §12, §18. Compiled from SGI chip specifications (REX3, RB2, VC2, XMAP9, MC, GIO) and Linux/NetBSD driver sources. |
+| [H] | *SGI Indy (IP24 / "Guinness") hardware reference*, local research note, `/tmp/opencode/indy-hardware.md`, §2, §3, §9, §12, §18. Compiled from SGI chip specifications (REX3, RB2, VC2, XMAP9, MC, GIO) and Linux/NetBSD driver sources. |
 | [THESEUS] | Theseus OS, a framekernel OS with cell-based isolation, https://github.com/theseus-os/Theseus (repository; the framekernel/cell model referenced in §3.3). |
 | [WAYLAND] | Wayland, "Wayland Architecture", https://wayland.freedesktop.org/architecture.html (fetched 2026-10-20). |
 | [WXML] | Wayland, `protocol/wayland.xml`, https://gitlab.freedesktop.org/wayland/wayland/-/blob/main/protocol/wayland.xml (fetched 2026-10-20), `wl_shm`, `wl_surface.frame`, `wl_surface.commit`. |

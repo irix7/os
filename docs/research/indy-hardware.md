@@ -1,4 +1,4 @@
-# SGI Indy (IP22 / “Guinness”) hardware reference
+# SGI Indy (IP24 / “Guinness”) hardware reference
 
 **Purpose.** A subsystem-by-subsystem hardware description of the SGI Indy, written for
 someone bringing up a bare-metal operating system in Rust. For every block it gives the
@@ -8,10 +8,11 @@ alignment, known silicon bugs). Documented behaviour is separated from driver wo
 and from emulator-derived guesses throughout; the residual unknowns are collected in
 [§18](#18-unresolved-and-uncertain).
 
-**Machine identity.** The Indy mainboard is silkscreened **IP24**, but the firmware and
-all system software identify it as **IP22**; SGI’s code name is **Guinness**. Indigo2 is
-**FullHouse** and shares the IP22 architecture but differs in IOC revision, EISA, and
-graphics. Every register in this document is the Indy variant unless stated otherwise;
+**Machine identity.** The Indy mainboard is silkscreened **IP24**; this project uses
+**IP24** for the target and the iris profile. The firmware and the Linux/NetBSD source
+trees identify the same machine as **IP22**; SGI’s code name is **Guinness**. The
+**IP22** name is retained only in external source references. Indigo2 is **FullHouse**
+and shares that architecture but differs in IOC revision, EISA, and graphics. Every register in this document is the Indy variant unless stated otherwise;
 where the two machines differ the IOC2 specification has a dedicated section [S3 §6.0].
 
 ---
@@ -99,7 +100,7 @@ brief [S21].
    over the buffer’s address range (index-based, since these caches are physically indexed
    and the line size is 16 B on R4000/R4400 and 32 B on R4600/R5000). A `sync` instruction
    is required after the cache ops and before the doorbell write to the device. Getting
-   this wrong is the single most common source of “the disk read random garbage” on IP22.
+   this wrong is the single most common source of “the disk read random garbage” on the Indy.
 3. **The instruction cache is not coherent with the data cache.** After writing code,
    flush D over the range, then `cache 0x10` (I-cache invalidate) and `sync`.
 4. **TLB.** 48 JTLB entries, each mapping an **even/odd page pair**; `PageMask` selects
@@ -146,8 +147,7 @@ per-byte and errors are logged, not corrected. [S2 §2; S18 mc.h]
 alias of the first 128 MB appears at `0x2000_0000` (segment 1). SGI’s memory map lets a
 256 MB machine occupy `0x0800_0000–0x17FF_FFFF`, with `0x2000_0000` providing a
 non-cacheable-ish window used by some firmware paths. Software should size RAM from the
-ARCS memory descriptor list rather than probing, because probing a nonexistent bank on
-IP22 does not bus-error cleanly.
+ARCS memory descriptor list rather than probing, because probing a nonexistent bank on the Indy does not bus-error cleanly.
 
 **Key registers** (`struct sgimc_regs`, [S18 mc.h]); offsets in bytes from 0x1FA0_0000:
 
@@ -242,7 +242,7 @@ parallel port), and the Dallas RTC window. [S1 §1.1, §3.0]
 | 0x0006_0038 | battery-backed RAM (8 KB minus the RTC words) |
 
 (The last two appear at physical `0x1FBE_0000`, consistent with `hpc3_regs.rtcregs` and
-`bbram[]` in [S18 hpc3.h] and with NetBSD’s `dsclock.c`, which maps `0x1fbe0000` for IP22.)
+`bbram[]` in [S18 hpc3.h] and with NetBSD’s `dsclock.c`, which maps `0x1fbe0000` for the Indy.)
 
 The “external register” windows are 32 KB each and come straight from the HPC3 spec
 [S1 §3.0]: HD0 `0x1FBC_0000–0x1FBC_7FFF`, HD1 `0x1FBC_8000–0x1FBC_FFFF`, ENET

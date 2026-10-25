@@ -1,6 +1,6 @@
 # IRIX 7 — Architectural Design Decision Research Report
 
-**Scope:** every major OS design decision for IRIX 7 — a GPL-3.0, clean-room, Rust-native operating system for the SGI Indy (IP22, MIPS III, big-endian ELF32) that runs existing IRIX 6.5 o32/n32 binaries unchanged through a legacy ABI compatibility container, offers new Rust programs a native capability/object interface, and boots via the factory SGI PROM.
+**Scope:** every major OS design decision for IRIX 7 — a GPL-3.0, clean-room, Rust-native operating system for the SGI Indy (IP24, MIPS III, big-endian ELF32) that runs existing IRIX 6.5 o32/n32 binaries unchanged through a legacy ABI compatibility container, offers new Rust programs a native capability/object interface, and boots via the factory SGI PROM.
 
 **Status of this document:** research input to ADR-0010 (kernel architecture), ADR-0011 (native capability substrate + compat container), ADR-0016 (o32 ECOFF bootstrap), ADR-0017 (modern equivalents as references), ADR-0018 (codegen backend), and the proposed two-phase ROM handoff.
 
@@ -127,7 +127,7 @@ Treat the machine as a network of cores; each core runs its own kernel instance 
 
 **Cons.**
 
-- The Indy is single-CPU in its common configuration (IP22 with one R4400), and at most dual-CPU in later Indigo2/Challenge configurations; a multikernel's core complexity buys nothing.
+- The Indy is single-CPU in its common configuration (IP24 with one R4400), and at most dual-CPU in later Indigo2/Challenge configurations; a multikernel's core complexity buys nothing.
 - Message-passing between cores on a machine with no coherent interconnect optimisation is pure overhead.
 - No Rust multikernel of production quality exists.
 
@@ -210,7 +210,7 @@ The OS is a set of cells (≈ crates) with fine-grained, language-enforced state
 
 **Cons.**
 
-- Every syscall and every page fault costs a mode switch and TLB work; on an R4400 with a 48-entry TLB (per SGI IP22 documentation) this is not free.
+- Every syscall and every page fault costs a mode switch and TLB work; on an R4400 with a 48-entry TLB (per SGI IP24 documentation) this is not free.
 - Hardware protection does not protect against kernel bugs: a monolithic kernel with a wild pointer still corrupts everything.
 - It forces the native capability model and the compat container across a boundary that the project wants cheap (function calls and shared memory).
 
@@ -2390,7 +2390,7 @@ Use stock rustc with custom target JSON for `mips2-sgi-irix7-o32` and `mips3-sgi
 
 **Recommendation I5.** **I5-iii**: build the boot-critical drivers (serial, timer, interrupt controller, HPC3, Seeq, SCSI, RTC) into the kernel; make non-critical drivers loadable cells later. Prioritise the devices needed for the tracer bullet and the compat layer: serial console, timer, HPC3 interrupt controller, Seeq Ethernet (for the ROM/kernel networking), SCSI disk (for the root filesystem), RTC (time), and Newport graphics (console/graphics) last.
 
-**Device notes (Indy/IP22).**
+**Device notes (Indy/IP24).**
 
 - **HPC3**: the system I/O controller; interrupt controller, DMA, Ethernet, SCSI, serial, audio, and parallel all hang off it. Its register block is memory-mapped (the prompt gives the Seeq base as `0xBF580000`); the framework must label these ranges sensitive.
 - **Seeq 80C03 Ethernet**: 10 Mbit/s, DMA via HPC3; the ROM and kernel share a driver.
@@ -2715,7 +2715,7 @@ A clean-room XFS implementation that starts read-only (mount, read, lookup, exte
 
 ### K.2 Why this combination fits IRIX 7
 
-**MIPS Indy (IP22, MIPS III, big-endian, small TLB, limited RAM).** The design avoids every avoidable source of overhead: no microkernel IPC, no per-syscall address-space switch for native code, no unwinder, no 64-bit pointers, soft-float in the kernel, and direct-mapped kernel RAM. The MIPS-specific work (TLB refill, cache maintenance, ECOFF, o32/n32 decode) is isolated in the framework and the compat container, where it can be audited and tested on the emulator before real hardware.
+**MIPS Indy (IP24, MIPS III, big-endian, small TLB, limited RAM).** The design avoids every avoidable source of overhead: no microkernel IPC, no per-syscall address-space switch for native code, no unwinder, no 64-bit pointers, soft-float in the kernel, and direct-mapped kernel RAM. The MIPS-specific work (TLB refill, cache maintenance, ECOFF, o32/n32 decode) is isolated in the framework and the compat container, where it can be audited and tested on the emulator before real hardware.
 
 **GPL-3.0.** Every recommendation avoids licence traps: smoltcp is 0BSD, `abi_stable` is MIT/Apache-2.0, rustls is Apache-2.0/ISC, Theseus and Asterinas are permissive (check versions), Mesa is MIT, and the clean-room XFS avoids the GPL-2.0-only incompatibility of porting Linux XFS. ZFS (CDDL) is explicitly excluded. The ADR-0012 gate applies to every dependency, including transitive ones.
 

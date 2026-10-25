@@ -11,7 +11,7 @@ Record each machine's exact configuration. The two stock Indys are not identical
 
 | Field | Indy A | Indy B |
 |---|---|---|
-| Model / profile | Indy (IP24 in iris naming) | Indy (IP24 in iris naming) |
+| Model / profile | Indy (IP24) | Indy (IP24) |
 | CPU | R4400 (confirm speed) | R4400 (confirm speed) |
 | RAM | Confirm banks | Confirm banks |
 | Graphics board | Confirm (8-bit XL / 24-bit XL / XZ) | Confirm |

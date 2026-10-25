@@ -1,7 +1,7 @@
-# X11 in Rust for IRIX 7 (IP22 Indy)
+# X11 in Rust for IRIX 7 (IP24 Indy)
 
 **Scope.** State of X11 in Rust, and what it would take to give a clean-room GPL-3.0
-Rust OS on SGI Indy hardware (IP22, MIPS III R4400, big-endian, 32–128 MB, GR1
+Rust OS on SGI Indy hardware (IP24, MIPS III R4400, big-endian, 32–128 MB, GR1
 Newport / GR2 Express 2D graphics) a working X11 server for legacy IRIX 6.5
 binaries.
 

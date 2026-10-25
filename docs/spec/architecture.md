@@ -88,9 +88,11 @@ not be supported under Linux; the OS therefore detects the board at boot and ena
 the features the hardware provides. The emulator default is the first reference, not the
 only configuration. ISDN is explicitly out of scope.
 
-> **Naming note.** The hardware report uses "IP22 / Guinness" for the Indy, while the
-> iris emulator calls the Indy `IP24` and the Indigo2 `IP22`. The project should settle
-> on one convention before the hardware tables are frozen; see §17.
+> **Naming note.** The Indy mainboard is silkscreened **IP24**; this project uses
+> `IP24` for the target, matching the iris `IndyIp24` profile. The firmware and the
+> Linux/NetBSD source trees call the same machine **IP22**; those external source
+> names are retained only where they are citations. The Indigo2 is a different
+> machine and is `IP22` in iris naming.
 
 ### 1.2 Goals
 
@@ -1976,8 +1978,7 @@ corresponding implementation phase.
 
 ### 17.7 Naming and legal
 
-- **IP24 vs IP22**: iris calls the Indy `IP24` and the Indigo2 `IP22`; the hardware report
-  and common usage call the Indy IP22. Settle one convention.
+- The "IRIX 7" name and trademark review.
 - The "IRIX 7" name and any SGI trademark implications; the project is clean-room and
   unaffiliated, but the name should be reviewed before distribution.
 
