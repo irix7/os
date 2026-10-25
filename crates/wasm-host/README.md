@@ -4,9 +4,10 @@ Host-side `wasmi` lifecycle for the IRIX 7 Wasm core: engine configuration,
 fuel metering, the `i7host` import surface, the submission/completion queue and
 instance startup.
 
-The library is `no_std + alloc` unless the `std` feature is enabled for tests.
-`HostHooks` is the seam to the native shim. It carries the clock, the console
-and a `PolicyHooks` table for the M1 local policy:
+The `std` feature is enabled by default for the workstation tests; the kernel
+module disables it and builds the library with `no_std + alloc`. `HostHooks`
+is the seam to the native shim. It carries the clock, the console and a
+`PolicyHooks` table for the M1 local policy:
 
 - `host_node_id`, `host_policy_begin`/`commit`/`abort` and `host_policy_stats`;
 - `host_ns_mkdir`/`put`/`lookup`/`get`/`root` for the staged namespace and CAS;

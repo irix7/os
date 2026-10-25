@@ -166,6 +166,13 @@ fn cap_check(context: usize, handle: u64, rights: u32, object: &[u8; 32]) -> i32
     }
 }
 
+fn cap_rights(context: usize, handle: u64, object: &[u8; 32]) -> i32 {
+    match policy(context).cap_rights(handle, &sys_primitives::ObjectId(*object)) {
+        Some(rights) => rights as i32,
+        None => -1,
+    }
+}
+
 fn stats(context: usize, out: &mut [u32; 4]) -> i32 {
     match policy(context).stats() {
         Ok(summary) => {
@@ -217,6 +224,7 @@ fn run_policy_guest() {
             actor_queue,
             cap_issue,
             cap_check,
+            cap_rights,
             stats,
         },
     };

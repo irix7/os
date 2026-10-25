@@ -22,7 +22,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 519,568 bytes, leaving 4,720 bytes under the PROM limit; the
+  policy image is 520,076 bytes, leaving 4,212 bytes under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
   wasmi module. Loading the Wasm probe with `module b` leaves MCP running.
@@ -37,12 +37,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `wasm: run=42`. The evidence matches the native `m1:` root, actor, rights and home;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
-  capability is published. The module is about 1.34 MiB (1,344,424 bytes in
+  capability is published. The module is about 1.34 MiB (1,345,816 bytes in
   the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
-  remains 519,568 bytes (4,720 free).
+  remains 520,076 bytes (4,212 free).
 - The M1 software path now boots both the no-network/no-module path and the
   slot-B Wasm-policy path on iris, with zero mesh traffic and MCP still live
-  in slot A. The optional Wasm probe starts after `BOOT-READY`; MCP-only
+  in slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The optional
+  Wasm probe starts after `BOOT-READY`; MCP-only
   readiness measured 7.3–7.7 s and the full Wasm path 21.7–35.4 s. The
   readiness budget excludes the optional probe; the full-path latency is
   recorded under #17 as a performance limitation.

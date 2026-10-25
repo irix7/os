@@ -641,6 +641,17 @@ pub extern "C" fn _start_rust() -> ! {
     // the last kernel messages are visible even if userland never returns.
     start_userland();
 
+    // Re-report the mesh counters after the optional Wasm probe and userland
+    // smoke. The M1 gate must cover the whole boot, not only the pre-readiness
+    // snapshot.
+    console_write("m1-post: mesh=");
+    write_u64_dec(crate::mesh::frames() as u64);
+    console_write("/");
+    write_u64_dec(crate::mesh::rpcs() as u64);
+    console_write("/");
+    write_u64_dec(crate::mesh::envelopes() as u64);
+    console_println("");
+
     // Userland returned (normally after exit, or because target 2 had no
     // loadable image).  Keep the console, network and module services alive.
     // Both the BootInfo path and the register-handoff path keep the console

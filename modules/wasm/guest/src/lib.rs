@@ -25,6 +25,9 @@ const MOTD: &[u8] = b"Welcome to IRIX 7.\n";
 const ETC: &[u8] = b"/etc";
 const MOTD_PATH: &[u8] = b"/etc/motd";
 
+// SAFETY: every `host_*` call passes a pointer to a live stack/static object in
+// Wasm linear memory and a length the host validates before reading or writing.
+// The host rejects negative or oversized lengths and never retains the pointer.
 #[link(wasm_import_module = "i7host")]
 extern "C" {
     fn host_version() -> i32;
@@ -50,6 +53,7 @@ extern "C" {
     fn host_actor_queue(id: i32) -> i32;
     fn host_cap_issue(object: i32, rights: i32, subject: i32, home: i32) -> i64;
     fn host_cap_check(handle: i64, rights: i32, object: i32) -> i32;
+    fn host_cap_rights(handle: i64, object: i32) -> i32;
 }
 
 #[panic_handler]
@@ -238,6 +242,10 @@ pub extern "C" fn run() -> i32 {
     if unsafe { host_ns_root(address_mut(&mut committed_root)) } != 0 || committed_root != root {
         return fail(27);
     }
+    let host_rights = unsafe { host_cap_rights(handle, address(&root)) };
+    if host_rights != RIGHTS {
+        return fail(28);
+    }
 
     let mut evidence = [0u8; 256];
     let mut out = Out::new(&mut evidence);
@@ -246,7 +254,7 @@ pub extern "C" fn run() -> i32 {
     out.text(b" actor=");
     out.hex(&actor);
     out.text(b" cap=ok rights=");
-    out.dec(RIGHTS as usize);
+    out.dec(host_rights as usize);
     out.text(b" home=");
     out.hex(&node);
     out.text(b" objects=");

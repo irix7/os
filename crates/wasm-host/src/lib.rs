@@ -33,7 +33,9 @@ pub struct HostHooks {
     pub policy: PolicyHooks,
 }
 
-/// Issue a capability and return its opaque handle, or zero.
+/// Issue a capability and return its `generation << 32 | index` handle, or
+/// zero. The generation is part of the handle so a caller can detect a stale
+/// slot without a separate revocation query.
 pub type CapIssueHook = fn(usize, &[u8; 32], u32, &[u8; 32], &[u8; 16]) -> i64;
 
 /// Native primitives behind the guest's local-policy decision.
@@ -73,10 +75,13 @@ pub struct PolicyHooks {
     pub actor_place: fn(usize, &[u8; 16], &[u8; 16]) -> i32,
     /// Put an actor on the run queue.
     pub actor_queue: fn(usize, &[u8; 16]) -> i32,
-    /// Issue a capability and return its opaque handle, or zero.
+    /// Issue a capability and return its `generation << 32 | index` handle, or
+    /// zero. The guest may probe the generation to detect a stale handle.
     pub cap_issue: CapIssueHook,
     /// Check a capability handle for an object and rights set.
     pub cap_check: fn(usize, u64, u32, &[u8; 32]) -> i32,
+    /// Return the capability's committed rights, or a negative status.
+    pub cap_rights: fn(usize, u64, &[u8; 32]) -> i32,
     /// Write `[objects, actors, queued, caps]`.
     pub stats: fn(usize, &mut [u32; 4]) -> i32,
 }
@@ -157,6 +162,10 @@ fn unavailable_cap_check(_context: usize, _handle: u64, _rights: u32, _object: &
     -1
 }
 
+fn unavailable_cap_rights(_context: usize, _handle: u64, _object: &[u8; 32]) -> i32 {
+    -1
+}
+
 fn unavailable_stats(_context: usize, _out: &mut [u32; 4]) -> i32 {
     -1
 }
@@ -181,6 +190,7 @@ impl PolicyHooks {
             actor_queue: unavailable_actor_queue,
             cap_issue: unavailable_cap_issue,
             cap_check: unavailable_cap_check,
+            cap_rights: unavailable_cap_rights,
             stats: unavailable_stats,
         }
     }
@@ -363,6 +373,18 @@ impl Host {
                     return -1;
                 }
                 (hooks.cap_check)(hooks.context, handle as u64, rights as u32, &oid)
+            },
+        )?;
+        linker.func_wrap(
+            "i7host",
+            "host_cap_rights",
+            |caller: Caller<'_, HostState>, handle: i64, object: i32| -> i32 {
+                let hooks = caller.data().hooks.policy;
+                let mut oid = [0u8; 32];
+                if !read_memory(&caller, object, 32, &mut oid) {
+                    return -1;
+                }
+                (hooks.cap_rights)(hooks.context, handle as u64, &oid)
             },
         )?;
         linker.func_wrap(

@@ -266,6 +266,16 @@ fn hook_cap_check(context: usize, handle: u64, rights: u32, object: &[u8; 32]) -
     }
 }
 
+fn hook_cap_rights(context: usize, handle: u64, object: &[u8; 32]) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.cap_rights(handle, &sys_primitives::ObjectId(*object)) {
+        Some(rights) => rights as i32,
+        None => -1,
+    }
+}
+
 fn hook_stats(context: usize, out: &mut [u32; 4]) -> i32 {
     let Some(policy) = policy(context) else {
         return -1;
@@ -323,6 +333,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
             actor_queue: hook_actor_queue,
             cap_issue: hook_cap_issue,
             cap_check: hook_cap_check,
+            cap_rights: hook_cap_rights,
             stats: hook_stats,
         },
     };

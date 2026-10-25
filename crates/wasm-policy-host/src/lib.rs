@@ -175,6 +175,23 @@ impl CapTable {
             && entry.rights & rights == rights
     }
 
+    fn rights(&self, handle: u64, object: &ObjectId) -> Option<u32> {
+        if handle == 0 {
+            return None;
+        }
+        let index = (handle & 0xffff_ffff) as usize;
+        let generation = (handle >> 32) as u32;
+        if index == 0 || index >= MAX_CAPS {
+            return None;
+        }
+        let entry = &self.entries[index];
+        if entry.live && entry.generation == generation && entry.object == *object {
+            Some(entry.rights)
+        } else {
+            None
+        }
+    }
+
     fn count(&self) -> u32 {
         self.count
     }
@@ -304,6 +321,14 @@ impl Policy {
                 self.stage = Some(stage);
                 return Err(PolicyError::MissingObject);
             }
+        }
+        let unqueued = stage
+            .actors
+            .ids()
+            .any(|actor| !stage.queue.contains(&actor));
+        if unqueued {
+            self.stage = Some(stage);
+            return Err(PolicyError::Queue);
         }
         let stats = stats_of(&stage);
         self.committed = Some(Committed::from_stage(stage));
@@ -446,6 +471,15 @@ impl Policy {
         }
     }
 
+    /// Return a live capability's rights for an object, if the handle is valid.
+    pub fn cap_rights(&self, handle: u64, object: &ObjectId) -> Option<u32> {
+        match self.current() {
+            Some(Current::Stage(stage)) => stage.caps().rights(handle, object),
+            Some(Current::Committed(committed)) => committed.caps().rights(handle, object),
+            None => None,
+        }
+    }
+
     /// Counters for the guest's evidence line.
     pub fn stats(&self) -> Result<Stats, PolicyError> {
         match self.current() {
@@ -548,6 +582,22 @@ mod tests {
         let stats = policy.stats().expect("stats");
         assert_eq!(stats.actors, 1);
         assert_eq!(stats.queued, 1);
+        policy.commit().expect("commit");
+        assert!(policy.is_committed());
+    }
+
+    #[test]
+    fn commit_rejects_an_actor_without_a_queue_entry() {
+        let mut policy = Policy::new(node(), 0);
+        policy.begin().expect("begin");
+        policy.actor_spawn(actor()).expect("spawn");
+        policy.actor_place(actor(), node()).expect("place");
+        assert_eq!(policy.commit(), Err(PolicyError::Queue));
+        assert!(!policy.is_committed());
+        assert_eq!(policy.stats().expect("stats").queued, 0);
+        policy.actor_queue(actor()).expect("queue");
+        policy.commit().expect("commit");
+        assert!(policy.is_committed());
     }
 
     #[test]
@@ -569,10 +619,18 @@ mod tests {
         assert!(!policy.cap_check(handle, RIGHT_MANAGE, &root));
         assert!(!policy.cap_check(handle, RIGHT_READ, &motd));
         assert!(!policy.cap_check(handle ^ (1 << 32), RIGHT_READ, &root));
+        assert_eq!(
+            policy.cap_rights(handle, &root),
+            Some(RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE)
+        );
         assert_eq!(policy.stats().expect("stats").caps, 1);
         policy.commit().expect("commit");
         assert!(policy.cap_check(handle, RIGHT_READ, &root));
         assert!(!policy.cap_check(handle, RIGHT_MANAGE, &root));
+        assert_eq!(
+            policy.cap_rights(handle, &root),
+            Some(RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE)
+        );
     }
 
     #[test]

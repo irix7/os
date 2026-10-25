@@ -147,11 +147,12 @@ the test runs `packages` and `packages install mcp` against the GitHub index.
 This is the primary diskless gate; a SCSI disk is not a boot, discovery or
 module prerequisite.
 
-A slot-B boot serves a 1,344,424-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,345,816-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
-`m1: ... mesh=0/0/0` and `BOOT-READY` with MCP still listening. The CI
-compares the `m1-wasm` root, actor, rights and home against the native `m1:` line
+`m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
+`BOOT-READY` with MCP still listening. The CI compares the `m1-wasm` root,
+actor, rights and home against the native `m1:` line
 and checks `objects=5 actors=1 queued=1 caps=1`. The guest drives the
 namespace, actor and capability choice; the host supplies only staged
 CAS/table primitives. A failed or trapped guest aborts the stage, so no
@@ -174,9 +175,10 @@ recorded under #17 as a performance limitation; it is not a claim that the
 Wasm policy is cheap to load on the R4600.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
-It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, `BOOT-READY`
-with `network=off` and `mcp=disabled`, the expected target-2 load failure and
-the sash prompt. This is the M1 no-network, no-module boot.
+It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, the
+post-smoke `m1-post: mesh=0/0/0` line, `BOOT-READY` with `network=off` and
+`mcp=disabled`, the expected target-2 load failure and the sash prompt. This is
+the M1 no-network, no-module boot.
 
 The same job then runs the offline recovery image.  It wraps `user/hello` as a
 256 KiB SCSI target-2 image and appends the `logical` module to the same disk,
