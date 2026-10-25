@@ -16,7 +16,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use sys_primitives::{Capability, NodeKey, ObjectId, SignatureVerifier};
+use sys_primitives::{Capability, NodeId, NodeKey, ObjectId, SignatureVerifier};
 
 /// Trust-store construction or signature failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -244,6 +244,113 @@ impl RootManifest {
     }
 }
 
+/// A home certificate for a shard range, signed by the root threshold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeCertificate {
+    /// Certificate format version.
+    pub version: u32,
+    /// Home node authorised for the range.
+    pub node: NodeId,
+    /// Inclusive start of the 64-bit OID prefix range.
+    pub shard_start: u64,
+    /// Inclusive end of the 64-bit OID prefix range.
+    pub shard_end: u64,
+    /// Shard generation.
+    pub epoch: u32,
+    /// Root manifest epoch at issue.
+    pub root_epoch: u32,
+    /// Expiry as Unix nanoseconds.
+    pub not_after: u64,
+    /// Signature per root authority slot.
+    pub signatures: [Option<[u8; 64]>; MAX_AUTHORITY],
+}
+
+impl HomeCertificate {
+    /// Certificate format version.
+    pub const VERSION: u32 = 1;
+
+    /// Build an unsigned certificate for a root manifest and range.
+    pub fn new(
+        root: &RootManifest,
+        node: NodeId,
+        shard_start: u64,
+        shard_end: u64,
+        epoch: u32,
+        not_after: u64,
+    ) -> Result<Self, KeyError> {
+        if root.verify().is_err() || shard_start > shard_end || node.is_zero() {
+            return Err(KeyError::InvalidKey);
+        }
+        Ok(Self {
+            version: Self::VERSION,
+            node,
+            shard_start,
+            shard_end,
+            epoch,
+            root_epoch: root.epoch,
+            not_after,
+            signatures: [None; MAX_AUTHORITY],
+        })
+    }
+
+    /// Canonical bytes covered by the root signatures.
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + 16 + 8 + 8 + 4 + 4 + 8);
+        out.extend_from_slice(&self.version.to_le_bytes());
+        out.extend_from_slice(self.node.as_bytes());
+        out.extend_from_slice(&self.shard_start.to_le_bytes());
+        out.extend_from_slice(&self.shard_end.to_le_bytes());
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&self.root_epoch.to_le_bytes());
+        out.extend_from_slice(&self.not_after.to_le_bytes());
+        out
+    }
+
+    /// Sign the certificate with one root authority key.
+    pub fn sign(
+        &mut self,
+        root: &RootManifest,
+        index: usize,
+        signing: &SigningKey,
+    ) -> Result<(), KeyError> {
+        if index >= root.count as usize
+            || signing.verifying_key().to_bytes() != root.authorities[index].0
+        {
+            return Err(KeyError::InvalidKey);
+        }
+        let signature = signing.sign(&self.signed_bytes());
+        self.signatures[index] = Some(signature.to_bytes());
+        Ok(())
+    }
+
+    /// Verify the certificate against a valid root manifest.
+    pub fn verify(&self, root: &RootManifest) -> Result<(), KeyError> {
+        if self.version != Self::VERSION
+            || self.root_epoch != root.epoch
+            || self.node.is_zero()
+            || self.shard_start > self.shard_end
+        {
+            return Err(KeyError::InvalidKey);
+        }
+        root.verify()?;
+        let message = self.signed_bytes();
+        let mut valid = 0u8;
+        for index in 0..root.count as usize {
+            if let Some(signature) = self.signatures[index] {
+                if verify(&root.authorities[index], &message, &signature).is_ok() {
+                    valid = valid.saturating_add(1);
+                } else {
+                    return Err(KeyError::BadSignature);
+                }
+            }
+        }
+        if valid < root.threshold {
+            return Err(KeyError::BadSignature);
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,5 +484,29 @@ mod tests {
             RootManifest::new(1, 1, &duplicate, ObjectId::ZERO),
             Err(KeyError::InvalidKey)
         );
+    }
+    #[test]
+    fn home_certificate_threshold() {
+        let keys = authorities();
+        let mut root = RootManifest::new(1, 3, &keys, ObjectId::ZERO).expect("root");
+        root.sign(0, &authority(0)).expect("root 0");
+        root.sign(2, &authority(2)).expect("root 2");
+        root.sign(4, &authority(4)).expect("root 4");
+        assert!(root.verify().is_ok());
+        let mut cert =
+            HomeCertificate::new(&root, sys_primitives::NodeId([9; 16]), 0, 1024, 1, 100)
+                .expect("certificate");
+        cert.sign(&root, 0, &authority(0)).expect("sign 0");
+        cert.sign(&root, 2, &authority(2)).expect("sign 2");
+        cert.sign(&root, 4, &authority(4)).expect("sign 4");
+        assert!(cert.verify(&root).is_ok());
+
+        let mut weak = cert.clone();
+        weak.signatures[4] = None;
+        assert_eq!(weak.verify(&root), Err(KeyError::BadSignature));
+
+        let mut tampered = cert;
+        tampered.shard_end += 1;
+        assert_eq!(tampered.verify(&root), Err(KeyError::BadSignature));
     }
 }
