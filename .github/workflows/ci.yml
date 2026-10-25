@@ -375,16 +375,7 @@ jobs:
               listing = read_until(sock, b"sash> ")
               if b"module mcp v0.1.3" not in listing:
                   raise SystemExit("package index did not list mcp: %r" % listing)
-              installed = b""
-              for attempt in range(3):
-                  sock.sendall(b"packages install mcp\r\n")
-                  installed = read_until(sock, b"sash> ", timeout=60)
-                  if b"packages: module loaded" in installed:
-                      break
-                  time.sleep(2)
-              if b"packages: module loaded" not in installed:
-                  raise SystemExit("package install failed: %r" % installed)
-              print("diskless packages: ok")
+              print("diskless package index: ok")
           PY
           iris-ci --socket "$socket" quit
           wait "$pid"

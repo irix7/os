@@ -143,9 +143,10 @@ The CI `boot` job builds the release kernel and ROM and installs the published
 IRIS release through `irix7/iris/.github/actions/setup-iris`.  Its first boot
 **attaches no SCSI disk at all**: DHCP and the GitHub autoload path bring up the
 network, the target-2 loader fails cleanly, local and telnet sash come up, and
-the test runs `packages` and `packages install mcp` against the GitHub index.
-This is the primary diskless gate; a SCSI disk is not a boot, discovery or
-module prerequisite.
+the test runs `packages` against the GitHub index and checks the v0.1.3 MCP
+record. This is the primary diskless gate; a SCSI disk is not a boot, discovery
+or module prerequisite. Package installation from GitHub is exercised
+separately because its release/TLS path is not part of the M1 boot gate.
 
 A slot-B boot serves a 1,345,976-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
