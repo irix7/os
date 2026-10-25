@@ -36,7 +36,10 @@ kind name version url sha256 description...
 `kind` is `module` or `userland`.  Names are ASCII, contain no whitespace, and
 are stable across versions.  `version` is a release tag or SemVer.  `url` must
 be HTTPS and immutable for that version.  `sha256` is 64 lowercase hex digits
-over the exact bytes.  The description is the remainder of the line.
+over the exact bytes.  The description is the remainder of the line.  Records
+with the same name are newest first; the client loads the first match.  The
+current client holds a 16 KiB index; a larger store needs shards, which are a
+later format change.
 
 Comments and blank lines are ignored.  Unknown fields are rejected by the
 client; a future format version is not guessed.
@@ -44,7 +47,7 @@ client; a future format version is not guessed.
 ## 4. Client rules
 
 Sash fetches the index over the kernel TLS client, lists entries, and on
-`packages install NAME` selects the newest exact version.  A module is verified
+`packages install NAME` selects the first (newest) exact version.  A module is verified
 and loaded through the existing module path.  Userland records are listed but
 are not executed by `packages install` yet; the diskless run/cache layer is the
 next storage slice.  No entry is executed if the digest does not match.

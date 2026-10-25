@@ -63,8 +63,10 @@ pub enum Outcome {
     Deferred(Deferred),
 }
 
-static mut PACKAGE_INDEX: [u8; 4096] = [0; 4096];
-static mut RESULT: [u8; 4096] = [0; 4096];
+// The package index is a small catalog, not a solver database.  Keep enough
+// room for a community store; a future shard format can go larger.
+static mut PACKAGE_INDEX: [u8; 16 * 1024] = [0; 16 * 1024];
+static mut RESULT: [u8; 16 * 1024] = [0; 16 * 1024];
 static mut RESULT_LEN: usize = 0;
 
 struct ResultSink;

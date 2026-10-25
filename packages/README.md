@@ -14,6 +14,7 @@ kind name version url sha256 description...
 - `url` is an immutable HTTPS URL (prefer a release asset or a raw commit URL).
 - `sha256` covers the exact bytes served at `url`.
 - `description` is free text to the end of the line.
+- Records with the same name are newest first; `sash` loads the first match.
 
 The catalog includes module binaries under `modules/` and userland images under
 `userland/`; both are served as immutable raw files for the version recorded in
