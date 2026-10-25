@@ -347,6 +347,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
@@ -438,6 +439,7 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'wasm: host=1' --timeout 120
           iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 120
@@ -534,6 +536,7 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'm1-wasm: ' --timeout 180
           iris-ci --socket "$socket" serial-wait 'wasm: runtime=' --timeout 30
           iris-ci --socket "$socket" serial-wait 'autoload: wasm took' --timeout 30
@@ -594,6 +597,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
@@ -725,6 +729,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
@@ -808,6 +813,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
