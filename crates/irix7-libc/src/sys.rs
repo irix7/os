@@ -23,6 +23,8 @@ pub const SYS_READ: usize = 16;
 pub const SYS_FSTAT: usize = 17;
 pub const SYS_STAT: usize = 18;
 pub const SYS_PIPE: usize = 22;
+pub const SYS_TCGETWINSIZE: usize = 23;
+pub const SYS_TCSETWINSIZE: usize = 24;
 
 #[inline(always)]
 pub unsafe fn syscall0(n: usize) -> usize {
@@ -185,6 +187,36 @@ pub unsafe extern "C" fn close(fd: i32) -> i32 {
     let result = syscall1(SYS_CLOSE, fd as usize);
     if result == usize::MAX {
         *__errno_location() = 9;
+        -1
+    } else {
+        0
+    }
+}
+
+#[repr(C)]
+pub struct WinSize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tcgetwinsize(fd: i32, ws: *mut WinSize) -> i32 {
+    let result = syscall2(SYS_TCGETWINSIZE, fd as usize, ws as usize);
+    if result == usize::MAX {
+        *__errno_location() = 22;
+        -1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn tcsetwinsize(fd: i32, ws: *const WinSize) -> i32 {
+    let result = syscall2(SYS_TCSETWINSIZE, fd as usize, ws as usize);
+    if result == usize::MAX {
+        *__errno_location() = 22;
         -1
     } else {
         0

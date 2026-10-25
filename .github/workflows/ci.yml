@@ -299,6 +299,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'winsize=100x40' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"

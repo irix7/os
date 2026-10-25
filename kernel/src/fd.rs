@@ -28,6 +28,7 @@ static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MA
 static mut PIPE_HEAD: [usize; MAX_PIPES] = [0; MAX_PIPES];
 static mut PIPE_LEN: [usize; MAX_PIPES] = [0; MAX_PIPES];
 static mut PIPE_USED: [bool; MAX_PIPES] = [false; MAX_PIPES];
+static mut CONSOLE_WINSIZE: [u16; 4] = [24, 80, 0, 0];
 
 struct DirEntry {
     name: &'static [u8],
@@ -143,6 +144,7 @@ pub fn reset() {
         PIPE_HEAD = [0; MAX_PIPES];
         PIPE_LEN = [0; MAX_PIPES];
         PIPE_USED = [false; MAX_PIPES];
+        CONSOLE_WINSIZE = [24, 80, 0, 0];
     }
 }
 
@@ -414,6 +416,27 @@ pub fn write(fd: i32, buffer: &[u8]) -> isize {
         Kind::Console | Kind::Dir(_) | Kind::PipeRead(_) => -1,
         Kind::Closed => -1,
     }
+}
+
+/// Read the console window size into `out`.
+pub fn get_winsize(fd: i32, out: &mut [u16; 4]) -> bool {
+    if kind(fd) != Kind::Console {
+        return false;
+    }
+    // SAFETY: single-threaded kernel; the value is copied out.
+    *out = unsafe { CONSOLE_WINSIZE };
+    true
+}
+
+/// Set the console window size. Zero rows or columns are invalid.
+pub fn set_winsize(fd: i32, value: &[u16; 4]) -> bool {
+    if kind(fd) != Kind::Console || value[0] == 0 || value[1] == 0 {
+        return false;
+    }
+    unsafe {
+        CONSOLE_WINSIZE = *value;
+    }
+    true
 }
 
 pub fn metadata(fd: i32) -> Option<(u32, i64)> {
