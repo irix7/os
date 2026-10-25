@@ -68,9 +68,10 @@ and exercises local home policy; it does not yet construct a mesh frame.
 applicable; clippy/deny clean; no existing public API changes.
 
 The native compatibility workstream now has a minimal o32 loader/syscall probe:
-`user/o32-hello` is loaded with `EF_MIPS_ABI_O32`, calls classic `write(4)` and
-`exit(1)`, and is CI-booted alongside the local logical module.  It is not an
-IRIX 6.5 binary; the libc/`rld`/`sproc`/signal container is still ahead.
+`user/o32-hello` is loaded with `EF_MIPS_ABI_O32`, calls classic `open(5)`,
+`read(3)`, `write(4)`, `close(6)` and `exit(1)`, and is CI-booted alongside the
+local logical module.  It is not an IRIX 6.5 binary; the
+libc/`rld`/`sproc`/signal container is still ahead.
 
 ### Phase 2 — Indy shim and single-node kernel
 

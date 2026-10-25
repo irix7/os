@@ -151,8 +151,9 @@ patched rust-src tree; the CI boot gate uses the smaller native hello.
 
 The CI boot gate also builds `user/o32-hello`, rewrites its `e_flags` to
 `EF_MIPS_ABI_O32`, and boots it with the same local logical module and
-`net=off`.  It checks `hello from o32` and exit 42.  This is a synthetic loader
-and syscall-personality probe, not an IRIX 6.5 binary; the IRIX libc, `rld`,
+`net=off`.  It checks `hello from o32`, a read of `/hello.txt` through o32
+`open`/`read`/`write`/`close`, and exit 42.  This is a synthetic loader and
+syscall-personality probe, not an IRIX 6.5 binary; the IRIX libc, `rld`,
 `sproc`, signals and full decoder remain future work.
 
 ## 4. CI

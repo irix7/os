@@ -747,10 +747,31 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                     finish_user_exit(tf, tf.arg(4));
                     return;
                 }
+                3 => {
+                    let result = crate::user::read_fd(tf.arg(4), tf.arg(5), tf.arg(6));
+                    tf.set_result(result);
+                    tf.regs[7] = if result == u32::MAX { 1 } else { 0 };
+                    tf.advance_epc();
+                    return;
+                }
                 4 => {
                     let result = crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6));
                     tf.set_result(result);
                     tf.regs[7] = if result == u32::MAX { 1 } else { 0 };
+                    tf.advance_epc();
+                    return;
+                }
+                5 => {
+                    let result = crate::user::open_path(tf.arg(4), tf.arg(5));
+                    tf.set_result(result as u32);
+                    tf.regs[7] = if result < 0 { 1 } else { 0 };
+                    tf.advance_epc();
+                    return;
+                }
+                6 => {
+                    let result = crate::fd::close(tf.arg(4) as i32);
+                    tf.set_result(result as u32);
+                    tf.regs[7] = if result < 0 { 1 } else { 0 };
                     tf.advance_epc();
                     return;
                 }

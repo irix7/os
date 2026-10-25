@@ -373,6 +373,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
           iris-ci --socket "$socket" quit
