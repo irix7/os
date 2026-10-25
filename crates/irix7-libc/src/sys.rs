@@ -22,6 +22,7 @@ pub const SYS_GETPID: usize = 15;
 pub const SYS_READ: usize = 16;
 pub const SYS_FSTAT: usize = 17;
 pub const SYS_STAT: usize = 18;
+pub const SYS_PIPE: usize = 22;
 
 #[inline(always)]
 pub unsafe fn syscall0(n: usize) -> usize {
@@ -184,6 +185,17 @@ pub unsafe extern "C" fn close(fd: i32) -> i32 {
     let result = syscall1(SYS_CLOSE, fd as usize);
     if result == usize::MAX {
         *__errno_location() = 9;
+        -1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn pipe(fds: *mut i32) -> i32 {
+    let result = syscall1(SYS_PIPE, fds as usize);
+    if result == usize::MAX {
+        *__errno_location() = 24;
         -1
     } else {
         0

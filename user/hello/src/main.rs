@@ -11,7 +11,9 @@
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
-use native_libc::{_exit, calloc, free, malloc, memalign, memcmp, memcpy, realloc, strlen, write};
+use native_libc::{
+    _exit, calloc, free, malloc, memalign, memcmp, memcpy, pipe, read, realloc, strlen, write,
+};
 
 /// Forces the loader to map and zero a BSS range beyond the file data.
 #[no_mangle]
@@ -158,6 +160,30 @@ pub extern "C" fn _start() -> ! {
     }
     unsafe { free(aligned) };
 
+    // A pipe is a small in-kernel ring in the bring-up fd table.  The write
+    // and read ends share the ring; no scheduler or process switch is needed.
+    let mut fds = [-1i32; 2];
+    if unsafe { pipe(fds.as_mut_ptr()) } != 0 || fds[0] < 0 || fds[1] < 0 {
+        exit(59);
+    }
+    let pipe_message = b"pipe\n";
+    if unsafe { write(fds[1], pipe_message.as_ptr() as *const c_void, pipe_message.len()) }
+        != pipe_message.len() as isize
+    {
+        exit(60);
+    }
+    let mut pipe_buffer = [0u8; 5];
+    if unsafe { read(fds[0], pipe_buffer.as_mut_ptr() as *mut c_void, pipe_buffer.len()) }
+        != pipe_buffer.len() as isize
+    {
+        exit(61);
+    }
+    if pipe_buffer != *b"pipe\n" {
+        exit(62);
+    }
+    if !write_bytes(b"pipe=ok\n") {
+        exit(63);
+    }
     unsafe {
         // Exercise the highest mapped stack page.
         core::arch::asm!("sw $zero, -4($sp)", options(nostack));

@@ -50,6 +50,24 @@ __irix7_write:
     jr      $ra
     nop
 
+    .section .text.__irix7_read, "ax", @progbits
+    .align 2
+    .globl __irix7_read
+__irix7_read:
+    li      $v0, 16
+    syscall
+    jr      $ra
+    nop
+
+    .section .text.__irix7_pipe, "ax", @progbits
+    .align 2
+    .globl __irix7_pipe
+__irix7_pipe:
+    li      $v0, 22
+    syscall
+    jr      $ra
+    nop
+
     .section .text.__irix7_exit, "ax", @progbits
     .align 2
     .globl __irix7_exit
@@ -94,6 +112,8 @@ __irix7_mprotect:
 
 extern "C" {
     fn __irix7_write(fd: c_int, buf: *const u8, count: usize) -> isize;
+    fn __irix7_read(fd: c_int, buf: *mut u8, count: usize) -> isize;
+    fn __irix7_pipe(fds: *mut c_int) -> c_int;
     fn __irix7_exit(status: c_int) -> !;
     fn __irix7_mmap_anon(length: usize) -> *mut c_void;
     fn __irix7_munmap(address: *mut c_void, length: usize) -> c_int;
@@ -109,6 +129,29 @@ pub unsafe extern "C" fn write(fd: c_int, buffer: *const c_void, count: usize) -
         *__errno_location() = ERRNO_IO;
     }
     result
+}
+
+/// POSIX `read` over the provisional fd ABI.
+#[inline(never)]
+#[no_mangle]
+pub unsafe extern "C" fn read(fd: c_int, buffer: *mut c_void, count: usize) -> isize {
+    let result = __irix7_read(fd, buffer as *mut u8, count);
+    if result < 0 {
+        *__errno_location() = ERRNO_IO;
+    }
+    result
+}
+
+/// POSIX `pipe`: two descriptors, read first and write second.
+#[no_mangle]
+pub unsafe extern "C" fn pipe(fds: *mut c_int) -> c_int {
+    let result = __irix7_pipe(fds);
+    if result < 0 {
+        *__errno_location() = ERRNO_NOMEM;
+        -1
+    } else {
+        0
+    }
 }
 
 /// Terminate the user image; the kernel returns to the console.
