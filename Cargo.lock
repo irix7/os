@@ -634,6 +634,7 @@ dependencies = [
  "mesh-core",
  "mesh-service",
  "module-abi",
+ "platform-api",
  "rand_core",
  "smoltcp",
  "sys-primitives",

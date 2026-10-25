@@ -45,6 +45,7 @@ pub mod net;
 pub mod ntp;
 pub mod nvram;
 pub mod ping;
+pub mod platform;
 pub mod range;
 pub mod readahead;
 pub mod rtc;
@@ -619,6 +620,10 @@ pub extern "C" fn _start_rust() -> ! {
         }
         None => console_println("rtc: no valid time"),
     }
+
+    // The native resources the architecture core will use.  This is a shim
+    // over the existing bring-up, not a second initialisation path.
+    platform::init();
 
     // Boot-time module configuration from the PROM environment.
     let autoload = autoload::boot();
