@@ -714,6 +714,11 @@ dependencies = [
 name = "mesh-sim"
 version = "0.1.0"
 dependencies = [
+ "agnostic-core",
+ "cap-engine",
+ "cas-core",
+ "cas-store",
+ "ed25519-dalek",
  "mesh-core",
  "mesh-service",
  "sys-primitives",

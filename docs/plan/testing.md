@@ -19,8 +19,13 @@ The architecture adds a second test axis: the same logical computer at **1, 2, 8
 The policy-level gates already run in `crates/mesh-sim` against the real
 `mesh-service` membership table and `mesh-core` rendezvous. The kernel now
 prints its single-node identity and initialises the same membership policy at
-boot; this is M1 boot evidence, not a mesh. The fabric, capability, CAS and Wasm host crates have host tests;
-the 128-node execution gate requires the native shim and transport work.
+boot; this is M1 boot evidence, not a mesh. A host integration test,
+`crates/mesh-sim/tests/single_node.rs`, joins the real membership table,
+namespace/CAS, actor directory/run queue and capability engine on one node and
+constructs no fabric frame. It is local-policy evidence only; the kernel does
+not start that policy yet. The fabric, capability, CAS and Wasm host crates
+have host tests; the 128-node execution gate requires the native shim and
+transport work.
 
 Architecture CI additions:
 

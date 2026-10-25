@@ -12,3 +12,10 @@ path = "src/lib.rs"
 mesh-core = { path = "../mesh-core" }
 mesh-service = { path = "../mesh-service" }
 sys-primitives = { path = "../sys-primitives" }
+
+[dev-dependencies]
+agnostic-core = { path = "../agnostic-core" }
+cap-engine = { path = "../cap-engine" }
+cas-core = { path = "../cas-core" }
+cas-store = { path = "../cas-store" }
+ed25519-dalek = { version = "2.1", default-features = false }

@@ -80,9 +80,9 @@ and keyboard, the DS1386 clock, SHA-256-seeded boot entropy and reset. A boot
 self-test checks page allocation, identity DMA, entropy and the capability
 flags. Device submission, general IRQ delivery and one-shot timers still return
 `NotSupported`; the polled Seeq/SCSI path remains authoritative until the
-completion engine lands. Membership, CAS, capability and actor policy is
-host-tested, but the local namespace is not implemented and none of it is yet
-started by the kernel.
+completion engine lands. Membership, namespace/CAS, capability and actor policy
+now meet in the local host gate (`mesh-sim/tests/single_node.rs`), but none of
+it is started by the kernel yet.
 
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms

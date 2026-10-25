@@ -115,8 +115,10 @@ The kernel now initialises the one-node membership view from the DS1386 MAC and
 resolves local object homes through the shared rendezvous policy. A first Indy
 `PlatformShim` slice covers physical pages, the kseg0 direct map, DMA cache
 maintenance, console/keyboard, the DS1386 clock and boot entropy; asynchronous
-device submission still belongs to the polled native path. The kernel does not
-yet run the Wasm core or join a mesh; M1 is partial and M2 is still ahead.
+device submission still belongs to the polled native path. The single-node
+policy also has a combined host gate for membership, namespace/CAS, actors and
+capabilities. The kernel does not yet run that policy, the Wasm core or a mesh;
+M1 is partial and M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
 user SDK and `wasm-abi` v1. The production POSIX layer is the
