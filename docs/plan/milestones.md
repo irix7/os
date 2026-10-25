@@ -84,6 +84,12 @@ completion engine lands. Membership, namespace/CAS, capability and actor policy
 now meet in the local host gate (`mesh-sim/tests/single_node.rs`), but none of
 it is started by the kernel yet.
 
+**PROM budget finding:** the first shim slice leaves the compressed PROM at
+494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
+directory directly into the kernel produced 522,248 bytes, leaving only 2,040
+bytes of headroom, so it was not merged. Runtime policy must therefore ship in
+the core module or a separate core image; it cannot grow the fixed bootstrap.
+
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
 budgets.
