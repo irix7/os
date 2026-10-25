@@ -428,9 +428,9 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'wasm: host=1' --timeout 120
           iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           python3 - "$work/serial.log" <<'PY'

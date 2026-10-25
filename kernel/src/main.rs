@@ -630,8 +630,12 @@ pub extern "C" fn _start_rust() -> ! {
 
     // Boot-time module configuration from the PROM environment.
     let autoload = autoload::boot();
-    autoload::boot_wasm();
     announce_boot(autoload);
+
+    // The optional slot-B policy probe is deliberately after the readiness
+    // marker. Its 1.3 MiB fetch is not part of the readiness budget and must
+    // not delay MCP or the local console.
+    autoload::boot_wasm();
 
     // The boot log is the local display now.  Paint it before handing over so
     // the last kernel messages are visible even if userland never returns.

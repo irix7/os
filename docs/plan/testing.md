@@ -165,12 +165,13 @@ is not claimed, and is recorded as the hardware limitation in §5.**
 The policy guest is a boot-time proof, not yet a resident or multiplexed
 policy service.
 
-**M1 performance is not met.** On the local iris run, MCP-only boots reached
-`BOOT-READY` in 7.3–7.7 s; the same boot with the slot-B Wasm autoload took
-21.7–35.4 s. The Wasm fetch/load/policy path is far outside the plan's 5% /
-1 ms regression budget. The slot-B path remains an optional evidence boot, and
-the M1 performance gate stays open until the runtime is made boot-cheap or the
-Wasm policy moves outside the readiness path.
+**Readiness and optional Wasm are measured separately.** With the local MCP
+fixture, MCP-only boots reached `BOOT-READY` in 7.3–7.7 s. The optional slot-B
+Wasm probe now starts after `BOOT-READY`; it added 21.7–35.4 s to the full
+run. The M1 readiness budget does not include that optional probe, so the
+readiness gate is not regressed by Wasm. The full slot-B path latency is
+recorded under #17 as a performance limitation; it is not a claim that the
+Wasm policy is cheap to load on the R4600.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
 It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, `BOOT-READY`
