@@ -22,7 +22,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 519,916 bytes, leaving 4,372 bytes under the PROM limit; the
+  policy image is 519,480 bytes, leaving 4,808 bytes under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
   wasmi module. Loading the Wasm probe with `module b` leaves MCP running.
@@ -33,6 +33,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `mcp=disabled`; it runs no module and leaves sash usable.
 - `modules/wasm` is a wasmi runtime probe: it compiles and runs an embedded
   Wasm module on iris and prints `wasm: run=42`. It is not the policy core.
+- The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
+  probe at boot while MCP remains in slot A.
 
 ## [0.1.3] — 2026-10-25
 
