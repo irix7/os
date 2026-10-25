@@ -139,6 +139,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cas-store"
+version = "0.1.0"
+dependencies = [
+ "cas-core",
+ "sys-primitives",
+]
+
+[[package]]
 name = "cc"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
