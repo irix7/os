@@ -280,7 +280,11 @@ pub fn open_path(path: &[u8], flags: u32) -> i32 {
     };
     let path = &resolved[..len];
     if path == b"/dev/null" {
-        return install(Kind::Null);
+        return if crate::logical::device(path) {
+            install(Kind::Null)
+        } else {
+            -1
+        };
     }
     if path == b"/dev/tty" || path == b"/dev/console" {
         return 0;

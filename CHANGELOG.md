@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- Runtime module dependencies are recorded as required post-M1 work (#217):
+  a module manifest with exact name/version/digest dependencies, a resolver,
+  versioned export tables and a downloadable module manager. The current
+  fixed-slot loader remains standalone-only.
 - The ROM freeze policy is recorded: after M1 is re-closed, the compressed
   PROM/kernel image no longer gains features; policy, runtime, transport,
   servers and devices ship as downloadable modules.
@@ -25,13 +29,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 521,588 bytes, leaving 2,700 bytes under the PROM limit; the
+  policy image is 514,560 bytes in CI (local 514,560), leaving 9,728 bytes
+  under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
   wasmi module. Loading the Wasm probe with `module b` leaves MCP running.
 - The M1 line now reports `mesh=0/0/0` and the boot CI asserts it, replacing the
-  assumption that a single-node boot sends no mesh traffic with an explicit
-  counter surface.
+  assumption that a single-node boot sends no mesh traffic with self-tested
+  kernel counters; there is no mesh transport to increment them.
 - A `net=off` boot with no local module now reports `BOOT-READY` with
   `mcp=disabled`; it runs no module and leaves sash usable.
 - `modules/wasm` is the slot-B Wasm core for M1. The guest drives a staged
@@ -40,12 +45,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `wasm: run=42`. The evidence matches the native `m1:` root, actor, rights and home;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
-  capability is published. The module is about 1.34 MiB (1,347,256 bytes in
+  capability is published. The module is about 1.34 MiB (1,347,416 bytes in CI; local 1,347,416 in
   the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
-  remains 521,588 bytes (2,700 free).
+  remains 514,560 bytes in CI (local 514,560, 9,728 bytes free).
 - The M1 software path now boots both the no-network/no-module path and the
-  slot-B Wasm-policy path on iris, with zero mesh traffic and MCP still live
-  in slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The optional
+  slot-B Wasm-policy path on iris, with zero mesh traffic and MCP loaded in
+  slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The checked-in
+  v0.1.3 MCP artifact has a known HTTP bug; a current-tree build answers. The optional
   Wasm probe starts after `BOOT-READY`; MCP-only readiness measured 7.3–7.7 s.
   The readiness budget excludes the optional probe; the instrumented run
   reports `autoload: wasm took 2140 ms` over local HTTP or 1600 ms from the

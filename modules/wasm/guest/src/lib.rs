@@ -24,6 +24,8 @@ const RIGHTS: i32 = RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE;
 const MOTD: &[u8] = b"Welcome to IRIX 7.\n";
 const ETC: &[u8] = b"/etc";
 const MOTD_PATH: &[u8] = b"/etc/motd";
+const DEV: &[u8] = b"/dev";
+const DEV_NULL_PATH: &[u8] = b"/dev/null";
 
 // SAFETY: every `host_*` call passes a pointer to a live stack/static object in
 // Wasm linear memory and a length the host validates before reading or writing.
@@ -147,6 +149,28 @@ pub extern "C" fn run() -> i32 {
         return fail(9);
     }
 
+    let mut dev = [0u8; 32];
+    if unsafe {
+        host_ns_mkdir(DEV.as_ptr() as i32, DEV.len() as i32, address_mut(&mut dev))
+    } != 0
+    {
+        return fail(30);
+    }
+    let mut dev_null = [0u8; 32];
+    if unsafe {
+        host_ns_put(
+            DEV_NULL_PATH.as_ptr() as i32,
+            DEV_NULL_PATH.len() as i32,
+            KIND_BLOB,
+            0,
+            0,
+            address_mut(&mut dev_null),
+        )
+    } != 0
+    {
+        return fail(31);
+    }
+
     // Validate the path and fetch the object by OID, not by ambient handle.
     let mut looked_up = [0u8; 32];
     if unsafe {
@@ -224,7 +248,7 @@ pub extern "C" fn run() -> i32 {
     if unsafe { host_policy_stats(address_mut(&mut stats)) } != 0 {
         return fail(22);
     }
-    if stats != [5, 1, 1, 1] {
+    if stats != [9, 1, 1, 1] {
         return fail(23);
     }
 

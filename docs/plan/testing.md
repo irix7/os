@@ -29,7 +29,7 @@ namespace/CAS, actor and capability policy at boot as well; the module remains
 the signed 1-of-1 probe. The slot-B Wasm module now runs the local policy from
 a Rust guest through the staged `i7host` surface and prints evidence matching
 the native `m1:` line; the general module multiplexer is still missing. Mesh
-traffic is now instrumented and asserted zero on the M1 line. The fabric,
+has no transport; the kernel counters are self-tested and the M1 lines assert zero. This is a construction invariant, not a packet-level measurement of a future transport. The fabric,
 capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
@@ -148,15 +148,15 @@ record. This is the primary diskless gate; a SCSI disk is not a boot, discovery
 or module prerequisite. Package installation from GitHub is exercised
 separately because its release/TLS path is not part of the M1 boot gate.
 
-A slot-B boot serves a 1,347,256-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,347,416-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
 `m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
-`BOOT-READY` with MCP still listening. A second local boot uses `wasm.local`
+`BOOT-READY` with MCP loaded. The checked-in v0.1.3 MCP release artifact has a known HTTP bug; a current-tree build answers when probed from a peer. A host-to-guest HTTP probe is not yet a CI gate. A second local boot uses `wasm.local`
 on SCSI target 2 with `net=off`, so the same boot asserts
 `BOOT-READY network=off mcp=disabled` and the Wasm policy evidence. The CI
 compares the `m1-wasm` root, actor, rights and home against the native `m1:` line
-and checks `objects=5 actors=1 queued=1 caps=1`. The guest drives the
+and checks `objects=9 actors=1 queued=1 caps=1`. The guest drives the
 namespace, actor and capability choice; the host supplies only staged
 CAS/table primitives. A failed or trapped guest aborts the stage, so no
 partial policy is published. The image must stay within the
@@ -200,7 +200,7 @@ The `boot` job also builds the patched Rust `std` rlib and the static
 `user/std-hello` image, strips and pads it to target 2, and boots it with
 `net=off`. It asserts `hello from std`, `file=`, `write=ok`, `chdir=ok`,
 `cwd=/etc`, `relative=Welcome to IRIX 7.`, `stat_size=17`, `entry=hello.txt`,
-exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. The same image is also
+`dev_null=ok`, exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. The same image is also
 booted without a Wasm module to exercise the native policy fallback. This is
 now a CI artifact rather than a local-only run.
 

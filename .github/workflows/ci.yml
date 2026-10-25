@@ -222,7 +222,7 @@ jobs:
       - name: Build release kernel
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
             cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
               --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
@@ -458,7 +458,7 @@ jobs:
           wasm = re.search(
               r"^m1-wasm: root=([0-9a-f]{64}) actor=([0-9a-f]{32}) "
               r"cap=ok rights=([0-9]+) home=([0-9a-f]{32}) "
-              r"objects=5 actors=1 queued=1 caps=1$",
+              r"objects=9 actors=1 queued=1 caps=1$",
               text,
               re.MULTILINE,
           )
@@ -670,6 +670,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'cwd=/etc' --timeout 30
           iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 30
           iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'entry=hello.txt' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
@@ -729,6 +730,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 120
           iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"

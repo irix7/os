@@ -7,7 +7,7 @@
 //! namespace/CAS/actor/capability state as the fallback.
 
 use crate::capability::{self, CapTable, Capability, Rights};
-use agnostic_core::{ActorTable, RunQueue};
+use agnostic_core::{ActorState, ActorTable, RunQueue};
 use cas_core::ObjectKind;
 use cas_store::Namespace;
 use m1_policy_bridge::{bridge_address, Bridge, MAGIC, VERSION};
@@ -51,6 +51,36 @@ pub fn init() {
 fn local() -> Option<&'static Local> {
     // SAFETY: single-threaded kernel; LOCAL is initialised once at boot.
     unsafe { (&*core::ptr::addr_of!(LOCAL)).as_ref() }
+}
+
+fn local_mut() -> Option<&'static mut Local> {
+    // SAFETY: single-threaded kernel; LOCAL is initialised once at boot.
+    unsafe { (&mut *core::ptr::addr_of_mut!(LOCAL)).as_mut() }
+}
+
+/// Mark the single native userland actor as running and take it off the run
+/// queue. This makes the M1 actor table a live userland path, not only a boot
+/// self-test.
+pub fn actor_enter() -> bool {
+    let Some(local) = local_mut() else {
+        return false;
+    };
+    if local.queue.pick() != Some(local.actor) {
+        return false;
+    }
+    local
+        .actors
+        .set_state(local.actor, ActorState::Running)
+        .is_ok()
+}
+
+/// Mark the native userland actor dead and reap it after the exit trap.
+pub fn actor_leave() {
+    let Some(local) = local_mut() else {
+        return;
+    };
+    let _ = local.actors.set_state(local.actor, ActorState::Dead);
+    let _ = local.actors.reap(local.actor);
 }
 
 fn wasm() -> Option<&'static Bridge> {
@@ -156,6 +186,39 @@ pub fn open_file(path: &[u8]) -> bool {
     file_size(path).is_some()
 }
 
+/// Check whether the live policy exposes a device object at `path`.
+pub fn device(path: &[u8]) -> bool {
+    if let Some(bridge) = wasm() {
+        let mut root = [0u8; 32];
+        if unsafe { (bridge.root)(bridge.context, root.as_mut_ptr()) } != 0 {
+            return false;
+        }
+        if unsafe { (bridge.authorize)(bridge.context, root.as_ptr(), Rights::READ) } != 0 {
+            return false;
+        }
+        let Ok(path) = core::str::from_utf8(path) else {
+            return false;
+        };
+        let mut oid = [0u8; 32];
+        return unsafe {
+            (bridge.lookup)(bridge.context, path.as_ptr(), path.len(), oid.as_mut_ptr())
+        } == 0;
+    }
+    let Some(local) = local() else {
+        return false;
+    };
+    if !local
+        .caps
+        .permits(&local.cap.handle(), Rights(Rights::READ))
+    {
+        return false;
+    }
+    let Ok(path) = core::str::from_utf8(path) else {
+        return false;
+    };
+    local.namespace.lookup(path).is_ok()
+}
+
 impl Local {
     fn start(node: NodeId, now_ms: u64) -> Option<Self> {
         let table = MembershipTable::single(node, now_ms);
@@ -165,6 +228,18 @@ impl Local {
         let motd = namespace
             .put("/etc/motd", ObjectKind::Blob, b"Welcome to IRIX 7.\n")
             .ok()?;
+        // The device namespace is part of the same local policy, so M1 can
+        // exercise a capability-backed /dev object rather than only a static
+        // fd special case.
+        namespace.create_dir_all("/dev").ok()?;
+        let dev_null = namespace.put("/dev/null", ObjectKind::Blob, b"").ok()?;
+        // Fetch the stored objects back by OID; a path lookup alone is not a
+        // CAS read.
+        if namespace.store().get(motd)? != b"Welcome to IRIX 7.\n"
+            || namespace.store().kind(dev_null) != Some(ObjectKind::Blob)
+        {
+            return None;
+        }
         let root = namespace.root();
         if home_for(&root, &view) != Some(node) {
             return None;
@@ -190,7 +265,9 @@ impl Local {
             root_id,
             Rights(Rights::READ | Rights::WRITE | Rights::INVOKE),
         )?;
-        let verified = caps.permits(&cap.handle(), Rights(Rights::READ));
+        let verified = caps.permits(&cap.handle(), Rights(Rights::READ))
+            && !caps.permits(&cap.handle(), Rights(Rights::MANAGE))
+            && caps.object(&cap.handle()) == Some((1, root_id));
 
         Some(Self {
             namespace,

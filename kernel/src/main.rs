@@ -594,7 +594,6 @@ pub extern "C" fn _start_rust() -> ! {
     frames::init(&usable_descs, usable_count);
 
     scheduler::init();
-    capability::init();
     idle::init();
 
     console_println("kernel: up");
@@ -658,12 +657,14 @@ pub extern "C" fn _start_rust() -> ! {
 fn start_userland() {
     console_println("kernel: starting userland from SCSI target 2");
     graphics_console::flush();
+    let _ = crate::logical::actor_enter();
     // SAFETY: single-threaded kernel; the trampoline saves and restores the
     // caller's $sp/$ra and callee-saved registers around the one-way entry.
     unsafe {
         traps::user_from_console_elf();
     }
 
+    crate::logical::actor_leave();
     user::cleanup();
     console_println("kernel: userland returned to kernel console");
     graphics_console::flush();

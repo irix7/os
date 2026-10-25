@@ -103,17 +103,17 @@ remains the module probe. The slot-B Wasm module now runs the local policy
 from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses
 and checks the capability rights, and commits atomically. Its
 `m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence matches the native
-`m1:` line, while MCP remains in slot A. The general module multiplexer is
+`m1:` line, while MCP remains loaded in slot A; the released v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers. The general module multiplexer is
 still missing; the fixed A/B layout is the current coexistence mechanism. Zero
-mesh traffic is instrumented and asserted on the M1 line.
+the kernel has no mesh transport; the counters are self-tested and the M1 lines assert zero (a construction invariant, not packet-level instrumentation).
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 521,588 bytes
-(2,700 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy, fat LTO and `opt-level=z` is 514,560 bytes
+(9,728 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
@@ -130,10 +130,10 @@ The automatic queue, lookup and module multiplexer are still to come.
 
 **M1 software status (2026-10-26):** the iris gate boots the no-network,
 no-module path and the slot-B Wasm-policy path; the native and Wasm
-root/actor/home/capability evidence match, MCP remains live in slot A, and
+root/actor/home/capability evidence match, MCP remains loaded in slot A (the v0.1.3 release artifact HTTP bug is tracked), and
 `mesh=0/0/0` is asserted both before and after the optional Wasm probe and
-userland smoke. The rebuilt PROM is 521,588 of 524,288 bytes
-(2,700 free) and the Wasm module is 1,347,256 bytes, inside the
+userland smoke. The rebuilt PROM is 514,560 bytes in CI (local 514,560) of 524,288 bytes
+(9,728 free) and the Wasm module is 1,347,416 bytes (CI; local build 1,347,416), inside the
 1,572,864-byte slot-B limit. The optional slot-B probe now runs after the
 readiness marker. MCP-only readiness measured 7.3–7.7 s. The instrumented Wasm
 path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the
@@ -170,7 +170,8 @@ trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 Integrate wasmi deterministically with fuel metering, the guest ABI, host
 memory validation and the completion ring. Start an echo/scheduler actor. Add
 the MIPS build gate and a kill criterion for runtime or performance failure;
-keep the native core option.
+keep the native core option. Add the module manifest and runtime dependency
+manager required by #217, without growing the frozen PROM.
 
 **Exit:** core starts on iris; actor suite; deterministic corpus; native
 POSIX/IRIX paths still pass; no packet or block data path inside Wasm.

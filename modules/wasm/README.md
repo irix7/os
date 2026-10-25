@@ -10,7 +10,7 @@ capability rights and validates every allow and deny case. It prints
 `wasm: host=1` for the host-ABI probe, then reproducible evidence:
 
 ```text
-m1-wasm: root=<64 hex> actor=<32 hex> cap=ok rights=35 home=<32 hex> objects=5 actors=1 queued=1 caps=1
+m1-wasm: root=<64 hex> actor=<32 hex> cap=ok rights=35 home=<32 hex> objects=9 actors=1 queued=1 caps=1
 ```
 
 The root, actor, rights, home and capability state match the native `m1:` line.

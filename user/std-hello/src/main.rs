@@ -66,6 +66,13 @@ fn main() {
             println!("stat error: {error}");
         }
     }
+    match std::fs::write("/dev/null", b"discard\n") {
+        Ok(()) => println!("dev_null=ok"),
+        Err(error) => {
+            failed = true;
+            println!("dev_null error: {error}");
+        }
+    }
     match std::fs::read_dir("/") {
         Ok(entries) => {
             for entry in entries.flatten() {

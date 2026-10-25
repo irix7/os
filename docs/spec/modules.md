@@ -282,14 +282,22 @@ ticker: tick
 - TCP listen/accept/send/recv/state/close over the shared interface, so a module can serve
   a protocol without linking smoltcp.
 - The NTP wall clock (distinct from monotonic `clock_ms`).
-- A module manifest with a name and required ABI version.
+- A module manifest with a name, version, required ABI and exports.
+- Runtime module dependencies: a module declares exact `name`, `version` and
+  SHA-256 records; a downloadable module manager resolves the graph, verifies
+  every image, loads dependencies before dependents and publishes versioned C
+  export tables. This is required after M1 and is tracked in #217. It is not
+  implemented by the fixed-slot loader below.
 
 These are additive to the version 2 table.
 
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
-- More than two fixed slots or a relocatable multiplexer.
-- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or dependency resolution.
+- More than two fixed slots or a relocatable multiplexer in the M1 loader.
+- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or runtime
+  dependency resolution, until the module manager in #217 lands. Official
+  modules may bundle dependencies at build time in the interim, but that is not
+  a runtime dependency claim.
 - Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.
