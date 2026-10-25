@@ -1,0 +1,12 @@
+[package]
+name = "wasm-host"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Host-side wasmi lifecycle and i7host functions for IRIX 7"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+wasmi = { version = "2.0", default-features = false, features = ["std", "deterministic", "validate", "wat"] }
