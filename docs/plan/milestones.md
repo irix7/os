@@ -73,6 +73,16 @@ timer, IRQ, Seeq, SCSI, DMA, console, RNG and reset. Keep the old path
 selectable. Add the single-node `MembershipView::single` path and exercise the
 global object, namespace, capability and actor code with no mesh envelope.
 
+**Status (2026-10-25):** the first shim slice is in the kernel: physical frames,
+the kseg0 direct map, DMA cache maintenance, the polled serial/graphics console
+and keyboard, the DS1386 clock, SHA-256-seeded boot entropy and reset. A boot
+self-test checks page allocation, identity DMA, entropy and the capability
+flags. Device submission, general IRQ delivery and one-shot timers still return
+`NotSupported`; the polled Seeq/SCSI path remains authoritative until the
+completion engine lands. Membership, CAS, capability and actor policy is
+host-tested, but the local namespace is not implemented and none of it is yet
+started by the kernel.
+
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
 budgets.

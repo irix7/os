@@ -25,6 +25,22 @@ pub fn dcache_writeback_invalidate(addr: usize, len: usize) {
     }
 }
 
+/// Invalidate the data cache over `[addr, addr + len)`.
+///
+/// `cache 0x11` is Hit Invalidate (D).  Use this for a buffer the device has
+/// just written; writeback would copy stale CPU lines over the new data.
+pub fn dcache_invalidate(addr: usize, len: usize) {
+    let mut p = addr & !(LINE - 1);
+    let end = addr.saturating_add(len);
+    while p < end {
+        // SAFETY: cache maintenance on a mapped kernel address.
+        unsafe {
+            core::arch::asm!(".set noat", "cache 0x11, 0({0})", in(reg) p, options(nostack));
+        }
+        p += LINE;
+    }
+}
+
 /// Invalidate the instruction cache over `[addr, addr + len)`.
 ///
 /// `cache 0x10` is Hit Invalidate (I).

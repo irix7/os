@@ -110,7 +110,10 @@ delivery, termios or socket API yet.
   the `i7host` import surface; it runs a WAT module, not the kernel core.
 
 The kernel now initialises the one-node membership view from the DS1386 MAC and
-resolves local object homes through the shared rendezvous policy. It does not
+resolves local object homes through the shared rendezvous policy. A first Indy
+`PlatformShim` slice covers physical pages, the kseg0 direct map, DMA cache
+maintenance, console/keyboard, the DS1386 clock and boot entropy; asynchronous
+device submission still belongs to the polled native path. The kernel does not
 yet run the Wasm core or join a mesh; M1 is partial and M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
