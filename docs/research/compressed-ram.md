@@ -1,7 +1,7 @@
 # Compressed RAM (CRAM) and IRIX 7
 
 **Question.** What is Meta's CRAM, what does it actually measure, and can — or should —
-IRIX 7 adopt anything like it on an SGI Indy (IP22, R4400/MIPS III, 32–256 MiB, no MMU
+IRIX 7 adopt anything like it on an SGI Indy (IP24, R4400/MIPS III, 32–256 MiB, no MMU
 userspace yet, no swap)?
 
 **Short answer.** CRAM is a Linux memory-management service for a memory device that

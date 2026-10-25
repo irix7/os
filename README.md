@@ -5,7 +5,7 @@ application binaries through a legacy ABI layer. It inherits the IRIX 6.5
 compatibility mandate without forward compatibility: IRIX 6.5 applications run
 on IRIX 7, but IRIX 7-native binaries are not promised on IRIX 6.5.
 
-The first hardware target is the SGI Indy (IP22, MIPS III); x86_64 PCs and
+The first hardware target is the SGI Indy (IP24, MIPS III); x86_64 PCs and
 KVM/VirtIO cloud machines follow. The design target is bigger than a single
 workstation: **one logical computer built from 1 to 128 kernel replicas**.
 

@@ -1,6 +1,6 @@
 ## Destination
 
-IRIX 7, a GPL-3.0 Rust-native operating system for the SGI Indy (IP22; `IP24` in iris naming): a monolithic Rust kernel (n32/MIPS III) reimplementing everything on the IRIX discs clean-room, running existing IRIX 6.5 binaries unchanged through a legacy ABI layer, and offering new Rust programs a native capability/object interface. It carries IRIX's identity — `sproc`, XFS, real-time scheduling, graphics and digital media, hardware inventory, topology awareness — as first-class services. Backward-only, no-regressions; forward compatibility is out.
+IRIX 7, a GPL-3.0 Rust-native operating system for the SGI Indy (IP24): a monolithic Rust kernel (n32/MIPS III) reimplementing everything on the IRIX discs clean-room, running existing IRIX 6.5 binaries unchanged through a legacy ABI layer, and offering new Rust programs a native capability/object interface. It carries IRIX's identity — `sproc`, XFS, real-time scheduling, graphics and digital media, hardware inventory, topology awareness — as first-class services. Backward-only, no-regressions; forward compatibility is out.
 
 The advanced architecture (2026-10-20) frames IRIX 7 as **the successor SGI might have built if it had not gone boring**: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace drivers, a network-first boot (R2/EROFS root planned), an in-OS MCP control plane, and a new IRIX-inspired desktop. The native ABI is new; IRIX lives in the compatibility container. The normative architecture is `docs/spec/architecture.md`; the evidence base is `docs/research/`.
 
@@ -112,7 +112,7 @@ is a planning aid, not a legal opinion.
 - Overlay persistence and local cache format.
 - `irix7-9p` scope and the optional 9P remote mounts.
 - Benchmark suite contents (tracked, never gated).
-- IP24 vs IP22 naming, and the "IRIX 7" name/trademark review.
+- The "IRIX 7" name and trademark review.
 
 ## Out of scope
 

@@ -601,7 +601,7 @@ def draw_seed(node: dict) -> str:
         + "</g>"
     )
     out.append('<text class="seed-title" x="38" y="0">IRIX 7</text>')
-    out.append('<text class="seed-sub" x="38" y="17">IP22 · MIPS R4400</text>')
+    out.append('<text class="seed-sub" x="38" y="17">IP24 · MIPS R4400</text>')
     out.append("</g>")
     return "\n".join(out)
 
@@ -991,7 +991,7 @@ def build_page(roadmap: Roadmap) -> str:
 
   <section class="intro" id="intro" aria-labelledby="intro-title">
     <div class="intro-main">
-      <p class="eyebrow"><span class="pulse"></span> A living roadmap · IP22</p>
+      <p class="eyebrow"><span class="pulse"></span> A living roadmap · IP24</p>
       <h1 id="intro-title">The Tree of<br><em>IRIX 7</em></h1>
       <p class="intro-lead">{esc(data["meta"]["intro"][0])}</p>
       <p class="intro-copy">{esc(data["meta"]["intro"][1])}</p>

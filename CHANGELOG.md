@@ -453,7 +453,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - Consolidated the ROM and kernel on n32/MIPS III and removed the misnamed
   `mips2-sgi-irix7-o32` target and its duplicate spec.
 - The ROM now links text at the PROM window (`0xBFC00000`) and writable data at 7 MiB
-  (`0xA8700000`), with an 8 MiB stack top, matching the original IP22 PROM layout.
+  (`0xA8700000`), with an 8 MiB stack top, matching the original IP24 PROM layout.
 - CI and release scripts build the kernel and ROM from the same target; the ROM build
   passes `rom/linker.ld`.
 - README links the architecture spec and the plan.

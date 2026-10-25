@@ -125,7 +125,7 @@
       "branch": "foundation",
       "status": "active",
       "title": "IRIX 7",
-      "subtitle": "IP22 \u00b7 MIPS R4400",
+      "subtitle": "IP24 \u00b7 MIPS R4400",
       "summary": "A clean-room Rust operating system for the SGI Indy, carrying IRIX's identity forward as first-class services."
     },
     {

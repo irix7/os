@@ -1,8 +1,9 @@
 /*
- * memsize.S -- SGI Indy (IP22/IP24) memory sizing and mapping.
+ * memsize.S -- SGI Indy (IP24) memory sizing and mapping.
  *
- * A port of stand/arcs/IP22prom/lmem_conf.s.  Runs with NO stack: RAM is
- * unmapped until MEMCFG0/1 are programmed, so there is nowhere to put one.
+ * A port of stand/arcs/IP22prom/lmem_conf.s (the upstream PROM source's
+ * IP22 name).  Runs with NO stack: RAM is unmapped until MEMCFG0/1 are
+ * programmed, so there is nowhere to put one.
  * Only registers are used, exactly as the original firmware does.
  *
  * Each bank is probed through the KSEG1 alias of physical HIGH_MEM_BASE
