@@ -26,8 +26,9 @@ constructs no fabric frame. The loadable `logical` module runs the same policy
 on iris outside the compressed PROM; it prints its local root, actor and
 verified 1-of-1 capability, then ticks. The kernel now starts a local
 namespace/CAS, actor and capability policy at boot as well; the module remains
-the signed 1-of-1 probe. The Wasm core and zero-mesh instrumentation are still
-missing. The fabric, capability, CAS and Wasm host crates have host tests;
+the signed 1-of-1 probe. A wasmi runtime probe runs as a module; the Wasm
+policy core and module multiplexer are still missing. Mesh traffic is now
+instrumented and asserted zero on the M1 line. The fabric, capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:

@@ -196,6 +196,10 @@ and returns non-zero to unregister. Swap `hello` for `ticker` in the two command
 hashes it with BLAKE3, and during idle ticks writes an `I7CACHE1` header and the sector
 to target 3, then verifies the readback. It is a probe, not the final package cache.
 
+`modules/wasm` is the first wasmi probe. It embeds a tiny Wasm module, instantiates it
+with the no_std interpreter, runs its `run` export and prints `wasm: run=42`. It is a
+runtime proof, not the policy core or the final shim integration.
+
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local
 membership view from the `info` MAC, stores an `/etc/motd` object in the CAS

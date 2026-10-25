@@ -634,6 +634,7 @@ jobs:
           erofs  erofs-module  core,alloc
           logical logical-module core,alloc
           cache  cache-module  core,alloc
+          wasm   wasm-module   core,alloc
           EOF
 
           echo "=== Module image sizes (limit $LIMIT bytes) ==="

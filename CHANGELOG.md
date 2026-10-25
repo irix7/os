@@ -29,6 +29,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   counter surface.
 - A `net=off` boot with no local module now reports `BOOT-READY` with
   `mcp=disabled`; it runs no module and leaves sash usable.
+- `modules/wasm` is a wasmi runtime probe: it compiles and runs an embedded
+  Wasm module on iris and prints `wasm: run=42`. It is not the policy core.
 
 ## [0.1.3] — 2026-10-25
 
