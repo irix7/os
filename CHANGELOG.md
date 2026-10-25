@@ -13,6 +13,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `modules/cache` is a content-addressed one-sector cache probe: it reads
   target 1 LBA 0, hashes it with BLAKE3, writes an `I7CACHE1` header and data to
   target 3 during idle ticks, then verifies the readback.
+- `packages install NAME` now installs userland images: it fetches the record
+  into the 256 KiB loader buffer, verifies its SHA-256, writes it to SCSI
+  target 2 with HPC3 DMA, and leaves the user to `reboot`.
+- Release builds use thin LTO.  The unreleased userland-install image is
+  499,644 bytes, leaving 24,644 bytes under the PROM limit; the v0.1.3 release
+  remains 520,840 bytes.
 
 ## [0.1.3] — 2026-10-25
 

@@ -51,6 +51,17 @@ static mut HEAP_MAPPED: bool = false;
 static mut HEAP_TLB_START: u32 = 0;
 static mut HEAP_PHYS: u64 = 0;
 
+/// The package installer's userland staging buffer.
+///
+/// This is the same 256 KiB buffer the ELF loader uses, so installing an image
+/// does not add a second large `.bss` allocation.  It is only valid while the
+/// console owns the machine (no user process is running).
+pub fn image_buffer() -> &'static mut [u8] {
+    // SAFETY: sash is single-threaded; the loader and the installer never run
+    // at the same time.
+    unsafe { &mut *core::ptr::addr_of_mut!(ELF_BUF) }
+}
+
 fn page_of(address: u32) -> u32 {
     address & !0xFFF
 }
