@@ -258,6 +258,21 @@ jobs:
               --target targets/mips3-sgi-irix7-n32.json -p logical-module
           "$LLVM_OBJCOPY" -O binary \
             target/mips3-sgi-irix7-n32/release/logical-module "$RUNNER_TEMP/logical.module"
+      - name: Build wasm module
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target targets/mips3-sgi-irix7-n32.json -p wasm-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/wasm-module "$RUNNER_TEMP/wasm.module"
+          size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
+          echo "wasm.module: $size bytes"
+          test "$size" -le 2097152
+
       - name: Setup IRIS
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@4b00413663a979d15b7ef8cd2208d95a030796a4
@@ -350,6 +365,68 @@ jobs:
                   raise SystemExit("package install failed: %r" % installed)
               print("diskless packages: ok")
           PY
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
+      - name: Boot ROM with slot-B wasm autoload
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-wasm-autoload"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          sha=$(sha256sum "$RUNNER_TEMP/wasm.module" | awk '{print $1}')
+          python3 - "$work/nvram.bin" "$sha" <<'PY'
+          import sys
+
+          env = (f"wasm.url=http://192.168.0.1:18088/wasm.module\0"
+                 f"wasm.sha256={sys.argv[2]}\0"
+                 "console=serial0\0\0").encode()
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+
+          python3 -m http.server 18088 --bind 0.0.0.0 \
+            --directory "$RUNNER_TEMP" >"$work/http.log" 2>&1 &
+          http_pid=$!
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18885 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" "$http_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -50 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
+          grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -575,6 +652,8 @@ jobs:
           path: |
             ${{ runner.temp }}/iris-diskless/serial.log
             ${{ runner.temp }}/iris-diskless/iris.out
+            ${{ runner.temp }}/iris-wasm-autoload/serial.log
+            ${{ runner.temp }}/iris-wasm-autoload/iris.out
             ${{ runner.temp }}/iris-offline-no-module/serial.log
             ${{ runner.temp }}/iris-offline-no-module/iris.out
             ${{ runner.temp }}/iris-boot/serial.log

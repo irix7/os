@@ -52,13 +52,16 @@ request, because `main` is protected). The file supplies:
 |---|---|
 | `mcp.url` | `https://host[:port]/path` |
 | `mcp.sha256` | 64 hex digits, the digest of the module image |
+| `wasm.url` | optional NVRAM-only slot-B probe URL |
+| `wasm.sha256` | optional slot-B probe digest |
 
 The DS1386 environment may override the same two names for a local test rig; it is a
 hardware chip, not a release distribution channel. After DHCP and DNS are up, and before
 the boot handoff, the kernel reads the configuration, zeroes module slot A,
 fetches the image, verifies the digest and calls the entry. A failure prints
 `autoload: ...` and the boot continues with a `BOOT-NOT-READY` marker; it never runs
-an unverified image.
+an unverified image. An optional NVRAM `wasm.url`/`wasm.sha256` pair loads the
+slot-B Wasm probe after MCP; it does not affect the MCP readiness marker.
 
 At startup the kernel also validates the DS1386 environment and MAC. A blank or corrupt
 environment is repaired with a minimal default and a locally administered fallback MAC,

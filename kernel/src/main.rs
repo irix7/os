@@ -630,6 +630,7 @@ pub extern "C" fn _start_rust() -> ! {
 
     // Boot-time module configuration from the PROM environment.
     let autoload = autoload::boot();
+    autoload::boot_wasm();
     announce_boot(autoload);
 
     // The boot log is the local display now.  Paint it before handing over so

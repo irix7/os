@@ -106,8 +106,8 @@ instrumented and asserted on the M1 line.
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 519,916 bytes
-(4,372 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy and fat LTO is 519,480 bytes
+(4,808 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 

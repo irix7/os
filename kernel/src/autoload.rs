@@ -63,6 +63,43 @@ pub fn boot() -> Status {
     finish(run(url, &config.digest()))
 }
 
+/// Load the optional slot-B wasm probe from `wasm.url` NVRAM.
+///
+/// M1 uses this to prove the runtime starts during boot without replacing the
+/// slot-A MCP module.  It is optional; a missing key is silent.
+pub fn boot_wasm() {
+    let mut url = [0u8; 192];
+    let Some(n) = nvram::get("wasm.url", &mut url) else {
+        return;
+    };
+    if crate::net::disabled() {
+        console_println("autoload: network off; wasm module skipped");
+        return;
+    }
+    let Ok(url) = core::str::from_utf8(&url[..n]) else {
+        console_println("autoload: wasm.url is not UTF-8");
+        return;
+    };
+    let mut digest_buf = [0u8; 80];
+    let Some(dn) = nvram::get("wasm.sha256", &mut digest_buf) else {
+        console_println("autoload: wasm.sha256 missing");
+        return;
+    };
+    let Some(digest) = parse_digest(&digest_buf[..dn]) else {
+        console_println("autoload: wasm.sha256 is not 64 hex digits");
+        return;
+    };
+    console_println("autoload: loading wasm module");
+    match run_slot(module::Slot::B, url, &digest) {
+        Ok(0) => console_println("autoload: wasm returned"),
+        Ok(_) => console_println("autoload: wasm returned non-zero"),
+        Err(error) => {
+            console_println("autoload: wasm failed");
+            console_println(error);
+        }
+    }
+}
+
 fn boot_nvram(url: &[u8]) -> Status {
     let Ok(url) = core::str::from_utf8(url) else {
         console_println("autoload: mcp.url is not UTF-8");
@@ -168,10 +205,14 @@ enum FetchResult {
 ///
 /// Used by the package index; the normal boot path uses [`boot`].
 pub fn load_url(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
-    run(url, digest)
+    run_slot(module::Slot::A, url, digest)
 }
 
 fn run(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
+    run_slot(module::Slot::A, url, digest)
+}
+
+fn run_slot(slot: module::Slot, url: &str, digest: &Sha256) -> Result<i32, &'static str> {
     if url.is_empty() || url.len() > REDIRECT_MAX {
         return Err("autoload: URL too long");
     }
@@ -183,7 +224,7 @@ fn run(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
         let Ok(url) = core::str::from_utf8(&current[..current_len]) else {
             return Err("autoload: URL is not UTF-8");
         };
-        match fetch_once(url, digest)? {
+        match fetch_once(slot, url, digest)? {
             FetchResult::Loaded(code) => return Ok(code),
             FetchResult::Redirect(location) => {
                 let Some(target) = location.as_str() else {
@@ -203,7 +244,7 @@ fn run(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
     Err("autoload: too many redirects")
 }
 
-fn fetch_once(url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
+fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
     let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
         (true, rest)
     } else if let Some(rest) = url.strip_prefix("http://") {
@@ -225,8 +266,8 @@ fn fetch_once(url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
     let ip = crate::telnet::resolve_host(host.as_bytes()).ok_or("autoload: unknown host")?;
 
     console_println("autoload: fetching module");
-    module::clear(module::Slot::A);
-    let area = module::area(module::Slot::A);
+    module::clear(slot);
+    let area = module::area(slot);
     let (summary, captured) = if secure {
         tls::get_to(ip, port, host, path, area)?
     } else {
@@ -249,12 +290,7 @@ fn fetch_once(url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
         return Err("autoload: module hash mismatch");
     }
     // SAFETY: the image fits and its hash matched.
-    unsafe {
-        Ok(FetchResult::Loaded(module::call_entry(
-            module::Slot::A,
-            captured,
-        )))
-    }
+    unsafe { Ok(FetchResult::Loaded(module::call_entry(slot, captured))) }
 }
 
 fn parse_digest(hex: &[u8]) -> Option<Sha256> {
