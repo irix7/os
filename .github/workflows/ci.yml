@@ -33,6 +33,29 @@ jobs:
             echo "No Rust workspace yet; skipping."
           fi
 
+  dco:
+    name: DCO
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check commit sign-offs
+        run: |
+          set -euo pipefail
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          missing=0
+          while IFS= read -r commit; do
+            author="$(git show -s --format='%an <%ae>' "$commit")"
+            if ! git show -s --format=%B "$commit" | grep -Fqi "Signed-off-by: ${author}"; then
+              echo "::error::commit ${commit} is not signed off by ${author}"
+              missing=1
+            fi
+          done < <(git rev-list --no-merges "${base}..${head}")
+          exit "$missing"
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
