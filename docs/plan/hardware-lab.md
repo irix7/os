@@ -130,7 +130,7 @@ Keep, or record where to get:
 | XZ/Extreme | Deferred | Rare; iris has bring-up support |
 | Indy Video | Deferred | Required for video output |
 | 32 MiB RAM | Not supported for the full stack | Lite mode TBD |
-| 64 MiB RAM | Minimum candidate | Confirm with M6/M7 |
+| 64 MiB RAM | Minimum candidate | Confirm during display bring-up |
 
 ## 11. Lab notebook
 

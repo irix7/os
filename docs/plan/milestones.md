@@ -1,553 +1,178 @@
 # IRIX 7 — Milestone Plan
 
-**Status:** living document
-**Strategy:** walking skeleton. Every milestone is a vertical slice with a demo, not a horizontal platform layer.
-**Companion:** [`../spec/architecture.md`](../spec/architecture.md), [`github.md`](github.md), [`risks.md`](risks.md).
+**Status:** active plan
+**Architecture:** [`../spec/system.md`](../spec/system.md)
+**Strategy:** one logical computer built from 1–128 kernel replicas. Every
+phase is a vertical slice with a runnable demo and a hard gate.
 
-> **See it grow:** [The Tree of IRIX 7](../roadmap-tree.md) is the interactive view of this plan.
+## 1. Current state
 
-## 1. Summary
+The native Indy bring-up is the base: the assembly ROM tests DRAM and starts
+the n32 kernel, which owns Seeq networking, DHCP/DNS/NTP, HTTP/HTTPS, the REX3
+boot log, telnet, HTTPS module autoload and the static Rust `std` image on
+SCSI target 2. The released image is v0.1.2.
 
-| ID | Milestone | Demo | Estimate | Release |
-|---|---|---|---|---|
-| M0 | Toolchain unblocked | CI cross-compiles a `no_std` binary for n32 and o32; tracer bullet prints on iris | 2–4 weeks | — |
-| M1 | ROM boot + kernel networking | Assembly ROM tests DRAM, decompresses the n32 kernel and jumps; kernel does DHCP/DNS/NTP/HTTP/HTTPS, console and modules | 4–6 weeks | — |
-| M2 | Kernel core | Timer ticks, page fault, panic screen, scheduler | 6–10 weeks | — |
-| M3 | Network + MCP + shell | Agent connects over HTTP, runs a command, reads serial, captures screen | 4–6 weeks | v0.1 |
-| M4 | SCSI + block + EROFS | `cat /etc/motd` from the R2 root image | 8–12 weeks | — |
-| M5 | First IRIX binary | An o32 IRIX `hello` prints and exits | 8–12 weeks | v0.2 |
-| M6 | Display + native desktop | A native window with text, cursor, damage repair | 8–12 weeks | v0.3 |
-| M7 | X11 | `xterm` and `twm` under a display lease | 12–20 weeks | v0.4 |
-| M8 | XFS read-only | `ls` an IRIX 6.5 disk | 8–12 weeks | v0.5 |
-| M9 | Native cell + capability ABI | A Rust cell opens a file and prints | 8–12 weeks | v0.6 |
-| M9.5 | Native Rust `std` | A native cell uses `std::fs`, `std::thread`, `std::process` and `std::net` | 8–12 weeks | — |
-| M10 | Real-Indy release | A real Indy boots from R2, runs MCP/X11/XFS, updates | 8–12 weeks | v1.0 |
+The shared architecture crates are merged and host-tested:
+`sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`,
+`cap-engine`, `guest-abi`, `wasm-host` and `mesh-sim`. The SDK owns
+`wasm-abi` v0.5.0 and the user SDK v0.4.0. The kernel does not yet run the Wasm
+core or join a mesh; those are the first two gates.
 
-**Rough total:** 76–118 person-weeks (1.5–2.3 years for one full-time person, sequential). Parallel work on X11, XFS and the native ABI can compress the calendar; the critical path is M0 → M1 → M2 → M3 → M4 → M5 → M7 → M10.
+Native POSIX/relibc, the IRIX 6.5 container and ABI 10 modules remain native
+compatibility surfaces throughout.
 
-The estimates are planning ranges, not commitments. They exclude holidays, hardware repairs and the inevitable "the emulator is wrong" detours.
+## 2. Hard gates
 
-## 2. Release map
-
-| Release | Contents | Audience |
+| Gate | Nodes | What must pass |
 |---|---|---|
-| v0.1 | Serial, network, MCP, shell, reset/watchdog | The developer/agent |
-| v0.2 | First IRIX o32 binary, minimal libc | Compatibility testers |
-| v0.3 | Newport display, native desktop shell | Early users |
-| v0.4 | X11 lease, `xterm`/`twm`, Xlib subset | IRIX application testers |
-| v0.5 | XFS read-only, IRIX disk access | Data-recovery users |
-| v0.6 | Native cells, capability ABI, native libc | Rust developers |
-| v1.0 | Real-Indy daily driver, updater, docs, signed release | The project |
+| M1 | 1 | Boot with no network, quorum or seed; zero mesh RPCs; local namespace, CAS, capabilities, actors and devices; POSIX/IRIX smoke |
+| M2 | 2 | Join, membership epoch, rendezvous homes, remote capability route, L0 migration both ways, one-node failure and partition |
+| M3 | 8 | Sharded homes, namespace/CAS fetch-by-OID, placement, two-node failure, membership churn, GPU object path |
+| M4 | 128 | 128 replicas, ≤2 normal hops, no global queue/lock/all-to-all, eight-node failure, 64/64 partition, churn, 1M OIDs, 10k actors |
 
-## 3. Cross-cutting workstreams
+M1 and M2 must run on real kernels. M4 may use a simulator plus QEMU, but the
+simulator must use the same `mesh-core` and `mesh-service` policy as the
+kernel.
 
-These run in parallel with every milestone and are tracked as their own epics:
+## 3. Phases
 
-- **Clean-room and provenance** — harness, similarity screen, DCO, access control for `irix6`.
-- **Native POSIX and Rust std** — POSIX.1-2024 profile, native libc ABI and the hosted
-  Rust `std`; see [`../spec/posix.md`](../spec/posix.md).  This is downstream of the
-  native process model, not a replacement for the IRIX 6.5 compatibility contract.
-- **CI and automation** — cross-compile, emulator boot, smoke harness, hardware-in-the-loop, releases.
-- **Documentation** — user, admin, install, troubleshooting; interface specs; ADRs.
-- **Security** — threat model, MCP modes, supply chain, vulnerability disclosure.
-- **Hardware lab** — the two Indys, serial, SCSI emulators, spares, backups.
-- **Performance and benchmarks** — tracked, never gated.
-- **Community** — contributing, governance, good-first issues, release notes.
+### Phase 0 — Baseline and decisions
 
----
+Record boot, DHCP/DNS/NTP, TLS, HTTP, telnet, MCP, module-load and user-image
+baselines; image/RAM budgets; the compatibility contract; and ADRs for the
+two-stage kernel, Wasm runtime, capability v2, migration level, global kernel,
+home ownership, threshold authority and the 1/2/8/128 gates. Build a
+traceability matrix. No production code change.
 
-## M0 — Toolchain unblocked
-
-**Goal:** make the existing toolchain reliably build the kernel and ROM for n32/MIPS III
-and produce a reproducible `no_std` artefact.
-
-**Demo:** CI cross-compiles a `no_std` binary for `mips3-sgi-irix7-n32`, and the existing
-tracer bullet boots on iris and prints its marker.
-
-**Acceptance criteria:**
-
-- [x] `-Z build-std` works for `core`/`alloc` on the custom target.
-- [ ] `rustc_codegen_gcc` builds and produces working code for n32.
-- [x] The LLVM path works for the custom target.
-- [x] The Nix devshell pins rustc, GCC, binutils and the target spec.
-- [x] A clean checkout can build the tracer bullet without manual steps.
-- [x] CI caches the toolchain and the target artefacts.
-- [x] The disk-space blocker is resolved or worked around.
-- [ ] The build is reproducible (same inputs → same hashes).
-
-**Dependencies:** access to `irix7/project`, the Nix flake, the captured sysroot, iris.
-
-**Estimate:** 2–4 weeks.
-
-**Risks:** host-toolchain glue; GCC-backend disk space; nightly drift.
-
-**Out of scope:** kernel features, drivers, userspace.
-
----
-
-## M1 — ROM boot + kernel networking
-
-**Goal (as delivered):** a MIPS III assembly PROM replacement that sizes and tests DRAM,
-brings up the serial console, LZ4-decompresses the n32 kernel to `0x8804_0000` and jumps to
-it. Networking, the console and the clock are initialised once in the kernel.
-
-**Demo:** in iris the raw PROM image prints the boot banner, tests 32 MiB of RAM, decompresses
-the kernel and prints `kernel: up`; DHCP and DNS complete; the telnet console answers and
-survives `reboot`. `https example.com:443/` verifies the certificate chain and reports a body
-digest matching the host.
-
-**Acceptance criteria:**
-
-- [x] Serial console works from the first instruction.
-- [x] RAM is sized and tested stacklessly before any RAM structures exist.
-- [x] The kernel is decompressed from PROM and entered at `0x8804_0000`.
-- [x] Seeq 8003 + HPC3 PDMA; DHCPv4 with renewals; DNS; NTP; ICMP.
-- [x] HTTP/1.1 and HTTPS/TLS 1.3 with certificate-chain verification.
-- [x] SHA-256 over fetched bodies, and a digest gate for modules.
-- [x] Telnet console with its command set, surviving boot and reconnect.
-- [x] Loadable modules fetched over HTTPS into RAM.
-- [x] The image fits in the 512 KiB PROM window (about 476 KiB).
-- [x] The handoff is documented in [`../spec/boot-protocol.md`](../spec/boot-protocol.md);
-      `BootInfo` is optional and the current ROM passes registers.
-- [x] HTTP Range support (HTTP/1.1 `Range`, 206 validation).
-
-**Note:** the design changed during M1. The ROM started as a Rust netboot client; it is now
-an assembly stub that embeds the kernel, and the network stack and console live in the kernel.
-Because the PROM window is the binding constraint, new features are modules downloaded over
-HTTPS rather than growth of the compressed image.
-
-**Dependencies:** M0, iris (or an Indy), a local HTTP server for modules.
-
-**Estimate:** 4–6 weeks.
-
-**Risks:** Seeq quirks; kernel load address and `BootInfo` layout; cache flush before the
-jump; ROM size; 10 Mbit timeouts; TLS.
-
-**Out of scope:** HTTP Range, the full boot bundle, storage.
-
----
+**Exit:** baseline recorded; ADRs accepted or explicitly deferred; every
+requirement mapped to a phase and a test.
 
-## M2 — Kernel core
+### Phase 1 — Shared vocabulary and workspace
 
-**Goal:** the privileged framework: traps, TLB, caches, CP0 timer, frame allocator, scheduler,
-capability table, panic path and serial console.
+Add `sys-primitives`, `mesh-core`, `platform-api`, `fabric`, `guest-abi`,
+`cas-core`, `cap-engine`, `mesh-service`, `wasm-host` and `mesh-sim`.
+`os-sdk/wasm-abi` is the single guest ABI.
 
-**Status (2026-10-25):** in progress — the kernel links at `0x88040000`, clears `.bss`,
-sets up its stack and prints `kernel: up`.  The current ROM passes no `BootInfo`; the
-kernel falls back to the register handoff, reserves the low window through `0x08B00000`
-and starts the frame allocator above it.  The kernel owns the telnet console after the
-hand-off.  The general exception vector saves a full register frame and round-trips a
-deliberate `break`/`syscall` through `eret`; timer interrupts stay on the fast path.
-Entry through the trap/`eret` path, syscall return and the native n32 user image
-work, and a CP0 Compare timer plus `WAIT` idle loop parks the vCPU.  The capability table has generation-checked
-handles, object preservation and rights checks; wiring it into every kernel service is
-still open.  A general page-table refill, page-fault handling and the EDF/fair run queues
-remain open.  The Stage 0 CPU/MMU gate is complete: correct `Status.KSU`/`UX`,
-XTLB vector, R4000 PageMask encodings, cacheable user pages for LL/SC, a 64-bit
-trap frame and LL-bit clearing on trap/switch.
-
-**Demo:** the kernel prints the boot RAM geometry, calibrates the timer, runs two kernel
-tasks with EDF and fair classes, handles a deliberate page fault, and panics cleanly with
-a register dump.
-
-**Acceptance criteria:**
-
-- [x] Kernel links at `0x88040000` and falls back to the register handoff when `$a0` is 0.
-- [x] Kernel reserves the low window through `0x08B00000`; usable RAM starts above it.
-- [x] Kernel clears `.bss` and sets up its stack.
-- [x] Kernel prints `kernel: up`; serial console works after hand-off.
-- [x] Kernel owns the telnet console after boot.
-- [x] General exception vector, full register frame and `eret` round trip work on
-      MIPS III (kernel-mode self-test).
-- [x] One-entry software TLB refill and `eret` work on MIPS III (kernel-mode
-      self-test).
-- [x] User-mode entry with `KSU=user`, syscall return and the native n32 user image
-      work on MIPS III.
-- [ ] General page-table refill and page-fault handling work on MIPS III.
-- [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
-- [x] Frame allocator uses the boot RAM geometry and the reserved low window; no RAM probing.
-- [ ] 16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.
-- [x] Capability table with generation counters, object identity and rights checks
-      (kernel-service enforcement wiring still open).
-- [ ] EDF and fair run queues; `is_running` debug assertion.
-- [x] Panic screen with registers, stack trace and a serial dump.
-- [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
-- [x] CP0 Compare timer and `WAIT` idle loop park an idle vCPU.
-
-**Dependencies:** M1.
-
-**Estimate:** 6–10 weeks.
-
-**Risks:** TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage;
-idle guest pegging host CPU (iris idle-CPU issue).
-
-**Out of scope:** drivers, userspace, filesystems.
-
----
-
-## M3 — Network + MCP + shell
-
-**Goal:** the development harness: a de-privileged network cell, a de-privileged MCP cell, and
-a shell. This is a deliberate MCP-first deviation from the hardware bring-up order: the
-control plane is how everything else gets built.
-
-**Demo:** an agent connects to the Indy over Streamable HTTP with a bearer token, runs
-`uname`, lists files, reads the serial log, captures the framebuffer, and reboots the machine.
-
-**Prototype:** `modules/mcp` (loaded over HTTPS into RAM) serves JSON-RPC 2.0
-`initialize`, `ping`, `tools/list` and `tools/call` at `POST /mcp`, with the `status`,
-`echo`, `console`, `serial.read`, `system.reset`, `system.poweroff` and `status`
-(IP/MAC/RAM/uptime/date) tools. The iris rig forwards host 8088 to the module's guest port 80.
-It is autoloaded from the repository boot configuration (with an NVRAM override for the
-test rig) and comes back after `system.reset`. It has no bearer token, SSE, shell or screen tools yet.
-
-**Acceptance criteria:**
-
-- [ ] Network cell owns the Seeq, exposes `/net`, and survives a reset.
-- [ ] MCP `initialize`, `tools/list`, `tools/call`, `ping` and progress notifications.
-- [ ] Tools: `shell.exec`, `fs.read`, `fs.write`, `fs.list`, `serial.read`, `serial.write`,
-      `screen.capture`, `system.reset`, `system.poweroff`.
-- [x] Bearer token authentication; no TLS in v1; binds to the LAN interface.
-- [ ] Shell: `help`, `ls`, `cat`, `echo`, `uname`, `ps`, `reboot`, `poweroff`.
-      Prototype: `echo`, `uname`, `help`, `reboot` and `poweroff` work through `shell.exec`;
-      `ls`, `cat` and `ps` wait for the filesystem and process work.
-- [ ] `system.reset` is guarded by the watchdog and returns after the reboot.
-- [ ] The agent loop is documented and reproducible.
+**Status (2026-10-25):** merged. `sys-primitives` has wire round-trips;
+`mesh-core` uses BLAKE3 rendezvous, leases and GPU placement; `mesh-service`
+covers membership and failure state; `fabric` covers tags, streams and
+completions; `cas-core` covers OIDs/manifests; `cap-engine` covers Ed25519,
+trust and threshold roots; `wasm-host` runs an `i7host` WAT module; `mesh-sim`
+passes 1/2/8/128 policy gates. The native kernel still boots unchanged.
 
-**Dependencies:** M2, R2/local HTTP, a host-side MCP client.
+**Exit:** native image boots; new crates host-tested and wasm32-checked where
+applicable; clippy/deny clean; no existing public API changes.
 
-**Estimate:** 4–6 weeks.
+### Phase 2 — Indy shim and single-node kernel
 
-**Risks:** MCP prompt injection; full root; no audit; network driver bugs.
+Implement `PlatformShim` for the Indy behind the existing kernel: pages, MMU,
+timer, IRQ, Seeq, SCSI, DMA, console, RNG and reset. Keep the old path
+selectable. Add the single-node `MembershipView::single` path and exercise the
+global object, namespace, capability and actor code with no mesh envelope.
 
-**Out of scope:** SCSI, filesystems, display, X11.
+**Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
+and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
+budgets.
 
----
+### Phase 3 — Asynchronous fabric and two-node routing
 
-## M4 — SCSI + block + EROFS
-
-**Goal:** read the root image from R2 over HTTP Range through a userspace block/FS stack.
+Implement tag/stream flow control, completions, cancellation, W3C Trace
+Context, shared-memory local transport and TCP/TLS transport. Add the
+`MeshHeader`, route cache, `MOVED` handling, membership v0 and remote
+capability routing. Keep 9P2000.L as an edge gateway.
 
-**Demo:** the shell runs `cat /etc/motd` and `ls /` from the EROFS root image; a write to
-`/tmp` goes to the overlay; the machine boots with no SCSI disk.
+**Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
+trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 
-**Status (2026-10-24):** the prototype runs on iris, but it is **not yet a userspace
-stack**.  SCSI, the block service and the HTTP Range client are kernel code; the HTTP MCP
-server and the filesystem are loadable kernel images (modules).  The console `erofs`
-command (built with the optional `erofs-debug` feature) mounts an HTTP/HTTPS EROFS image
-and verifies its SHA-256, and the MCP tools expose
-`fs.read/list/stat/readlink/write/remove` through the overlay.  The target userspace/cell
-form is deferred to M5/M9.  Evidence:
+### Phase 4 — Wasm host and minimal core on the Indy
 
-- HTTP Range EROFS with a 256 KiB window, SHA gate and `cat /etc/motd` over telnet;
-- MCP smoke tests for `block.read`, `fs.read/list/stat/readlink/write/remove` and the
-  RAM overlay;
-- a diskless boot with no SCSI target 1 or 2 still reaches the MCP server;
-- a disk-present boot mounts target 2 through the SCSI block service.
+Integrate wasmi deterministically with fuel metering, the guest ABI, host
+memory validation and the completion ring. Start an echo/scheduler actor. Add
+the MIPS build gate and a kill criterion for runtime or performance failure;
+keep the native core option.
 
-**Acceptance criteria:**
+**Exit:** core starts on iris; actor suite; deterministic corpus; native
+POSIX/IRIX paths still pass; no packet or block data path inside Wasm.
 
-- [x] SCSI initialises the WD33C93 and reads blocks.  (Prototype: kernel WD33C93 driver
-      with HPC3 descriptor DMA and a polled PIO fallback; the de-privileged SCSI cell is
-      deferred.)
-- [ ] Block cell exposes a block-device capability and an LRU cache.  (Prototype: ABI
-      `block_read` plus a 64-block LRU inside the loadable `mcp`/`erofs` images; the
-      capability and cell form are deferred.)
-- [x] EROFS reader mounts the standard little-endian image; byte-order codec tested.
-- [x] HTTP Range client fetches 64–256 KiB blocks with read-ahead.
-- [x] SHA-256 verifies the image before mount.
-- [x] Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).
-- [x] The boot path works with the disk absent and with the disk present.
+### Phase 5 — Global namespace, CAS and actor lifecycle
 
-**Dependencies:** M3 (network), M2 (framework).
+Move namespace and capability policy into the core; implement CAS fetch,
+manifests, cache/pinning, L0 migration, per-node run queues and placement. Add
+the POSIX bridge and ABI 10 bridge.
 
-**Estimate:** 8–12 weeks.
+**Exit:** M2 full; M3 sharded homes, CAS fetch, placement, two-node failure;
+L0 migration both ways; compatibility suite.
 
-**Risks:** SCSI DMA/direction; EROFS corner cases; R2 latency; 10 Mbit throughput.
+### Phase 6 — x86_64 PC shim
 
-**Out of scope:** XFS, I7FS, write-back to R2.
+Limine/UEFI boot, ACPI/APIC, e1000e, AHCI/NVMe, framebuffer and serial. Reuse
+the same core OID and host. Add a PC smoke image and Indy↔PC migration.
 
----
+**Exit:** PC boots the core; DHCP/HTTP/block; cross-endian state hash; e1000e
+throughput; Indy unchanged.
 
-## M5 — First IRIX binary
+### Phase 7 — Cloud VirtIO and 128-node gate
 
-**Goal:** run one real IRIX 6.5 o32 binary unchanged.
+virtio-net/blk/vsock, ACPI/DT, GIC/PSCI; 128-node simulator with fault and
+churn injection; placement and authority scale tests; M4 instrumentation for
+hops, mesh RPCs, gossip bytes and lease rejects.
 
-**Demo:** an o32 `hello` binary from the IRIX 6.5.7m sysroot prints `hello, IRIX 7` and exits
-with status 0; the shell reports the exit status.
+**Exit:** cloud x86_64/AArch64 boots; cross-architecture migration; M3; M4
+policy and real-mesh limitations recorded.
 
-**Status (2026-10-25):** the `irix-elf` parser/load plan is in place, and a native
-n32 user ELF loads from SCSI target 2 automatically after boot (and through the
-telnet `userelf` command).  The kernel maps its `PT_LOAD` pages and BSS, builds the
-conventional argc/argv/envp initial stack and enters it.  A static Rust `std`
-image now runs: it reads args and time, sleeps, reads/writes/stats the tiny ramfs,
-iterates the root directory, and uses `chdir`/relative paths.  The kernel has a
-provisional fd table and the matching syscalls.  The exit path frees the image,
-stack and heap pairs.  This is still a bring-up native image: no o32/IRIX
-compatibility, process table, threads/TLS, signals, termios, sockets, dynamic
-linking or full libc.
+### Phase 8 — CAS, threshold authority and revocation
 
-**Acceptance criteria:**
+Make CAS primary for actor images/state and boot manifests; implement
+threshold root manifests, home certificates, trust store, revocation epochs,
+bounded revocation sets, key rotation and partition windows. Keep EROFS as a
+read-only oracle during migration.
 
-- [ ] ELF loader maps the o32 image and its interpreter/libs.
-- [ ] o32 syscall decode: `write`, `exit`, `open`, `close`, `read`, `brk`, `getpid`.
-- [ ] Minimal IRIX libc: `write`, `exit`, `open`, `close`, `read`, `malloc`/`free`, `printf`.
-- [ ] Argument and environment passing; stack layout correct.
-- [ ] `errno` mapping; exit status propagation.
-- [ ] The test binary and expected output are in the compatibility corpus.
-- [ ] The clean-room provenance of the binary and the libc is recorded.
+**Exit:** forge/replay/expiry/revocation fail closed; crash-consistency and GC
+tests; ABI 10 still works; M1–M4 security gates.
 
-**Dependencies:** M2, M4.
+### Phase 9 — Remove duplicate paths
 
-**Estimate:** 8–12 weeks.
+Remove the polled monolith, old scheduler stub, duplicate driver paths and old
+HTTP/MCP server where the fabric gateway replaces them. Keep POSIX/IRIX and
+the recovery console.
 
-**Risks:** ABI details; libc surface; stack/register conventions; big-endian.
+**Exit:** no feature flags; all targets boot from the same core OID;
+compatibility suites green; rollback drill.
 
-**Out of scope:** n32, `fork`/`exec`, signals, Motif, X11.
+## 4. Native compatibility workstream
 
----
+This work continues in parallel and is a gate on every phase:
 
-## M6 — Display + native desktop
+- native Indy ROM, Seeq, SCSI, REX3 and DS1386;
+- POSIX/relibc, the 42-symbol bring-up shim and the IRIX 6.5 container;
+- ABI 10 modules and the user SDK;
+- EROFS/HTTP Range and the recovery console.
 
-**Goal:** a native display server and a minimal IRIX-inspired desktop: window, text, cursor,
-damage repair, 8-bit indexed.
+A phase that breaks these does not pass, even if its Wasm demo works.
 
-**Demo:** a native window shows `hello, IRIX 7`, moves, raises, and redraws with damage
-tracking; the hardware cursor moves; the desktop has a launcher and a clock.
+## 5. Workstreams
 
-**Acceptance criteria:**
+- **Runtime:** wasmi, determinism, fuel, MIPS performance, L2 research.
+- **Mesh:** homes, routing, membership, placement, authority, 128-node test.
+- **Storage:** CAS, manifests, replication, pinning, GC.
+- **Devices:** Seeq, SCSI, e1000e, AHCI/NVMe, virtio, GPU object protocol.
+- **Compatibility:** POSIX/relibc, IRIX 6.5, ABI 10.
+- **Fabric:** frames, tags, completions, cancellation, trace, 9P gateway.
+- **Toolchain/SDK:** `wasm-abi`, user SDK, core image, build/image tooling.
 
-- [ ] Newport REX3 blit, fill, line and text paths work.
-- [x] VC2 mode programming (1024×768 or 1280×1024) and XMAP9 palette.
-- [ ] Hardware cursor in the XMAP9 auxiliary plane.
-- [ ] Retained window images and damage-driven repair.
-- [ ] Display lease for a full-screen cell.
-- [ ] Input: keyboard and mouse events.
-- [ ] A minimal native desktop: launcher, window manager, clock, terminal.
-- [ ] The display protocol is documented in `../spec/display-protocol.md` (planned).
+## 6. Budget and release
 
-**Dependencies:** M2, M4.
+- **New effort:** 60–95 person-weeks on top of the native compatibility work.
+- The Wasm runtime/migration and hardware shims dominate, not the frame format.
+- v1 is L0 migration, per-object linearisability, sharded homes and threshold
+  authority. L2 migration, home groups and multi-object transactions are v2.
+- The native v0.1.2 image remains the last shipped release until M1/M2 pass.
+- A release manifest must state native-only, single-node or mesh-capable; it
+  must name the supported hardware matrix.
 
-**Estimate:** 8–12 weeks.
+## 7. Definition of done
 
-**Risks:** undocumented VRAM size; REX3 FIFO depth; 24-bit planar mode; input.
-
-**Out of scope:** X11, GL, video capture/playback, 3D.
-
----
-
-## M7 — X11
-
-**Goal:** run real IRIX X clients under a clean-room Rust X11 server in display-lease mode.
-
-**Demo:** `xterm` and `twm` run under X11 on the Indy; the keyboard and mouse work; the
-server survives an X client crash.
-
-**Acceptance criteria:**
-
-- [ ] X11 connection handshake, MSBFirst, setup reply.
-- [ ] Core protocol: windows, GCs, pixmaps, fonts, events, properties, selections.
-- [ ] 8-bit PseudoColor and 24-bit TrueColor visuals.
-- [ ] Extensions required by the corpus: SHAPE, MIT-SHM (or a local equivalent), XTEST.
-- [ ] Xlib ABI subset sufficient for `xterm`/`twm`.
-- [ ] Display lease integration with the native display server.
-- [ ] X Test Suite subset passes.
-- [ ] The X11 server is a native cell; legacy clients are MMU processes.
-
-**Dependencies:** M5 (libc), M6 (display).
-
-**Estimate:** 12–20 weeks.
-
-**Risks:** Xlib/Motif surface; protocol corner cases; performance; 4Dwm parity.
-
-**Out of scope:** rootless embedding, GLX, Motif applications, the full IRIX desktop.
-
----
-
-## M8 — XFS read-only
-
-**Goal:** read an IRIX 6.5 XFS v4 disk image.
-
-**Demo:** `ls /mnt/irix` lists an IRIX 6.5 disk image and `cat` reads a file.
-
-**Acceptance criteria:**
-
-- [ ] Superblock, AG headers, inode core, extents, bmap B+tree.
-- [ ] Four directory forms, symlinks, clean-log check.
-- [ ] Big-endian metadata; no byte swapping on the hot path.
-- [ ] Refuses a dirty log with a clear message.
-- [ ] Test corpus: clean IRIX 6.5 images, large files, sparse files, symlinks.
-- [ ] `fsck`-style consistency checks for the reader.
-- [ ] The XFS server is a userspace cell over a block-device capability.
-
-**Dependencies:** M4.
-
-**Estimate:** 8–12 weeks.
-
-**Risks:** IRIX v4 specifics (v1 dirs, ACLs); dirty logs; corrupted images.
-
-**Out of scope:** log replay, write, XFS v5.
-
----
-
-## M9 — Native cell + capability ABI
-
-**Goal:** load and run a native Rust cell through the capability ABI and the Unix-shaped libc.
-
-**Demo:** a Rust cell opens a file, maps a shared buffer, calls a server over a channel, and
-prints `hello from a cell`; `fork`/`exec` on a small cell works.
-
-**Acceptance criteria:**
-
-- [ ] Cell loader: `.o` relocation, `CellNamespace`, symbol resolution.
-- [ ] Capability table: rights, derivation, delegation, revocation.
-- [ ] Synchronous IPC + shared memory; `Port` events.
-- [ ] Native libc: `open`/`read`/`write`/`close`/`mmap`/`fork`/`exec`/`wait`.
-- [ ] Process = one cell with a Unix personality; fd = capability.
-- [ ] `fork` is limited to small cells; `posix_spawn`/`exec` is the preferred path.
-- [ ] ABI version negotiation; incompatible cells are refused.
-- [ ] The native ABI is documented in [`../spec/native-abi.md`](../spec/native-abi.md).
-
-**Dependencies:** M2, M3, M4.
-
-**v0 bring-up (2026-10-25):** `user/libc` provides the freestanding C ABI subset
-needed by the ELF smoke image, and `crates/irix7-libc` carries the 42-symbol shim
-used by the static `std` image.  The kernel has a small console/ramfs fd table,
-`stat`, `read_dir`, `chdir`, clocks and `nanosleep`; the std image exercises args,
-time, sleep, read/write/stat/read_dir and relative paths.  The capability table,
-process creation, pthread/TLS, signals, termios and the production libc remain
-open.
-
-**Estimate:** 8–12 weeks.
-
-**Risks:** `fork` in a SAS kernel; cell relocation; capability/namespace impedance.
-
-**Out of scope:** full POSIX, `sproc` for native, hot-swap.
-
----
-
-## M9.5 — Native Rust `std`
-
-**Goal:** make the real Rust standard library usable by native IRIX 7 cells and
-applications, on the POSIX.1-2024 native libc from M9.
-
-**Demo:** a native cell opens and reads a file with `std::fs`, spawns and joins a thread
-with `std::thread`, runs a child with `std::process::Command`, connects with
-`std::net::TcpStream`, and measures with `std::time::Instant` on iris.
-
-**Acceptance criteria:**
-
-- [ ] The native libc v0 and the POSIX.1-2024 profile are implemented and layout-tested.
-- [x] A hosted n32 target (`os = "irix7"`, Unix family) builds the `std` **rlib**
-      with `-Zbuild-std=std`, and it is not `restricted_std`.
-- [x] A static `std` image runs on iris with args, time, `sleep`, a tiny
-      `std::fs` ramfs, `chdir` and relative paths
-      ([bring-up](../research/std-hello-bringup.md)).  This uses a 42-symbol
-      shim, not the final libc.
-- [x] The relibc n32 big-endian Linux/QEMU gate passes TLS, `setjmp`/`longjmp`
-      and pthread/TLS smoke tests ([report](../research/relibc-n32-bringup.md)).
-      A provisional `irix7-pal` scaffold builds and links C probes, but has not
-      run on IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
-- [ ] `std::fs`, `std::thread`, `std::sync`, `std::process`, `std::net`, `std::env`,
-      `std::time`, TLS and the `std::os::unix` traits work on the real libc.
-- [ ] `catch_unwind` catches a panic at the cell boundary (or the phase-1 abort path is
-      documented and tested).
-- [ ] The kernel, ROM and loadable-module dependency graphs contain no `std`.
-- [ ] The IRIX 6.5 compatibility `std`, if built, is a separate target and is not the
-      native ABI.
-- [ ] The GCC-backend gate is resolved: `std` builds and runs under
-      `rustc_codegen_gcc` on n32, or ADR-0018 is amended for userland.
-
-**Dependencies:** M9, the native libc spec, the std research.
-
-**Estimate:** 8–12 weeks.
-
-**Risks:** the GCC backend; native libc surface; TLS/unwind on MIPS III; `fork`/threads;
-POSIX-2024 option gaps.
-
-**Out of scope:** IRIX 6.5 compatibility `std`, upstream target promotion, `dlopen`/shared
-loading, full XSI certification.
-
----
-
-## M10 — Real-Indy release
-
-**Goal:** boot, run and update IRIX 7 on a real Indy from R2.
-
-**Demo:** a real Indy cold-boots from the ROM, fetches the kernel and root image from R2,
-starts MCP, runs X11, reads an XFS disk, and updates to a new image with rollback.
-
-**Acceptance criteria:**
-
-- [ ] Cold boot on both real Indys (or the supported configuration).
-- [ ] Graphics board detection (Newport 8-bit/24-bit; XZ/Extreme if present).
-- [ ] SCSI, Seeq, HAL2, Vino detection and basic operation.
-- [ ] MCP over the real network; watchdog recovery.
-- [ ] X11 `xterm`/`twm` on the real hardware.
-- [ ] XFS read-only on a real IRIX disk.
-- [ ] Image update: fetch, verify, A/B switch, rollback.
-- [ ] Installer/user/admin docs; troubleshooting guide.
-- [ ] SBOM, checksums, signature, release notes.
-- [ ] The release is reproducible from a clean checkout.
-
-**Dependencies:** all milestones.
-
-**Estimate:** 8–12 weeks.
-
-**Risks:** hardware failures; real-Indy configuration; R2 quotas; last-mile bugs.
-
-**Out of scope:** video output (Indy Video), 3D, ISDN, hard real-time, full IRIX desktop parity.
-
----
-
-## 4. Critical path
-
-```text
-M0 → M1 → M2 → M3 → M4 → M5 → M7 → M10
-                 │         │
-                 ├→ M6 ────┘
-                 ├→ M8
-                 └→ M9 → M9.5
-```
-
-- **M7 (X11)** is the longest single item; start the X11 server design during M5.
-- **M8 (XFS)** can run in parallel with M6/M7 once M4 is stable.
-- **M9 (native ABI)** can run in parallel with M7/M8 once M3 is stable.
-- **M10** is the integration and hardware-validation gate.
-
-## 5. Scope cuts
-
-The following are deliberately excluded from v1.0:
-
-- ISDN.
-- Video output (Indy Video board).
-- 3D hardware acceleration.
-- Hard real-time guarantees.
-- X11 rootless embedding and GLX.
-- XFS write and dirty-log replay.
-- I7FS (fallback: RedoxFS or read-only images).
-- The original Indigo Magic desktop as the native desktop.
-- Full POSIX and full IRIX userland parity.
-- Forward compatibility.
-
-## 6. Milestone template
-
-New milestones use this shape:
-
-```markdown
-### Mx — Title
-**Goal:** one sentence.
-**Demo:** what the user sees.
-**Acceptance criteria:** testable checklist.
-**Dependencies:** milestone IDs, ADRs, hardware.
-**Estimate:** range in person-weeks.
-**Risks:** top three.
-**Out of scope:** what this milestone deliberately does not do.
-```
-
-## 7. Change control
-
-- A milestone change requires an ADR or a maintainer decision recorded in the issue.
-- Slipping a milestone is normal; silently dropping an acceptance criterion is not.
-- The Project board is the source of truth for status; this document is the source of truth
-  for scope.
+A phase is done when its demo and gate run on the target hardware or documented
+simulator, the compatibility suites pass, the relevant spec/ADR is updated,
+no new global lock/queue/central directory exists, and the previous recovery
+image still boots.

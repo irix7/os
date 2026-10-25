@@ -3,7 +3,7 @@
 **Status:** living document
 **Scope:** versioning, channels, artefacts, image pipeline, signing, A/B updates, rollback,
 support and release checklists.
-**Related:** [`github.md`](github.md) §13, [`testing.md`](testing.md) §8, [`security.md`](security.md).
+**Related:** [`milestones.md`](milestones.md), [`../spec/system.md`](../spec/system.md), [`github.md`](github.md) §13, [`testing.md`](testing.md) §8, [`security.md`](security.md).
 
 ## 1. Versioning
 
@@ -14,6 +14,27 @@ support and release checklists.
 - Git tags: `v0.1.0`, `v0.2.0`, …; releases are immutable.
 - The kernel, boot bundle and root image share the OS version; the native ABI has its own
   version.
+
+### 1.1 Wasm/mesh release line
+
+The native **v0.1.2** image remains the last shipped release. The Wasm/mesh line is
+not releasable until the M1 (single node) and M2 (two node) gates pass.
+
+Wasm/mesh artefacts are added alongside, not instead of, the native artefacts:
+
+| Artefact | Contents |
+|---|---|
+| `irix7-core.wasm` | The architecture-independent core; one BLAKE3 OID |
+| `irix7-shim-<target>` | Indy, x86_64 PC and cloud shim image |
+| `irix7-boot.manifest` | Core OID, shim version, membership/authority root, ABIs |
+| `irix7-modules-abi10` | Existing native module set, unchanged contract |
+| `irix7-user-sdk` | User SDK image/template artefacts |
+| `irix7-mesh-config` | Join token/authority root material, never the private key |
+
+The native kernel, boot bundle and EROFS root stay in the release until Phase 9.
+A release manifest must state whether it is native-only, single-node or
+mesh-capable. A mesh release must name the supported node matrix; “any
+computer” is not a release claim.
 
 ## 2. Channels
 

@@ -2,7 +2,37 @@
 
 **Status:** living document
 **Principle:** tests are the specification's executable half. Benchmarks inform; they do not gate.
-**Related:** [`../plan/milestones.md`](milestones.md), [`hardware-lab.md`](hardware-lab.md), [`release.md`](release.md).
+**Related:** [`milestones.md`](milestones.md), [`../spec/system.md`](../spec/system.md), [`hardware-lab.md`](hardware-lab.md), [`release.md`](release.md).
+
+## 0. Mesh gates (current)
+
+The architecture adds a second test axis: the same logical computer at **1, 2, 8 and
+128 nodes**. These are hard gates, not benchmark notes.
+
+| Gate | What is tested |
+|---|---|
+| M1 | Single-node boot with no network/quorum/seed; zero mesh frames; local namespace/CAS/capabilities/actors/devices; POSIX/IRIX smoke |
+| M2 | Join, membership epoch, rendezvous home, remote capability route, L0 migration both ways, one-node failure and partition |
+| M3 | Eight-node sharded homes, CAS fetch-by-OID, placement, two-node failure, churn, GPU object path |
+| M4 | 128-node simulator/QEMU: ≤2 normal hops, no global queue/lock/all-to-all, eight-node failure, churn, 1M OIDs, 10k actors |
+
+The policy-level gates already run in `crates/mesh-sim` against the real
+`mesh-service` membership table and `mesh-core` rendezvous. They do not prove a
+running mesh. The fabric, capability, CAS and Wasm host crates have host tests;
+the 128-node execution gate requires the native shim and transport work.
+
+Architecture CI additions:
+
+| Job | What | Required |
+|---|---|---|
+| `architecture-host` | `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`, `cap-engine`, `mesh-sim` tests | Yes |
+| `architecture-wasm32` | `sys-primitives`, `mesh-core`, `fabric`, `cas-core`, `cap-engine` check for wasm32 | Yes |
+| `wasm-host` | wasmi host imports, fuel exhaustion and typed calls | Yes |
+| `mesh-gates` | 1/2/8/128 policy gates and failure injection | Yes at Phase 3+ |
+| `mesh-real` | 2/8-node iris or QEMU transport/migration gate | Yes at Phase 3+ |
+
+The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
+and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.
 
 ## 1. Test pyramid
 
@@ -79,6 +109,8 @@
 | X11 | X Test Suite subset, `xterm`, `twm` | `test/x11/` |
 | MCP | JSON-RPC frames, tool schemas | `test/mcp/` |
 | Native std | Static `std` image, args/time/sleep/fs/chdir fixture | `user/std-hello/` |
+| Mesh policy | Fabric frames, mesh homes, membership, CAS manifests, capabilities | `crates/` |
+| Wasm host | WAT/ABI/fuel fixtures | `crates/wasm-host/` |
 | relibc n32 | `hello`, TLS, `setjmp`, pthread smoke tests | [`irix7/relibc`](https://github.com/irix7/relibc) |
 | Fuzz seeds | ELF, EROFS, XFS, 9P, HTTP, Git | `test/fuzz/` |
 
@@ -97,11 +129,11 @@ and sockets remain open.
 | `fmt` | `cargo fmt --check` | Yes |
 | `clippy` | `cargo clippy -- -D warnings` | Yes |
 | `test` | host unit/integration | Yes |
-| `cross` | n32/o32 `-Z build-std` (M0 gate) | Yes once M0 is green |
+| `cross` | n32/o32 `-Z build-std` (toolchain gate) | Yes |
 | `std` | static `std` image + native syscall fixture | Yes once std bring-up is in CI |
 | `relibc-n32` | external n32/QEMU relibc gate | Manual/nightly until linked |
 | `boot` | iris boot + smoke harness | Yes |
-| `mcp` | MCP conformance against a running iris instance | Yes once M3 is green |
+| `mcp` | MCP conformance against a running iris instance | Yes once P3 is green |
 | `licence` | `cargo-deny`, REUSE, SBOM | Yes |
 | `security` | CodeQL, dependency review, `cargo-audit` | Yes |
 | `docs` | mdBook build, link check | Yes |

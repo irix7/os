@@ -9,6 +9,12 @@ version, not a silent edit.
 
 | Interface | File | Status | Owner | Version | Tests |
 |---|---|---|---|---|---|
+| Logical computer / mesh | [`../spec/system.md`](../spec/system.md) | draft | kernel / mesh | 1.0 | `mesh-core`, `mesh-service`, `mesh-sim`; M1–M4 gates |
+| Wasm host-call ABI | [`irix7/os-sdk/wasm-abi`](https://github.com/irix7/os-sdk/tree/main/wasm-abi) | draft | ABI / SDK | 1.0 (SDK v0.5.0) | `guest-abi`, `wasm-host`, wasm32 check |
+| Fabric `MessageFrame` / `MeshHeader` | [`../spec/system.md`](../spec/system.md) §3 | draft | kernel / mesh | 1.0 | `sys-primitives` wire tests, `fabric` tests |
+| Capability v2 / root manifest | [`../spec/system.md`](../spec/system.md) §4 | draft | security / mesh | 2.0 | `sys-primitives`, `cap-engine` tests |
+| CAS manifest | [`../spec/system.md`](../spec/system.md) §6 | draft | storage | 1.0 | `cas-core` manifest/verification tests |
+| Native `PlatformShim` | [`../spec/system.md`](../spec/system.md) §3.1 | draft | kernel / targets | 1.0 | `platform-api`; mock + Indy/PC/cloud later |
 | ROM ↔ kernel boot handoff | [`../spec/boot-protocol.md`](../spec/boot-protocol.md) | draft | boot | 1.0 | iris + Indy |
 | MCP control plane | [`../spec/mcp.md`](../spec/mcp.md) | draft | infra | 1.0 | MCP conformance + agent loop |
 | MCP application endpoints | [`../spec/mcp-apps.md`](../spec/mcp-apps.md) | draft | infra | 0.1 | broker + local MCP app harness |
@@ -38,17 +44,19 @@ version, not a silent edit.
 
 ## 3. Priority
 
-The first three specs are the ones needed to build M1–M4:
+The system interfaces come first:
 
-1. **Boot protocol** — the ROM cannot hand off to the kernel without it.
-2. **MCP** — the development harness depends on it.
-3. **Driver interface** — every driver cell depends on it.
+1. **Logical computer / mesh** — homes, routing, authority and 1/128 gates.
+2. **Wasm host-call ABI** — the core cannot run without it.
+3. **Fabric and capability tokens** — local and remote operations share them.
+4. **PlatformShim** — the native side of the line.
 
-The next three are needed for M5–M9:
+The native compatibility interfaces remain:
 
-1. Native capability ABI.
-2. Native libc ABI.
-3. Image format / manifest.
+1. **Boot protocol** — the Indy ROM handoff.
+2. **Native capability ABI and native libc ABI** — POSIX/IRIX.
+3. **Driver interface and MCP** — the development harness.
+4. **Image format / manifest** — boot bundle and release.
 
 ## 4. Change process
 
