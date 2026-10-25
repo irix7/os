@@ -112,11 +112,16 @@ mesh traffic is instrumented and asserted on the M1 line.
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 521,320 bytes
-(2,968 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy and fat LTO is 521,588 bytes
+(2,700 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
+**ROM freeze:** after M1 is re-closed, the compressed PROM/kernel image is
+frozen for new features. Only correctness, security and hardware-enablement
+fixes may change it. M2 and later policy, runtime, transport, server and device
+work ships as modules through the package index; the kernel keeps only the
+fixed service table and boot-critical path.
 The optional SCSI write cache is deliberately a module, not PROM code: verified
 downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
 a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
@@ -127,8 +132,8 @@ The automatic queue, lookup and module multiplexer are still to come.
 no-module path and the slot-B Wasm-policy path; the native and Wasm
 root/actor/home/capability evidence match, MCP remains live in slot A, and
 `mesh=0/0/0` is asserted both before and after the optional Wasm probe and
-userland smoke. The rebuilt PROM is 521,320 of 524,288 bytes
-(2,968 free) and the Wasm module is 1,345,976 bytes, inside the
+userland smoke. The rebuilt PROM is 521,588 of 524,288 bytes
+(2,700 free) and the Wasm module is 1,347,256 bytes, inside the
 1,572,864-byte slot-B limit. The optional slot-B probe now runs after the
 readiness marker. MCP-only readiness measured 7.3–7.7 s. The instrumented Wasm
 path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the
@@ -136,18 +141,19 @@ local SCSI cache, with `wasm: runtime=0 ms`; fetch/copy dominate. The
 network-off/local-SCSI boot also exercises the Wasm policy with
 `mcp=disabled`. The full-path load time is recorded as an observation under
 issue #214, not a gate; the local cache is the preferred optional source. The live
-Wasm-policy bridge is deferred to Phase 5 (#213): M1 accepts the native kernel
-policy plus the
-boot-time Wasm proof, not a resident Wasm authority. **Real-Indy execution was not available in this
-workspace.** The exact limitation is hardware-specific: no physical Indy IP24
+Wasm-policy bridge is now adopted for the userland `/etc/motd` path: the
+kernel validates the fixed bridge and reads that object through the committed
+guest policy, with the native kernel policy as fallback. The actor/run-queue
+and full resident authority remains Phase 5 work (#213). **Real-Indy
+execution was not available in this workspace.** The exact limitation is hardware-specific: no physical Indy IP24
 or self-hosted lab runner was attached, so the gate cannot validate the real
 SCC, Seeq DMA, SCSI, REX3 or DS1386 timing and cache behaviour. The gate is
 iris-only and must not be reported as a real-Indy pass; the follow-up is the
 lab work in #16.
 
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
-and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
-budgets.
+and POSIX image unchanged; no mesh RPCs. Boot time is **recorded, not gated**
+for the 1994 hardware path; the optional module load is likewise an observation.
 
 ### Phase 3 — Asynchronous fabric and two-node routing
 

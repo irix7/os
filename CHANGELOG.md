@@ -8,6 +8,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The ROM freeze policy is recorded: after M1 is re-closed, the compressed
+  PROM/kernel image no longer gains features; policy, runtime, transport,
+  servers and devices ship as downloadable modules.
 - Module ABI v11 adds `block_write` for one 512-byte SCSI sector.  The kernel
   writes through HPC3 DMA; the write path is not used during boot.
 - `modules/cache` is a content-addressed one-sector cache probe: it reads
@@ -22,7 +25,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 521,320 bytes, leaving 2,968 bytes under the PROM limit; the
+  policy image is 521,588 bytes, leaving 2,700 bytes under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
   wasmi module. Loading the Wasm probe with `module b` leaves MCP running.
@@ -37,9 +40,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `wasm: run=42`. The evidence matches the native `m1:` root, actor, rights and home;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
-  capability is published. The module is about 1.34 MiB (1,345,976 bytes in
+  capability is published. The module is about 1.34 MiB (1,347,256 bytes in
   the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
-  remains 521,320 bytes (2,968 free).
+  remains 521,588 bytes (2,700 free).
 - The M1 software path now boots both the no-network/no-module path and the
   slot-B Wasm-policy path on iris, with zero mesh traffic and MCP still live
   in slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The optional
@@ -49,9 +52,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   local SCSI cache, and `wasm: runtime=0 ms`; fetch/copy dominate. The
   network-off/local-SCSI boot also runs the Wasm policy with `mcp=disabled`.
   The optional full-path load time is recorded as an observation under #214;
-  it is not a gate and does not delay readiness. The live Wasm-policy bridge is
-  deferred to Phase 5; M1 keeps the native kernel policy and uses the Wasm
-  policy as a boot-time proof.
+  it is not a gate and does not delay readiness. The Wasm policy is now
+  adopted for the userland `/etc/motd` path through a fixed read-only bridge;
+  the native kernel policy remains the fallback, and the full actor/run-queue
+  authority is still Phase 5 work.
   Real-Indy hardware execution was not available: no physical Indy IP24 or
   lab runner was attached, so real SCC, Seeq DMA, SCSI, REX3 and DS1386
   timing/cache behaviour is unvalidated. The M1 result is an iris gate with

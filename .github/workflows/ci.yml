@@ -354,6 +354,7 @@ jobs:
           # leave the network-backed sash at the console.
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
 
           python3 - <<'PY'
           import socket
@@ -396,6 +397,12 @@ jobs:
           profile = "indy_ip24"
 
           [scsi]
+
+          [[port_forward]]
+          proto = "tcp"
+          host_port = 8088
+          guest_port = 80
+          bind = "localhost"
           EOF
 
           sha=$(sha256sum "$RUNNER_TEMP/wasm.module" | awk '{print $1}')
@@ -472,6 +479,21 @@ jobs:
               "wasm policy matches native root/actor/rights/home:",
               native.groups()[0],
           )
+          PY
+          python3 - <<'PY'
+          import socket
+
+          with socket.create_connection(("127.0.0.1", 8088), timeout=10) as sock:
+              sock.sendall(b"GET / HTTP/1.0\r\nHost: localhost\r\n\r\n")
+              data = b""
+              while True:
+                  chunk = sock.recv(4096)
+                  if not chunk:
+                      break
+                  data += chunk
+              if b"IRIX 7" not in data:
+                  raise SystemExit("MCP did not answer after slot-B load: %r" % data[:200])
+              print("MCP after slot-B: ok")
           PY
           iris-ci --socket "$socket" quit
           wait "$pid"
@@ -599,6 +621,7 @@ jobs:
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -608,6 +631,79 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/iris-std"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$RUNNER_TEMP/std-hello/std-hello.raw" \
+            "$RUNNER_TEMP/wasm.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
+          import hashlib
+          import sys
+
+          std = open(sys.argv[1], "rb").read()
+          wasm = open(sys.argv[2], "rb").read()
+          padded = wasm + b"\0" * ((-len(wasm)) % 512)
+          lba = len(std) // 512
+          sectors = len(padded) // 512
+          open(sys.argv[3], "wb").write(std + padded)
+          env = (f"wasm.local=2:{lba}:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
+                 "net=off\0console=serial0\0\0").encode()
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[4], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$work/target2.raw" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18890 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -80 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'm1-live: wasm-policy adopted' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'hello from std' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'write=ok' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'chdir=ok' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'cwd=/etc' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'entry=hello.txt' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
+          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
+      - name: Boot native std fallback
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-std-native"
           mkdir -p "$work"
           cd "$work"
           cat > "$work/machine.toml" <<'EOF'
@@ -635,7 +731,7 @@ jobs:
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
             --scsi2 "$RUNNER_TEMP/std-hello/std-hello.raw" \
             --nvram "$work/nvram.bin" \
-            --ci-socket "$socket" --monitor-port 18890 \
+            --ci-socket "$socket" --monitor-port 18892 \
             --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
           pid=$!
           cleanup() {
@@ -652,7 +748,8 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'hello from std' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
@@ -732,6 +829,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'winsize=100x40' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
 
@@ -814,6 +912,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
           iris-ci --socket "$socket" quit
           wait "$pid"
@@ -835,6 +934,8 @@ jobs:
             ${{ runner.temp }}/iris-wasm-local/iris.out
             ${{ runner.temp }}/iris-std/serial.log
             ${{ runner.temp }}/iris-std/iris.out
+            ${{ runner.temp }}/iris-std-native/serial.log
+            ${{ runner.temp }}/iris-std-native/iris.out
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
 

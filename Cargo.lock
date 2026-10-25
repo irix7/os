@@ -627,6 +627,7 @@ dependencies = [
  "erofs",
  "hpc3",
  "irix-elf",
+ "m1-policy-bridge",
  "mesh-core",
  "mesh-service",
  "module-abi",
@@ -683,6 +684,10 @@ dependencies = [
  "module-abi",
  "sys-primitives",
 ]
+
+[[package]]
+name = "m1-policy-bridge"
+version = "0.1.0"
 
 [[package]]
 name = "managed"
@@ -1183,6 +1188,7 @@ dependencies = [
 name = "wasm-module"
 version = "0.1.0"
 dependencies = [
+ "m1-policy-bridge",
  "module-abi",
  "sys-primitives",
  "wasm-host",

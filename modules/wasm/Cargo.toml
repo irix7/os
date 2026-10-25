@@ -17,6 +17,7 @@ panic = "abort"
 opt-level = 2
 
 [dependencies]
+m1-policy-bridge = { path = "../../crates/m1-policy-bridge" }
 module-abi.workspace = true
 sys-primitives = { path = "../../crates/sys-primitives" }
 wasm-host = { path = "../../crates/wasm-host", default-features = false }

@@ -148,7 +148,7 @@ record. This is the primary diskless gate; a SCSI disk is not a boot, discovery
 or module prerequisite. Package installation from GitHub is exercised
 separately because its release/TLS path is not part of the M1 boot gate.
 
-A slot-B boot serves a 1,345,976-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,347,256-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
 `m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
@@ -198,9 +198,11 @@ is forward-only ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
 The `boot` job also builds the patched Rust `std` rlib and the static
 `user/std-hello` image, strips and pads it to target 2, and boots it with
-`net=off`. It asserts `hello from std`, the ramfs/stat/read_dir/chdir checks,
-exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. This is now a CI
-artifact rather than a local-only run.
+`net=off`. It asserts `hello from std`, `file=`, `write=ok`, `chdir=ok`,
+`cwd=/etc`, `relative=Welcome to IRIX 7.`, `stat_size=17`, `entry=hello.txt`,
+exit 0 and the post-smoke `m1-post: mesh=0/0/0` line. The same image is also
+booted without a Wasm module to exercise the native policy fallback. This is
+now a CI artifact rather than a local-only run.
 
 The CI boot gate also builds `user/o32-hello`, rewrites its `e_flags` to
 `EF_MIPS_ABI_O32`, and boots it with the same local logical module and

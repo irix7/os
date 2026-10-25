@@ -544,7 +544,9 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
             }
             done as u32
         }
-        crate::fd::Kind::Dir(_) | crate::fd::Kind::PipeRead(_) => u32::MAX,
+        crate::fd::Kind::Dir(_) | crate::fd::Kind::PipeRead(_) | crate::fd::Kind::Logical => {
+            u32::MAX
+        }
         crate::fd::Kind::Closed => u32::MAX,
     }
 }

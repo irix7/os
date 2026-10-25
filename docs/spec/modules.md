@@ -15,6 +15,16 @@ capability ABI are separate, later work).
 TLS stays in the core. It is the transport that makes module downloads trustworthy, so the
 module command uses HTTPS by default.
 
+### 1.1 PROM freeze
+
+Once M1 is re-closed, the compressed PROM/kernel image is **frozen for new
+features**. Only correctness, security and hardware-enablement fixes may change
+it. New policy, runtime, transport, server, device and management features ship
+as downloadable modules through the package index, using the versioned service
+table. The M1 live-policy bridge is a transitional exception; future module
+work must not grow the kernel object graph. The stable module ABI and the
+package index replace ad-hoc PROM changes.
+
 ## 2. Transport and integrity
 
 1. The console command is
