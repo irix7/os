@@ -481,6 +481,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "mesh-core"
+version = "0.1.0"
+dependencies = [
+ "sys-primitives",
+]
+
+[[package]]
 name = "module-abi"
 version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.3.0#9e27368d8ea5f1f7937fd19d60129420b0fbf914"
@@ -593,6 +600,13 @@ checksum = "f950b2377845cebe5cf8b5165cb3cc1a5e0fa5cfa3e1f7f55707d8fd82e0a7b7"
 dependencies = [
  "der 0.7.10",
  "spki",
+]
+
+[[package]]
+name = "platform-api"
+version = "0.1.0"
+dependencies = [
+ "sys-primitives",
 ]
 
 [[package]]
@@ -807,6 +821,10 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "sys-primitives"
+version = "0.1.0"
 
 [[package]]
 name = "ticker-module"
