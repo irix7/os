@@ -43,6 +43,14 @@ Architecture CI additions:
 | `mesh-gates` | 1/2/8/128 policy gates and failure injection | Yes at Phase 3+ |
 | `mesh-real` | 2/8-node iris or QEMU transport/migration gate | Yes at Phase 3+ |
 
+The first `mesh-real` rung is the [M2 two-node rig](m2-rig.md) in `tools/m2-rig`. It
+starts **two independent iris processes**, asserts `BOOT-READY`, distinct MACs, NodeIds
+and guest addresses, and runs a two-way TCP probe through the host relay. It is evidence
+for the M2-0 foundation only: it deliberately leaves both nodes at `mesh=single` and does
+not implement join, membership, homes, capability routes or migration. Those are
+M2-1..M2-5. The rig is a manual command until the M2-8 CI job wraps it; the evidence
+bundle under `target/m2-rig/evidence/` is the review artefact.
+
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
 and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.
 

@@ -18,10 +18,19 @@
 - [Native libc ABI](spec/native-libc.md)
 - [Driver interface](spec/driver-interface.md)
 
+## Architecture decisions
+
+- [ADR index](adr/README.md)
+- [M2-ADR-0001 — two-node rig](adr/m2-0001-two-node-rig.md)
+- [M2-ADR-0002 — transport](adr/m2-0002-transport.md)
+- [M2-ADR-0003 — authority](adr/m2-0003-authority.md)
+- [M2-ADR-0004 — actor runtime](adr/m2-0004-actor-runtime.md)
+
 ## Plan
 
 - [Plan index](plan/README.md)
 - [Milestones](plan/milestones.md)
+- [M2 two-node rig](plan/m2-rig.md)
 - [Roadmap tree (interactive)](roadmap-tree.md)
 - [GitHub operating model](plan/github.md)
 - [Risk register](plan/risks.md)

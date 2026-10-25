@@ -1,0 +1,14 @@
+[package]
+name = "m2-rig"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Two-node IRIX 7 rig: two independent iris instances, a Rust host relay, and evidence capture."
+publish = false
+
+# Standalone host tool: it is not part of the kernel workspace, so a plain
+# `cargo build` in the repository root does not cross-build it and the
+# cross-compilation gates stay unchanged.
+[workspace]
+
+[dependencies]

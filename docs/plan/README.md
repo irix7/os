@@ -11,6 +11,7 @@ The system architecture answers *what* IRIX 7 is; the hardware/compatibility spe
 | Document | What it covers |
 |---|---|
 | [`milestones.md`](milestones.md) | **Active plan:** the 1–128-node logical computer, phases 0–9, M1–M4 gates, native compatibility and rollback. |
+| [`m2-rig.md`](m2-rig.md) | **M2 runbook:** two independent iris kernels, the host relay path, readiness, the two-way probe and the M2-1 handoff. |
 | [`github.md`](github.md) | Organisation, repositories, Projects v2, labels, templates, automation, Actions, security and every free GitHub feature we use. |
 | [`risks.md`](risks.md) | The risk register, decision backlog and review process. |
 | [`interfaces.md`](interfaces.md) | Index of interface specifications and their status. |
@@ -56,3 +57,4 @@ A milestone is done when:
 
 - 2026-10-20 — initial plan after the advanced-architecture grilling.
 - 2026-10-25 — the plan now describes the 1–128-node Wasm/mesh logical computer; native POSIX/IRIX and ABI 10 compatibility remain workstreams; ABI 11 adds block_write.
+- 2026-10-26 — M2 starts on two independent iris kernels: the [M2 rig runbook](m2-rig.md) and the [M2 ADR series](../adr/README.md) record the transport, 1-of-1 authority and native stackless actor decisions.

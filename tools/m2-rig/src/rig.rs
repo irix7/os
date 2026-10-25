@@ -1,0 +1,920 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//! The two-node rig: options, instance derivation, NVRAM, process control and
+//! serial readiness.
+//!
+//! One `Machine` per process is an iris invariant, so the rig starts two
+//! `iris` processes.  `--instance N` derives a disjoint state directory, CI
+//! socket, monitor/serial ports, MAC and NAT subnet.  The rig adds only the
+//! explicit host forwards it needs (telnet, MCP HTTP and the future mesh
+//! listener), then records every derived value in the evidence bundle.
+
+use std::fs;
+use std::io::Write;
+use std::net::Ipv4Addr;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crate::nvram;
+
+/// The guest's future mesh TCP listener.
+pub const MESH_GUEST_PORT: u16 = 7000;
+/// MCP listens on guest port 80.
+pub const MCP_GUEST_PORT: u16 = 80;
+/// The kernel telnet console listens on guest port 23.
+pub const TELNET_GUEST_PORT: u16 = 23;
+
+/// What the operator asked the rig to do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    /// Start both nodes, probe both directions, stop, and write evidence.
+    Run,
+    /// Start both nodes and leave them running.
+    Up,
+    /// Stop both nodes.
+    Down,
+    /// Show the nodes' lifecycle and boot markers.
+    Status,
+    /// Probe both directions against already-running nodes.
+    Probe,
+    /// Print the derived instance table without starting anything.
+    PrintConfig,
+    /// Remove the rig work directory.
+    Clean,
+}
+
+impl Action {
+    /// Parse the command line word.
+    pub fn parse(word: &str) -> Option<Self> {
+        Some(match word {
+            "run" => Self::Run,
+            "up" => Self::Up,
+            "down" => Self::Down,
+            "status" => Self::Status,
+            "probe" => Self::Probe,
+            "print-config" => Self::PrintConfig,
+            "clean" => Self::Clean,
+            _ => return None,
+        })
+    }
+}
+
+/// Parsed command line.
+#[derive(Debug)]
+pub struct Options {
+    /// Action to perform.
+    pub action: Action,
+    /// Repository root (contains `kernel/linker.ld`).
+    pub repo: PathBuf,
+    /// Rig work directory.
+    pub work: PathBuf,
+    /// `iris` binary.
+    pub iris: PathBuf,
+    /// `iris-ci` binary.
+    pub iris_ci: PathBuf,
+    /// PROM image.
+    pub rom: PathBuf,
+    /// Fresh MCP module image.
+    pub module: PathBuf,
+    /// First monitor port block.
+    pub base_port: u16,
+    /// Boot deadline.
+    pub timeout: Duration,
+    /// Leave the nodes running after `run`.
+    pub keep: bool,
+    /// Print extra detail.
+    pub verbose: bool,
+}
+
+impl Options {
+    /// The work directory for one node.
+    pub fn node_dir(&self, instance: u32) -> PathBuf {
+        self.work.join(format!("n{instance}"))
+    }
+
+    /// The generated iris config for one node.
+    pub fn node_config(&self, instance: u32) -> PathBuf {
+        self.work.join(format!("n{instance}.toml"))
+    }
+
+    /// The monitor/serial/CI port block for one node.
+    pub fn port_base(&self, instance: u32) -> u16 {
+        self.base_port
+            .saturating_add((instance as u16).saturating_mul(100))
+    }
+
+    /// The first host-forward port for one node.
+    pub fn forward_base(&self, instance: u32) -> u16 {
+        self.base_port
+            .saturating_add(600)
+            .saturating_add((instance as u16).saturating_mul(10))
+    }
+
+    /// Telnet forward: host -> guest 23.
+    pub fn telnet_port(&self, instance: u32) -> u16 {
+        self.forward_base(instance)
+    }
+
+    /// MCP HTTP forward: host -> guest 80.
+    pub fn http_port(&self, instance: u32) -> u16 {
+        self.forward_base(instance).saturating_add(1)
+    }
+
+    /// Mesh forward: host -> guest 7000.
+    pub fn mesh_port(&self, instance: u32) -> u16 {
+        self.forward_base(instance).saturating_add(2)
+    }
+}
+
+/// Parse arguments.  `argv[0]` is the binary name.
+pub fn parse_args<I>(args: I) -> Result<Option<Options>, String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut action = None;
+    let mut repo = None;
+    let mut work = None;
+    let mut iris = None;
+    let mut iris_ci = None;
+    let mut rom = None;
+    let mut module = None;
+    let mut base_port = 9100u16;
+    let mut timeout = Duration::from_secs(180);
+    let mut keep = false;
+    let mut verbose = false;
+
+    let mut iter = args.into_iter();
+    let _program = iter.next();
+    while let Some(argument) = iter.next() {
+        match argument.as_str() {
+            "-h" | "--help" => return Ok(None),
+            "--repo" => repo = Some(PathBuf::from(next_value(&mut iter, "--repo")?)),
+            "--work" => work = Some(PathBuf::from(next_value(&mut iter, "--work")?)),
+            "--iris" => iris = Some(PathBuf::from(next_value(&mut iter, "--iris")?)),
+            "--iris-ci" => iris_ci = Some(PathBuf::from(next_value(&mut iter, "--iris-ci")?)),
+            "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
+            "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
+            "--base-port" => {
+                base_port = next_value(&mut iter, "--base-port")?
+                    .parse()
+                    .map_err(|_| "--base-port must be a TCP port".to_string())?;
+            }
+            "--timeout" => {
+                let seconds: u64 = next_value(&mut iter, "--timeout")?
+                    .parse()
+                    .map_err(|_| "--timeout must be seconds".to_string())?;
+                timeout = Duration::from_secs(seconds.max(10));
+            }
+            "--keep" => keep = true,
+            "--verbose" => verbose = true,
+            other if other.starts_with('-') => {
+                return Err(format!("unknown option {other}"));
+            }
+            other => {
+                if action.is_some() {
+                    return Err(format!("unexpected argument {other}"));
+                }
+                action =
+                    Some(Action::parse(other).ok_or_else(|| format!("unknown command {other}"))?);
+            }
+        }
+    }
+
+    let action = action.unwrap_or(Action::Run);
+    let repo = match repo {
+        Some(path) => path,
+        None => find_repo_root()?,
+    };
+    let work = work.unwrap_or_else(|| repo.join("target/m2-rig"));
+    let iris = iris
+        .or_else(|| std::env::var_os("IRIS").map(PathBuf::from))
+        .unwrap_or_else(|| default_sibling(&repo, "iris"));
+    let iris_ci = iris_ci
+        .or_else(|| std::env::var_os("IRIS_CI").map(PathBuf::from))
+        .unwrap_or_else(|| default_sibling(&repo, "iris-ci"));
+    let rom = rom.unwrap_or_else(|| work.join("irix7-rom.bin"));
+    let module = module.unwrap_or_else(|| work.join("mcp.module"));
+
+    Ok(Some(Options {
+        action,
+        repo,
+        work,
+        iris,
+        iris_ci,
+        rom,
+        module,
+        base_port,
+        timeout,
+        keep,
+        verbose,
+    }))
+}
+
+fn next_value<I>(iter: &mut I, option: &str) -> Result<String, String>
+where
+    I: Iterator<Item = String>,
+{
+    iter.next().ok_or_else(|| format!("{option} needs a value"))
+}
+
+fn find_repo_root() -> Result<PathBuf, String> {
+    if let Some(path) = std::env::var_os("M2_RIG_REPO") {
+        return Ok(PathBuf::from(path));
+    }
+    let cwd = std::env::current_dir().map_err(|error| format!("cwd: {error}"))?;
+    for candidate in cwd.ancestors() {
+        if candidate.join("kernel/linker.ld").is_file() && candidate.join("Cargo.toml").is_file() {
+            return Ok(candidate.to_path_buf());
+        }
+    }
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    if let Some(candidate) = manifest.parent().and_then(Path::parent) {
+        if candidate.join("kernel/linker.ld").is_file() {
+            return Ok(candidate.to_path_buf());
+        }
+    }
+    Err("cannot find the repository root; pass --repo".into())
+}
+
+fn default_sibling(repo: &Path, name: &str) -> PathBuf {
+    let sibling = repo
+        .parent()
+        .map(|parent| parent.join("iris/target/release").join(name))
+        .filter(|path| path.is_file());
+    sibling.unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// One independent guest.
+#[derive(Clone, Debug)]
+pub struct Node {
+    /// `n0` or `n1`.
+    pub name: String,
+    /// iris instance id.
+    pub instance: u32,
+    /// Instance state directory.
+    pub state_dir: PathBuf,
+    /// Generated iris config.
+    pub config: PathBuf,
+    /// CI control socket.
+    pub ci_socket: PathBuf,
+    /// Serial transcript.
+    pub serial_log: PathBuf,
+    /// Monitor port.
+    pub monitor: u16,
+    /// Station address.
+    pub mac: [u8; 6],
+    /// The kernel's 16-byte NodeId (MAC followed by zeros).
+    pub node_id: [u8; 16],
+    /// NAT CIDR.
+    pub nat_subnet: String,
+    /// NAT gateway address seen by this guest.
+    pub gateway: Ipv4Addr,
+    /// Guest address.
+    pub guest: Ipv4Addr,
+    /// Host telnet forward.
+    pub telnet_port: u16,
+    /// Host MCP HTTP forward.
+    pub http_port: u16,
+    /// Host mesh forward.
+    pub mesh_port: u16,
+    /// Port base.
+    pub port_base: u16,
+}
+
+impl Node {
+    /// The MAC as lower-case colon-separated text.
+    pub fn mac_string(&self) -> String {
+        nvram::mac_string(&self.mac)
+    }
+
+    /// The NodeId as the kernel prints it: 32 upper-case hex digits.
+    pub fn node_id_string(&self) -> String {
+        let mut out = String::with_capacity(32);
+        for byte in self.node_id {
+            out.push(
+                char::from_digit((byte >> 4) as u32, 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+            out.push(
+                char::from_digit((byte & 0xf) as u32, 16)
+                    .unwrap()
+                    .to_ascii_uppercase(),
+            );
+        }
+        out
+    }
+
+    /// The environment the rig writes into this node's DS1386 image.
+    pub fn environment(
+        &self,
+        fixture_port: u16,
+        mesh_peer: &str,
+        authority: &str,
+    ) -> Vec<(String, String)> {
+        vec![
+            (
+                "mcp.url".into(),
+                format!("http://{}:{fixture_port}/mcp.module", self.gateway),
+            ),
+            ("mcp.sha256".into(), String::new()),
+            ("mesh.peer".into(), mesh_peer.into()),
+            ("mesh.authority".into(), authority.into()),
+            ("mesh.epoch".into(), "1".into()),
+            ("console".into(), "serial0".into()),
+        ]
+    }
+}
+
+/// Derive both nodes, write their configs, and return them.
+///
+/// This calls the emulator's own `--print-instance` surface rather than
+/// reimplementing its derivation.  The only additions are the explicit host
+/// forwards needed by the rig.
+pub fn derive_nodes(options: &Options) -> Result<Vec<Node>, String> {
+    fs::create_dir_all(&options.work)
+        .map_err(|error| format!("create {}: {error}", options.work.display()))?;
+    let mut nodes = Vec::new();
+    for instance in 0..2u32 {
+        let config = options.node_config(instance);
+        write_config(options, instance, &config)?;
+        let report = run_print_instance(options, instance, &config)?;
+        let monitor = parse_port(&report, "monitor")?;
+        let ci_socket = PathBuf::from(parse_field(&report, "ci_socket")?);
+        let serial_log = PathBuf::from(parse_field(&report, "serial_log")?);
+        let mac = nvram::parse_mac(&parse_field(&report, "mac")?)?;
+        let nat_subnet = parse_field(&report, "nat_subnet")?;
+        let (gateway, guest) = subnet_hosts(&nat_subnet)?;
+        let state_dir = PathBuf::from(parse_field(&report, "state_dir")?);
+        let mut node_id = [0u8; 16];
+        node_id[..6].copy_from_slice(&mac);
+        nodes.push(Node {
+            name: format!("n{instance}"),
+            instance,
+            state_dir,
+            config,
+            ci_socket,
+            serial_log,
+            monitor,
+            mac,
+            node_id,
+            nat_subnet,
+            gateway,
+            guest,
+            telnet_port: options.telnet_port(instance),
+            http_port: options.http_port(instance),
+            mesh_port: options.mesh_port(instance),
+            port_base: options.port_base(instance),
+        });
+    }
+    Ok(nodes)
+}
+
+fn write_config(options: &Options, instance: u32, path: &Path) -> Result<(), String> {
+    let telnet = options.telnet_port(instance);
+    let http = options.http_port(instance);
+    let mesh = options.mesh_port(instance);
+    let config = format!(
+        "# Generated by tools/m2-rig. Do not edit.\n\
+         banks = [64, 0, 0, 0]\n\
+         no_audio = true\n\
+         \n\
+         [machine]\n\
+         profile = \"indy_ip24\"\n\
+         \n\
+         [scsi]\n\
+         \n\
+         [[port_forward]]\n\
+         proto = \"tcp\"\n\
+         host_port = {telnet}\n\
+         guest_port = {TELNET_GUEST_PORT}\n\
+         bind = \"localhost\"\n\
+         \n\
+         [[port_forward]]\n\
+         proto = \"tcp\"\n\
+         host_port = {http}\n\
+         guest_port = {MCP_GUEST_PORT}\n\
+         bind = \"localhost\"\n\
+         \n\
+         [[port_forward]]\n\
+         proto = \"tcp\"\n\
+         host_port = {mesh}\n\
+         guest_port = {MESH_GUEST_PORT}\n\
+         bind = \"localhost\"\n"
+    );
+    fs::write(path, config).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
+fn run_print_instance(options: &Options, instance: u32, config: &Path) -> Result<String, String> {
+    let output = Command::new(&options.iris)
+        .arg("--config")
+        .arg(config)
+        .arg("--instance")
+        .arg(instance.to_string())
+        .arg("--state-dir")
+        .arg(options.node_dir(instance))
+        .arg("--port-base")
+        .arg(options.port_base(instance).to_string())
+        .arg("--print-instance")
+        .output()
+        .map_err(|error| format!("run {} --print-instance: {error}", options.iris.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "iris --print-instance {} failed: {}{}",
+            instance,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_field(report: &str, name: &str) -> Result<String, String> {
+    let prefix = format!("{name}: ");
+    report
+        .lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim().to_string())
+        .ok_or_else(|| format!("instance report has no {name}"))
+}
+
+fn parse_port(report: &str, name: &str) -> Result<u16, String> {
+    parse_field(report, name)?
+        .parse()
+        .map_err(|_| format!("instance report has a bad {name}"))
+}
+
+/// Split a /24 NAT CIDR into gateway (.1) and guest (.2).
+pub fn subnet_hosts(cidr: &str) -> Result<(Ipv4Addr, Ipv4Addr), String> {
+    let (address, prefix) = cidr
+        .split_once('/')
+        .ok_or_else(|| format!("NAT subnet {cidr:?} is not CIDR"))?;
+    if prefix != "24" {
+        return Err(format!("NAT subnet {cidr:?} is not a /24"));
+    }
+    let base: Ipv4Addr = address
+        .parse()
+        .map_err(|_| format!("NAT subnet {cidr:?} has a bad address"))?;
+    let octets = base.octets();
+    if octets[3] != 0 {
+        return Err(format!(
+            "NAT subnet {cidr:?} does not start on a /24 boundary"
+        ));
+    }
+    Ok((
+        Ipv4Addr::new(octets[0], octets[1], octets[2], 1),
+        Ipv4Addr::new(octets[0], octets[1], octets[2], 2),
+    ))
+}
+
+/// Write the DS1386 image for a node.
+pub fn write_nvram(
+    node: &Node,
+    fixture_port: u16,
+    module_sha256: &str,
+    mesh_peer: &str,
+    authority: &str,
+) -> Result<(), String> {
+    let mut env = node.environment(fixture_port, mesh_peer, authority);
+    for (name, value) in &mut env {
+        if name == "mcp.sha256" {
+            *value = module_sha256.to_string();
+        }
+    }
+    let pairs: Vec<(&str, &str)> = env
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
+    let image = nvram::image(&pairs, node.mac)?;
+    fs::create_dir_all(&node.state_dir)
+        .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
+    fs::write(node.state_dir.join("nvram.bin"), image)
+        .map_err(|error| format!("write NVRAM for {}: {error}", node.name))
+}
+
+/// A started iris process.
+pub struct RunningNode {
+    /// The node description.
+    pub node: Node,
+    /// The child process.
+    pub child: Child,
+}
+
+/// Start one iris process.
+pub fn start_node(options: &Options, node: &Node) -> Result<RunningNode, String> {
+    fs::create_dir_all(&node.state_dir)
+        .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
+    // iris opens the serial log in append mode, so a previous run's
+    // `BOOT-READY` would satisfy the readiness wait before the new kernel has
+    // booted.  A run owns its serial transcript from the first byte.
+    let _ = fs::remove_file(&node.serial_log);
+    let stdout_path = node.state_dir.join("stdout");
+    let stderr_path = node.state_dir.join("stderr");
+    let stdout = fs::File::create(&stdout_path)
+        .map_err(|error| format!("create {}: {error}", stdout_path.display()))?;
+    let stderr = fs::File::create(&stderr_path)
+        .map_err(|error| format!("create {}: {error}", stderr_path.display()))?;
+    let mut command = Command::new(&options.iris);
+    command
+        .arg("--config")
+        .arg(&node.config)
+        .arg("--instance")
+        .arg(node.instance.to_string())
+        .arg("--state-dir")
+        .arg(&node.state_dir)
+        .arg("--port-base")
+        .arg(node.port_base.to_string())
+        .arg("--prom")
+        .arg(&options.rom)
+        .arg("--nvram")
+        .arg(node.state_dir.join("nvram.bin"))
+        .arg("--ci")
+        .arg("--ci-socket")
+        .arg(&node.ci_socket)
+        .arg("--serial-log")
+        .arg(&node.serial_log)
+        .arg("--monitor-port")
+        .arg(node.monitor.to_string())
+        .current_dir(&node.state_dir)
+        .env("IRIS_NO_IDLE", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
+    let child = command
+        .spawn()
+        .map_err(|error| format!("start {}: {error}", options.iris.display()))?;
+    Ok(RunningNode {
+        node: node.clone(),
+        child,
+    })
+}
+
+/// Wait for the CI socket to appear and the monitor to answer.
+pub fn wait_ci_ready(options: &Options, node: &Node, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        if node.ci_socket.exists() {
+            match run_ci(options, node, &["status", "--wait-ready", "30"]) {
+                Ok(_) => return Ok(()),
+                Err(error) => {
+                    if options.verbose {
+                        eprintln!("{}: CI not ready yet: {error}", node.name);
+                    }
+                }
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Err(format!(
+        "{}: CI socket {} did not become ready",
+        node.name,
+        node.ci_socket.display()
+    ))
+}
+
+/// Run an `iris-ci` subcommand against a node.
+pub fn run_ci(options: &Options, node: &Node, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(&options.iris_ci)
+        .arg("--socket")
+        .arg(&node.ci_socket)
+        .args(args)
+        .output()
+        .map_err(|error| format!("run {}: {error}", options.iris_ci.display()))?;
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    text.push_str(&String::from_utf8_lossy(&output.stderr));
+    if output.status.success() {
+        Ok(text)
+    } else {
+        Err(format!(
+            "iris-ci {} on {} failed: {}",
+            args.join(" "),
+            node.name,
+            text.trim()
+        ))
+    }
+}
+
+/// Start the CPU on a node.
+pub fn start_cpu(options: &Options, node: &Node) -> Result<(), String> {
+    run_ci(options, node, &["start"]).map(|_| ())
+}
+
+/// Read a serial transcript, treating an absent file as empty.
+pub fn read_serial(node: &Node) -> String {
+    fs::read(&node.serial_log)
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        .unwrap_or_default()
+}
+
+/// Wait for a marker in the serial transcript.
+pub fn wait_serial(
+    _options: &Options,
+    running: &mut RunningNode,
+    marker: &str,
+    timeout: Duration,
+) -> Result<String, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let text = read_serial(&running.node);
+        if let Some(line) = text.lines().find(|line| line.contains(marker)) {
+            return Ok(line.trim().to_string());
+        }
+        if let Some(status) = running
+            .child
+            .try_wait()
+            .map_err(|error| format!("wait for {}: {error}", running.node.name))?
+        {
+            return Err(format!(
+                "{} exited ({status}) before {marker:?}\n--- serial ---\n{}",
+                running.node.name,
+                tail(&text, 40)
+            ));
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{}: timed out waiting for {marker:?}\n--- serial ---\n{}",
+                running.node.name,
+                tail(&text, 40)
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Boot markers extracted from one serial transcript.
+#[derive(Clone, Debug, Default)]
+pub struct BootFacts {
+    /// The `BOOT-READY` line.
+    pub boot_ready: Option<String>,
+    /// The `mcp: listening` line.
+    pub mcp: Option<String>,
+    /// The `mesh: single node` line.
+    pub mesh: Option<String>,
+    /// The `network: mac` line.
+    pub network_mac: Option<String>,
+    /// The DHCP address line.
+    pub network_ip: Option<String>,
+}
+
+impl BootFacts {
+    /// Extract the facts from a transcript.
+    pub fn from_serial(text: &str) -> Self {
+        let find = |prefix: &str| {
+            text.lines()
+                .find(|line| line.trim_start().starts_with(prefix))
+                .map(|line| line.trim().to_string())
+        };
+        Self {
+            boot_ready: text
+                .lines()
+                .find(|line| line.trim_start().starts_with("BOOT-READY "))
+                .map(|line| line.trim().to_string()),
+            mcp: find("mcp: listening on port 80"),
+            mesh: find("mesh: single node "),
+            network_mac: find("network: mac "),
+            network_ip: text
+                .lines()
+                .find(|line| line.trim_start().starts_with("network: dhcp"))
+                .map(|line| line.trim().to_string()),
+        }
+    }
+
+    /// Check the readiness and identity markers against a node.
+    pub fn verify(&self, node: &Node) -> Result<(), String> {
+        let ready = self
+            .boot_ready
+            .as_deref()
+            .ok_or_else(|| format!("{}: no BOOT-READY", node.name))?;
+        for required in ["network=up", "mcp=listening", "mesh=single"] {
+            if !ready.contains(required) {
+                return Err(format!(
+                    "{}: BOOT-READY lacks {required}: {ready}",
+                    node.name
+                ));
+            }
+        }
+        if self.mcp.is_none() {
+            return Err(format!("{}: no MCP listener line", node.name));
+        }
+        let mesh = self
+            .mesh
+            .as_deref()
+            .ok_or_else(|| format!("{}: no mesh identity line", node.name))?;
+        let observed = mesh
+            .strip_prefix("mesh: single node ")
+            .ok_or_else(|| format!("{}: malformed mesh line {mesh:?}", node.name))?;
+        if !observed.eq_ignore_ascii_case(&node.node_id_string()) {
+            return Err(format!(
+                "{}: guest NodeId {observed} does not match derived {}",
+                node.name,
+                node.node_id_string()
+            ));
+        }
+        let mac_line = self
+            .network_mac
+            .as_deref()
+            .ok_or_else(|| format!("{}: no network MAC line", node.name))?;
+        let mac_text = mac_line
+            .strip_prefix("network: mac ")
+            .ok_or_else(|| format!("{}: malformed MAC line {mac_line:?}", node.name))?;
+        if !mac_text.eq_ignore_ascii_case(&node.mac_string()) {
+            return Err(format!(
+                "{}: guest MAC {mac_text} does not match derived {}",
+                node.name,
+                node.mac_string()
+            ));
+        }
+        let ip_line = self
+            .network_ip
+            .as_deref()
+            .ok_or_else(|| format!("{}: no DHCP address line", node.name))?;
+        if !ip_line.contains(&node.guest.to_string()) {
+            return Err(format!(
+                "{}: DHCP line {ip_line:?} does not contain {}",
+                node.name, node.guest
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Wait until both nodes have booted and their identities match.
+pub fn wait_boot(options: &Options, nodes: &mut [RunningNode]) -> Result<Vec<BootFacts>, String> {
+    let mut facts = Vec::new();
+    for running in nodes.iter_mut() {
+        wait_serial(options, running, "BOOT-READY", options.timeout)?;
+        let text = read_serial(&running.node);
+        let fact = BootFacts::from_serial(&text);
+        fact.verify(&running.node)?;
+        facts.push(fact);
+    }
+    Ok(facts)
+}
+
+/// Stop a node cleanly through its CI socket, then wait for the process.
+pub fn stop_node(options: &Options, running: &mut RunningNode) -> Result<(), String> {
+    let quit = run_ci(options, &running.node, &["quit"]);
+    if let Err(error) = &quit {
+        if options.verbose {
+            eprintln!("{}: clean quit failed: {error}", running.node.name);
+        }
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match running.child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => {
+                let _ = running.child.kill();
+                let _ = running.child.wait();
+                return Err(format!("{}: quit timed out; killed", running.node.name));
+            }
+            Err(error) => return Err(format!("{}: wait: {error}", running.node.name)),
+        }
+    }
+}
+
+/// Stop every running node, collecting the first error.
+pub fn stop_nodes(options: &Options, nodes: &mut [RunningNode]) -> Vec<String> {
+    let mut errors = Vec::new();
+    for running in nodes.iter_mut() {
+        if let Err(error) = stop_node(options, running) {
+            errors.push(error);
+        }
+    }
+    errors
+}
+
+/// The last `count` lines of a transcript.
+pub fn tail(text: &str, count: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines.len().saturating_sub(count);
+    lines[start..].join("\n")
+}
+
+/// Run a git query in the repository.
+pub fn git(repo: &Path, args: &[&str]) -> String {
+    match Command::new("git").arg("-C").arg(repo).args(args).output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim().to_string()
+        }
+        _ => "unknown".into(),
+    }
+}
+
+/// Copy a file, ignoring a missing source.
+pub fn copy_if_present(from: &Path, to: &Path) -> std::io::Result<()> {
+    match fs::copy(from, to) {
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Write a text file, creating parent directories.
+pub fn write_text(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let mut file =
+        fs::File::create(path).map_err(|error| format!("create {}: {error}", path.display()))?;
+    file.write_all(text.as_bytes())
+        .map_err(|error| format!("write {}: {error}", path.display()))
+}
+
+/// Collect the derived values as a map for evidence and printing.
+pub fn node_table(nodes: &[Node]) -> String {
+    let mut out = String::new();
+    out.push_str("name instance state_dir ci_socket monitor mac node_id nat_subnet guest gateway telnet http mesh\n");
+    for node in nodes {
+        out.push_str(&format!(
+            "{} {} {} {} {} {} {} {} {} {} {} {} {}\n",
+            node.name,
+            node.instance,
+            node.state_dir.display(),
+            node.ci_socket.display(),
+            node.monitor,
+            node.mac_string(),
+            node.node_id_string(),
+            node.nat_subnet,
+            node.guest,
+            node.gateway,
+            node.telnet_port,
+            node.http_port,
+            node.mesh_port
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subnet_is_gateway_one_and_guest_two() {
+        let (gateway, guest) = subnet_hosts("192.168.7.0/24").unwrap();
+        assert_eq!(gateway, Ipv4Addr::new(192, 168, 7, 1));
+        assert_eq!(guest, Ipv4Addr::new(192, 168, 7, 2));
+    }
+
+    #[test]
+    fn bad_subnet_is_rejected() {
+        assert!(subnet_hosts("192.168.7.4/24").is_err());
+        assert!(subnet_hosts("192.168.7.0/16").is_err());
+    }
+
+    #[test]
+    fn ports_are_disjoint() {
+        let options = Options {
+            action: Action::PrintConfig,
+            repo: PathBuf::from("."),
+            work: PathBuf::from("."),
+            iris: PathBuf::from("iris"),
+            iris_ci: PathBuf::from("iris-ci"),
+            rom: PathBuf::from("rom"),
+            module: PathBuf::from("module"),
+            base_port: 9100,
+            timeout: Duration::from_secs(1),
+            keep: false,
+            verbose: false,
+        };
+        assert_eq!(options.port_base(0), 9100);
+        assert_eq!(options.port_base(1), 9200);
+        assert_eq!(options.telnet_port(0), 9700);
+        assert_eq!(options.telnet_port(1), 9710);
+        assert_eq!(options.http_port(0), 9701);
+        assert_eq!(options.http_port(1), 9711);
+        assert_eq!(options.mesh_port(0), 9702);
+        assert_eq!(options.mesh_port(1), 9712);
+    }
+
+    #[test]
+    fn node_id_is_the_mac_then_zeroes() {
+        let node = Node {
+            name: "n0".into(),
+            instance: 0,
+            state_dir: PathBuf::new(),
+            config: PathBuf::new(),
+            ci_socket: PathBuf::new(),
+            serial_log: PathBuf::new(),
+            monitor: 0,
+            mac: [0x08, 0x00, 0x69, 0x4d, 0x32, 0x00],
+            node_id: [
+                0x08, 0x00, 0x69, 0x4d, 0x32, 0x00, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+            nat_subnet: "192.168.0.0/24".into(),
+            gateway: "192.168.0.1".parse().unwrap(),
+            guest: "192.168.0.2".parse().unwrap(),
+            telnet_port: 9700,
+            http_port: 9701,
+            mesh_port: 9702,
+            port_base: 9100,
+        };
+        assert_eq!(node.node_id_string(), "0800694D320000000000000000000000");
+    }
+}
