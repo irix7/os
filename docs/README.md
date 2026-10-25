@@ -1,10 +1,12 @@
 # IRIX 7 documentation
 
-IRIX 7 is a clean-room, GPL-3.0, Rust-native operating system for the SGI Indy,
-x86_64 PCs and KVM/VirtIO cloud machines. The architecture target is **one
-logical computer built from 1–128 kernel replicas**: a native shim per node and
-the same Wasm core on every node, with a global object/capability namespace and
-an asynchronous fabric.
+IRIX 7 is a clean-room, GPL-3.0, Rust-native operating system that runs
+existing IRIX 6.5 application binaries through a legacy ABI layer. It inherits
+the IRIX 6.5 compatibility mandate without forward compatibility. The first
+hardware target is the SGI Indy; x86_64 PCs and KVM/VirtIO cloud machines
+follow. The architecture target is **one logical computer built from 1–128
+kernel replicas**: a native shim per node and the same Wasm core on every node,
+with a global object/capability namespace and an asynchronous fabric.
 
 The current bring-up is smaller: the native Indy ROM/kernel and a static Rust
 `std` image run, while the Wasm/mesh crates are host-tested and the kernel has
