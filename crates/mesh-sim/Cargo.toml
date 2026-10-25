@@ -1,0 +1,14 @@
+[package]
+name = "mesh-sim"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Host simulation of the 1-128-node IRIX 7 logical computer"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+mesh-core = { path = "../mesh-core" }
+mesh-service = { path = "../mesh-service" }
+sys-primitives = { path = "../sys-primitives" }
