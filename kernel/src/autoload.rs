@@ -37,7 +37,7 @@ pub enum Status {
 pub fn boot() -> Status {
     let mut local = [0u8; 160];
     if let Some(n) = nvram::get("mcp.local", &mut local) {
-        return finish(load_local(&local[..n]));
+        return finish(load_local(module::Slot::A, &local[..n]));
     }
 
     // A network-off M1 boot does not have a repository to consult and does
@@ -68,6 +68,26 @@ pub fn boot() -> Status {
 /// M1 uses this to prove the runtime starts during boot without replacing the
 /// slot-A MCP module.  It is optional; a missing key is silent.
 pub fn boot_wasm() {
+    let mut local = [0u8; 160];
+    if let Some(n) = nvram::get("wasm.local", &mut local) {
+        console_println("autoload: loading local wasm module");
+        let started = crate::idle::uptime_ms();
+        let result = load_local(module::Slot::B, &local[..n]);
+        let elapsed = crate::idle::uptime_ms().saturating_sub(started);
+        console_write("autoload: wasm took ");
+        write_dec(elapsed);
+        console_println(" ms");
+        match result {
+            Ok(0) => console_println("autoload: wasm returned"),
+            Ok(_) => console_println("autoload: wasm returned non-zero"),
+            Err(error) => {
+                console_println("autoload: wasm failed");
+                console_println(error);
+            }
+        }
+        return;
+    }
+
     let mut url = [0u8; 192];
     let Some(n) = nvram::get("wasm.url", &mut url) else {
         return;
@@ -147,38 +167,38 @@ fn boot_nvram(url: &[u8]) -> Status {
 /// The NVRAM record is `<target>:<lba>:<sectors>:<sha256>`.  The image is read
 /// in 255-sector chunks because the bring-up READ(6) path cannot cross that
 /// boundary, then verified before the entry call.
-fn load_local(record: &[u8]) -> Result<i32, &'static str> {
-    let text = core::str::from_utf8(record).map_err(|_| "autoload: mcp.local is not UTF-8")?;
+fn load_local(slot: module::Slot, record: &[u8]) -> Result<i32, &'static str> {
+    let text = core::str::from_utf8(record).map_err(|_| "autoload: local record is not UTF-8")?;
     let mut fields = text.split(':');
-    let target = parse_u32(fields.next().ok_or("autoload: mcp.local target missing")?)?;
-    let lba = parse_u32(fields.next().ok_or("autoload: mcp.local LBA missing")?)?;
-    let sectors = parse_u32(fields.next().ok_or("autoload: mcp.local sectors missing")?)?;
+    let target = parse_u32(fields.next().ok_or("autoload: local target missing")?)?;
+    let lba = parse_u32(fields.next().ok_or("autoload: local LBA missing")?)?;
+    let sectors = parse_u32(fields.next().ok_or("autoload: local sectors missing")?)?;
     let digest = parse_digest(
         fields
             .next()
-            .ok_or("autoload: mcp.local digest missing")?
+            .ok_or("autoload: local digest missing")?
             .as_bytes(),
     )
-    .ok_or("autoload: mcp.local digest is not 64 hex digits")?;
+    .ok_or("autoload: local digest is not 64 hex digits")?;
     if fields.next().is_some() {
-        return Err("autoload: mcp.local has extra fields");
+        return Err("autoload: local record has extra fields");
     }
     if target >= 7 {
-        return Err("autoload: mcp.local target must be 0..6");
+        return Err("autoload: local target must be 0..6");
     }
     let len = (sectors as usize)
         .checked_mul(512)
-        .ok_or("autoload: mcp.local length overflow")?;
-    if len == 0 || len > module::slot_size(module::Slot::A) {
-        return Err("autoload: mcp.local does not fit module slot A");
+        .ok_or("autoload: local length overflow")?;
+    if len == 0 || len > module::slot_size(slot) {
+        return Err("autoload: local image does not fit module slot");
     }
     if lba.checked_add(sectors).is_none() {
-        return Err("autoload: mcp.local LBA overflow");
+        return Err("autoload: local LBA overflow");
     }
 
     console_println("autoload: loading local module");
-    module::clear(module::Slot::A);
-    let area = module::area(module::Slot::A);
+    module::clear(slot);
+    let area = module::area(slot);
     let mut done = 0usize;
     while done < len {
         let count = ((len - done) / 512).min(255);
@@ -190,12 +210,12 @@ fn load_local(record: &[u8]) -> Result<i32, &'static str> {
         return Err("autoload: local module hash mismatch");
     }
     // SAFETY: the image fits and its hash matched.
-    unsafe { Ok(module::call_entry(module::Slot::A, len)) }
+    unsafe { Ok(module::call_entry(slot, len)) }
 }
 
 fn parse_u32(text: &str) -> Result<u32, &'static str> {
     text.parse::<u32>()
-        .map_err(|_| "autoload: mcp.local field is not a decimal integer")
+        .map_err(|_| "autoload: local field is not a decimal integer")
 }
 
 fn finish(result: Result<i32, &'static str>) -> Status {

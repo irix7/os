@@ -151,8 +151,10 @@ A slot-B boot serves a 1,345,976-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
 `m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
-`BOOT-READY` with MCP still listening. The CI compares the `m1-wasm` root,
-actor, rights and home against the native `m1:` line
+`BOOT-READY` with MCP still listening. A second local boot uses `wasm.local`
+on SCSI target 2 with `net=off`, so the same boot asserts
+`BOOT-READY network=off mcp=disabled` and the Wasm policy evidence. The CI
+compares the `m1-wasm` root, actor, rights and home against the native `m1:` line
 and checks `objects=5 actors=1 queued=1 caps=1`. The guest drives the
 namespace, actor and capability choice; the host supplies only staged
 CAS/table primitives. A failed or trapped guest aborts the stage, so no
@@ -169,8 +171,8 @@ policy service.
 **Readiness and optional Wasm are measured separately.** With the local MCP
 fixture, MCP-only boots reached `BOOT-READY` in 7.3–7.7 s. The optional slot-B
 Wasm probe starts after `BOOT-READY`; the instrumented run reports
-`autoload: wasm took 2140 ms` and `wasm: runtime=0 ms`, so the module fetch and
-copy (not the guest policy) dominate. The full local path is about 9.4 s. The
+`autoload: wasm took 2140 ms` over HTTP and 1600 ms from the local SCSI cache,
+with `wasm: runtime=0 ms`, so fetch/copy (not the guest policy) dominate. The
 M1 readiness budget does not include that optional probe, so readiness is not
 regressed by Wasm. The full slot-B path is recorded under #214; it is not a
 claim that the Wasm policy is cheap to load on the R4600.
