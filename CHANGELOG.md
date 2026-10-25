@@ -48,7 +48,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   reports `autoload: wasm took 2140 ms` over local HTTP or 1600 ms from the
   local SCSI cache, and `wasm: runtime=0 ms`; fetch/copy dominate. The
   network-off/local-SCSI boot also runs the Wasm policy with `mcp=disabled`.
-  The full-path latency is tracked under #214.
+  The optional full path is accepted as a post-readiness diagnostic waiver
+  under #214; it does not delay readiness. The live Wasm-policy bridge is
+  deferred to Phase 5; M1 keeps the native kernel policy and uses the Wasm
+  policy as a boot-time proof.
   Real-Indy hardware execution was not available: no physical Indy IP24 or
   lab runner was attached, so real SCC, Seeq DMA, SCSI, REX3 and DS1386
   timing/cache behaviour is unvalidated. The M1 result is an iris gate with
