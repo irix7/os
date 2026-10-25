@@ -190,6 +190,10 @@ This work continues in parallel and is a gate on every phase:
 - ABI 10 compatibility modules and the user SDK;
 - EROFS/HTTP Range and the recovery console (the clean-room `sash` on telnet
   and the local keyboard/display).
+- a fully Rust native desktop based on a downstream COSMIC toolkit fork
+  (`libcosmic`/`iced`/`cosmic-text`) on the native display server (D33, #194);
+  no Wayland or `cosmic-comp` on the Indy. Full COSMIC on GPU nodes is a
+  separate long-range path.
 
 A phase that breaks these does not pass, even if its Wasm demo works.
 

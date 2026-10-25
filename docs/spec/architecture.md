@@ -189,7 +189,7 @@ normative for this spec.
 | D2 | **Native ABI is new; IRIX lives only in the compatibility container** | Keeps the native world free to be modern |
 | D3 | **Native process = one cell with a Unix personality** | `fork` copies the cell, `exec` replaces it, signals are events, file descriptors are capabilities |
 | D4 | **Capability ABI underneath, Unix-shaped libc on top** | `open`/`read`/`write`/`fork`/`exec` for apps; capabilities for authority |
-| D5 | **New native desktop, IRIX-inspired** | Indigo Magic workflow and aesthetics, new code; not the original binaries |
+| D5 | **New native desktop, IRIX-inspired and fully Rust** | Indigo Magic workflow and aesthetics, new code; a downstream COSMIC toolkit fork on the native display server (D33); not the original binaries |
 | D6 | **All Indy hardware except ISDN** | Graphics, audio, Ethernet, SCSI, Vino capture, serial, RTC, CPU; video output deferred |
 | D7 | **First target is the iris default** | Indy `IndyIp24`, R4400, Newport XL, 256 MiB, HAL2, Seeq, WD33C93; other boards detected later |
 
@@ -232,6 +232,7 @@ normative for this spec.
 | D30 | **In-OS MCP server: full root, bearer token, no audit, hardware watchdog** | The development harness; the user accepted the risk |
 | D31 | **Plan 9 ideas only where they serve IRIX**: `ctl`/`data`/`status`, `/net`, optional 9P; no per-process namespaces by default | Selective, not a clone |
 | D32 | **Native libc API baseline is POSIX.1-2024 (SUSv5), not the IRIX 6.5 ABI** | Rust std and new applications need a modern, documented Unix surface; the compatibility container keeps IRIX 6.5 exactly |
+| D33 | **Native desktop toolkit: downstream COSMIC (`libcosmic`/`iced`/`cosmic-text`) on the native display server** | Fully Rust desktop and apps; no Wayland, `cosmic-comp`, DRM/GBM/EGL or GPU requirement on the Indy. The fork is a small downstream backend/patch set, not a hard fork of the Epoch. A full `cosmic-comp`/Wayland port is a separate GPU-node path. |
 
 ### 2.3 Decision principles
 
@@ -1622,11 +1623,17 @@ It provides:
 - a terminal and a text editor;
 - integration with the MCP server for remote inspection (optional).
 
-The UI toolkit is an open question (§17). The constraint is that it must emit the display
-server's drawing protocol and must not require client-side full-surface recomposition,
-alpha blending or GPU acceleration. A small immediate-mode toolkit or a retained-mode
-toolkit over the surface API are both viable; the choice should follow a prototype, not a
-fashion.
+The UI toolkit is a downstream COSMIC toolkit fork (D33): `libcosmic`, `iced` and
+`cosmic-text`, with an IRIX-native window/surface/input backend and `iced_tiny_skia`/
+`tiny-skia` software rendering. It emits the native display server's drawing protocol and
+must not require client-side full-surface recomposition, alpha blending, Wayland,
+DRM/GBM/EGL or GPU acceleration on the Indy. The fork keeps the libcosmic application API
+stable so COSMIC applications can build; it is not a second desktop toolkit and not a
+`cosmic-comp` port. The full COSMIC session compositor is a separate GPU-node path.
+
+The desktop environment and its applications are Rust. Low-level OS interfaces may be
+native IRIX services or Rust bindings; no GTK, Qt or C/C++ native shell is permitted.
+X11 remains a compatibility surface for IRIX 6.5 binaries, not the native desktop.
 
 ### 13.4 Graphics server
 
@@ -1693,6 +1700,11 @@ The memory controller peaks at 266 MB/s. A Wayland compositor is also a Linux-sh
 (libudev, libinput, libgbm, libEGL, libxkbcommon, DRM/KMS, Unix fd passing) onto a kernel
 that has none of those interfaces. The right ideas — damage, buffer handles, frame
 callbacks — are adopted; the protocol and the rendering model are not.
+
+This decision applies to the Indy native path. A COSMIC toolkit fork (D33) can use the
+native display server without Wayland. A full `cosmic-comp`/Wayland port may be pursued
+on future x86_64/AArch64 nodes with a GPU, but it must not become an Indy boot or desktop
+dependency.
 
 ### 13.10 Effort
 
@@ -1923,8 +1935,9 @@ corresponding implementation phase.
 
 ### 17.2 Graphics and media
 
-- The native UI toolkit (immediate-mode vs retained-mode; custom vs existing Rust
-  toolkit). The constraint is no GPU, no client-side full-surface recomposition.
+- The exact downstream patch boundary for the COSMIC toolkit fork (D33): which
+  `iced`/`libcosmic` changes stay local, how much of COSMIC's D-Bus/session surface is
+  retained, and when an upstream backend is practical.
 - The native graphics API: a simple 2D API (rects, blits, text), or a subset of OpenGL.
   Deferred (§13.3).
 - Video output: the Indy Video GIO board is not modelled by iris; add it only if the real
