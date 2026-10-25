@@ -210,6 +210,59 @@ A phase that breaks these does not pass, even if its Wasm demo works.
 - **Fabric:** frames, tags, completions, cancellation, trace, 9P gateway.
 - **Toolchain/SDK:** `wasm-abi`, user SDK, core image, build/image tooling.
 
+### 5.1 Sourcing and reuse
+
+The [Rust repository sourcing study](../research/rust-repository-sourcing.md)
+(2026-10-25) maps each component to verified Rust candidates, licence status,
+portability blockers and the issues they unblock. It is research input, not an
+ADR.
+
+The standing rule is **reuse before reimplementation**:
+
+1. adopt a compatible project as-is;
+2. carry a minimal downstream patch or backend;
+3. fork only where the design requires it (the COSMIC toolkit is the current
+   example);
+4. reimplement only where the licence, platform assumptions or architecture
+   make reuse unsafe.
+
+Every adoption still needs a spike and a work-item record: licence, source
+provenance, build requirements, n32/32-bit/big-endian behaviour, allocation and
+thread assumptions, and a replacement plan. A permissive licence is not a
+provenance certificate, and “pure Rust” is not a portability proof.
+
+**Sequenced candidates:**
+
+| Order | Candidate | Licence | Why / gate |
+|---:|---|---|---|
+| 1 | Tooling gate suite: `cargo-deny`, `cargo-audit`, `cargo-cyclonedx`, `cargo-about`, `cargo-call-stack`, `cargo-bloat`, `proptest`, `cargo-fuzz`, `nextest` | MIT/Apache-2.0, Apache-2.0, NCSA | Host-only; unblocks clean-room, CI, security, release and performance evidence (#12, #13, #15, #17, #11). |
+| 2 | `foca` | MPL-2.0 | `no_std` + `alloc` SWIM membership; the missing M2–M4 failure/membership layer. Requires a 32-bit/no_std spike (#3–#5). |
+| 3 | `x11rb` + `yserver` | MIT OR Apache-2.0; MIT | X11 wire types and server path (#8), then legacy app compatibility (#6, #7, #11). |
+| 4 | `uutils/coreutils` | MIT | Userland utility corpus after the native `std`/relibc environment exists (#6, #10, #11, #2). |
+| 5 | `cosmic-text` + `harfrust` + `tiny-skia`, then `libcosmic` | MIT/Apache-2.0, MIT, BSD-3, MPL-2.0 | Native COSMIC toolkit fork and software renderer (#7, #8, #194). |
+| 6 | `unwinding` + a clean-room IRIX `libc` module | MIT/Apache-2.0 | `std`, unwinding and the native cell ABI (#6, #10, #11). |
+| 7 | `lamxfs` + `xfs-core` | MIT/Apache-2.0, Apache-2.0 | XFS v4/v5 read-only (#9), subject to provenance review. |
+| 8 | `object` + `xmas-elf` + `gdbstub` | Apache/MIT; MIT/Apache-2.0 | Host ELF inspection and a MIPS-capable debug stub (#2, #6, #10). |
+| 9 | `rmcp` | Apache-2.0 | Official MCP SDK on a host or native cell, not the kernel module (#2, #13, #15). |
+
+**Rejected or conditional:**
+
+- The closest IRIX `std`/libc prior art (`rust-irixlibstd`, `rust-irix`) has no
+  licence file; use it as evidence, not code. Ask for relicensing if needed.
+- GPL-2.0-only sources are incompatible: Linux/XFS/`libxfs`, `git2`/libgit2,
+  `fish` and similar. Do not copy them.
+- AGPL, SSPL, CDDL, EPL, proprietary and unlicensed code are rejected.
+- MPL-2.0 (`foca`, `libcosmic`, `ostd`, `symphonia`) is compatible with
+  file-level obligations; keep the files MPL and publish modifications.
+- Wayland/DRM/GBM/GPU libraries remain rejected for the Indy native path;
+  `cosmic-comp` is a separate GPU-node path.
+- C-backed crates (`ring`, `aws-lc-rs`, `zstd`, `littlefs2`, `git2`,
+  `capstone`) need a Rust alternative or an explicit build/port work item.
+
+No candidate is adopted by this plan entry. The next action is a host-only
+tooling spike, followed by `foca`; each must pass its own portability test
+before it enters a product dependency.
+
 ## 6. Budget and release
 
 - **New effort:** 60–95 person-weeks on top of the native compatibility work.
