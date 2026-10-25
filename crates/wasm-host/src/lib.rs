@@ -9,7 +9,9 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-use wasmi::{Caller, Config, Engine, Linker, Module, Store};
+use std::collections::VecDeque;
+use sys_primitives::{Completion, CompletionId, CompletionKind, Status, Tag};
+use wasmi::{Caller, Config, Engine, Extern, Linker, Module, Store};
 
 /// The current host ABI version.
 pub const HOST_ABI_VERSION: i32 = 1;
@@ -25,6 +27,8 @@ pub struct HostState {
     pub console_writes: u64,
     /// Exit status requested by the guest, if any.
     pub exit_status: Option<i32>,
+    /// Completions waiting for the guest to poll.
+    pub completions: VecDeque<Completion>,
 }
 
 impl Default for HostState {
@@ -34,6 +38,7 @@ impl Default for HostState {
             submissions: 0,
             console_writes: 0,
             exit_status: None,
+            completions: VecDeque::new(),
         }
     }
 }
@@ -80,23 +85,53 @@ impl Host {
             "i7host",
             "host_submit",
             |mut caller: Caller<'_, HostState>,
-             _op: i32,
-             _a0: i64,
+             op: i32,
+             a0: i64,
              _a1: i64,
              _a2: i64,
              _a3: i64|
              -> i64 {
-                let event = caller.data_mut().next_event();
-                caller.data_mut().submissions += 1;
+                let state = caller.data_mut();
+                let event = state.next_event();
+                state.submissions += 1;
+                state.completions.push_back(Completion {
+                    event: CompletionId(event),
+                    tag: Tag(0),
+                    status: Status::Ok,
+                    kind: CompletionKind::None,
+                    flags: 0,
+                    reserved: 0,
+                    value0: op as u32,
+                    value1: a0 as u64,
+                });
                 event as i64
             },
         )?;
         linker.func_wrap(
             "i7host",
             "host_poll",
-            |mut caller: Caller<'_, HostState>, _out: i32, _max: i32| -> i32 {
-                let _ = caller.data_mut();
-                0
+            |mut caller: Caller<'_, HostState>, out: i32, max: i32| -> i32 {
+                let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
+                    return 0;
+                };
+                let limit = max.max(0) as usize;
+                let mut written = 0usize;
+                while written < limit {
+                    let Some(completion) = caller.data_mut().completions.pop_front() else {
+                        break;
+                    };
+                    let Some(offset) = (out as usize).checked_add(written * Completion::LEN) else {
+                        break;
+                    };
+                    if memory
+                        .write(&mut caller, offset, &completion.encode())
+                        .is_err()
+                    {
+                        break;
+                    }
+                    written += 1;
+                }
+                written as i32
             },
         )?;
         linker.func_wrap(
@@ -209,5 +244,30 @@ mod tests {
         "#;
         let host = Host::new().expect("host");
         assert!(host.run_i32(wasm, "run", 100).is_err());
+    }
+    const POLL_WAT: &str = r#"
+        (module
+          (import "i7host" "host_submit"
+            (func $submit (param i32 i64 i64 i64 i64) (result i64)))
+          (import "i7host" "host_poll"
+            (func $poll (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (func (export "run") (result i32)
+            i32.const 1
+            i64.const 0
+            i64.const 0
+            i64.const 0
+            i64.const 0
+            call $submit
+            drop
+            i32.const 0
+            i32.const 1
+            call $poll))
+    "#;
+
+    #[test]
+    fn poll_delivers_a_completion_to_guest_memory() {
+        let host = Host::new().expect("host");
+        assert_eq!(host.run_i32(POLL_WAT.as_bytes(), "run", 10_000).unwrap(), 1);
     }
 }

@@ -10,3 +10,4 @@ path = "src/lib.rs"
 
 [dependencies]
 wasmi = { version = "2.0", default-features = false, features = ["std", "deterministic", "validate", "wat"] }
+sys-primitives = { path = "../sys-primitives" }
