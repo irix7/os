@@ -709,6 +709,12 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Disabled => console_write("disabled"),
         autoload::Status::Failed => console_write("failed"),
     }
+    console_write(" mesh=");
+    console_write(if crate::mesh::is_single() {
+        "single"
+    } else {
+        "not-ready"
+    });
     if ready {
         console_println("");
     } else {
