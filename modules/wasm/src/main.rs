@@ -35,6 +35,8 @@ use wasm_policy_host::Policy;
 const GUEST: &[u8] = include_bytes!("guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
+/// Actor identity captured from the guest's `host_actor_spawn` call.
+static mut LIVE_ACTOR: [u8; 16] = [0; 16];
 
 struct ModuleAllocator;
 
@@ -234,7 +236,12 @@ fn hook_home(context: usize, oid: &[u8; 32], out: &mut [u8; 16]) -> i32 {
 
 fn hook_actor_spawn(context: usize, id: &[u8; 16]) -> i32 {
     match policy(context).map(|policy| policy.actor_spawn(ActorId(*id))) {
-        Some(Ok(())) => 0,
+        Some(Ok(())) => {
+            // SAFETY: the guest is synchronous on the module's single thread;
+            // the bridge reads this only after the policy commits.
+            unsafe { LIVE_ACTOR = *id };
+            0
+        }
         _ => -1,
     }
 }
@@ -327,6 +334,19 @@ unsafe extern "C" fn bridge_root(context: usize, out: *mut u8) -> i32 {
     }
 }
 
+unsafe extern "C" fn bridge_actor(context: usize, out: *mut u8) -> i32 {
+    if policy(context).is_none() || out.is_null() {
+        return -1;
+    }
+    // SAFETY: the bridge is read after commit; LIVE_ACTOR is module-owned.
+    let actor = unsafe { LIVE_ACTOR };
+    if actor.iter().all(|&byte| byte == 0) {
+        return -1;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(actor.as_ptr(), out, actor.len()) };
+    0
+}
+
 unsafe extern "C" fn bridge_lookup(
     context: usize,
     path: *const u8,
@@ -406,6 +426,7 @@ unsafe fn publish_bridge(policy: *mut Policy) -> bool {
         reserved: 0,
         context: policy as usize,
         root: bridge_root,
+        actor: bridge_actor,
         lookup: bridge_lookup,
         get: bridge_get,
         authorize: bridge_authorize,

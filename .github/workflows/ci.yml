@@ -471,10 +471,12 @@ jobs:
               "guest root is not distinct from native root: "
               f"{native.group(1)}"
           )
-          assert native.groups()[1:] == wasm.groups()[1:], (
-              "Wasm policy actor/rights/home differ from native: "
-              f"{native.groups()[1:]} != {wasm.groups()[1:]}"
+          assert native.group(2) != wasm.group(2), (
+              "guest actor is not distinct from native actor: "
+              f"{native.group(2)}"
           )
+          assert native.group(3) == wasm.group(3), "rights differ"
+          assert native.group(4) == wasm.group(4), "home differs"
           assert native.group(3) == "35", "unexpected M1 rights"
           print(
               "wasm policy has distinct root and matches actor/rights/home:",

@@ -702,6 +702,12 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
                 write_u64_dec(crate::mesh::rpcs() as u64);
                 console_write("/");
                 write_u64_dec(crate::mesh::envelopes() as u64);
+                if let Some(actor) = crate::logical::actor_id() {
+                    console_write(" actor=");
+                    for byte in actor.0 {
+                        print_hex8(byte);
+                    }
+                }
                 console_println("");
             }
         }

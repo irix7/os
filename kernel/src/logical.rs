@@ -83,6 +83,35 @@ pub fn actor_leave() {
     let _ = local.actors.reap(local.actor);
 }
 
+/// The live userland actor identity.
+pub fn actor_id() -> Option<ActorId> {
+    local().map(|local| local.actor)
+}
+
+impl Local {
+    /// Replace the native actor with the guest-chosen actor while preserving
+    /// the one-node home and the single run-queue entry.
+    fn adopt_actor(&mut self, actor: ActorId) -> bool {
+        if actor == self.actor {
+            return true;
+        }
+        if self.queue.remove(self.actor).is_err() {
+            return false;
+        }
+        let _ = self.actors.set_state(self.actor, ActorState::Dead);
+        let _ = self.actors.reap(self.actor);
+        if self.actors.spawn(actor).is_err() {
+            return false;
+        }
+        let node = crate::mesh::node_id();
+        if self.actors.place(actor, node).is_err() || self.queue.push_fair(actor, 0).is_err() {
+            return false;
+        }
+        self.actor = actor;
+        true
+    }
+}
+
 fn wasm() -> Option<&'static Bridge> {
     // SAFETY: single-threaded kernel; the bridge is published before userland.
     unsafe { WASM }
@@ -103,7 +132,19 @@ pub fn adopt_wasm() {
         // SAFETY: single-threaded kernel; the bridge and Policy live for the
         // module's lifetime.
         unsafe { WASM = Some(bridge) };
-        crate::console_println("m1-live: wasm-policy adopted");
+        let mut actor = [0u8; 16];
+        if unsafe { (bridge.actor)(bridge.context, actor.as_mut_ptr()) } == 0
+            && !actor.iter().all(|&byte| byte == 0)
+        {
+            if let Some(local) = local_mut() {
+                let _ = local.adopt_actor(ActorId(actor));
+            }
+        }
+        crate::console_write("m1-live: wasm-policy adopted actor=");
+        for byte in actor {
+            crate::print_hex8(byte);
+        }
+        crate::console_println("");
     }
 }
 

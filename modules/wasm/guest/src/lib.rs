@@ -207,7 +207,7 @@ pub extern "C" fn run() -> i32 {
     // The actor id is derived from the node id, and the guest checks the home
     // before asking the host to place or queue it.
     let mut actor = node;
-    actor[15] = 1;
+    actor[15] = 2;
     if unsafe { host_actor_spawn(address(&actor)) } != 0 {
         return fail(14);
     }

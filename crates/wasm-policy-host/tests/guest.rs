@@ -269,7 +269,7 @@ fn run_policy_guest() {
         "actor={}",
         hex(&{
             let mut actor = node.0;
-            actor[15] = 1;
+            actor[15] = 2;
             actor
         })
     )));

@@ -32,6 +32,8 @@ pub struct Bridge {
     pub context: usize,
     /// Write the current root OID.
     pub root: unsafe extern "C" fn(usize, *mut u8) -> i32,
+    /// Write the actor identity chosen and committed by the guest.
+    pub actor: unsafe extern "C" fn(usize, *mut u8) -> i32,
     /// Resolve a path and write its OID.
     pub lookup: unsafe extern "C" fn(usize, *const u8, usize, *mut u8) -> i32,
     /// Fetch an object by OID. Returns length or a negative status.
