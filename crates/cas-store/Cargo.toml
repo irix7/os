@@ -1,0 +1,13 @@
+[package]
+name = "cas-store"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "In-memory content-addressed store policy for IRIX 7"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cas-core = { path = "../cas-core" }
+sys-primitives = { path = "../sys-primitives" }
