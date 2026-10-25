@@ -130,14 +130,15 @@ pthreads).  Neither is a complete POSIX system; threads, spawn, signals, termios
 and sockets remain open.
 
 The CI `boot` job builds the release kernel and ROM, wraps `user/hello` as a
-256 KiB SCSI target-2 image, and builds the `logical` module.  It installs the
-published IRIS release through `irix7/iris/.github/actions/setup-iris`, serves
-the module from the guest gateway with an NVRAM override, and boots with
-`iris-ci`.  It waits for the module's `cap=ok` line, `BOOT-READY`, `hello from
-user`, the exit marker and `logical: tick 3`, then uploads the serial
-transcript.  The action's release build needs `IRIS_NO_IDLE=1`; `docs/ci.md` in
-the IRIS repository documents that limitation.  The serial waits follow log
-order because the default `iris-ci` consumer cursor is forward-only
+256 KiB SCSI target-2 image, and appends the `logical` module to the same disk.
+It writes an `mcp.local` NVRAM record so the kernel loads the module from the
+local SCSI bus, installs the published IRIS release through
+`irix7/iris/.github/actions/setup-iris`, and boots with `iris-ci`.  It waits for
+the module's `cap=ok` line, `BOOT-READY`, `hello from user`, the exit marker and
+`logical: tick 3`, then uploads the serial transcript.  The action's release
+build needs `IRIS_NO_IDLE=1`; `docs/ci.md` in the IRIS repository documents that
+limitation.  The serial waits follow log order because the default `iris-ci`
+consumer cursor is forward-only
 ([irix7/iris#110](https://github.com/irix7/iris/issues/110)).
 
 ## 4. CI
