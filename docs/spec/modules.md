@@ -88,11 +88,11 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 10:
+`Services` is `#[repr(C)]` and versioned. Version 11:
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 10 |
+| 0x00 | `version` | 11 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x0C | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -112,15 +112,16 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x44 | `info` | `intptr_t (*)(uint32_t kind, uint8_t *ptr, size_t len)` — 0 status, 1 net, 2 mem, 3 time |
 | 0x48 | `screen_read` | `intptr_t (*)(uint32_t offset, uint8_t *ptr, size_t len)` — BGR shadow bytes |
 | 0x4C | `block_read` | `int32_t (*)(uint8_t target, uint32_t lba, uint8_t *ptr)` — one 512-byte SCSI sector; 0 or -1 |
+| 0x50 | `block_write` | `int32_t (*)(uint8_t target, uint32_t lba, const uint8_t *ptr)` — one 512-byte SCSI sector; 0 or -1 |
 
-The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.3.0`.  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.6.0`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
-the table is 0x50 bytes.
+the table is 0x54 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
-that needs a newer table can reject an older core by checking `version`.  The optional
-SCSI cache module will need an appended `block_write` service and a bounded cache queue;
-neither is present in ABI v10.
+that needs a newer table can reject an older core by checking `version`.  ABI v11 appends
+`block_write`; the optional cache probe uses it.  A bounded download queue and a module
+multiplexer are still future work.
 
 ### TCP slots
 
@@ -165,7 +166,7 @@ The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packag
 developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
 macros, the n32 target and flat linker, a copyable template, a hello example and
 `tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
-`v0.3.0` tag, so the contract has one source of truth.
+`v0.6.0` tag, so the contract has one source of truth.
 
 A module built with the SDK is still a flat image linked at `0x88400000`, fetched over
 HTTPS, digest-checked and called through this table. The SDK changes none of the contract
@@ -190,6 +191,10 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
 `modules/ticker` is the long-running reference: it allocates 32 bytes through the service
 table, prints `ticker: alloc ok`, then prints `ticker: tick` once a second for five seconds
 and returns non-zero to unregister. Swap `hello` for `ticker` in the two commands above.
+
+`modules/cache` proves the ABI 11 write path: it reads SCSI target 1 LBA 0 into RAM,
+hashes it with BLAKE3, and during idle ticks writes an `I7CACHE1` header and the sector
+to target 3, then verifies the readback. It is a probe, not the final package cache.
 
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local

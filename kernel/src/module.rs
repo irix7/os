@@ -41,6 +41,7 @@ static SERVICES: Services = Services {
     info: service_info,
     screen_read: service_screen_read,
     block_read: service_block_read,
+    block_write: service_block_write,
 };
 
 /// The periodic callback of the loaded module, if it registered one.
@@ -325,6 +326,20 @@ unsafe extern "C" fn service_block_read(target: u8, lba: u32, ptr: *mut u8) -> i
             }
             0
         }
+        Err(_) => -1,
+    }
+}
+
+unsafe extern "C" fn service_block_write(target: u8, lba: u32, ptr: *const u8) -> i32 {
+    if ptr.is_null() {
+        return -1;
+    }
+    // SAFETY: the module passed a readable 512-byte buffer.
+    let sector = unsafe { core::slice::from_raw_parts(ptr, 512) };
+    let mut data = [0u8; 512];
+    data.copy_from_slice(sector);
+    match crate::scsi::write_sector(target, lba, &data) {
+        Ok(()) => 0,
         Err(_) => -1,
     }
 }

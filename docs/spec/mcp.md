@@ -27,7 +27,7 @@ a loadable image; “module” is not a privilege boundary.  It implements:
   `console`/`serial.write` (write a line to the guest console), `serial.read` (the kernel's
   8 KiB serial ring, from an absolute offset), `system.reset` and `system.poweroff`;
 - filesystem tools over the target 2 EROFS fixture: `fs.read`, `fs.list`, `fs.stat` and
-  `fs.readlink` read the image through ABI 10 `block_read`, a 16-block LRU and the RAM
+  `fs.readlink` read the image through ABI 10+ `block_read`, a 16-block LRU and the RAM
   overlay, and `fs.write`/`fs.remove` write and whiteout overlay entries;
 - `resources/list` and `resources/read` expose `irix7://serial`, `irix7://status`,
   `irix7://net` and `irix7://mem` as `text/plain`;

@@ -3,7 +3,7 @@
 A loadable module that mounts the EROFS fixture image on **SCSI target 2 at
 LBA 0**, reads `/etc/motd`, and prints it through the console service.  It
 links `crates/erofs` and `crates/block-cache` by path and reads sectors through
-the ABI version 10 `block_read` service.
+the ABI version 11 `block_read` service (unchanged from ABI 10).
 
 The image is the compact `crates/erofs/tests/fixtures/root.erofs` fixture
 (SHA-256 `9e3fd4b55c042224b9d31631c2099909c6eabdeadbcbf74b5116320071f0f522`)

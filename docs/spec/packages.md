@@ -60,9 +60,11 @@ digest and fetched again without network; absence or failure of that disk never
 blocks the network path.  The cache is an optimisation, never a source of
 authority: bytes are re-verified on every install.
 
-The current bring-up uses the existing 256 KiB RAM read-ahead window.  The
-SCSI write-cache path is the next storage slice; `sash` and `mount` must not
-assume a disk is present.
+The current bring-up uses the existing 256 KiB RAM read-ahead window for
+network reads.  ABI v11 adds `block_write` and a probe module can persist one
+sector to a cache-owned target during its idle tick.  A bounded download queue
+and automatic lookup are still the next storage slice; `sash` and `mount` must
+not assume a disk is present.
 
 ## 6. Optional SCSI cache module
 
@@ -71,19 +73,21 @@ It is a loadable kernel module (or a component of the resident policy module
 while there is only one module slot) with a tick callback.  The verified
 download path places each blob in a bounded RAM queue keyed by its SHA-256;
 the module drains that queue only from its idle tick, writes the bytes to a
-**cache-owned** SCSI range through a future append-only `block_write` service,
-and records the digest.  A cache hit is re-verified against the digest before
-use.  A power loss may leave a partial record; the next boot ignores it and
+**cache-owned** SCSI range through the ABI v11 `block_write` service, and
+records the digest.  A cache hit is re-verified against the digest before use.
+A power loss may leave a partial record; the next boot ignores it and
 re-fetches.
 
 The module never writes a data disk.  A target/range is used only when it
 carries an `I7CACHE` reservation or is explicitly configured as cache.  A
 missing, read-only or failed disk leaves the network/RAM path untouched.
 
-The current implementation has the RAM window only.  `block_write` and the
-cache queue are not in ABI v10; the SDK will append them with a version bump.
-The one-slot module area also means the cache cannot coexist with the MCP
-module until a multiplexer or merged policy module lands.
+The current implementation has the RAM window and a one-sector probe:
+`modules/cache` reads target 1 LBA 0, hashes it with BLAKE3, and writes an
+`I7CACHE1` header plus the data to target 3 during two idle ticks, then
+verifies the readback.  The bounded download queue and automatic cache lookup
+are still to come.  The one-slot module area also means the cache cannot
+coexist with the MCP module until a multiplexer or merged policy module lands.
 
 ## 7. Non-goals
 

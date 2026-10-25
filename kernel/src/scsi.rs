@@ -54,6 +54,8 @@ const HPC3_SBCD_EOX: u32 = 0x0000_8000;
 const HPC3_SCTRL_ACTIVE: u32 = 0x10;
 /// `ctrl`: flush the SCSI FIFO; used to drain a completed read.
 const HPC3_SCTRL_FLUSH: u32 = 0x08;
+/// `ctrl`: memory-to-device direction.
+const HPC3_SCTRL_DIR: u32 = 0x04;
 /// `ctrl`: reset the DMA channel and the external controller.
 const HPC3_SCTRL_CRESET: u32 = 0x40;
 /// `ctrl`: parity error on the HPC-to-WD interface.
@@ -95,6 +97,7 @@ const RSELID_ER: u8 = 0x80;
 const TIMEOUT: u8 = 63;
 
 const CSR_PHASE_MASK: u8 = 0x07;
+const PHASE_DATA_OUT: u8 = 0x00;
 const PHASE_DATA_IN: u8 = 0x01;
 const PHASE_CMD: u8 = 0x02;
 const PHASE_MESG_OUT: u8 = 0x06;
@@ -473,7 +476,7 @@ fn dma_stop() -> Result<(), &'static str> {
 }
 
 /// Point the channel at `desc_phys` and start a device-to-memory transfer.
-fn dma_arm(desc_phys: u32, first_len: usize) -> Result<(), &'static str> {
+fn dma_arm(desc_phys: u32, first_len: usize, outbound: bool) -> Result<(), &'static str> {
     dma_write_ctrl(0);
     if !dma_wait_inactive(DMA_STOP_SPINS) {
         dma_write_ctrl(HPC3_SCTRL_CRESET);
@@ -497,8 +500,12 @@ fn dma_arm(desc_phys: u32, first_len: usize) -> Result<(), &'static str> {
     crate::cache::sync();
     compiler_fence(Ordering::SeqCst);
 
-    // Big-endian, device-to-memory: bit 2 (memory -> device) stays clear.
-    dma_write_ctrl(HPC3_SCTRL_ACTIVE);
+    // Big-endian. Bit 2 is 1 for memory-to-device, 0 for device-to-memory.
+    let mut ctrl = HPC3_SCTRL_ACTIVE;
+    if outbound {
+        ctrl |= HPC3_SCTRL_DIR;
+    }
+    dma_write_ctrl(ctrl);
     Ok(())
 }
 
@@ -568,7 +575,7 @@ fn disable_dma(reason: &str) {
     unsafe {
         DMA_DISABLED = true;
     }
-    crate::print_str("scsi: DMA read failed (");
+    crate::print_str("scsi: DMA transfer failed (");
     crate::print_str(reason);
     crate::println("); using polled PIO");
 }
@@ -611,6 +618,90 @@ fn read_dma(target: u8, lba: u32, blocks: usize, buf: &mut [u8]) -> Result<(), D
     Ok(())
 }
 
+/// DMA write of a validated WRITE(6) request.
+fn write_dma(target: u8, lba: u32, blocks: usize, buf: &[u8]) -> Result<(), DmaError> {
+    if dma_disabled() {
+        return Err(DmaError::Unavailable);
+    }
+    let len = blocks * SECTOR;
+    let dma = DmaBuffer::alloc(len).ok_or(DmaError::Unavailable)?;
+    let data_vaddr = kseg0(dma.data_phys);
+    let desc_vaddr = kseg0(dma.desc_phys);
+
+    // Copy the caller's bytes into the DMA bounce buffer and clean both the
+    // data and descriptors before the device reads them.
+    let data = unsafe { core::slice::from_raw_parts_mut(data_vaddr as *mut u8, len) };
+    data.copy_from_slice(buf);
+    let descs =
+        unsafe { core::slice::from_raw_parts_mut(desc_vaddr as *mut DmaDesc, MAX_DMA_DESCS + 1) };
+    let written = build_chain(descs, dma.data_phys as u32, len, dma.desc_phys as u32)
+        .ok_or(DmaError::Unavailable)?;
+    crate::cache::dcache_writeback_invalidate(data_vaddr, len);
+    crate::cache::dcache_writeback_invalidate(desc_vaddr, written * DESC_SIZE);
+    crate::cache::sync();
+    compiler_fence(Ordering::SeqCst);
+
+    run_dma_scsi_write(target, lba, blocks, &dma, len)?;
+    crate::cache::dcache_writeback_invalidate(data_vaddr, len);
+    crate::cache::sync();
+    Ok(())
+}
+
+fn run_dma_scsi_write(
+    target: u8,
+    lba: u32,
+    blocks: usize,
+    dma: &DmaBuffer,
+    len: usize,
+) -> Result<(), DmaError> {
+    let csr = select(target).map_err(DmaError::Scsi)?;
+    if csr == (CSR_PHASE_MISMATCH | PHASE_MESG_OUT) {
+        if let Err(error) = send_identify() {
+            abort_command();
+            return Err(DmaError::Scsi(error));
+        }
+    }
+
+    let mut cdb = [
+        0x0a, // WRITE(6)
+        ((lba >> 16) & 0x1f) as u8,
+        (lba >> 8) as u8,
+        lba as u8,
+        blocks as u8,
+        0,
+    ];
+    let csr = match xfer(cdb.len(), &mut cdb, true) {
+        Ok(csr) => csr,
+        Err(error) => {
+            abort_command();
+            return Err(DmaError::Scsi(error));
+        }
+    };
+    if csr & CSR_PHASE_MASK != PHASE_DATA_OUT {
+        abort_command();
+        return Err(DmaError::Scsi("no data-out phase after WRITE(6)"));
+    }
+
+    if let Err(error) = dma_arm(dma.desc_phys as u32, len.min(MAX_DESC_LEN), true) {
+        return Err(DmaError::Fatal(error));
+    }
+
+    let outcome = dma_transfer(len);
+    let stopped = dma_stop();
+    write_reg(REG_CONTROL, CONTROL_EDI_IDI);
+    crate::cache::dcache_writeback_invalidate(kseg0(dma.data_phys), len);
+    crate::cache::sync();
+    stopped.map_err(DmaError::Fatal)?;
+
+    let csr = outcome.map_err(DmaError::Transfer)?;
+    if csr == CSR_S_XFERRED || csr == CSR_DISC || csr == CSR_DISC_1 {
+        finish().map_err(DmaError::Scsi)?;
+        return Ok(());
+    }
+    finish().map_err(DmaError::Scsi)?;
+    Ok(())
+}
+
 fn run_dma_scsi(
     target: u8,
     lba: u32,
@@ -647,7 +738,7 @@ fn run_dma_scsi(
         return Err(DmaError::Scsi("no data-in phase after READ(6)"));
     }
 
-    if let Err(error) = dma_arm(dma.desc_phys as u32, len.min(MAX_DESC_LEN)) {
+    if let Err(error) = dma_arm(dma.desc_phys as u32, len.min(MAX_DESC_LEN), false) {
         // dma_arm resets the channel and the external controller before
         // returning, so PIO cannot continue this command.
         return Err(DmaError::Fatal(error));
@@ -698,6 +789,41 @@ fn read_pio(target: u8, lba: u32, blocks: usize, buf: &mut [u8]) -> Result<(), &
     }
     let _ = finish();
     Ok(())
+}
+
+/// Write `buf.len()` bytes to `lba` with WRITE(6) over HPC3 DMA.
+///
+/// The length must be a non-zero multiple of 512, at most 255 blocks and at
+/// most [`MAX_DMA_LEN`].  The caller is responsible for choosing a writable
+/// target; this is used by the optional cache module and never by the boot
+/// path.
+pub fn write_blocks(target: u8, lba: u32, buf: &[u8]) -> Result<(), &'static str> {
+    if buf.is_empty() || buf.len() % SECTOR != 0 {
+        return Err("write length is not a whole number of sectors");
+    }
+    let blocks = buf.len() / SECTOR;
+    if blocks > MAX_RD6_BLOCKS {
+        return Err("write is larger than WRITE(6) allows");
+    }
+    if blocks > 0 && lba.saturating_add(blocks as u32 - 1) > MAX_RD6_LBA {
+        return Err("LBA is out of range for WRITE(6)");
+    }
+
+    if buf.len() > MAX_DMA_LEN {
+        return Err("write is larger than the DMA window");
+    }
+    match write_dma(target, lba, blocks, buf) {
+        Ok(()) => Ok(()),
+        Err(DmaError::Unavailable) => Err("SCSI DMA is unavailable"),
+        Err(DmaError::Scsi(error) | DmaError::Fatal(error) | DmaError::Transfer(error)) => {
+            Err(error)
+        }
+    }
+}
+
+/// Write one 512-byte sector to `target` with WRITE(6).
+pub fn write_sector(target: u8, lba: u32, buf: &[u8; 512]) -> Result<(), &'static str> {
+    write_blocks(target, lba, buf)
 }
 
 /// Reset the HPC3 SCSI channel and the WD33C93, then read back its identity.
