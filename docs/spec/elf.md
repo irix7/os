@@ -239,8 +239,8 @@ up to 256 KiB from SCSI target 2 LBA 0 in 64 KiB chunks, accepts an n32 or o32
 `ET_EXEC` image, maps each `PT_LOAD` memory range into kuseg, zeroes BSS and
 enters at `e_entry` with a four-page user stack at `0x7FF0_0000` in real
 `KSU=user` mode.  The loader records the image ABI; the syscall path has a
-minimal o32 bridge for classic `write(4)`, `exit(1)` and `getpid(20)`, with
-provisional `$a3` error signalling.
+minimal o32 bridge for classic `read(3)`, `write(4)`, `open(5)`, `close(6)`,
+`exit(1)` and `getpid(20)`, with provisional `$a3` error signalling.
 It maps 4 KiB pages in JTLB even/odd pairs starting at index 4; the 1 MiB heap uses
 two 256 KiB page pairs.  User pages are cacheable so LL/SC atomics are defined.
 
@@ -256,7 +256,8 @@ probe (`user/o32-hello`), not an IRIX 6.5 application; the IRIX libc, `rld`,
 syscall set is
 `write`, `read`, `exit`, `mmap`/`munmap`/`mprotect`, `open`/`close`/`fcntl`/`dup`,
 `getcwd`/`chdir`, `poll`, `signal`, `getentropy`, `clock_gettime`, `getpid`,
-`fstat`/`stat`, `readdir` and `nanosleep`.  The kernel has a small fd table with
+`fstat`/`stat`, `readdir`, `pipe`, `tcgetwinsize`/`tcsetwinsize` and
+`nanosleep`.  The kernel has a small fd table with
 console, `/dev/null` and a two-file read/write ramfs; `stat`/`fstat` and directory
 iteration work.  Threads/TLS, `posix_spawn`, real signals and termios are still
 absent.  The 42-symbol C shim in `crates/irix7-libc` is the bring-up libc; the

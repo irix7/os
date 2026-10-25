@@ -17,6 +17,12 @@ SECTIONS
     *(.rodata.*)
   }
 
+  .bss (NOLOAD) : {
+    *(.bss)
+    *(.bss.*)
+    *(COMMON)
+  }
+
   /DISCARD/ : {
     *(.MIPS.abiflags)
     *(.reginfo)
