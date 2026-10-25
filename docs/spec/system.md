@@ -104,7 +104,7 @@ The following remain native and are not moved into Wasm:
 
 - POSIX syscalls and the relibc/native-libc fast path;
 - the IRIX 6.5 o32/n32 compatibility container;
-- the ABI 10 loadable-module interface;
+- the ABI 11 loadable-module interface, backward-compatible with ABI 10;
 - NIC, block, MMU, timer and DMA drivers.
 
 The Wasm core manages namespace/capability policy and actor placement. It does

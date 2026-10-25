@@ -6,6 +6,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Module ABI v11 adds `block_write` for one 512-byte SCSI sector.  The kernel
+  writes through HPC3 DMA; the write path is not used during boot.
+- `modules/cache` is a content-addressed one-sector cache probe: it reads
+  target 1 LBA 0, hashes it with BLAKE3, writes an `I7CACHE1` header and data to
+  target 3 during idle ticks, then verifies the readback.
+
 ## [0.1.3] — 2026-10-25
 
 ### Added

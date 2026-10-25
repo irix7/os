@@ -131,6 +131,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
 
 [[package]]
+name = "cache-module"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "module-abi",
+]
+
+[[package]]
 name = "cap-engine"
 version = "0.1.0"
 dependencies = [
@@ -743,7 +751,7 @@ dependencies = [
 [[package]]
 name = "module-abi"
 version = "0.1.0"
-source = "git+https://github.com/irix7/os-sdk?tag=v0.3.0#9e27368d8ea5f1f7937fd19d60129420b0fbf914"
+source = "git+https://github.com/irix7/os-sdk?tag=v0.6.0#733675947f4ec001df37c42e9773fab669085f0a"
 
 [[package]]
 name = "native-abi"

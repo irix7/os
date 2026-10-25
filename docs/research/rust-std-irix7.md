@@ -2121,7 +2121,7 @@ All paths are relative to the pinned sysroot’s `lib/rustlib/src/rust/`:
 - `kernel/Cargo.toml`, `kernel/src/main.rs`, `kernel/src/module.rs`
 - `modules/hello/Cargo.toml`, `modules/hello/linker.ld`,
   `modules/httpd/src/main.rs`
-- `module-abi` (external, pinned `v0.3.0`): `Services`/`ModuleVtable`,
+- `module-abi` (external, pinned `v0.6.0`): `Services`/`ModuleVtable`,
   `ABI_VERSION = 10`, compile-time offsets.
 
 ### 13.4 External ADRs

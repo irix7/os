@@ -100,16 +100,17 @@ that policy yet.
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
-bytes of headroom, so it was not merged. The current console/sash plus EROFS
-Range image is 520,840 bytes (3,448 free). Runtime policy, modules and userland
-software must ship in the package index or a separate core image; they cannot
-grow the fixed bootstrap.
+bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
+Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 write path is
+520,500 bytes (3,788 free). Runtime policy, modules and userland software must
+ship in the package index or a separate core image; they cannot grow the fixed
+bootstrap.
 
 The optional SCSI write cache is deliberately a module, not PROM code: verified
 downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
-a cache-owned range during its idle tick.  It lands after the network/RAM path
-is stable and needs an appended `block_write` ABI service plus a module
-multiplexer while the module area has one slot.
+a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
+`modules/cache` proves the idle write and readback on target 1 to target 3.
+The automatic queue, lookup and module multiplexer are still to come.
 
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
@@ -139,7 +140,7 @@ POSIX/IRIX paths still pass; no packet or block data path inside Wasm.
 
 Move namespace and capability policy into the core; implement CAS fetch,
 manifests, cache/pinning, L0 migration, per-node run queues and placement. Add
-the POSIX bridge and ABI 10 bridge.
+the POSIX bridge and ABI 10 compatibility bridge (ABI 11 adds block_write).
 
 **Exit:** M2 full; M3 sharded homes, CAS fetch, placement, two-node failure;
 L0 migration both ways; compatibility suite.
@@ -169,7 +170,7 @@ bounded revocation sets, key rotation and partition windows. Keep EROFS as a
 read-only oracle during migration.
 
 **Exit:** forge/replay/expiry/revocation fail closed; crash-consistency and GC
-tests; ABI 10 still works; M1–M4 security gates.
+tests; ABI 10 modules still work; ABI 11 adds block_write; M1–M4 security gates.
 
 ### Phase 9 — Remove duplicate paths
 
@@ -186,7 +187,7 @@ This work continues in parallel and is a gate on every phase:
 
 - native Indy ROM, Seeq, SCSI, REX3 and DS1386;
 - POSIX/relibc, the 42-symbol bring-up shim and the IRIX 6.5 container;
-- ABI 10 modules and the user SDK;
+- ABI 10 compatibility modules and the user SDK;
 - EROFS/HTTP Range and the recovery console (the clean-room `sash` on telnet
   and the local keyboard/display).
 
@@ -198,7 +199,7 @@ A phase that breaks these does not pass, even if its Wasm demo works.
 - **Mesh:** homes, routing, membership, placement, authority, 128-node test.
 - **Storage:** CAS, manifests, replication, pinning, GC.
 - **Devices:** Seeq, SCSI, e1000e, AHCI/NVMe, virtio, GPU object protocol.
-- **Compatibility:** POSIX/relibc, IRIX 6.5, ABI 10.
+- **Compatibility:** POSIX/relibc, IRIX 6.5, ABI 10 (ABI 11 adds block_write).
 - **Fabric:** frames, tags, completions, cancellation, trace, 9P gateway.
 - **Toolchain/SDK:** `wasm-abi`, user SDK, core image, build/image tooling.
 

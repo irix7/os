@@ -3,7 +3,7 @@
 //! `/etc/motd`.
 //!
 //! The image starts at LBA 0.  The module links `crates/erofs` and
-//! `crates/block-cache` by path, reads sectors through the ABI version 10
+//! `crates/block-cache` by path, reads sectors through the ABI version 11
 //! `block_read` service, and prints through `write`.  It is a flat image at
 //! `0x8840_0000`, so it does not grow the compressed PROM.
 

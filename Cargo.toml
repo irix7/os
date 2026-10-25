@@ -1,9 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "crates/overlay", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/native-abi", "crates/sys-primitives", "crates/platform-api", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/fabric", "crates/guest-abi", "crates/cas-core", "crates/cas-store", "crates/cap-engine", "crates/agnostic-core", "crates/wasm-host", "rom", "kernel", "modules/hello", "modules/ticker", "modules/mcp", "modules/block", "modules/erofs", "modules/logical"]
+members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "crates/overlay", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/native-abi", "crates/sys-primitives", "crates/platform-api", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/fabric", "crates/guest-abi", "crates/cas-core", "crates/cas-store", "crates/cap-engine", "crates/agnostic-core", "crates/wasm-host", "rom", "kernel", "modules/hello", "modules/ticker", "modules/mcp", "modules/block", "modules/erofs", "modules/logical", "modules/cache"]
 
 [workspace.dependencies]
-module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.3.0", package = "module-abi" }
+module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.6.0", package = "module-abi" }
 
 [profile.dev]
 panic = "abort"

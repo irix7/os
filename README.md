@@ -63,7 +63,7 @@ The architecture does not throw away the current system:
 
 - POSIX/relibc and the IRIX 6.5 compatibility container stay native. The Wasm
   core manages policy and namespace, not their instruction streams.
-- The ABI 10 loadable-module interface stays native and separate from the new
+- The ABI 11 loadable-module interface (backward-compatible with ABI 10) stays native and separate from the new
   Wasm ABI.
 - The Indy assembly ROM, Seeq/SCSI drivers and native n32 POSIX image remain the
   bring-up and recovery path.
@@ -140,7 +140,7 @@ The static Rust `std` image also boots in that configuration and exits 0. The
 kernel itself does not start the policy yet, and it does not run the Wasm core
 or a mesh; M1 is partial and M2 is still ahead.
 
-The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
+The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 11,
 user SDK and `wasm-abi` v1. The production POSIX layer is the
 [relibc fork](https://github.com/irix7/relibc); its n32 Linux/QEMU gate passes,
 while the native PAL, error channel, TLS and `stat` ABI remain open.

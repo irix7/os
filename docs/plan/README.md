@@ -55,4 +55,4 @@ A milestone is done when:
 ## Revision
 
 - 2026-10-20 — initial plan after the advanced-architecture grilling.
-- 2026-10-25 — the plan now describes the 1–128-node Wasm/mesh logical computer; native POSIX/IRIX and ABI 10 remain compatibility workstreams.
+- 2026-10-25 — the plan now describes the 1–128-node Wasm/mesh logical computer; native POSIX/IRIX and ABI 10 compatibility remain workstreams; ABI 11 adds block_write.

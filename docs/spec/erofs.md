@@ -488,7 +488,7 @@ session are the follow-ups; neither changes the on-disk path.
 
 The disk filesystem path is a loadable module, not a kernel command.  The
 `modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
-`/etc/motd` and prints it through the console service.  It uses the ABI 10
+`/etc/motd` and prints it through the console service.  It uses the ABI 10+
 `block_read` service, `block-cache`'s LRU (64 x 4 KiB, 256 KiB), its own global
 allocator over the kernel `alloc` service, and the same EROFS reader.  The flat
 module is 79,160 bytes and never enters the compressed PROM.  On iris it prints
