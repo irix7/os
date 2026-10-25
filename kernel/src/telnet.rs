@@ -48,6 +48,8 @@ struct Console {
     pending_ping: Option<PingRequest>,
     /// A deferred module fetch and run.
     pending_module: Option<HttpRequest>,
+    /// A deferred sash package/mount request.
+    pending_sash: Option<crate::sash::Deferred>,
     #[cfg(feature = "erofs-debug")]
     /// A deferred EROFS image read over HTTP.
     pending_erofs: Option<crate::erofs_cmd::Request>,
@@ -118,6 +120,7 @@ pub fn init() {
                 pending_ntp: None,
                 pending_ping: None,
                 pending_module: None,
+                pending_sash: None,
                 #[cfg(feature = "erofs-debug")]
                 pending_erofs: None,
             });
@@ -317,6 +320,21 @@ pub fn poll() {
                     }
                 }
                 let _ = w.sock.send_slice(b"sash> ");
+            });
+        }
+    }
+
+    // A sash package/index or remote-mount request runs outside the socket
+    // borrow, like the module and EROFS commands.
+    let sash_request = unsafe { CONSOLE.as_mut() }.and_then(|console| console.pending_sash.take());
+    if let Some(request) = sash_request {
+        let output = crate::sash::run_deferred(request);
+        let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
+        if let Some(handle) = handle {
+            net::sockets_with(|sockets| {
+                let sock = sockets.get_mut::<TcpSocket>(handle);
+                let _ = sock.send_slice(output);
+                let _ = sock.send_slice(b"sash> ");
             });
         }
     }
@@ -541,11 +559,21 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
 
     {
         let mut sink = SocketSink { sock: &mut *sock };
-        if crate::sash::execute(line, &mut sink) {
-            console.line_len = 0;
-            drain_to_socket(sock);
-            prompt(sock);
-            return;
+        match crate::sash::execute(line, &mut sink) {
+            crate::sash::Outcome::Handled => {
+                console.line_len = 0;
+                drain_to_socket(sock);
+                prompt(sock);
+                return;
+            }
+            crate::sash::Outcome::Deferred(request) => {
+                console.line_len = 0;
+                console.pending_sash = Some(request);
+                let _ = sock.send_slice(b"sash: fetching...\r\n");
+                drain_to_socket(sock);
+                return;
+            }
+            crate::sash::Outcome::Unknown => {}
         }
     }
 
@@ -820,8 +848,15 @@ fn local_input(byte: u8) {
             crate::write_bytes(b"\r\n");
             let line = unsafe { &LOCAL_LINE[..LOCAL_LEN] };
             let mut sink = LocalSink;
-            if !crate::sash::execute(line, &mut sink) {
-                crate::sash::Sink::write(&mut sink, b"unknown command; type `help`\r\n");
+            match crate::sash::execute(line, &mut sink) {
+                crate::sash::Outcome::Handled => {}
+                crate::sash::Outcome::Deferred(request) => {
+                    let output = crate::sash::run_deferred(request);
+                    crate::sash::Sink::write(&mut sink, output);
+                }
+                crate::sash::Outcome::Unknown => {
+                    crate::sash::Sink::write(&mut sink, b"unknown command; type `help`\r\n");
+                }
             }
             unsafe {
                 LOCAL_LEN = 0;

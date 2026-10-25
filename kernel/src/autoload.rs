@@ -156,6 +156,13 @@ enum FetchResult {
     Redirect(crate::http::Location),
 }
 
+/// Load and run a module from an explicit URL and SHA-256 digest.
+///
+/// Used by the package index; the normal boot path uses [`boot`].
+pub fn load_url(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
+    run(url, digest)
+}
+
 fn run(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
     if url.is_empty() || url.len() > REDIRECT_MAX {
         return Err("autoload: URL too long");

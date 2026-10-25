@@ -20,7 +20,7 @@ panic = "abort"
 opt-level = 2
 
 [features]
-default = []
+default = ["erofs-debug"]
 cross = []
 # Debug console EROFS-over-HTTP command.  The loadable erofs module is the
 # normal filesystem path; this feature is off by default to keep the PROM small.

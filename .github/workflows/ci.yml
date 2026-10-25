@@ -209,6 +209,9 @@ jobs:
               --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
           python3 rom/tools/make_prom.py \
             target/mips3-sgi-irix7-n32/release/rom "$RUNNER_TEMP/irix7-rom.bin"
+          rom_size=$(stat -c%s "$RUNNER_TEMP/irix7-rom.bin")
+          echo "PROM: $rom_size bytes"
+          test "$rom_size" -le 524288
       - name: Build user hello disk image
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
