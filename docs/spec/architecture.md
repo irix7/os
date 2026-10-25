@@ -6,6 +6,12 @@
 **Related:** `docs/map.md` (project map); `github.com/irix7/project` (toolchain + ADRs 0001–0020); `github.com/irix7/os` (this repo, planned)
 **Research inputs:** [`../research/`](../research/) — the hardware, X11, native-window, filesystem, Plan 9 and EROFS reports
 
+> **Architecture note (2026-10-25):** the primary system architecture is
+> [`system.md`](system.md): one logical computer of 1–128 native shims running the
+> same Wasm core.  This document remains the native, compatibility-container and
+> hardware-layer reference; where it describes a monolithic privileged kernel or
+> a single-node-only boot path, the system architecture takes precedence.
+>
 > **Implementation status (2026-10-25):** the replacement ROM is a MIPS III
 > **assembly** stub, not a Rust ROM.  It sizes and tests DRAM, brings up the
 > serial console, LZ4-decompresses the n32 kernel and jumps to it.  The kernel

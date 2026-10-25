@@ -6,7 +6,8 @@
 
 ## Architecture
 
-- [Advanced architecture](spec/architecture.md)
+- [System architecture](spec/system.md)
+- [Hardware and compatibility architecture](spec/architecture.md)
 - [Boot protocol](spec/boot-protocol.md)
 - [IRIX ELF loader contract](spec/elf.md)
 - [Loadable kernel modules](spec/modules.md)

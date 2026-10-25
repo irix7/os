@@ -1,74 +1,128 @@
 # IRIX 7
 
-A Rust-native operating system for the SGI Indy (IP22, MIPS III). The design
-target is to reimplement everything on the IRIX discs clean-room in Rust: run
-existing IRIX 6.5 application binaries unchanged and offer new Rust programs a
-native capability/object interface.
+IRIX 7 is a Rust-native operating system for the SGI Indy (IP22, MIPS III), and
+for x86_64 PCs and KVM/VirtIO cloud machines. The design target is bigger than
+a single workstation: **one logical computer built from 1 to 128 kernel
+replicas**.
 
-> **[The Tree of IRIX 7](https://irix7.github.io/os/tree/)** — the living roadmap,
-> from the toolchain roots to the v1.0 canopy.
+Each replica runs the same architecture-independent Wasm core on a
+target-specific native shim. Objects, actors, capabilities, namespaces,
+devices and scheduling are global; the mesh has no central directory, global
+lock or global run queue. A single node is the base case and works with no
+network, quorum or seed.
 
-Design targets:
+This is the “network is the computer” architecture: installing another node
+adds its CPU, memory, storage and devices to the capability graph. The Indy
+can resolve a GPU object on a modern node, or an actor can migrate to that
+node, without an application-level remote-mount or RPC protocol.
 
-- Monolithic Rust kernel, n32/MIPS III, accepting both o32 and n32 user binaries.
-- Legacy ABI layer: ELF, the o32 and n32 ABIs (MIPS II/III), and the SGI libc
-  and syscall ABI, built as a compat container over the kernel's object model.
-- Native ABI: a capability/object model (handles + rights, jobs, channels,
-  VMAR/VMO, ports), distinct from the C ABI.
-- IRIX's identity carried forward as first-class services: `sproc`, XFS,
-  real-time scheduling, graphics and digital media, hardware inventory, topology
-  awareness.
-- Backward-only compatibility; forward compatibility is out.
+> **The Tree of IRIX 7** — [irix7.github.io/os/tree](https://irix7.github.io/os/tree/)
+> is the living roadmap. The implementation plan is in
+> [`docs/plan/milestones.md`](docs/plan/milestones.md).
 
-The advanced architecture is in [`docs/spec/architecture.md`](docs/spec/architecture.md), with
-the evidence base in [`docs/research/`](docs/research/). It frames IRIX 7 as the successor SGI
-might have built: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace
-drivers, a network-first boot (with an R2/EROFS root still planned), an in-OS MCP control plane, and a new IRIX-inspired desktop.
+## Architecture
 
-The plan is in [`docs/plan/`](docs/plan/): milestones, GitHub, risks, interfaces, hardware lab,
-testing, security, release, legal, community and cost. Live tracking is the
-[IRIX 7 — Roadmap](https://github.com/orgs/irix7/projects/2); the documentation site is
-[irix7.github.io/os](https://irix7.github.io/os/), and the roadmap grows as
-[The Tree of IRIX 7](https://irix7.github.io/os/tree/).
+- **Native shims** own the hardware and TCB: boot firmware, MMU, interrupts,
+  timers, DMA, NIC, block, console and the local device namespace. The Indy
+  keeps its assembly ROM and native n32 kernel during bring-up; the PC and
+  cloud shims are Limine/UEFI + ACPI/VirtIO.
+- **One Wasm core** owns scheduling policy, the global namespace, the
+  capability engine, the actor directory and placement. The core image has one
+  BLAKE3 OID and is loaded by every shim.
+- **One asynchronous fabric** connects local and remote operations. A
+  `MessageFrame` carries tags, streams, deadlines, dependency edges, flow
+  control and W3C Trace Context; a `MeshHeader` adds source/destination, home,
+  route hints and epochs. Local calls bypass the mesh envelope.
+- **Global object-capabilities.** A 320-byte capability names an object, its
+  home, rights (`READ | WRITE | EXECUTE | INVOKE`), epochs and an Ed25519
+  signature. Authority is a threshold root, not a single key holder.
+- **Content-addressed storage.** Immutable objects and actor state are BLAKE3
+  OIDs; manifests use FastCDC chunks. Mutable roots are owned by one home under
+  a lease. The namespace is a global tree of directory objects, not a set of
+  remote mounts.
+- **1–128 nodes.** Homes are computed by rendezvous hashing over an immutable
+  membership view; failed nodes leave the routing snapshot; stale routes
+  answer `MOVED` and are fenced by epochs. The 128-node target has bounded
+  gossip and at most two normal forwarding hops.
+- **Devices are global objects.** `GpuDevice`, `BlockDevice` and `NetDevice`
+  live in the namespace. The Indy submits offscreen GPU command buffers and
+  receives CAS/compressed results; no remote BAR mapping or fake local-bus
+  coherency is assumed.
+- **Migration is explicit.** v1 supports stackless actor migration at message
+  boundaries. Arbitrary-safepoint migration is a later runtime project.
+  Wire and state metadata is little-endian; MIPS/Wasm conversion is canonical,
+  never a blanket byte swap of linear memory.
 
-Design decisions live in `irix7/project` (ADR-0001–0020); the advanced architecture decisions
-D1–D31 are in `docs/spec/architecture.md` §2.2.
+## Compatibility
 
-## Status
+The architecture does not throw away the current system:
 
-Bootable on iris. A MIPS III assembly PROM replacement sizes and tests DRAM, serial-boots,
-decompresses the n32 kernel into RAM and jumps to it. The kernel owns the machine: Seeq 8003
-networking, DHCP/DNS, NTP, ICMP, HTTP and HTTPS (TLS 1.3 with certificate verification), a
-telnet console on port 23, a wall clock seeded from the DS1386 RTC, a CP0-timer idle path, and a loader for modules fetched over
-HTTPS into RAM. The REX3 paints the boot log full-screen, then the kernel enters the native n32 user image on SCSI target 2; diagnostics are available from the telnet console. A CPU shadow of the REX3 output is streamed as a BMP and as an inline PNG thumbnail by
-the MCP module. A loadable
-module serves an MCP control plane (JSON-RPC `initialize`, `ping`, `tools/list`,
-`tools/call`) at `POST /mcp`, with `status`, `echo`, `console`, `serial.read`, `system.reset` and `system.poweroff`
-tools.
+- POSIX/relibc and the IRIX 6.5 compatibility container stay native. The Wasm
+  core manages policy and namespace, not their instruction streams.
+- The ABI 10 loadable-module interface stays native and separate from the new
+  Wasm ABI.
+- The Indy assembly ROM, Seeq/SCSI drivers and native n32 POSIX image remain the
+  bring-up and recovery path.
+- IRIX 6.5 binaries cannot run inside the Wasm interpreter.
+- “Any computer” means a supported node matrix, not a universal driver claim.
+  The first cloud/PC targets are VirtIO, Limine/UEFI and a conservative hardware
+  set; AMD GPU support starts through a hosted/node service, not an immediate
+  bare-metal GPU stack.
 
-A native n32 ELF loader (`userelf`) maps a user image from SCSI target 2 into kuseg
-and enters it with an argc/argv/envp stack.  A static Rust `std` image now runs
-there: it reads arguments, time, a small ramfs (`read`, `write`, `stat`,
-`read_dir`), `chdir`/relative paths and sleeps; the kernel has a provisional fd
-table and the matching syscalls.  The image is single-threaded and its filesystem
-is only the tiny ramfs: there is no process table, threads/TLS, termios, signals or
-sockets yet.  `user/libc` and `crates/irix7-libc` are bring-up C ABI shims.
+The normative system specification is
+[`docs/spec/system.md`](docs/spec/system.md). The native architecture and
+compatibility layer remain in
+[`docs/spec/architecture.md`](docs/spec/architecture.md).
 
-The production POSIX layer will be a fork of
-[`relibc`](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU gate has
-passed, including TLS, `setjmp` and pthreads.  A provisional IRIX PAL scaffold
-(`irix7-pal`) now builds and links C probes, but it has not been booted on IRIX 7
-and the kernel's error channel, TLS and `stat` ABI still need work.  This is a
-bring-up path for the native process model, not an IRIX 6.5 compatibility
-container.
+## Current status
 
-The next milestones are in [`docs/plan/milestones.md`](docs/plan/milestones.md); the live
-tree is at [irix7.github.io/os/tree](https://irix7.github.io/os/tree/).
+**Released:** v0.1.2 is the current native Indy ROM. It boots the assembly ROM,
+tests DRAM, decompresses the n32 kernel, brings up Seeq networking, DHCP/DNS/
+NTP, HTTP/HTTPS, the REX3 boot log, telnet and HTTPS module autoload, then
+enters the static Rust `std` image on SCSI target 2.
 
-Module developers can use the separate
-[IRIX 7 module SDK](https://github.com/irix7/os-sdk): the ABI context and entry macros,
-a copyable template, the n32 target and linker, and a build tool that produces a flat,
-hashed module image. The SDK owns the `module-abi` crate; this repository consumes it at tag `v0.3.0`.
+**Native bring-up:** the `std` image exercises args, time, sleep, a small
+read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths through the 42-
+symbol C shim. The kernel stack top is `0x88300000`; the loader uses cacheable
+user pages, real 256 KiB PageMask pairs, a 64-bit trap frame and LL-bit
+clearing. There is no process table, threads/TLS, `posix_spawn`, signal
+delivery, termios or socket API yet.
+
+**Architecture foundation merged on `main`:**
+
+- `sys-primitives` — ObjectId, NodeId, capability v2, MessageFrame,
+  MeshHeader/Envelope, completions and trace vocabulary; wire tests.
+- `mesh-core` — BLAKE3 rendezvous homes, bounded route cache, leases and
+  GPU-aware placement; 1/128-node tests.
+- `mesh-service` — membership, join/leave epochs, incarnation heartbeats,
+  suspect/failed state and deterministic snapshots.
+- `mesh-sim` — 1/2/8/128-node host gates for load bounds, deterministic homes
+  and failed-node exclusion.
+- `fabric` — tag allocation, stream flow control and bounded completion
+  buffering.
+- `guest-abi` — OS re-export of the SDK `wasm-abi` v0.5.0 host-call surface.
+- `cas-core` — BLAKE3 OIDs, canonical chunk manifests and verification.
+- `cap-engine` — Ed25519 trust store, capability signing/verification and
+  threshold root manifests.
+- `wasm-host` — deterministic wasmi lifecycle prototype with fuel metering and
+  the `i7host` import surface; it runs a WAT module, not the kernel core.
+
+The kernel does not yet run the Wasm core or join a mesh. The M1/M2 gates are
+the next hard milestones.
+
+The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
+user SDK and `wasm-abi` v1. The production POSIX layer is the
+[relibc fork](https://github.com/irix7/relibc); its n32 Linux/QEMU gate passes,
+while the native PAL, error channel, TLS and `stat` ABI remain open.
+
+## Plans and documentation
+
+- [Milestone plan](docs/plan/milestones.md) — phases, 1/2/8/128 gates, rollback.
+- [System architecture](docs/spec/system.md) — the logical computer.
+- [Install guide](docs/install.md), [testing](docs/plan/testing.md),
+  [interfaces](docs/plan/interfaces.md), [risks](docs/plan/risks.md).
+- [Research](docs/research/) — the evidence base, including the Wasm/mesh
+  system design and the native bring-up reports.
 
 ## Licence
 

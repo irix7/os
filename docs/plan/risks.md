@@ -4,32 +4,51 @@
 **Review cadence:** monthly, and at every milestone boundary.
 **Scoring:** likelihood 1–5 × impact 1–5. **High** ≥ 15, **medium** 8–14, **low** ≤ 7.
 
-## 1. Top five
+## 1. Top risks
 
-1. **Scope and bus factor.** The full plan is 76–118 person-weeks for one person, before the
-   compatibility library surface is fully counted. A single maintainer is the largest
-   existential risk.
-2. **The compatibility container is bigger than it looks.** libc, Motif, GL, dmedia, the
+1. **Scope and bus factor.** The native plan is 76–118 person-weeks and the
+   architecture adds 60–95, before the compatibility library surface is fully counted.
+   A single maintainer is the largest existential risk.
+2. **No Rust `no_std` runtime has full live-stack migration.** wasmi has no
+   serialisable call stack; wasm3 is C. v1 is deliberately L0 only.
+3. **The compatibility container is bigger than it looks.** libc, Motif, GL, dmedia, the
    IRIX desktop and the Xlib ABI are not yet estimated. This is the project's identity and
    its longest pole.
-3. **`fork` in a single address space.** A plain copy is not viable for large cells on a
-   32–256 MiB Indy. The native process model needs a decision before M9.
-4. **A driver bug is a kernel bug.** De-privileged cells with raw DMA and no full IOMMU mean
+4. **`fork` in a single address space.** A plain copy is not viable for large cells on a
+   32–256 MiB Indy. The native process model needs a decision before the native process phase.
+5. **A driver bug is a kernel bug.** De-privileged cells with raw DMA and no full IOMMU mean
    a bad SCSI, Seeq or Vino driver can corrupt the kernel. v1 may panic on a driver fault.
-5. **MCP is full root, no audit, HTTP and a bearer token.** A prompt injection or a LAN
+6. **MCP is full root, no audit, HTTP and a bearer token.** A prompt injection or a LAN
    attacker can reset or overwrite the machine. Acceptable for a development harness, not
    for a product control plane.
+
+## 1.1 Architecture risks
+
+| ID | Risk | L | I | Score | Mitigation |
+|---|---|---:|---:|---:|---|
+| R21 | 128-node membership/failure detection produces gossip storms or false failures | 5 | 5 | 25 | SWIM-style O(log n), immutable epochs, bounded summaries, simulator/fault injection |
+| R22 | A single hot home overloads; home movement loses data | 4 | 4 | 16 | Rendezvous homes, route caches, leases/epochs, forwarding; split objects in v2 |
+| R23 | Threshold authority colludes or loses quorum | 3 | 5 | 15 | Independent operators, 3-of-5/5-of-7, audit, root rotation; document the trust anchor |
+| R24 | Global namespace path sees mixed versions | 4 | 4 | 16 | Per-directory linearisability, epoch caches, `EXDEV` for cross-home rename |
+| R25 | Stale route or moved object commits twice | 4 | 5 | 20 | TTL/hop bound, home epoch, lease fencing, one `MOVED` retry |
+| R26 | Wasmi cannot build or perform on R4600 | 4 | 5 | 20 | Phase 4 build gate; native data plane; fallback to wasm3/Rust port/native core |
+| R27 | 128-node test fidelity is weak | 5 | 4 | 20 | 8–16 QEMU + simulator, fault injection, real 2–8 nodes |
+| R28 | Capability root custody without a TPM | 4 | 5 | 20 | Ephemeral/provisioned keys, short expiry, threshold root, physical security |
+| R29 | L2 migration is assumed but unsolved | 4 | 5 | 20 | L0 v1; fund a separate runtime project; state the limitation |
+| R30 | Native POSIX/IRIX regression during extraction | 4 | 4 | 16 | Native fast paths, compatibility suite at every phase, rollback image |
+
+The architecture also inherits the native risks below.
 
 ## 2. Register
 
 | ID | Risk | Category | L | I | Score | Mitigation | Trigger | Owner | Status |
 |---|---|---|---|---|---|---|---|---|---|
 | R1 | Scope exceeds available time; the project stalls like Harvey/Akaros | Schedule | 5 | 5 | 25 | Walking skeleton; v1 scope cuts; milestone demos; bus-factor plan | Two milestones slip by > 50% | maintainer | open |
-| R2 | Compat container (libc/Motif/GL/dmedia/Xlib) underestimated | Technical | 5 | 5 | 25 | Separate compat spec; estimate before M5; phase X11 lease first; defer GL/dmedia | M5 slips or libc grows past its estimate | compat | open |
-| R3 | `fork` in a SAS kernel is too expensive or unsafe | Technical | 4 | 4 | 16 | Native `fork` limited to small cells; `posix_spawn`/`exec` preferred; ADR before M9 | A cell > 8 MiB cannot fork | kernel | open |
+| R2 | Compat container (libc/Motif/GL/dmedia/Xlib) underestimated | Technical | 5 | 5 | 25 | Separate compat spec; estimate before the compatibility phase; phase X11 lease first; defer GL/dmedia | Compatibility phase slips or libc grows past its estimate | compat | open |
+| R3 | `fork` in a SAS kernel is too expensive or unsafe | Technical | 4 | 4 | 16 | Native `fork` limited to small cells; `posix_spawn`/`exec` preferred; ADR before the native process phase | A cell > 8 MiB cannot fork | kernel | open |
 | R4 | Driver bug corrupts the kernel (raw DMA, no full IOMMU) | Security | 4 | 5 | 20 | Documented `unsafe`; DMA TLB confinement where possible; watchdog; driver restart later | A driver fault panics the kernel | drivers | accepted |
 | R5 | MCP prompt injection or LAN attacker controls the machine | Security | 5 | 4 | 20 | Bearer token; trusted LAN/SSH tunnel; watchdog; production-mode capability scoping later | An unexpected MCP reset or file write | security | accepted |
-| R6 | `-Z build-std` glue or GCC backend never unblocks | Toolchain | 4 | 5 | 20 | M0 is the first milestone; fallback to LLVM path; dedicated toolchain owner | M0 slips > 4 weeks | toolchain | open |
+| R6 | `-Z build-std` glue or GCC backend never unblocks | Toolchain | 4 | 5 | 20 | The toolchain gate is first; fallback to LLVM path; dedicated toolchain owner | Toolchain gate slips > 4 weeks | toolchain | open |
 | R7 | R2/GitHub outage or quota exhaustion blocks boot/update | Operations | 3 | 5 | 15 | Local cache; retries; mirror; digest verification; quota monitoring | Boot fails twice from R2 | infra | open |
 | R8 | Real Indy hardware fails (PSU, SCSI, RTC, RAM) | Hardware | 4 | 4 | 16 | Two machines; spares; recapping; BlueSCSI/ZuluSCSI; backups; lab checklist | A machine stops booting | hardware | open |
 | R9 | Clean-room contamination reaches `irix7/os` | Legal | 3 | 5 | 15 | Harness, similarity screen, DCO, access control, review gate | Similarity screen flags a PR | clean-room | open |
@@ -40,7 +59,7 @@
 | R14 | Supply-chain or licence violation in a dependency | Legal | 3 | 4 | 12 | `cargo-deny`, SBOM, licence gate, pinned versions, review | CI licence failure | infra | open |
 | R15 | iris diverges from real hardware | Technical | 4 | 3 | 12 | Hardware-in-the-loop tests; differential tests; real-Indy milestones | A demo works on iris but not on Indy | hardware | open |
 | R16 | GitHub/R2 free-tier limits change or are exceeded | Operations | 2 | 4 | 8 | Cache; mirrors; quota alerts; self-hosted where possible | A quota warning or block | infra | open |
-| R17 | Nightly rustc drift breaks the build | Toolchain | 4 | 3 | 12 | Pin the nightly; upgrade deliberately; CI matrix | A nightly upgrade breaks M0 | toolchain | open |
+| R17 | Nightly rustc drift breaks the build | Toolchain | 4 | 3 | 12 | Pin the nightly; upgrade deliberately; CI matrix | A nightly upgrade breaks the cross-build | toolchain | open |
 | R18 | Documentation drifts from the code | Docs | 3 | 2 | 6 | Docs in the same PR; mdBook build; link check | A spec contradicts the code | docs | open |
 | R19 | Real-Indy lab access is unavailable | Hardware | 2 | 4 | 8 | Emulator-first; remote serial/power; spares | Cannot run a hardware milestone | hardware | open |
 | R20 | No second maintainer or reviewer | Community | 5 | 4 | 20 | Good-first issues; docs; ADRs; onboarding; pair reviews | PRs sit unreviewed for > 1 week | maintainer | open |

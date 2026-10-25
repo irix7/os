@@ -1,16 +1,16 @@
 # IRIX 7 — Project Plan
 
 **Status:** living document
-**Purpose:** turn the architecture in [`../spec/architecture.md`](../spec/architecture.md) into an executable plan.
+**Purpose:** turn the system architecture in [`../spec/system.md`](../spec/system.md) and the hardware/compatibility layers in [`../spec/architecture.md`](../spec/architecture.md) into an executable plan.
 **Scope:** the project operating system around the technical system: milestones, GitHub, risks, interfaces, hardware, testing, security, release, legal, community and cost.
 
-The architecture spec answers *what* IRIX 7 is. This directory answers *how the project gets built, tracked and shipped*.
+The system architecture answers *what* IRIX 7 is; the hardware/compatibility spec covers the native layers. This directory answers *how the project gets built, tracked and shipped*.
 
 ## Documents
 
 | Document | What it covers |
 |---|---|
-| [`milestones.md`](milestones.md) | The walking skeleton: M0–M10, demos, acceptance criteria, dependencies, estimates. |
+| [`milestones.md`](milestones.md) | **Active plan:** the 1–128-node logical computer, phases 0–9, M1–M4 gates, native compatibility and rollback. |
 | [`github.md`](github.md) | Organisation, repositories, Projects v2, labels, templates, automation, Actions, security and every free GitHub feature we use. |
 | [`risks.md`](risks.md) | The risk register, decision backlog and review process. |
 | [`interfaces.md`](interfaces.md) | Index of interface specifications and their status. |
@@ -55,3 +55,4 @@ A milestone is done when:
 ## Revision
 
 - 2026-10-20 — initial plan after the advanced-architecture grilling.
+- 2026-10-25 — the plan now describes the 1–128-node Wasm/mesh logical computer; native POSIX/IRIX and ABI 10 remain compatibility workstreams.

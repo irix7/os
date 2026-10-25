@@ -2,7 +2,7 @@
 
 **Status:** living document
 **Scope:** the organisation, repositories, Project, labels, templates, automation, CI, security and every free GitHub feature that is useful to IRIX 7.
-**Current state (2026-10-21):** `irix7/os` is public; Issues and Projects are enabled; Discussions and Wiki are enabled; the advanced labels and the `v0.1`–`v1.0` milestones exist; Project **#2, IRIX 7 — Roadmap**, is linked to the repository; the M0–M10 and cross-cutting epics exist and are attached to the Project with their fields set. An existing Project, **IRIX 6.5.7m rebuild**, covers the precursor work.
+**Current state (2026-10-25):** `irix7/os` is public; Issues and Projects are enabled; Discussions and Wiki are enabled; Project **#2, IRIX 7 — Roadmap**, is linked to the repository. The active Project fields are the P0–P9 architecture phases and the M1–M4 mesh gates; the native v0.1–v1.0 releases remain compatibility history. An existing Project, **IRIX 6.5.7m rebuild**, covers the precursor work.
 
 The goal is a project-management goliath that costs **$0/month** and still behaves like a
 serious engineering organisation: every issue tracked, every release reproducible, every
@@ -147,17 +147,17 @@ The bootstrap also creates the operational labels `area/boot`, `area/hardware`,
 
 ## 5. Milestones
 
-Create release milestones only; the `Phase` Project field carries M0–M10.
+Create release milestones only; the `Phase` Project field carries P0–P9 and the
+`Mesh gate` field carries M1–M4.
 
-| Milestone | Due | Contents |
+| Milestone | Gate | Contents |
 |---|---|---|
-| `v0.1` | M3 | Serial, network, MCP, shell, reset/watchdog |
-| `v0.2` | M5 | First IRIX o32 binary, minimal libc |
-| `v0.3` | M6 | Newport display, native desktop shell |
-| `v0.4` | M7 | X11 lease, `xterm`/`twm`, Xlib subset |
-| `v0.5` | M8 | XFS read-only, IRIX disk access |
-| `v0.6` | M9 | Native cells, capability ABI, native libc |
-| `v1.0` | M10 | Real-Indy daily driver, updater, docs, signed release |
+| `v0.1.2` | released | Native Indy ROM, network, MCP, static std bring-up |
+| `v0.2` | P1–P2 / M1 | Shared architecture crates, single-node logical kernel |
+| `v0.3` | P3 / M2 | Async fabric, two-node routing and migration |
+| `v0.4` | P4–P6 / M3 | Wasm core, PC shim, eight-node path |
+| `v0.5` | P7–P8 / M4 | Cloud shim, 128-node gate, threshold authority |
+| `v1.0` | all | Daily driver, updater, docs, signed release |
 
 Due dates are optional and should be set only when the milestone is active; a stale date is
 worse than no date.
@@ -167,8 +167,8 @@ worse than no date.
 GitHub's Issue Types and sub-issues are used where the org has them enabled; otherwise the
 `type/*` labels and task lists are the fallback.
 
-- **Epic** = a milestone or a cross-cutting workstream. One epic per M0–M10 plus the seven
-  cross-cutting workstreams.
+- **Epic** = an architecture phase, a mesh gate or a cross-cutting workstream. One epic per
+  P0–P9 and M1–M4 plus the seven cross-cutting workstreams.
 - **Sub-issue** = a feature, research task, hardware task or bug inside an epic.
 - **Task list** = the checklist inside an epic; every unchecked item links to an issue.
 - **Draft issue** = a Parking-lot idea in the Project, not yet promoted to a repository issue.
@@ -235,13 +235,14 @@ built-in "item closed" automation.
 | Field | Type | Options |
 |---|---|---|
 | `Workflow` | Single select | Backlog, Ready, In Progress, Blocked, In Review, Done |
-| `Phase` | Single select | M0 Toolchain, M1 ROM, M2 Kernel, M3 Network+MCP, M4 Storage, M5 Compat, M6 Display, M7 X11, M8 XFS, M9 Native, M10 Release |
+| `Phase` | Single select | P0 Baseline, P1 Vocabulary, P2 Indy shim, P3 Fabric, P4 Wasm core, P5 Namespace/CAS, P6 PC shim, P7 Cloud/128, P8 Authority, P9 Consolidation |
+| `Mesh gate` | Single select | M1 Single, M2 Two, M3 Eight, M4 128 |
 | `Area` | Single select | Kernel, Compat, Drivers, Display, Storage, Network, Toolchain, Infra, Docs, Security, Legal, Clean-room |
 | `Priority` | Single select | P0, P1, P2, P3 |
 | `Size` | Single select | XS, S, M, L, XL |
 | `Risk` | Single select | Low, Medium, High |
 | `Hardware` | Single select | iris, Indy, Both, None |
-| `Target` | Single select | v0.1, v0.2, v0.3, v0.4, v0.5, v0.6, v1.0 |
+| `Target` | Single select | v0.2, v0.3, v0.4, v0.5, v1.0 |
 | `Estimate` | Number | Person-days |
 | `Clean-room` | Single select | Not needed, Review, Approved |
 | `Start` | Date | Planned start |
@@ -297,7 +298,7 @@ GitHub Actions fills the gaps:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | PR, push to `main` | fmt, clippy, test, host build, cross-build (M0 gate), typos, markdownlint |
+| `ci.yml` | PR, push to `main` | fmt, clippy, test, host build, cross-build gate, typos, markdownlint |
 | `security.yml` | PR, push, schedule | `cargo-deny`, `cargo-audit`, dependency review, secret scan status |
 | `scorecard.yml` | schedule, push to `main` | OpenSSF Scorecard and SARIF upload |
 | `licence.yml` | PR, push | licence headers, third-party notices, SBOM |
@@ -436,7 +437,7 @@ hardware.
 ## 16. CLI bootstrap
 
 `scripts/github/bootstrap.sh` is idempotent and performs the setup. It created Project
-[#2](https://github.com/orgs/irix7/projects/2) and the M0–M10 epics on 2026-10-20.
+[#2](https://github.com/orgs/irix7/projects/2) and the original native epics on 2026-10-20.
 
 1. Checks `gh auth status` and the required scopes (`repo`, `workflow`, `project`).
 2. Enables Discussions and Wiki, disables blank issues.
@@ -444,8 +445,9 @@ hardware.
 4. Creates the milestones in §5.
 5. Creates the **IRIX 7 — Roadmap** project, links it to `irix7/os`.
 6. Creates the fields in §9.1.
-7. Creates the epics M0–M10 (and the cross-cutting epics) as issues, adds them to the
-   project, and sets `Phase`, `Area`, `Priority`, `Size`, `Risk`, `Hardware`, `Target`.
+7. Creates the P0–P9 and M1–M4 epics (and the cross-cutting epics) as issues, adds them to
+   the project, and sets `Phase`, `Mesh gate`, `Area`, `Priority`, `Size`, `Risk`, `Hardware`,
+   `Target`.
 8. Prints the project URL and the next manual steps (views, rulesets, CodeQL, Pages), because
    some features have no stable CLI/API.
 
