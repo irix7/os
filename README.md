@@ -90,9 +90,10 @@ read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths through the 42-
 symbol C shim.  The kernel console is the clean-room `sash` recovery shell over
 telnet and the local keyboard/display (`help`, `ls`, `cat`, `pwd`, `cd`,
 `printenv`, `status`, `hinv`, `packages`, `mount`, `boot`, `reboot`).  The
-`packages` command reads a HACS-style GitHub index; `mount` inspects a remote
-EROFS image over HTTPS Range.  Modules and userland software are distributed
-from that index, not added to the PROM.  The native user hello also exercises a small in-kernel pipe
+`packages` command reads a HACS-style GitHub index
+([`packages/`](packages/README.md)); `mount` inspects a remote EROFS image over
+HTTPS Range.  Modules and userland software are distributed from that index,
+not added to the PROM, and a SCSI disk is optional.  The native user hello also exercises a small in-kernel pipe
 ring (read/write descriptors and `pipe=ok`) and POSIX-2024
 `tcgetwinsize`/`tcsetwinsize` (`winsize=100x40`).  A separate synthetic o32
 probe exercises the first legacy loader/syscall path and reads `/hello.txt`
