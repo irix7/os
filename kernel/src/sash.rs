@@ -263,6 +263,44 @@ fn packages(out: &mut dyn Sink) {
     }
 }
 
+/// Fetch a direct package URL into `out` and return the captured length.
+///
+/// The package index uses raw or release-asset HTTPS URLs.  Redirects are not
+/// followed here; module records continue to use the autoload redirect path.
+fn fetch_package(url: &str, out: &mut [u8]) -> Result<usize, &'static str> {
+    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
+        (true, rest)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (false, rest)
+    } else {
+        (true, url)
+    };
+    let (host_port, path) = match rest.find('/') {
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => (rest, "/"),
+    };
+    if host_port.is_empty() {
+        return Err("empty package host");
+    }
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().map_err(|_| "bad package port")?),
+        None => (host_port, if secure { 443 } else { 80 }),
+    };
+    let ip = crate::telnet::resolve_host(host.as_bytes()).ok_or("unknown package host")?;
+    let (summary, captured) = if secure {
+        crate::tls::get_to(ip, port, host, path, out)?
+    } else {
+        crate::http::get_to(ip, port, host, path, out)?
+    };
+    if summary.status != 200 {
+        return Err("package HTTP status");
+    }
+    if captured == 0 {
+        return Err("empty package body");
+    }
+    Ok(captured)
+}
+
 fn install(out: &mut dyn Sink, name: &[u8]) {
     let Some(index) = fetch_index() else {
         out.write(b"packages: index fetch failed\r\n");
@@ -296,7 +334,38 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
             return;
         };
         if kind == b"userland" {
-            out.write(b"packages: userland install is not implemented\r\n");
+            let image = crate::user::image_buffer();
+            let len = match fetch_package(url, image) {
+                Ok(len) => len,
+                Err(error) => {
+                    let _ = write!(ResultSinkWriter { out }, "packages: {error}\r\n");
+                    return;
+                }
+            };
+            if len % 512 != 0 {
+                out.write(b"packages: userland image is not sector aligned\r\n");
+                return;
+            }
+            let expected = crate::sha256::Sha256(digest);
+            if !crate::sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
+                out.write(b"packages: userland digest mismatch\r\n");
+                return;
+            }
+            let mut offset = 0usize;
+            let mut lba = 0u32;
+            while offset < len {
+                let end = (offset + 64 * 1024).min(len);
+                if let Err(error) = crate::scsi::write_blocks(2, lba, &image[offset..end]) {
+                    let _ = write!(
+                        ResultSinkWriter { out },
+                        "packages: write failed: {error}\r\n"
+                    );
+                    return;
+                }
+                lba += ((end - offset) / 512) as u32;
+                offset = end;
+            }
+            out.write(b"packages: userland written to SCSI target 2; reboot\r\n");
             return;
         }
         match crate::autoload::load_url(url, &crate::sha256::Sha256(digest)) {
