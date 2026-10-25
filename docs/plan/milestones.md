@@ -135,7 +135,7 @@ path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the
 local SCSI cache, with `wasm: runtime=0 ms`; fetch/copy dominate. The
 network-off/local-SCSI boot also exercises the Wasm policy with
 `mcp=disabled`. The full-path load time is recorded as an observation under
-#214, not a gate; the local cache is the preferred optional source. The live
+issue #214, not a gate; the local cache is the preferred optional source. The live
 Wasm-policy bridge is deferred to Phase 5 (#213): M1 accepts the native kernel
 policy plus the
 boot-time Wasm proof, not a resident Wasm authority. **Real-Indy execution was not available in this
