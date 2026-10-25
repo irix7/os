@@ -211,6 +211,17 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/build-user-hello.sh "$RUNNER_TEMP/user-hello"
+      - name: Build hello module
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld" \
+            cargo build --release -Z build-std=core \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target targets/mips3-sgi-irix7-n32.json -p hello-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/hello-module "$RUNNER_TEMP/hello.module"
       - name: Setup IRIS
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@4b00413663a979d15b7ef8cd2208d95a030796a4
@@ -234,6 +245,33 @@ jobs:
           [scsi]
           EOF
 
+          # Serve the hello module from the host gateway; the guest's NAT
+          # gateway is 192.168.0.1. This exercises module autoload without
+          # depending on GitHub raw content during the boot gate.
+          cp "$RUNNER_TEMP/hello.module" "$work/hello.module"
+          python3 -m http.server 18080 --bind 0.0.0.0 --directory "$work" \
+            >"$work/http.log" 2>&1 &
+          http_pid=$!
+          for _ in $(seq 1 50); do
+            if python3 -c 'import socket; socket.create_connection(("127.0.0.1", 18080), 0.2)' 2>/dev/null; then
+              break
+            fi
+            sleep 0.1
+          done
+          python3 - "$work/hello.module" "$work/nvram.bin" <<'PY'
+          import hashlib
+          import sys
+
+          module = open(sys.argv[1], "rb").read()
+          env = (b"mcp.url=http://192.168.0.1:18080/hello.module\0"
+                 b"mcp.sha256=" + hashlib.sha256(module).hexdigest().encode() + b"\0"
+                 b"console=serial0\0\0")
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[2], "wb").write(image)
+          PY
+
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
@@ -244,18 +282,23 @@ jobs:
           pid=$!
           cleanup() {
             status=$?
-            kill "$pid" 2>/dev/null || true
+            kill "$pid" "$http_pid" 2>/dev/null || true
             if [ "$status" -ne 0 ]; then
               echo "--- iris output (tail)"
               tail -50 "$work/iris.out" || true
               echo "--- serial log (tail)"
               tail -50 "$work/serial.log" 2>/dev/null || true
+              echo "--- http log (tail)"
+              tail -20 "$work/http.log" || true
             fi
           }
           trap cleanup EXIT
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
+          # The module prints before the readiness marker, and the default
+          # serial cursor does not rewind, so assert it first.
+          iris-ci --socket "$socket" serial-wait 'hello from a downloaded module' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
