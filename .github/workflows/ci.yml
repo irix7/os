@@ -128,14 +128,16 @@ jobs:
       - name: Build n32 kernel (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
             --target targets/mips3-sgi-irix7-n32.json -p kernel
       - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # The ROM links text at the PROM reset window and data in DRAM.
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
@@ -146,14 +148,16 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           tools/build-user-hello.sh ${{ runner.temp }}/user-hello
 
       - name: Build native target probe (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # This is the hosted native target, not the kernel target: it must expose
           # target_os=irix7 and the unix family for the POSIX libc/std work.
@@ -211,17 +215,17 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/build-user-hello.sh "$RUNNER_TEMP/user-hello"
-      - name: Build hello module
+      - name: Build logical module
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld" \
-            cargo build --release -Z build-std=core \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/logical/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
               -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target targets/mips3-sgi-irix7-n32.json -p hello-module
+              --target targets/mips3-sgi-irix7-n32.json -p logical-module
           "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/hello-module "$RUNNER_TEMP/hello.module"
+            target/mips3-sgi-irix7-n32/release/logical-module "$RUNNER_TEMP/logical.module"
       - name: Setup IRIS
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@4b00413663a979d15b7ef8cd2208d95a030796a4
@@ -245,10 +249,10 @@ jobs:
           [scsi]
           EOF
 
-          # Serve the hello module from the host gateway; the guest's NAT
-          # gateway is 192.168.0.1. This exercises module autoload without
-          # depending on GitHub raw content during the boot gate.
-          cp "$RUNNER_TEMP/hello.module" "$work/hello.module"
+          # Serve the logical module from the host gateway; the guest's NAT
+          # gateway is 192.168.0.1. This exercises module autoload and the M1
+          # local policy without depending on GitHub raw content.
+          cp "$RUNNER_TEMP/logical.module" "$work/logical.module"
           python3 -m http.server 18080 --bind 0.0.0.0 --directory "$work" \
             >"$work/http.log" 2>&1 &
           http_pid=$!
@@ -258,12 +262,12 @@ jobs:
             fi
             sleep 0.1
           done
-          python3 - "$work/hello.module" "$work/nvram.bin" <<'PY'
+          python3 - "$work/logical.module" "$work/nvram.bin" <<'PY'
           import hashlib
           import sys
 
           module = open(sys.argv[1], "rb").read()
-          env = (b"mcp.url=http://192.168.0.1:18080/hello.module\0"
+          env = (b"mcp.url=http://192.168.0.1:18080/logical.module\0"
                  b"mcp.sha256=" + hashlib.sha256(module).hexdigest().encode() + b"\0"
                  b"console=serial0\0\0")
           image = bytearray(8192)
@@ -298,10 +302,11 @@ jobs:
           iris-ci --socket "$socket" start
           # The module prints before the readiness marker, and the default
           # serial cursor does not rewind, so assert it first.
-          iris-ci --socket "$socket" serial-wait 'hello from a downloaded module' --timeout 60
+          iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
           iris-ci --socket "$socket" quit
           wait "$pid"
       - uses: actions/upload-artifact@v4
