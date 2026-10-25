@@ -80,7 +80,7 @@ compatibility layer remain in
 
 ## Current status
 
-**Released:** v0.1.2 is the current native Indy ROM. It boots the assembly ROM,
+**Released:** v0.1.3 is the current native Indy ROM. It boots the assembly ROM,
 tests DRAM, decompresses the n32 kernel, brings up Seeq networking, DHCP/DNS/
 NTP, HTTP/HTTPS, the REX3 boot log, telnet and HTTPS module autoload, then
 enters the static Rust `std` image on SCSI target 2.

@@ -317,7 +317,7 @@ jobs:
               read_until(sock, b"sash> ")
               sock.sendall(b"packages\r\n")
               listing = read_until(sock, b"sash> ")
-              if b"module mcp v0.1.2" not in listing:
+              if b"module mcp v0.1.3" not in listing:
                   raise SystemExit("package index did not list mcp: %r" % listing)
               sock.sendall(b"packages install mcp\r\n")
               installed = read_until(sock, b"sash> ", timeout=60)

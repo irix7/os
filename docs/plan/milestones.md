@@ -10,7 +10,7 @@ phase is a vertical slice with a runnable demo and a hard gate.
 The native Indy bring-up is the base: the assembly ROM tests DRAM and starts
 the n32 kernel, which owns Seeq networking, DHCP/DNS/NTP, HTTP/HTTPS, the REX3
 boot log, telnet, HTTPS module autoload and the static Rust `std` image on
-SCSI target 2. The released image is v0.1.2.
+SCSI target 2. The released image is v0.1.3.
 
 The shared architecture crates are merged and host-tested:
 `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`,
@@ -208,7 +208,7 @@ A phase that breaks these does not pass, even if its Wasm demo works.
 - The Wasm runtime/migration and hardware shims dominate, not the frame format.
 - v1 is L0 migration, per-object linearisability, sharded homes and threshold
   authority. L2 migration, home groups and multi-object transactions are v2.
-- The native v0.1.2 image remains the last shipped release until M1/M2 pass.
+- The native v0.1.3 image remains the last shipped release until M1/M2 pass.
 - A release manifest must state native-only, single-node or mesh-capable; it
   must name the supported hardware matrix.
 

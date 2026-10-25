@@ -152,7 +152,8 @@ Create release milestones only; the `Phase` Project field carries P0–P9 and th
 
 | Milestone | Gate | Contents |
 |---|---|---|
-| `v0.1.2` | released | Native Indy ROM, network, MCP, static std bring-up |
+| `v0.1.2` | previous | Native Indy ROM, network, MCP, static std bring-up |
+| `v0.1.3` | released | Diskless package discovery, remote EROFS mount, current native ROM |
 | `v0.2` | P1–P2 / M1 | Shared architecture crates, single-node logical kernel |
 | `v0.3` | P3 / M2 | Async fabric, two-node routing and migration |
 | `v0.4` | P4–P6 / M3 | Wasm core, PC shim, eight-node path |
