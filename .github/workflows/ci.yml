@@ -439,13 +439,14 @@ jobs:
 
           text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
           native = re.search(
-              r"^m1: root=([0-9a-f]{64}) .*? actor=([0-9a-f]{32}) .*? home=([0-9a-f]{32})",
+              r"^m1: root=([0-9a-f]{64}) .*? actor=([0-9a-f]{32}) "
+              r".*? cap=ok rights=([0-9]+) .*? home=([0-9a-f]{32})",
               text,
               re.MULTILINE,
           )
           wasm = re.search(
-              r"^wasm-policy: root=([0-9a-f]{64}) actor=([0-9a-f]{32}) "
-              r"cap=ok home=([0-9a-f]{32}) "
+              r"^m1-wasm: root=([0-9a-f]{64}) actor=([0-9a-f]{32}) "
+              r"cap=ok rights=([0-9]+) home=([0-9a-f]{32}) "
               r"objects=5 actors=1 queued=1 caps=1$",
               text,
               re.MULTILINE,
@@ -456,7 +457,11 @@ jobs:
               "Wasm policy does not match native policy: "
               f"{native.groups()} != {wasm.groups()}"
           )
-          print("wasm policy matches native root/actor/home:", native.groups()[0])
+          assert native.group(3) == "35", "unexpected M1 rights"
+          print(
+              "wasm policy matches native root/actor/rights/home:",
+              native.groups()[0],
+          )
           PY
           iris-ci --socket "$socket" quit
           wait "$pid"

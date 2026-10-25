@@ -88,6 +88,9 @@ fn lookup(context: usize, path: &str, out: &mut [u8; 32]) -> i32 {
 fn get(context: usize, oid: &[u8; 32], kind: &mut i32, out: &mut [u8; 512]) -> i32 {
     match policy(context).get(&sys_primitives::ObjectId(*oid)) {
         Ok((object_kind, bytes)) => {
+            if bytes.len() > out.len() {
+                return -1;
+            }
             out[..bytes.len()].copy_from_slice(bytes);
             *kind = object_kind as i32;
             bytes.len() as i32
@@ -232,8 +235,8 @@ fn run_policy_guest() {
     let evidence =
         String::from_utf8(EVIDENCE.lock().expect("evidence lock").clone()).expect("utf-8 evidence");
     assert!(evidence.contains("wasm: host=1\n"));
-    assert!(evidence.contains("wasm-policy: root="));
-    assert!(evidence.contains(" cap=ok home="));
+    assert!(evidence.contains("m1-wasm: root="));
+    assert!(evidence.contains(" cap=ok rights=35 home="));
     assert!(evidence.contains("objects=5 actors=1 queued=1 caps=1\n"));
 
     let mut namespace = Namespace::new();

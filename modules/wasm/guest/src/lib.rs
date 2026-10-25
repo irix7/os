@@ -8,7 +8,7 @@
 //! never receives a native pointer or a kernel service table.
 //!
 //! It prints `wasm: host=1` for the host-ABI probe, then
-//! `wasm-policy: root=... actor=... cap=ok home=...` once the policy is
+//! `m1-wasm: root=... actor=... cap=ok rights=35 home=...` once the policy is
 //! committed.  Any failure aborts the stage and returns a non-42 status.
 
 #![no_std]
@@ -75,7 +75,7 @@ fn fail(step: i32) -> i32 {
     unsafe { host_policy_abort() };
     let mut buffer = [0u8; 48];
     let mut out = Out::new(&mut buffer);
-    out.text(b"wasm-policy: FAILED step=");
+    out.text(b"m1-wasm: FAILED step=");
     out.dec(step as usize);
     out.text(b"\n");
     write(out.slice());
@@ -241,11 +241,13 @@ pub extern "C" fn run() -> i32 {
 
     let mut evidence = [0u8; 256];
     let mut out = Out::new(&mut evidence);
-    out.text(b"wasm-policy: root=");
+    out.text(b"m1-wasm: root=");
     out.hex(&root);
     out.text(b" actor=");
     out.hex(&actor);
-    out.text(b" cap=ok home=");
+    out.text(b" cap=ok rights=");
+    out.dec(RIGHTS as usize);
+    out.text(b" home=");
     out.hex(&node);
     out.text(b" objects=");
     out.dec(stats[0] as usize);

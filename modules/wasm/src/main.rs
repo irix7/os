@@ -10,7 +10,7 @@
 //! pointer.
 //!
 //! On success the guest prints `wasm: host=1` and
-//! `wasm-policy: root=... actor=... cap=ok home=...`; this module prints
+//! `m1-wasm: root=... actor=... cap=ok rights=35 home=...`; this module prints
 //! `wasm: run=42`.  A guest trap or a non-42 result aborts the stage, so no
 //! partial object, actor or capability is published.  The kernel's native
 //! `m1:` policy remains the fallback and is not modified by this module.
@@ -339,6 +339,7 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
         Ok(42) => {
             // SAFETY: the module owns this allocation; guest callbacks are done.
             if !unsafe { (*policy).is_committed() } {
+                // SAFETY: the module owns this allocation and the guest has returned.
                 unsafe { (*policy).abort() };
                 log(services, b"wasm: policy not committed\n");
                 return &BAD;
@@ -347,11 +348,13 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
             &OK
         }
         Ok(_) => {
+            // SAFETY: the module owns this allocation and the guest has returned.
             unsafe { (*policy).abort() };
             log(services, b"wasm: wrong result\n");
             &BAD
         }
         Err(_) => {
+            // SAFETY: the module owns this allocation and the guest has returned.
             unsafe { (*policy).abort() };
             log(services, b"wasm: run failed\n");
             &BAD
@@ -361,6 +364,8 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
 
 fn node_id(services: &Services) -> Option<NodeId> {
     let mut text = [0u8; 256];
+    // SAFETY: the service writes at most `text.len()` bytes into the buffer and
+    // returns the number of bytes written.
     let n = unsafe { (services.info)(1, text.as_mut_ptr(), text.len()) };
     if n <= 0 {
         return None;

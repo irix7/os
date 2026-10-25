@@ -667,18 +667,12 @@ impl Host {
             "host_console_write",
             |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
                 let hooks = caller.data().hooks;
-                let Some(Extern::Memory(memory)) = caller.get_export("memory") else {
-                    return;
-                };
                 let len = len.max(0) as usize;
                 if len == 0 || len > 256 {
                     return;
                 }
                 let mut buffer = [0u8; 256];
-                if memory
-                    .read(&caller, ptr.max(0) as usize, &mut buffer[..len])
-                    .is_err()
-                {
+                if !read_memory(&caller, ptr, len, &mut buffer) {
                     return;
                 }
                 (hooks.console_write)(&buffer[..len]);

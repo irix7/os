@@ -10,12 +10,12 @@ capability rights and validates every allow and deny case. It prints
 `wasm: host=1` for the host-ABI probe, then reproducible evidence:
 
 ```text
-wasm-policy: root=<64 hex> actor=<32 hex> cap=ok home=<32 hex> objects=5 actors=1 queued=1 caps=1
+m1-wasm: root=<64 hex> actor=<32 hex> cap=ok rights=35 home=<32 hex> objects=5 actors=1 queued=1 caps=1
 ```
 
-The root, actor, home and capability state match the native `m1:` line. The
-module prints `wasm: run=42` only when the guest returns success and the policy
-is committed.
+The root, actor, rights, home and capability state match the native `m1:` line.
+The module prints `wasm: run=42` only when the guest returns success and the
+policy is committed.
 
 The guest imports only the `i7host` surface; it has no WASI or native import
 and never receives the kernel service table. The host side supplies the clock,
@@ -51,7 +51,8 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld"
   target/mips3-sgi-irix7-n32/release/wasm-module wasm.module
 ```
 
-The image must stay within the 1,572,864-byte slot-B limit. It is linked at
-`0x8848_0000` and loaded with `module b ...` or the NVRAM
+The flat module build uses `core,alloc`; the standalone guest builder uses
+`core` only. The image must stay within the 1,572,864-byte slot-B limit. It is
+linked at `0x8848_0000` and loaded with `module b ...` or the NVRAM
 `wasm.url`/`wasm.sha256` pair, so slot A's MCP module remains live. There is
 still no general relocatable module multiplexer.

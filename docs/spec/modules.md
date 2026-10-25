@@ -209,11 +209,12 @@ small Rust guest, instantiates it with the no_std interpreter and runs its `run`
 export. The guest drives the local policy: it chooses the `/etc` namespace
 layout, stores `/etc/motd`, resolves the root home, derives the local actor,
 chooses the capability rights and validates the allow and deny cases. It prints
-`wasm: host=1`, reproducible `wasm-policy: root=... actor=... cap=ok home=...`
-evidence matching the native `m1:` line, and `wasm: run=42`. The guest imports
-only the `i7host` surface through the no_std `wasm-host` crate; the host side
-supplies the staged CAS/namespace, actor table, capability table, clock and
-console through `HostHooks::policy`. `commit` publishes the stage as one value
+`wasm: host=1`, reproducible `m1-wasm: root=... actor=... cap=ok rights=35 home=...`
+evidence matching the native `m1:` root, actor, rights and home, and `wasm: run=42`.
+The guest imports only the `i7host` surface through its own `extern "C"` block;
+the host side uses the no_std `wasm-host` crate and supplies the staged
+CAS/namespace, actor table, capability table, clock and console through
+`HostHooks::policy`. `commit` publishes the stage as one value
 and the module aborts on a guest trap or a non-42 result, so a failed policy
 leaves no partial object, actor or capability. Load it with `module b ...`;
 slot A (MCP) remains live. The kernel's native `m1:` policy remains the

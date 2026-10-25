@@ -51,6 +51,11 @@ pub const RIGHT_REVOKE: u32 = 1 << 8;
 pub const RIGHT_MANAGE: u32 = 1 << 9;
 
 /// All rights the local table understands.
+///
+/// These are the kernel capability-table bits used by the native `m1:` policy.
+/// They are deliberately not `sys_primitives::Rights`, which is the four-bit
+/// object-fabric wire model; this probe mirrors the native kernel authority it
+/// has to match.
 pub const RIGHTS_ALL: u32 = 0x3ff;
 
 /// Maximum capabilities in the staged and committed tables.
@@ -285,8 +290,9 @@ impl Policy {
     /// Publish the staged policy if it is internally consistent.
     ///
     /// Publication is a single move, so a caller never observes half a
-    /// namespace, an actor without its queue entry or a capability without its
-    /// object.
+    /// namespace or a capability without its object. The guest validates the
+    /// actor/queue relation before calling this; a caller embedding the stage
+    /// directly must do the same.
     pub fn commit(&mut self) -> Result<Stats, PolicyError> {
         let stage = self.stage.take().ok_or(PolicyError::NoStage)?;
         if stage.namespace.store().kind(stage.namespace.root()) != Some(ObjectKind::Tree) {
