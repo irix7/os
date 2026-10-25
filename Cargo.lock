@@ -634,6 +634,9 @@ version = "0.1.0"
 name = "kernel"
 version = "0.1.0"
 dependencies = [
+ "agnostic-core",
+ "cas-core",
+ "cas-store",
  "embedded-io",
  "embedded-tls",
  "erofs",

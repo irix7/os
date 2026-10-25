@@ -27,6 +27,9 @@ cross = []
 erofs-debug = ["dep:erofs"]
 
 [dependencies]
+agnostic-core = { path = "../crates/agnostic-core" }
+cas-core = { path = "../crates/cas-core" }
+cas-store = { path = "../crates/cas-store" }
 embedded-io = { version = "0.7", default-features = false }
 erofs = { path = "../crates/erofs", default-features = false, optional = true }
 hpc3 = { path = "../crates/hpc3" }
