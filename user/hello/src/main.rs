@@ -12,7 +12,8 @@
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicU32, Ordering};
 use native_libc::{
-    _exit, calloc, free, malloc, memalign, memcmp, memcpy, pipe, read, realloc, strlen, write,
+    _exit, calloc, free, malloc, memalign, memcmp, memcpy, pipe, read, realloc, strlen,
+    tcgetwinsize, tcsetwinsize, winsize, write,
 };
 
 /// Forces the loader to map and zero a BSS range beyond the file data.
@@ -184,6 +185,40 @@ pub extern "C" fn _start() -> ! {
     if !write_bytes(b"pipe=ok\n") {
         exit(63);
     }
+
+    let mut initial = winsize::default();
+    if unsafe { tcgetwinsize(1, &mut initial) } != 0
+        || initial.ws_row != 24
+        || initial.ws_col != 80
+    {
+        exit(64);
+    }
+    let resized = winsize {
+        ws_row: 40,
+        ws_col: 100,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if unsafe { tcsetwinsize(1, &resized) } != 0 {
+        exit(65);
+    }
+    let mut readback = winsize::default();
+    if unsafe { tcgetwinsize(1, &mut readback) } != 0
+        || readback.ws_row != 40
+        || readback.ws_col != 100
+    {
+        exit(66);
+    }
+    let restore = winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    if unsafe { tcsetwinsize(1, &restore) } != 0 || !write_bytes(b"winsize=100x40\n") {
+        exit(67);
+    }
+
     unsafe {
         // Exercise the highest mapped stack page.
         core::arch::asm!("sw $zero, -4($sp)", options(nostack));

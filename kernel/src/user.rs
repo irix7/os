@@ -595,6 +595,39 @@ pub fn entropy_user(address: u32, length: u32) -> u32 {
     0
 }
 
+/// POSIX `tcgetwinsize`: copy the 8-byte winsize from the console.
+pub fn tcgetwinsize_user(fd: u32, address: u32) -> u32 {
+    if !range_ok(address, 8) {
+        return u32::MAX;
+    }
+    let mut value = [0u16; 4];
+    if !crate::fd::get_winsize(fd as i32, &mut value) {
+        return u32::MAX;
+    }
+    for (index, field) in value.iter().enumerate() {
+        unsafe {
+            core::ptr::write_volatile((address + index as u32 * 2) as *mut u16, *field);
+        }
+    }
+    0
+}
+
+/// POSIX `tcsetwinsize`: update the console size from the 8-byte winsize.
+pub fn tcsetwinsize_user(fd: u32, address: u32) -> u32 {
+    if !range_ok(address, 8) {
+        return u32::MAX;
+    }
+    let mut value = [0u16; 4];
+    for (index, field) in value.iter_mut().enumerate() {
+        *field = unsafe { core::ptr::read_volatile((address + index as u32 * 2) as *const u16) };
+    }
+    if crate::fd::set_winsize(fd as i32, &value) {
+        0
+    } else {
+        u32::MAX
+    }
+}
+
 /// Create a pipe and write `[read_fd, write_fd]` to the user buffer.
 pub fn pipe_user(address: u32) -> u32 {
     if !range_ok(address, 8) {

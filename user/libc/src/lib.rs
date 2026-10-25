@@ -68,6 +68,24 @@ __irix7_pipe:
     jr      $ra
     nop
 
+    .section .text.__irix7_tcgetwinsize, "ax", @progbits
+    .align 2
+    .globl __irix7_tcgetwinsize
+__irix7_tcgetwinsize:
+    li      $v0, 23
+    syscall
+    jr      $ra
+    nop
+
+    .section .text.__irix7_tcsetwinsize, "ax", @progbits
+    .align 2
+    .globl __irix7_tcsetwinsize
+__irix7_tcsetwinsize:
+    li      $v0, 24
+    syscall
+    jr      $ra
+    nop
+
     .section .text.__irix7_exit, "ax", @progbits
     .align 2
     .globl __irix7_exit
@@ -114,6 +132,8 @@ extern "C" {
     fn __irix7_write(fd: c_int, buf: *const u8, count: usize) -> isize;
     fn __irix7_read(fd: c_int, buf: *mut u8, count: usize) -> isize;
     fn __irix7_pipe(fds: *mut c_int) -> c_int;
+    fn __irix7_tcgetwinsize(fd: c_int, ws: *mut winsize) -> c_int;
+    fn __irix7_tcsetwinsize(fd: c_int, ws: *const winsize) -> c_int;
     fn __irix7_exit(status: c_int) -> !;
     fn __irix7_mmap_anon(length: usize) -> *mut c_void;
     fn __irix7_munmap(address: *mut c_void, length: usize) -> c_int;
@@ -148,6 +168,40 @@ pub unsafe extern "C" fn pipe(fds: *mut c_int) -> c_int {
     let result = __irix7_pipe(fds);
     if result < 0 {
         *__errno_location() = ERRNO_NOMEM;
+        -1
+    } else {
+        0
+    }
+}
+
+/// POSIX `struct winsize`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct winsize {
+    pub ws_row: u16,
+    pub ws_col: u16,
+    pub ws_xpixel: u16,
+    pub ws_ypixel: u16,
+}
+
+/// POSIX `tcgetwinsize`.
+#[no_mangle]
+pub unsafe extern "C" fn tcgetwinsize(fd: c_int, ws: *mut winsize) -> c_int {
+    let result = __irix7_tcgetwinsize(fd, ws);
+    if result < 0 {
+        *__errno_location() = ERRNO_INVAL;
+        -1
+    } else {
+        0
+    }
+}
+
+/// POSIX `tcsetwinsize`.
+#[no_mangle]
+pub unsafe extern "C" fn tcsetwinsize(fd: c_int, ws: *const winsize) -> c_int {
+    let result = __irix7_tcsetwinsize(fd, ws);
+    if result < 0 {
+        *__errno_location() = ERRNO_INVAL;
         -1
     } else {
         0
