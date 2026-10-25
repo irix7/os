@@ -112,8 +112,8 @@ kernel has no mesh transport; the counters are self-tested and the M1 lines asse
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy, fat LTO and `opt-level=z` is 520,376 bytes
-(3,912 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy, fat LTO and `opt-level=z` is 520,312 bytes
+(3,976 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
@@ -132,8 +132,8 @@ The automatic queue, lookup and module multiplexer are still to come.
 no-module path and the slot-B Wasm-policy path; the native and Wasm
 actor/rights/home evidence match; the guest root and actor are distinct, MCP remains loaded in slot A (the v0.1.3 release artifact HTTP bug is tracked), and
 `mesh=0/0/0` is asserted both before and after the optional Wasm probe and
-userland smoke. The rebuilt PROM is 520,376 bytes in CI (local 520,376) of 524,288 bytes
-(3,912 free) and the Wasm module is 1,347,688 bytes (CI; local build 1,347,688), inside the
+userland smoke. The rebuilt PROM is 520,312 bytes in CI (local 520,312) of 524,288 bytes
+(3,976 free) and the Wasm module is 1,347,640 bytes (CI; local build 1,347,640), inside the
 1,572,864-byte slot-B limit. The optional slot-B probe now runs after the
 readiness marker. MCP-only readiness measured 7.3–7.7 s. The instrumented Wasm
 path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the

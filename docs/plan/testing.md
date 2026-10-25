@@ -148,7 +148,7 @@ record. This is the primary diskless gate; a SCSI disk is not a boot, discovery
 or module prerequisite. Package installation from GitHub is exercised
 separately because its release/TLS path is not part of the M1 boot gate.
 
-A slot-B boot serves a 1,347,688-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,347,640-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
 `m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and

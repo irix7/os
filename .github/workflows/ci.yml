@@ -738,8 +738,8 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'file=hello from the IRIX 7 ramfs' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'file=hello from the IRIX 7 ramfs' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 30
           iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
           iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30

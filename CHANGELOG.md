@@ -29,7 +29,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability bound to the root OID prefix at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 520,376 bytes in CI (local 520,376), leaving 3,912 bytes
+  policy image is 520,312 bytes in CI (local 520,312), leaving 3,976 bytes
   under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
@@ -45,9 +45,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `wasm: run=42`. The guest chooses a distinct motd and actor, so root and actor differ; rights and home match the native line;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
-  capability is published. The module is about 1.34 MiB (1,347,688 bytes in CI; local 1,347,688 in
+  capability is published. The module is about 1.34 MiB (1,347,640 bytes in CI; local 1,347,640 in
   the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
-  remains 520,376 bytes in CI (local 520,376, 3,912 bytes free).
+  remains 520,312 bytes in CI (local 520,312, 3,976 bytes free).
 - With a committed Wasm policy, the kernel adopts the guest-chosen actor
   before entering userland; `m1-post` reports that actor. The native fallback
   remains actor 1.
