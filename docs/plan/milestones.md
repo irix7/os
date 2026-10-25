@@ -97,11 +97,13 @@ local-module configuration and exits 0; the CI boot gate uses the smaller native
 hello until the std image is a build artifact. The kernel itself does not start
 that policy yet.
 
-**PROM budget finding:** the first shim slice leaves the compressed PROM at
+**PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
-bytes of headroom, so it was not merged. Runtime policy must therefore ship in
-the core module or a separate core image; it cannot grow the fixed bootstrap.
+bytes of headroom, so it was not merged. The current console/sash plus EROFS
+Range image is 520,840 bytes (3,448 free). Runtime policy, modules and userland
+software must ship in the package index or a separate core image; they cannot
+grow the fixed bootstrap.
 
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms

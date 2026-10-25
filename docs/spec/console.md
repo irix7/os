@@ -60,6 +60,9 @@ The clean-room command set is:
 | `echo TEXT` | Echo the argument |
 | `status`, `net`, `mem`, `time` | Kernel, network, RAM and clock summaries |
 | `hinv` | CPU, memory and network inventory |
+| `packages` | List the GitHub package index |
+| `packages install NAME` | Verify and load a module from the index |
+| `mount URL [...]` | Inspect EROFS over HTTPS Range |
 | `boot` | Retry the target-2 user image |
 | `reboot` | Restart from the PROM |
 
@@ -69,8 +72,9 @@ Telnet additionally retains the kernel-only commands `diagnostics`, `scsi`,
 test hooks.  Sash has no userland, process table or job control dependency.
 
 The local prompt is printed when the target-2 user image returns, or when no
-image is attached.  A user image that never returns therefore keeps the local
-console; telnet sash remains independently available whenever networking is up.
+image is attached.  Telnet sash is independently available whenever networking
+is up.  The `packages` and `mount` commands are deferred so they run outside the
+telnet socket borrow; the local console runs them directly.
 
 ## 4. Native user output
 
