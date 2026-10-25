@@ -49,6 +49,7 @@ pub mod platform;
 pub mod range;
 pub mod readahead;
 pub mod rtc;
+pub mod sash;
 pub mod scheduler;
 pub mod scsi;
 pub mod sha256;
@@ -659,6 +660,7 @@ fn start_userland() {
     user::cleanup();
     console_println("kernel: userland returned to kernel console");
     graphics_console::flush();
+    crate::telnet::local_prompt();
 }
 
 /// Idle loop: poll the resident console service, network, and telnet.
@@ -679,6 +681,7 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         net::poll();
         module::poll();
         telnet::poll();
+        telnet::poll_local();
         if telnet::reboot_requested() {
             reboot();
         }

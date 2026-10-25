@@ -179,7 +179,8 @@ This work continues in parallel and is a gate on every phase:
 - native Indy ROM, Seeq, SCSI, REX3 and DS1386;
 - POSIX/relibc, the 42-symbol bring-up shim and the IRIX 6.5 container;
 - ABI 10 modules and the user SDK;
-- EROFS/HTTP Range and the recovery console.
+- EROFS/HTTP Range and the recovery console (the clean-room `sash` on telnet
+  and the local keyboard/display).
 
 A phase that breaks these does not pass, even if its Wasm demo works.
 

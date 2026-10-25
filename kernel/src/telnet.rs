@@ -439,7 +439,8 @@ fn service(sockets: &mut SocketSet<'static>, console: &mut Console) {
         console.last_cr = false;
         // IAC WILL ECHO, IAC WILL SUPPRESS-GO-AHEAD.
         let _ = sock.send_slice(&[0xFF, 0xFB, 0x01, 0xFF, 0xFB, 0x03]);
-        let _ = sock.send_slice(b"\r\nIRIX 7 kernel console\r\nType `help` for commands.\r\n");
+        let _ =
+            sock.send_slice(b"\r\nIRIX 7 sash (kernel console)\r\nType `help` for commands.\r\n");
         prompt(sock);
     } else if !now_connected {
         console.connected = false;
@@ -523,10 +524,30 @@ fn input(sock: &mut TcpSocket, console: &mut Console, b: u8) {
     }
 }
 
+struct SocketSink<'a, 'b> {
+    sock: &'a mut TcpSocket<'b>,
+}
+
+impl crate::sash::Sink for SocketSink<'_, '_> {
+    fn write(&mut self, bytes: &[u8]) {
+        let _ = self.sock.send_slice(bytes);
+    }
+}
+
 fn execute(sock: &mut TcpSocket, console: &mut Console) {
     let _ = sock.send_slice(b"\r\n");
     let line = &console.line[..console.line_len];
     let line = trim(line);
+
+    {
+        let mut sink = SocketSink { sock: &mut *sock };
+        if crate::sash::execute(line, &mut sink) {
+            console.line_len = 0;
+            drain_to_socket(sock);
+            prompt(sock);
+            return;
+        }
+    }
 
     match line {
         b"" => {}
@@ -758,8 +779,89 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
     prompt(sock);
 }
 
+/// The local keyboard/display sash line buffer.  It is independent of the
+/// telnet socket so sash still works with `net=off`.
+static mut LOCAL_LINE: [u8; LINE_LEN] = [0; LINE_LEN];
+static mut LOCAL_LEN: usize = 0;
+
+struct LocalSink;
+
+impl crate::sash::Sink for LocalSink {
+    fn write(&mut self, bytes: &[u8]) {
+        crate::write_bytes(bytes);
+    }
+}
+
+/// Print a local sash prompt on the graphics and serial consoles.
+pub fn local_prompt() {
+    crate::write_bytes(b"sash> ");
+}
+
+/// Poll the local keyboard and feed it to the local sash session.
+pub fn poll_local() {
+    loop {
+        let Some(key) = crate::kbd::poll_key() else {
+            break;
+        };
+        let byte = match key {
+            crate::kbd::Key::Char(byte) => byte,
+            crate::kbd::Key::Enter => b'\r',
+            crate::kbd::Key::Backspace => 0x7F,
+            crate::kbd::Key::Escape => 0x1B,
+            _ => continue,
+        };
+        local_input(byte);
+    }
+}
+
+fn local_input(byte: u8) {
+    match byte {
+        b'\r' | b'\n' => {
+            crate::write_bytes(b"\r\n");
+            let line = unsafe { &LOCAL_LINE[..LOCAL_LEN] };
+            let mut sink = LocalSink;
+            if !crate::sash::execute(line, &mut sink) {
+                crate::sash::Sink::write(&mut sink, b"unknown command; type `help`\r\n");
+            }
+            unsafe {
+                LOCAL_LEN = 0;
+            }
+            local_prompt();
+        }
+        0x08 | 0x7F => unsafe {
+            if LOCAL_LEN > 0 {
+                LOCAL_LEN -= 1;
+                crate::write_bytes(b"\x08 \x08");
+            }
+        },
+        0x03 => unsafe {
+            LOCAL_LEN = 0;
+            crate::write_bytes(b"^C\r\n");
+            local_prompt();
+        },
+        byte if (0x20..0x7F).contains(&byte) => unsafe {
+            if LOCAL_LEN < LINE_LEN {
+                LOCAL_LINE[LOCAL_LEN] = byte;
+                LOCAL_LEN += 1;
+                crate::write_bytes(&[byte]);
+            }
+        },
+        _ => {}
+    }
+}
+
+/// Ask the idle loop to retry the target-2 user image.
+pub fn request_boot() {
+    BOOT_REQUESTED.store(true, Ordering::SeqCst);
+}
+
+/// Ask the idle loop to restart from the PROM.
+pub fn request_reboot() {
+    REBOOT_REQUESTED.store(true, Ordering::SeqCst);
+}
+
 fn prompt(sock: &mut TcpSocket) {
-    let _ = sock.send_slice(b"kernel> ");
+    let _ = sock.send_slice(b"sash> ");
 }
 
 fn trim(mut line: &[u8]) -> &[u8] {
