@@ -17,8 +17,9 @@ The architecture adds a second test axis: the same logical computer at **1, 2, 8
 | M4 | 128-node simulator/QEMU: ≤2 normal hops, no global queue/lock/all-to-all, eight-node failure, churn, 1M OIDs, 10k actors |
 
 The policy-level gates already run in `crates/mesh-sim` against the real
-`mesh-service` membership table and `mesh-core` rendezvous. They do not prove a
-running mesh. The fabric, capability, CAS and Wasm host crates have host tests;
+`mesh-service` membership table and `mesh-core` rendezvous. The kernel now
+prints its single-node identity and initialises the same membership policy at
+boot; this is M1 boot evidence, not a mesh. The fabric, capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:

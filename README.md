@@ -109,8 +109,9 @@ delivery, termios or socket API yet.
 - `wasm-host` — deterministic wasmi lifecycle prototype with fuel metering and
   the `i7host` import surface; it runs a WAT module, not the kernel core.
 
-The kernel does not yet run the Wasm core or join a mesh. The M1/M2 gates are
-the next hard milestones.
+The kernel now initialises the one-node membership view from the DS1386 MAC and
+resolves local object homes through the shared rendezvous policy. It does not
+yet run the Wasm core or join a mesh; M1 is partial and M2 is still ahead.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 10,
 user SDK and `wasm-abi` v1. The production POSIX layer is the

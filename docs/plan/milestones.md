@@ -59,7 +59,9 @@ covers membership and failure state; `fabric` covers tags, streams, cancellation
 covers OIDs/manifests and `cas-store` covers put/pin policy; `cap-engine`
 covers Ed25519, trust, threshold roots and home certificates; `agnostic-core`
 covers actor home/host/lifecycle; `wasm-host` runs an `i7host` WAT module;
-`mesh-sim` passes 1/2/8/128 policy gates. The native kernel still boots unchanged.
+`mesh-sim` passes 1/2/8/128 policy gates. The native kernel also initialises the
+one-node membership view from the DS1386 MAC and exercises local home policy;
+it does not yet construct a mesh frame.
 
 **Exit:** native image boots; new crates host-tested and wasm32-checked where
 applicable; clippy/deny clean; no existing public API changes.

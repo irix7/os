@@ -38,9 +38,9 @@ ramfs, `stat`, `read_dir`, `chdir` and relative paths through a provisional
 syscall ABI and a 42-symbol C shim.
 
 The architecture foundation is merged: `sys-primitives`, `mesh-core`, `mesh-service`,
-`fabric`, `guest-abi`, `cas-core`, `cap-engine`, `mesh-sim` and a host-only
-`wasm-host` prototype. They are host-tested; the kernel does not yet run the
-Wasm core or join a mesh.
+`fabric`, `guest-abi`, `cas-core`, `cas-store`, `cap-engine`, `agnostic-core`,
+`mesh-sim` and a host-only `wasm-host` prototype. The kernel now initialises
+the one-node membership view; it does not yet run the Wasm core or join a mesh.
 
 The relibc n32 big-endian Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).
 A provisional IRIX PAL scaffold builds and links C probes but has not been
