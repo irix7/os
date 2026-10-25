@@ -92,10 +92,14 @@ pub extern "C" fn user_elf() {
             return;
         }
     };
-    if elf.abi() != Abi::N32 {
-        crate::print_str("userelf: not an n32 ELF\n");
-        return;
-    }
+    let user_abi = match elf.abi() {
+        Abi::N32 => crate::traps::UserAbi::N32,
+        Abi::O32 => crate::traps::UserAbi::O32,
+        _ => {
+            crate::print_str("userelf: not an o32/n32 ELF\n");
+            return;
+        }
+    };
     let plan = match elf.load_plan() {
         Ok(plan) => plan,
         Err(error) => {
@@ -171,7 +175,7 @@ pub extern "C" fn user_elf() {
     crate::print_str("userelf: entry=0x");
     crate::print_hex32(plan.entry());
     crate::println("");
-    traps::run_user(plan.entry(), user_sp, argc, argv, envp)
+    traps::run_user_abi(user_abi, plan.entry(), user_sp, argc, argv, envp)
 }
 
 /// Release every pair the loader mapped and clear the user range table.

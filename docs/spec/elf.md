@@ -235,9 +235,12 @@ cargo test -p irix-elf
 
 The kernel's `userelf` path is the first consumer of the load plan.  It is used
 by the automatic post-boot handoff and by the telnet `userelf` command.  It reads
-up to 256 KiB from SCSI target 2 LBA 0 in 64 KiB chunks, accepts an n32 `ET_EXEC`
-image, maps each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at
-`e_entry` with a four-page user stack at `0x7FF0_0000` in real `KSU=user` mode.
+up to 256 KiB from SCSI target 2 LBA 0 in 64 KiB chunks, accepts an n32 or o32
+`ET_EXEC` image, maps each `PT_LOAD` memory range into kuseg, zeroes BSS and
+enters at `e_entry` with a four-page user stack at `0x7FF0_0000` in real
+`KSU=user` mode.  The loader records the image ABI; the syscall path has a
+minimal o32 bridge for classic `write(4)`, `exit(1)` and `getpid(20)`, with
+provisional `$a3` error signalling.
 It maps 4 KiB pages in JTLB even/odd pairs starting at index 4; the 1 MiB heap uses
 two 256 KiB page pairs.  User pages are cacheable so LL/SC atomics are defined.
 
@@ -247,7 +250,10 @@ carry `argc`, `argv` and `envp` on entry.  The fixture uses `"hello"`,
 `"PATH=/"` and `"HOME=/"`.
 
 This is deliberately narrow.  There is no process table, address-space teardown,
-dynamic linker, o32 support or full POSIX libc.  The provisional syscall set is
+dynamic linker or full POSIX libc.  The o32 path is a synthetic loader/syscall
+probe (`user/o32-hello`), not an IRIX 6.5 application; the IRIX libc, `rld`,
+`sproc`, signals and the full decoder are still absent.  The provisional n32
+syscall set is
 `write`, `read`, `exit`, `mmap`/`munmap`/`mprotect`, `open`/`close`/`fcntl`/`dup`,
 `getcwd`/`chdir`, `poll`, `signal`, `getentropy`, `clock_gettime`, `getpid`,
 `fstat`/`stat`, `readdir` and `nanosleep`.  The kernel has a small fd table with

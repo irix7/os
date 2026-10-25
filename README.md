@@ -89,7 +89,9 @@ enters the static Rust `std` image on SCSI target 2.
 read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths through the 42-
 symbol C shim.  The native user hello also exercises a small in-kernel pipe
 ring (read/write descriptors and `pipe=ok`) and POSIX-2024
-`tcgetwinsize`/`tcsetwinsize` (`winsize=100x40`). The kernel stack top is `0x88300000`; the loader uses cacheable
+`tcgetwinsize`/`tcsetwinsize` (`winsize=100x40`).  A separate synthetic o32
+probe exercises the first legacy loader/syscall path (`hello from o32`); it is
+not an IRIX 6.5 application and the container remains ahead. The kernel stack top is `0x88300000`; the loader uses cacheable
 user pages, real 256 KiB PageMask pairs, a 64-bit trap frame and LL-bit
 clearing. There is no process table, threads/TLS, `posix_spawn`, signal
 delivery, termios or socket API yet.
