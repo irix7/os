@@ -128,14 +128,16 @@ jobs:
       - name: Build n32 kernel (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
             --target targets/mips3-sgi-irix7-n32.json -p kernel
       - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # The ROM links text at the PROM reset window and data in DRAM.
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
@@ -146,14 +148,16 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/user-hello-target
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           tools/build-user-hello.sh ${{ runner.temp }}/user-hello
 
       - name: Build native target probe (build-std)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          export RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin"
+          export RUST_LLD_DIR
           export PATH="$RUST_LLD_DIR:$PATH"
           # This is the hosted native target, not the kernel target: it must expose
           # target_os=irix7 and the unix family for the POSIX libc/std work.
