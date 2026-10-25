@@ -76,7 +76,6 @@ fn pair_of(address: u32) -> u32 {
 /// trampoline in `traps.rs`.  A load failure returns to the console wrapper.
 #[no_mangle]
 pub extern "C" fn user_elf() {
-    cleanup();
     let image = unsafe { &mut *core::ptr::addr_of_mut!(ELF_BUF) };
     // The WD33C93 READ(6) path used by the bring-up SCSI driver is limited to
     // 255 sectors, so pull the image in 64 KiB chunks.
@@ -95,6 +94,24 @@ pub extern "C" fn user_elf() {
         offset += chunk;
     }
 
+    run_image(image);
+}
+
+/// Load and enter an image already staged in [`ELF_BUF`].
+///
+/// `image` may be shorter than the buffer; only the supplied bytes are parsed.
+/// On success this does not return; on a load failure it returns to the
+/// caller.  The caller must have set up the console trampoline when entering
+/// from a console command.
+#[no_mangle]
+pub extern "C" fn user_loaded() {
+    let image = image_buffer();
+    run_image(image);
+}
+
+/// Shared loader body for target-2 and in-RAM userland images.
+pub fn run_image(image: &[u8]) {
+    cleanup();
     let elf = match Elf::parse(image) {
         Ok(elf) => elf,
         Err(error) => {

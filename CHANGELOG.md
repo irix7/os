@@ -16,8 +16,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `packages install NAME` now installs userland images: it fetches the record
   into the 256 KiB loader buffer, verifies its SHA-256, writes it to SCSI
   target 2 with HPC3 DMA, and leaves the user to `reboot`.
+- `packages run NAME` fetches and verifies a userland image and enters it from
+  RAM without a SCSI disk.
 - Release builds use thin LTO.  The unreleased userland-install image is
-  499,644 bytes, leaving 24,644 bytes under the PROM limit; the v0.1.3 release
+  499,804 bytes, leaving 24,484 bytes under the PROM limit; the v0.1.3 release
   remains 520,840 bytes.
 
 ## [0.1.3] — 2026-10-25

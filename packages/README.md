@@ -28,7 +28,8 @@ https://raw.githubusercontent.com/irix7/os/main/packages/index.conf
 
 `packages` lists the index.  `packages install NAME` loads a module record, or
 writes a verified userland image to SCSI target 2 when that disk is present;
-`reboot` then runs it.  A SCSI disk is never required: if one is present it is an
+`reboot` then runs it.  `packages run NAME` runs a userland image directly
+from RAM without a SCSI disk.  A SCSI disk is never required: if one is present it is an
 opportunistic cache, not a dependency.
 
 The index can move to a separate `irix7/packages` repository without changing
