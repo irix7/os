@@ -6,6 +6,13 @@
 **Related:** `docs/map.md` (project map); `github.com/irix7/project` (toolchain + ADRs 0001–0020); `github.com/irix7/os` (this repo, planned)
 **Research inputs:** [`../research/`](../research/) — the hardware, X11, native-window, filesystem, Plan 9 and EROFS reports
 
+> **Implementation status (2026-10-25):** the replacement ROM is a MIPS III
+> **assembly** stub, not a Rust ROM.  It sizes and tests DRAM, brings up the
+> serial console, LZ4-decompresses the n32 kernel and jumps to it.  The kernel
+> owns the network stack, TLS, HTTPS module fetch and the telnet console.  The
+> R2 boot bundle and EROFS root below are future production work; the current
+> user path is a static `std` image on SCSI target 2.
+
 ---
 
 ## Contents
@@ -115,8 +122,8 @@ only configuration. ISDN is explicitly out of scope.
 2. **Hardware wins where it must.** The framekernel keeps the core safe, but drivers
    may use `unsafe` when an abstraction would cost a feature or unacceptable
    performance. Every such use is documented and contained.
-3. **Do not depend on dead hardware.** The R2 boot path works without a SCSI disk. A
-   local cache is opportunistic.
+3. **Do not depend on dead hardware.** The future R2 boot path works without a SCSI
+   disk. A local cache is opportunistic.
 4. **Authority is a capability, not a name.** A path, a namespace or a mount point is
    not a security boundary in a single-address-space kernel.
 5. **Measure for information, not for gates.** Benchmarks are tracked; they do not
@@ -152,7 +159,7 @@ All governing decisions apply. The numbered, dated ADRs live in
 | 0013 | Full reimplementation, factory PROM | Clean-room reimplementation |
 | 0014 | Harness-enforced clean-room | Hybrid transcription |
 | 0015 | Layered spec, similarity screen | This document's verification |
-| 0016 | Rust ROM replaces the factory PROM; n32/MIPS III from the PROM window into the n32 kernel | Boot path |
+| 0016 | Assembly replacement ROM replaces the factory PROM; n32/MIPS III from the PROM window into the n32 kernel | Boot path |
 | 0017 | Modern equivalents as references | Research method |
 | 0018 | GCC backend primary, LLVM parallel | Codegen |
 | 0019 | IRIX fork on `rust-lang/gcc` | GCC 17 trunk + libgccjit |
@@ -199,9 +206,9 @@ normative for this spec.
 
 | ID | Decision | Rationale |
 |---|---|---|
-| D20 | **Minimal Rust ROM + boot bundle from R2** | The ROM has the Seeq driver; the bundle carries network, block, FS and init cells |
+| D20 | **Minimal assembly ROM; kernel-owned network and HTTPS modules** | The ROM only sizes DRAM, brings up serial, decompresses the kernel and jumps; the kernel owns Seeq, TLS, module fetch and the boot bundle later |
 | D21 | **Root image: standard little-endian EROFS + byte-order codec** | No fork; keeps Linux/`fsck`/`dump` as an independent oracle |
-| D22 | **R2-first boot; optional local cache** | A working SCSI disk may cache blocks; nothing depends on it |
+| D22 | **Network-first boot; optional local cache** | Boot config and modules arrive over HTTPS; an R2/EROFS root and local block cache are later work |
 | D23 | **XFS compatibility server read-only first; native FS (I7FS preferred, RedoxFS fallback) decided later** | XFS read-only is tractable; write is the long pole; the native FS choice can wait |
 | D24 | **User data: periodic batched Git commits (small) + R2 (large)** | Git's strengths for versioned text; object storage for media |
 | D25 | **Networking: Seeq 8003 + smoltcp; `/net` tree; optional 9P** | One owner, dual-stack, scriptable |
@@ -257,7 +264,7 @@ This is grounded in `irix7/project`, not speculation.
 | rustc | nightly, `-Z build-std` for `core`/`alloc` | codegen proven |
 | Codegen backend | `rustc_codegen_gcc` (libgccjit from §3.1) — **primary** | ADR-0018 |
 | Parallel path | LLVM custom target `mips3-sgi-irix7-n32` (n32/MIPS III) | codegen proven |
-| ABI | ROM and kernel are both n32/MIPS III; o32 belongs to the compatibility container | — |
+| ABI | ROM assembly and the kernel are n32/MIPS III; o32 belongs to the compatibility container | — |
 
 The local kernel/module target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM
 path).  The hosted native target is `targets/mips3-sgi-irix7-native-n32.json`
@@ -265,9 +272,9 @@ path).  The hosted native target is `targets/mips3-sgi-irix7-native-n32.json`
 is not used by the kernel.
 
 Current status (`stack.md` §5): codegen and `-Z build-std` for n32 are **proven**;
-the ROM boots from the PROM image and runs DHCP/NTP/HTTP under iris; the IRIX patch
-series applies cleanly to `rust-lang/gcc` — **proven**; GCC-backend build — **blocked**
-on disk space (the host is 99% full).
+the assembly ROM boots from the PROM image, and the kernel runs DHCP/NTP/HTTP under
+iris; the IRIX patch series applies cleanly to `rust-lang/gcc` — **proven**;
+GCC-backend build — **blocked** on disk space (the host is 99% full).
 
 Prior art on Rust IRIX targets (issue #41 research): `danifunker/rust-irixlibstd`
 (o32/MIPS II + n32/MIPS III) and `atomchild411/rust-irix` (rustc fork, n32/MIPS IV).
@@ -279,8 +286,9 @@ Conclusion: no rustc/LLVM fork is required; a custom n32/MIPS III target spec +
 - `#![no_std]`, `#![no_main]`, `#[panic_handler]`, `panic = "abort"` in both profiles.
 - No unwinding on bare metal.
 - The kernel is n32/MIPS III.
-- The boot ROM is a separate `no_std` artefact, built for n32/MIPS III and executed directly
-  from the PROM socket at `0xBFC00000`; it does not rely on the factory ARCS ECOFF loader.
+- The boot ROM is a separate MIPS III **assembly** artefact, executed directly from the
+  PROM socket at `0xBFC00000`; it does not rely on the factory ARCS ECOFF loader and
+  contains no Rust.
 - `-Z build-std` builds `core` and `alloc` for the kernel target today.  A hosted
   native target is planned for the POSIX.1-2024 libc and Rust `std`; the kernel and
   loadable modules remain `no_std` and must not link it.
@@ -304,7 +312,7 @@ harness is the regression guard.
 |---|---|---|
 | Host-toolchain glue | Clean builds need `cc` and `pkg-config` | CI installs GCC; the Nix devshell provides both |
 | GCC-backend disk space | Cannot build `rustc_codegen_gcc` | Free space; build on a larger volume; use the LLVM path in the meantime |
-| MIPS III + o32 | Legacy o32 binaries need a MIPS II decoder | ROM and kernel are n32/MIPS III; the compatibility container owns o32 |
+| MIPS III + o32 | Legacy o32 binaries need a MIPS II decoder | ROM assembly and the kernel are n32/MIPS III; the compatibility container owns o32 |
 | Big-endian Rust ecosystem | Some crates assume little-endian | Use explicit codecs; test on the Indy; prefer endian-neutral crates |
 
 ---
@@ -1004,10 +1012,10 @@ All drivers are **de-privileged cells** (D17). A driver:
 - is restartable: if a driver cell faults, the supervisor can revoke its capabilities and
   restart it without rebooting the kernel (a future goal; v1 may panic on a driver fault).
 
-The ROM's network driver and the framework's early serial/framebuffer console are the
+The kernel's network driver and the framework's early serial/framebuffer console are the
 exceptions to "all drivers are cells": they must exist before any cell can be loaded. The
-ROM driver lives in the boot ROM so the ROM can fetch the kernel and boot bundle (§10);
-the early console is replaced by the console cell once the boot bundle starts.
+network driver lives in the kernel because the ROM has no network stack; the early console
+runs until the console cell replaces it.
 
 ### 9.2 The `ctl`/`data`/`status` interface
 
@@ -1038,7 +1046,7 @@ onto the same files.
 | Video in | Vino | Input-only, composite/S-Video, 4 KiB descriptors, two channels | Vino cell |
 | RTC/NVRAM | Dallas DS1386 | Wall clock, NVRAM, watchdog | framework + RTC cell |
 | Expansion | GIO32/GIO64 | Product ID word, no hotplug, 32-bit addressing, DMA TLB | per-card |
-| Firmware | SGI PROM/ARCS (factory) | o32/ECOFF, memory descriptor list, environment variables; replaced by the n32 Rust ROM | boot |
+| Firmware | SGI PROM/ARCS (factory) | o32/ECOFF, memory descriptor list, environment variables; replaced by the n32 assembly ROM | boot |
 
 ### 9.4 Subsystem notes
 
@@ -1094,10 +1102,10 @@ full SGI product-ID table is incomplete in the available sources, so the OS matc
 known IDs and on the ARCS device tree.
 
 **PROM/ARCS.** The *factory* PROM is o32/ECOFF-only. It provides the memory descriptor list,
-environment variables, console and disk/network loaders. The Rust ROM replaces the factory
-firmware entirely: it is a raw n32/MIPS III image executed from the PROM socket at
-`0xBFC00000`, not an ECOFF image loaded by ARCS. The factory PROM remains a fallback and the
-source of the reset-time hardware state.
+environment variables, console and disk/network loaders. The replacement ROM is a raw n32
+MIPS III **assembly** image executed from the PROM socket at `0xBFC00000`, not an ECOFF
+image loaded by ARCS. It has no Rust and no network stack. The factory PROM remains a
+fallback and the source of the reset-time hardware state.
 
 ### 9.5 Interrupts and timers
 
@@ -1145,19 +1153,19 @@ devices on the critical path for the display and boot loops. SCSI, HAL2 and Vino
 
 ### 10.1 Boot paths
 
-There are three boot paths, in order of preference:
+Current and planned boot paths:
 
-1. **Production: Rust ROM → R2 → kernel → EROFS root.** The ROM has the Seeq driver and a
-   small network stack; it fetches the kernel and boot bundle from R2, verifies their
-   SHA-256 digests, jumps to the kernel, and the kernel mounts the root image from R2 over
-   HTTP Range.
-2. **Fallback: SGI PROM/ARCS → local disk or TFTP → kernel.** The factory PROM loads an
-   o32 ECOFF image. This is the tracer-bullet path (ADR-0016) and the recovery path when
-   the network or R2 is unavailable.
-3. **Emulator: iris direct load.** The emulator can load an ELF/ECOFF image directly,
-   bypassing the ROM; this is the fastest development loop.
+1. **Current: assembly ROM → kernel → HTTPS modules → SCSI target-2 image.** The ROM
+   sizes and tests DRAM, brings up serial, LZ4-decompresses the kernel and jumps.  The
+   kernel owns Seeq/smoltcp, TLS and module autoload, then enters the native image.
+2. **Future production: kernel → boot bundle → EROFS root from R2/HTTPS.** The bundle
+   carries the network, block, FS, init and MCP cells; the root is mounted over HTTP
+   Range, with an optional local cache.
+3. **Development: iris direct load.** The emulator can load an ELF/ECOFF image directly,
+   bypassing the ROM; this is the fastest development loop.  The factory PROM/ARCS path
+   is not implemented.
 
-### 10.2 Phase 1: the Rust ROM
+### 10.2 Phase 1: the assembly ROM
 
 The ROM is a pure MIPS III assembly stub; the kernel owns everything after the jump:
 
@@ -1275,26 +1283,24 @@ decompression and network I/O, which is why standard EROFS is the right call.
 
 ### 10.9 Boot sequence
 
-1. ROM initialises the CPU, caches, memory controller (read-only), serial and Seeq.
-2. ROM brings up smoltcp, DHCP (or static), DNS and the R2 endpoint.
-3. ROM fetches `kernel` and `boot.bundle`; verifies SHA-256; loads them at the agreed
-   addresses; flushes caches.
-4. ROM jumps to the kernel entry with a boot-info structure (memory map, console, MAC,
-   R2 URL, digests).
-5. Kernel initialises traps, TLB, frame allocator, scheduler and capability table.
-6. Kernel starts the boot-bundle cells: network, block, FS, init, MCP.
-7. The network cell reinitialises the Seeq and takes over `/net`.
-8. The FS cell mounts the EROFS root from R2 over HTTP Range; the block cell caches blocks
-   in RAM and, if present, on the local disk.
-9. The MCP cell starts the control plane; the agent connects.
-10. `init` starts the display server, audio server, graphics server and user session.
-11. The watchdog is armed; the idle loop runs.
+1. ROM initialises the CPU, caches and memory controller, tests DRAM, brings up the serial
+   console, LZ4-decompresses the kernel from PROM to `0x8804_0000` and jumps.
+2. Kernel initialises traps, TLB, frame allocator, scheduler and capability table.
+3. Kernel initialises the DS1386 RTC/NVRAM, Seeq, smoltcp, DHCP (with renewals), DNS, NTP,
+   ICMP and the telnet console.
+4. Kernel fetches `boot/config.conf` over HTTPS and autoloads digest-checked modules.
+5. Kernel enters the native n32 image on SCSI target 2; modules can return a tick callback
+   and serve TCP ports.
+6. The watchdog is armed; the idle loop runs.
+7. Future: the kernel fetches the boot bundle, starts the network/block/FS/init/MCP cells,
+   mounts the EROFS root from R2 over HTTP Range and starts `init`, the display server,
+   audio server and user session.
 
 ### 10.10 Failure modes
 
 | Failure | Behaviour |
 |---|---|
-| R2 unreachable | ROM retries; if it fails, fall back to the PROM/local image; the OS can boot a minimal rescue bundle |
+| R2 unreachable | Kernel retries; a failed boot-config/module fetch sets `BOOT-NOT-READY`. A future rescue bundle provides the fallback. |
 | Hash mismatch | Refuse to boot the image; log the expected/actual digest; fall back |
 | Root image 404 | Boot the boot bundle's rescue shell; network cell reports the error |
 | Kernel hang | DS1386 watchdog resets; MCP reconnects |
@@ -1452,8 +1458,8 @@ coupling erode the schedule advantage.
 
 The Seeq 8003 is a 10 Mbit Ethernet controller with eight registers and HPC3 PBUS DMA.
 The practical throughput is about 1.25 MB/s; the HPC3 aggregate is ~30 MB/s, so the
-network is the bottleneck for boot. The driver is a de-privileged cell; the ROM has its
-own minimal copy.
+network is the bottleneck for boot. The long-term driver is a de-privileged cell; during
+bring-up the kernel carries a polled/DMA Seeq driver, and the ROM has no network stack.
 
 ### 12.2 Stack
 
@@ -1497,18 +1503,16 @@ because it makes the network scriptable and MCP-wrappable.
 
 ### 12.4 Boot networking
 
-The ROM's network stack is a reduced smoltcp:
+The ROM has no network stack.  The kernel brings up smoltcp after the jump:
 
 1. Reset and initialise the Seeq; read the MAC from the DS1386 NVRAM.
-2. DHCP (or a static address from NVRAM) and DNS.
-3. Resolve the R2 endpoint; open a TCP connection.
-4. HTTP GET the kernel and boot bundle; verify SHA-256; load.
-5. Hand the network state (MAC, IP, gateway, DNS) to the kernel in the boot-info
-   structure; the kernel's network cell reinitialises the device.
+2. DHCP (or a static address from NVRAM), DNS and NTP.
+3. Fetch `boot/config.conf` over HTTPS/TLS 1.3 with chain verification.
+4. Fetch each module, verify its SHA-256, and call its entry through the C service table.
+5. Future: fetch the boot bundle and mount the EROFS root from R2 over HTTP Range.
 
-The ROM does not run TLS in v1. The public image is not secret; the digest is the
-integrity boundary. If the R2 bucket is private, the ROM can use a pre-signed URL baked
-into the boot configuration; TLS is future work.
+The ROM's only transport is the serial console.  The kernel's TLS root is embedded and
+module execution is gated on the SHA-256 digest in the boot configuration.
 
 ### 12.5 Performance
 
@@ -1930,7 +1934,7 @@ corresponding implementation phase.
 - R2 bucket layout, CDN caching headers, and the pre-signed URL strategy for a private
   bucket.
 - The local cache format and eviction policy.
-- Whether the ROM should speak TLS at all; v1 uses HTTP + digest.
+- Kernel TLS scope and certificate-root rotation; the ROM has no network stack.
 
 ### 17.4 Kernel and ABI
 

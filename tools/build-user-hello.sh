@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # Build the native n32 user hello ELF and wrap it as a raw SCSI image for
-# the telnet `userelf` command.
+# the automatic target-2 handoff (also loadable with the telnet `userelf` command).
 set -eu
 
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

@@ -9,8 +9,9 @@ The ROM and the kernel are **one program**, split across two load addresses:
 
 There is no BIOS/firmware boundary between them. The kernel must use the objects and state
 the ROM initialised, in place, as native parts of the same system. It must not re-create
-the network stack, console, timers or other shared state after the handoff. Calls between
-the two address ranges are normal intra-program calls.
+the DRAM geometry, memory-controller mapping or serial console the ROM set up. The kernel
+initialises the network stack, timers, graphical console and telnet console once; those
+were not ROM state. Calls between the two address ranges are normal intra-program calls.
 
 Consequences:
 
@@ -29,6 +30,25 @@ Consequences:
   falls back to the register handoff when `BootInfo` is absent.
 - The telnet console lives in the **kernel**. The ROM's only console is the serial
   line, and it stops being used once the kernel has taken over.
+
+## Userland and POSIX
+
+- The production C/POSIX layer is the clean-room [relibc fork](https://github.com/irix7/relibc)
+  on `irix7-n32`: n32, big-endian, 64-bit `time_t`/`off_t`, and POSIX.1-2024 as the
+  userland contract.  Its Linux/QEMU gate passes TLS, `setjmp` and pthreads.  A
+  provisional `irix7-pal` scaffold builds and links C probes, but it has not run on
+  IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
+- The current running user image is a static Rust `std` probe.  It uses the 42-symbol
+  `crates/irix7-libc` shim and provisional kernel syscalls, a small console/ramfs fd
+  table, a 1 MiB 256 KiB-page heap, and a four-page stack.  It is single-threaded and
+  has no process table, threads/TLS, `posix_spawn`, signals, termios or sockets.
+- Do not present the bring-up shim as the final libc, or the provisional syscalls as
+  the native capability ABI.  `docs/spec/native-abi.md` and `docs/spec/native-libc.md`
+  are the contracts; `docs/research/std-hello-bringup.md` records the bring-up.
+- The Stage 0 CPU/MMU gate is in place: user mode uses the correct `Status.KSU`
+  and `UX` bits, the XTLB vector is installed, user pages are cacheable and
+  LL/SC-safe, PageMask uses the R4000 encodings, the trap frame is 64-bit and
+  LL is cleared on traps.  Do not regress these in thread or process work.
 
 ## Other standing requirements
 
@@ -86,7 +106,8 @@ Consequences:
   updates that file with immutable raw module URLs and SHA-256 digests. A local test rig
   may override the same keys through the DS1386 environment (`mcp.url`, `mcp.sha256`) at
   register offset `0x10` (one byte per 32-bit word in the low lane). A failed fetch or
-  digest leaves the machine at the menu and runs nothing. The module reads the optional
+  digest records `autoload: ...`, the boot continues with a `BOOT-NOT-READY` marker,
+  and no unverified module runs. The module reads the optional
   `mcp.token` through the ABI v7 `config_get` service and requires a bearer token on
   `POST /mcp` when it is set. NVRAM is a hardware chip, not a distribution channel: the
   kernel validates it at startup and rewrites a blank or corrupt environment and MAC.

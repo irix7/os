@@ -11,7 +11,7 @@
 | ID | Milestone | Demo | Estimate | Release |
 |---|---|---|---|---|
 | M0 | Toolchain unblocked | CI cross-compiles a `no_std` binary for n32 and o32; tracer bullet prints on iris | 2–4 weeks | — |
-| M1 | ROM netboot | Assembly ROM tests DRAM, decompresses the n32 kernel and jumps; kernel does DHCP/DNS/NTP/HTTP/HTTPS, console and modules | 4–6 weeks | — |
+| M1 | ROM boot + kernel networking | Assembly ROM tests DRAM, decompresses the n32 kernel and jumps; kernel does DHCP/DNS/NTP/HTTP/HTTPS, console and modules | 4–6 weeks | — |
 | M2 | Kernel core | Timer ticks, page fault, panic screen, scheduler | 6–10 weeks | — |
 | M3 | Network + MCP + shell | Agent connects over HTTP, runs a command, reads serial, captures screen | 4–6 weeks | v0.1 |
 | M4 | SCSI + block + EROFS | `cat /etc/motd` from the R2 root image | 8–12 weeks | — |
@@ -85,7 +85,7 @@ tracer bullet boots on iris and prints its marker.
 
 ---
 
-## M1 — ROM netboot
+## M1 — ROM boot + kernel networking
 
 **Goal (as delivered):** a MIPS III assembly PROM replacement that sizes and tests DRAM,
 brings up the serial console, LZ4-decompresses the n32 kernel to `0x8804_0000` and jumps to
@@ -132,42 +132,47 @@ jump; ROM size; 10 Mbit timeouts; TLS.
 **Goal:** the privileged framework: traps, TLB, caches, CP0 timer, frame allocator, scheduler,
 capability table, panic path and serial console.
 
-**Status:** in progress — the kernel links at `0x88040000`, consumes `BootInfo` in `$a0`,
-uses a 2-entry memory map, clears `.bss`, sets up the stack, and prints `kernel: up`.
-The telnet ROM console remains live after the hand-off via the resident console poll.
-The general exception vector now saves a full register frame and round-trips a
+**Status (2026-10-25):** in progress — the kernel links at `0x88040000`, clears `.bss`,
+sets up its stack and prints `kernel: up`.  The current ROM passes no `BootInfo`; the
+kernel falls back to the register handoff, reserves the low window through `0x08B00000`
+and starts the frame allocator above it.  The kernel owns the telnet console after the
+hand-off.  The general exception vector saves a full register frame and round-trips a
 deliberate `break`/`syscall` through `eret`; timer interrupts stay on the fast path.
-A one-entry software TLB-refill vector now maps a private test page and returns
-through `eret`; a general page-table refill and user-mode return are still open.  The
-capability table has generation-checked handles, object preservation and rights
-checks; wiring it into kernel services is still open.
+Entry through the trap/`eret` path, syscall return and the native n32 user image
+work, and a CP0 Compare timer plus `WAIT` idle loop parks the vCPU.  The capability table has generation-checked
+handles, object preservation and rights checks; wiring it into every kernel service is
+still open.  A general page-table refill, page-fault handling and the EDF/fair run queues
+remain open.  The Stage 0 CPU/MMU gate is complete: correct `Status.KSU`/`UX`,
+XTLB vector, R4000 PageMask encodings, cacheable user pages for LL/SC, a 64-bit
+trap frame and LL-bit clearing on trap/switch.
 
-**Demo:** the kernel prints the ARCS memory map, calibrates the timer, runs two kernel tasks
-with EDF and fair classes, handles a deliberate page fault, and panics cleanly with a
-register dump.
+**Demo:** the kernel prints the boot RAM geometry, calibrates the timer, runs two kernel
+tasks with EDF and fair classes, handles a deliberate page fault, and panics cleanly with
+a register dump.
 
 **Acceptance criteria:**
 
-- [x] Kernel links at `0x88040000` and consumes `BootInfo` in `$a0`.
-- [x] Kernel memory map reserves ROM live state; usable RAM starts at `0x08B00000`.
-- [x] Kernel clears `.bss`, sets up stack, uses 2-entry memory map.
+- [x] Kernel links at `0x88040000` and falls back to the register handoff when `$a0` is 0.
+- [x] Kernel reserves the low window through `0x08B00000`; usable RAM starts above it.
+- [x] Kernel clears `.bss` and sets up its stack.
 - [x] Kernel prints `kernel: up`; serial console works after hand-off.
-- [x] Telnet ROM console remains live after kernel boots (resident console poll).
+- [x] Kernel owns the telnet console after boot.
 - [x] General exception vector, full register frame and `eret` round trip work on
       MIPS III (kernel-mode self-test).
 - [x] One-entry software TLB refill and `eret` work on MIPS III (kernel-mode
       self-test).
-- [ ] General page-table refill and user-mode exception return work on MIPS III.
+- [x] User-mode entry with `KSU=user`, syscall return and the native n32 user image
+      work on MIPS III.
+- [ ] General page-table refill and page-fault handling work on MIPS III.
 - [ ] CP0 `Count`/`Compare` calibrated against the 8254 reference.
-- [ ] Frame allocator from the ARCS memory descriptor list; no probing.
+- [x] Frame allocator uses the boot RAM geometry and the reserved low window; no RAM probing.
 - [ ] 16 MiB kseg2 mapping works; kseg0 direct map is used for the kernel.
 - [x] Capability table with generation counters, object identity and rights checks
       (kernel-service enforcement wiring still open).
 - [ ] EDF and fair run queues; `is_running` debug assertion.
 - [x] Panic screen with registers, stack trace and a serial dump.
 - [ ] The `ctl`/`data`/`status` driver interface is specified and unit-tested.
-- [ ] Real kernel idle path / throttle so an idle guest does not peg host CPU
-      (follow up on iris idle-CPU issue).
+- [x] CP0 Compare timer and `WAIT` idle loop park an idle vCPU.
 
 **Dependencies:** M1.
 
@@ -271,16 +276,16 @@ form is deferred to M5/M9.  Evidence:
 **Demo:** an o32 `hello` binary from the IRIX 6.5.7m sysroot prints `hello, IRIX 7` and exits
 with status 0; the shell reports the exit status.
 
-**Status (2026-10-24):** the `irix-elf` parser/load plan is in place, and a native
-n32 user ELF now loads from SCSI target 2 through `userelf`: the kernel maps its
-`PT_LOAD` pages and BSS, builds the conventional argc/argv/envp initial stack and
-enters it.  The ELF writes a string from its read-only segment and `argv[0]`/`envp[0]`
-from the stack through `write(fd, buffer, length)`, maps a zeroed anonymous heap
-page through `mmap`, then exits 42 and returns through the trampoline to the telnet
-console.  The exit path frees the image, stack and heap frame pairs.  A fixed-code
-smoke test also covers KSU entry and the trap-stack switch.  This is still a fixed
-native image: no o32/IRIX compatibility, process table, fd table, dynamic linking or
-libc.
+**Status (2026-10-25):** the `irix-elf` parser/load plan is in place, and a native
+n32 user ELF loads from SCSI target 2 automatically after boot (and through the
+telnet `userelf` command).  The kernel maps its `PT_LOAD` pages and BSS, builds the
+conventional argc/argv/envp initial stack and enters it.  A static Rust `std`
+image now runs: it reads args and time, sleeps, reads/writes/stats the tiny ramfs,
+iterates the root directory, and uses `chdir`/relative paths.  The kernel has a
+provisional fd table and the matching syscalls.  The exit path frees the image,
+stack and heap pairs.  This is still a bring-up native image: no o32/IRIX
+compatibility, process table, threads/TLS, signals, termios, sockets, dynamic
+linking or full libc.
 
 **Acceptance criteria:**
 
@@ -319,7 +324,7 @@ tracking; the hardware cursor moves; the desktop has a launcher and a clock.
 - [ ] Display lease for a full-screen cell.
 - [ ] Input: keyboard and mouse events.
 - [ ] A minimal native desktop: launcher, window manager, clock, terminal.
-- [ ] The display protocol is documented in [`../spec/display-protocol.md`](../spec/display-protocol.md).
+- [ ] The display protocol is documented in `../spec/display-protocol.md` (planned).
 
 **Dependencies:** M2, M4.
 
@@ -405,10 +410,13 @@ prints `hello from a cell`; `fork`/`exec` on a small cell works.
 
 **Dependencies:** M2, M3, M4.
 
-**v0 bring-up (2026-10-24):** `user/libc` provides the freestanding C ABI subset
-needed by the ELF smoke image: memory/string primitives, `write`, `_exit`,
-anonymous `mmap` and a one-way `malloc`.  File descriptors, the capability table,
-IPC and process creation remain open.
+**v0 bring-up (2026-10-25):** `user/libc` provides the freestanding C ABI subset
+needed by the ELF smoke image, and `crates/irix7-libc` carries the 42-symbol shim
+used by the static `std` image.  The kernel has a small console/ramfs fd table,
+`stat`, `read_dir`, `chdir`, clocks and `nanosleep`; the std image exercises args,
+time, sleep, read/write/stat/read_dir and relative paths.  The capability table,
+process creation, pthread/TLS, signals, termios and the production libc remain
+open.
 
 **Estimate:** 8–12 weeks.
 
@@ -431,10 +439,17 @@ with `std::thread`, runs a child with `std::process::Command`, connects with
 
 - [ ] The native libc v0 and the POSIX.1-2024 profile are implemented and layout-tested.
 - [x] A hosted n32 target (`os = "irix7"`, Unix family) builds the `std` **rlib**
-      with `-Zbuild-std=std`, and it is not `restricted_std`.  This is compile-only
-      evidence ([spike](../research/rust-std-build-spike.md)); the runtime is still open.
+      with `-Zbuild-std=std`, and it is not `restricted_std`.
+- [x] A static `std` image runs on iris with args, time, `sleep`, a tiny
+      `std::fs` ramfs, `chdir` and relative paths
+      ([bring-up](../research/std-hello-bringup.md)).  This uses a 42-symbol
+      shim, not the final libc.
+- [x] The relibc n32 big-endian Linux/QEMU gate passes TLS, `setjmp`/`longjmp`
+      and pthread/TLS smoke tests ([report](../research/relibc-n32-bringup.md)).
+      A provisional `irix7-pal` scaffold builds and links C probes, but has not
+      run on IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
 - [ ] `std::fs`, `std::thread`, `std::sync`, `std::process`, `std::net`, `std::env`,
-      `std::time`, TLS and the `std::os::unix` traits work in a cell.
+      `std::time`, TLS and the `std::os::unix` traits work on the real libc.
 - [ ] `catch_unwind` catches a panic at the cell boundary (or the phase-1 abort path is
       documented and tested).
 - [ ] The kernel, ROM and loadable-module dependency graphs contain no `std`.

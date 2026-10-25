@@ -3,7 +3,7 @@
 **Status:** living document
 **Scope:** threat model, trust boundaries, MCP modes, legacy sandboxing, driver safety,
 supply chain, secrets, disclosure and incident response.
-**Related:** [`../spec/architecture.md`](../spec/architecture.md) §4, §5, §14, [`../SECURITY.md`](../SECURITY.md).
+**Related:** [`../spec/architecture.md`](../spec/architecture.md) §4, §5, §14, [`../SECURITY.md`](../../SECURITY.md).
 
 ## 1. Assets and adversaries
 

@@ -2,11 +2,11 @@
 
 **Status:** living document
 **Licence:** GPL-3.0 (ADR-0012)
-**Related:** [`../LICENCE`](../LICENCE), [`github.md`](github.md) §3, [`security.md`](security.md).
+**Related:** [`../LICENCE`](../../LICENCE), [`github.md`](github.md) §3, [`security.md`](security.md).
 
 ## 1. Licence
 
-- The project is **GPL-3.0**; the full text is in [`../LICENCE`](../LICENCE).
+- The project is **GPL-3.0**; the full text is in [`../LICENCE`](../../LICENCE).
 - Every source file carries an SPDX header:
   `SPDX-License-Identifier: GPL-3.0-only` (or the appropriate licence for third-party code).
 - Third-party code retains its own licence and notices; the combined work is conveyed under

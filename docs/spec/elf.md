@@ -233,25 +233,25 @@ cargo test -p irix-elf
 
 ## 9. First kernel consumer
 
-The kernel's `userelf` console command is the first consumer of the load plan.  It
-reads up to 80 KiB from SCSI target 2 LBA 0, accepts an n32 `ET_EXEC` image, maps
-each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at `e_entry` with a
-fixed four-page user stack at `0x7FF0_0000`.  It maps 4 KiB pages in JTLB
-even/odd pairs and uses TLB indices 40-47.
+The kernel's `userelf` path is the first consumer of the load plan.  It is used
+by the automatic post-boot handoff and by the telnet `userelf` command.  It reads
+up to 256 KiB from SCSI target 2 LBA 0 in 64 KiB chunks, accepts an n32 `ET_EXEC`
+image, maps each `PT_LOAD` memory range into kuseg, zeroes BSS and enters at
+`e_entry` with a four-page user stack at `0x7FF0_0000` in real `KSU=user` mode.
+It maps 4 KiB pages in JTLB even/odd pairs starting at index 4; the 1 MiB heap uses
+two 256 KiB page pairs.  User pages are cacheable so LL/SC atomics are defined.
 
 The initial stack is the conventional layout: `argc` at `$sp`, then the `argv`
-and `envp` pointer arrays, then the strings.  `$a0`, `$a1` and `$a2` carry
-`argc`, `argv` and `envp` on entry.  The fixed fixture uses `"hello"`,
+and `envp` pointer arrays, then NUL-terminated strings.  `$a0`, `$a1` and `$a2`
+carry `argc`, `argv` and `envp` on entry.  The fixture uses `"hello"`,
 `"PATH=/"` and `"HOME=/"`.
 
-This is deliberately narrow: there is no process table, fd table, dynamic
-linker, o32 support, address-space teardown or libc.  The provisional syscalls
-are `write(fd, buffer, length)`, `exit(status)`, anonymous `mmap`, a one-way
-`munmap` and a permissive `mprotect`.  The kernel validates the write range against
-the loaded segments, stack and heap before copying.  There is no fd table: fd 1
-and 2 are accepted, the copied buffer is capped at 256 bytes, and the bytes go to
-the serial console for now.
-
-The provisional heap starts at `0x2000_0000` and grows to 128 KiB.  The loader
-maps it in even/odd 4 KiB pairs and releases every pair, including the image and
-stack, when the user exits or a load fails.
+This is deliberately narrow.  There is no process table, address-space teardown,
+dynamic linker, o32 support or full POSIX libc.  The provisional syscall set is
+`write`, `read`, `exit`, `mmap`/`munmap`/`mprotect`, `open`/`close`/`fcntl`/`dup`,
+`getcwd`/`chdir`, `poll`, `signal`, `getentropy`, `clock_gettime`, `getpid`,
+`fstat`/`stat`, `readdir` and `nanosleep`.  The kernel has a small fd table with
+console, `/dev/null` and a two-file read/write ramfs; `stat`/`fstat` and directory
+iteration work.  Threads/TLS, `posix_spawn`, real signals and termios are still
+absent.  The 42-symbol C shim in `crates/irix7-libc` is the bring-up libc; the
+production layer is the relibc fork.

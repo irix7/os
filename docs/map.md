@@ -2,7 +2,7 @@
 
 IRIX 7, a GPL-3.0 Rust-native operating system for the SGI Indy (IP22; `IP24` in iris naming): a monolithic Rust kernel (n32/MIPS III) reimplementing everything on the IRIX discs clean-room, running existing IRIX 6.5 binaries unchanged through a legacy ABI layer, and offering new Rust programs a native capability/object interface. It carries IRIX's identity — `sproc`, XFS, real-time scheduling, graphics and digital media, hardware inventory, topology awareness — as first-class services. Backward-only, no-regressions; forward compatibility is out.
 
-The advanced architecture (2026-10-20) frames IRIX 7 as **the successor SGI might have built if it had not gone boring**: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace drivers, an R2-first boot, an in-OS MCP control plane, and a new IRIX-inspired desktop. The native ABI is new; IRIX lives in the compatibility container. The normative architecture is `docs/spec/architecture.md`; the evidence base is `docs/research/`.
+The advanced architecture (2026-10-20) frames IRIX 7 as **the successor SGI might have built if it had not gone boring**: a framekernel with hybrid SAS/MMU isolation, de-privileged cells, userspace drivers, a network-first boot (R2/EROFS root planned), an in-OS MCP control plane, and a new IRIX-inspired desktop. The native ABI is new; IRIX lives in the compatibility container. The normative architecture is `docs/spec/architecture.md`; the evidence base is `docs/research/`.
 
 ## Notes
 
@@ -11,8 +11,8 @@ The advanced architecture (2026-10-20) frames IRIX 7 as **the successor SGI migh
   2. Stock rebuild (map #1): 6.5.7m rebuilt with the modernised GCC (rust-lang/gcc 17 trunk + IRIX series, ADR-0019) and binutils 2.47, cross-compiled to `mips-sgi-irix6.5` and booted/run on the guest.
   3. Upgrade the source repo to 6.5.22: decompile the 6.5.22 overlay contents and apply the findings to the 6.5.7m base source manually (optionally port back 6.5.30 updates).
   4. SOURCE to AST to RUST: this map.
-- Governing decisions: ADR-0001 (publish toolchain work only), ADR-0008 (compatibility mandate, backward-only), ADR-0009 (clean-room publication), ADR-0010 (Rust monolith, n32/MIPS III), ADR-0011 (native capability substrate + compat container), ADR-0012 (GPL-3.0), ADR-0013 (full reimplementation, factory PROM), ADR-0014 (harness-enforced clean-room, hybrid transcription), ADR-0015 (layered spec, similarity-screen verification), ADR-0016 (o32 ECOFF bootstrap into the n32 kernel), ADR-0017 (modern equivalents as references), ADR-0018 (GCC codegen backend primary, LLVM parallel), ADR-0019 (IRIX fork on rust-lang/gcc), ADR-0020 (rebuild ladder). ADRs live at `github.com/irix7/project/docs/adr/`.
-- The legacy layer order is syscall ABI -> loader -> libc; the tracer bullet is a freestanding Rust kernel reached through an o32 ECOFF bootstrap.
+- Governing decisions: ADR-0001 (publish toolchain work only), ADR-0008 (compatibility mandate, backward-only), ADR-0009 (clean-room publication), ADR-0010 (Rust monolith, n32/MIPS III), ADR-0011 (native capability substrate + compat container), ADR-0012 (GPL-3.0), ADR-0013 (full reimplementation, factory PROM), ADR-0014 (harness-enforced clean-room, hybrid transcription), ADR-0015 (layered spec, similarity-screen verification), ADR-0016 (replacement ROM at the PROM window into the n32 kernel), ADR-0017 (modern equivalents as references), ADR-0018 (GCC codegen backend primary, LLVM parallel), ADR-0019 (IRIX fork on rust-lang/gcc), ADR-0020 (rebuild ladder). ADRs live at `github.com/irix7/project/docs/adr/`.
+- The legacy layer order is syscall ABI -> loader -> libc; the tracer bullet is a freestanding Rust kernel reached through an assembly replacement ROM (the factory-PROM/o32 ECOFF path is not implemented).
 - Transcription is orchestrated by `irix7/harness`; only clean-room Rust reaches the public `irix7/os` repo.
 - Skills: grilling + domain-modelling for decision tickets; research for fact-finding tickets.
 
@@ -36,8 +36,8 @@ The grilling of 2026-10-20 settled the advanced architecture. The normative regi
 | Compatibility | In-kernel IRIX o32/n32 container; full fork/exec/sproc; library-level libc/X11/Motif/GL/dmedia; clean-room Rust X11 server phased lease → nested → rootless. |
 | Scheduling | EDF for media, fair for the rest; soft real-time; benchmarks tracked, never gated. |
 | Memory | Aggressive huge pages + cache colouring; DMA-first with cached buffers + explicit sync; raw DMA accepted; MC VDMA DMA TLB used where possible; no full IOMMU. |
-| Drivers | All de-privileged cells; the kernel brokers MMIO/DMA/IRQ; the ROM carries the network driver. |
-| Boot | Minimal Rust ROM with Seeq + smoltcp → R2 kernel + boot bundle → EROFS root over HTTP Range; optional local disk cache; R2-first. |
+| Drivers | All de-privileged cells; the kernel brokers MMIO/DMA/IRQ. The kernel carries the Seeq/smoltcp driver during bring-up because the ROM has no network stack. |
+| Boot | Minimal MIPS III assembly ROM → n32 kernel → HTTPS boot config/modules → SCSI target-2 image. Future: boot bundle and EROFS root from R2 over HTTP Range, with an optional local disk cache. |
 | Root image | Standard little-endian EROFS + byte-order codec; no big-endian fork. |
 | Storage | XFS compatibility server read-only first; native FS (I7FS preferred) later; user data via periodic Git commits + R2. |
 | Display | Plan 9 `8½`/BeOS `app_server`-lineage native display server; new IRIX-inspired desktop; userspace graphics/audio servers. |

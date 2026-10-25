@@ -7,8 +7,10 @@
 process model) and §6 (compatibility container), [`native-abi.md`](native-abi.md) (the kernel capability ABI
 under this C ABI), [`elf.md`](elf.md) (ELF loader contract),
 [`driver-interface.md`](driver-interface.md) (`ctl`/`data`/`status` and `posix_devctl`),
-[`modules.md`](modules.md) (kernel modules are `no_std`), and the
-[`std` research report](../research/rust-std-irix7.md).
+[`modules.md`](modules.md) (kernel modules are `no_std`), the
+[`std` research report](../research/rust-std-irix7.md), the
+[first running std image](../research/std-hello-bringup.md), and the
+[relibc n32 gate](../research/relibc-n32-bringup.md).
 
 **Machine-readable manifest:** [`native-libc-symbols.json`](native-libc-symbols.json).
 **Rust layout source:** [`crates/native-abi`](../../crates/native-abi/README.md) — provisional v0 types,
@@ -23,18 +25,27 @@ libc-to-capability boundary and the conformance rules.  The **source API** is
 [POSIX.1-2024](posix.md) plus a documented XSI subset and a short extension list.  POSIX
 defines the C source contract; it does not define this binary contract.
 
-This is a specification, not a certification claim.  No POSIX-conformant native libc
-exists yet: M9 builds the full one, and M9.5 builds the first native `std` subset
+This is a specification, not a certification claim.  No POSIX-conformant native
+libc exists yet.  The current `crates/irix7-libc` is a 42-symbol bring-up shim,
+and a static Rust `std` image runs on top of it with args, time, sleep and a tiny
+read/write ramfs.  The production C ABI layer will be the
+[`relibc` fork](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU
+gate passes.  A provisional `irix7-pal` scaffold builds and links C probes, but
+it has not run on IRIX 7 and the kernel error channel, TLS and `stat` ABI remain
+to be settled.
+M9 builds the full POSIX libc and M9.5 the first native `std` subset
 ([`../plan/milestones.md`](../plan/milestones.md)).  Every statement below is a
 requirement on that work, not a report of shipped behaviour.
 
-**v0 implementation (2026-10-24):** [`user/libc`](../../user/libc) is a small freestanding
-C ABI layer over the provisional kernel syscalls.  It provides `write`, `_exit`/`exit`,
-anonymous `mmap`, `munmap`/`mprotect` no-ops, `malloc`/`calloc`/`realloc`/`free`
-(a one-way mapping allocator), the `mem*` primitives, `strlen`/`strcmp`/`strncmp`/
-`strcpy`, `memalign` up to 16-byte alignment and `__errno_location`.  It has no fd
-table, file system, pthreads, TLS, signals, locale or capability boundary; it is a
-loader/libc smoke implementation, not the v1 profile.
+**v0 implementation (2026-10-25):** [`user/libc`](../../user/libc) is a small freestanding
+C ABI layer over the provisional kernel syscalls, and
+[`crates/irix7-libc`](../../crates/irix7-libc) is a 42-symbol shim for the static
+Rust `std` image.  The kernel now exposes a small console/`/dev/null`/ramfs fd table,
+`stat`, `read_dir`, `chdir`, `poll`, clocks and `nanosleep`; the `std` image exercises
+args, time, sleep, read/write/stat/read_dir and relative paths.  There is still no
+pthread/TLS, process table, signals, termios or capability boundary.  This is a
+bring-up implementation, not the v1 profile; the production layer is the
+[relibc fork](https://github.com/irix7/relibc).
 
 The document deliberately separates three things:
 

@@ -20,9 +20,11 @@ cargo build --release -Zbuild-std=std,panic_abort -Zbuild-std-features= \
 The link needs empty `libc.a`, `libm.a`, `librt.a` and `libpthread.a` archives
 in the `syslib` directory; the actual C symbols come from
 `crates/irix7-libc`.  Strip the ELF, pad it to 256 KiB, and attach it at SCSI
-target 2.
+target 2; the kernel enters it automatically after boot.
 
-The provisional libc shim is deliberately single-threaded and has only
-`/dev/null`/`/dev/tty`.  The production POSIX layer will be a relibc fork; see
+The provisional libc shim is deliberately single-threaded.  The kernel provides
+console descriptors, `/dev/null` and a small read/write ramfs; it has no process
+table, pthread/TLS, signals or termios.  The production POSIX layer will be a
+relibc fork; see
 [`docs/spec/userland-services.md`](../../docs/spec/userland-services.md) and
 [`docs/research/std-hello-bringup.md`](../../docs/research/std-hello-bringup.md).

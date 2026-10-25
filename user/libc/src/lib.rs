@@ -4,8 +4,9 @@
 //! This is a deliberately small, freestanding C ABI layer over the provisional
 //! user syscalls.  It implements the memory and string primitives, `write`,
 //! `_exit`, anonymous `mmap` and a one-way `malloc` so native user images can
-//! start sharing a runtime.  It is not yet the POSIX.1-2024 native libc: there
-//! is no fd table, file system, pthreads, TLS, signals or locale.
+//! start sharing a runtime.  It is not yet the POSIX.1-2024 native libc: the
+//! kernel now has a small console/ramfs fd table, but this library has no
+//! general file system, pthreads, TLS, signals or locale wrapper.
 //!
 //! The ABI is n32 big-endian.  All syscall entry points live in assembly so the
 //! compiler's register allocator cannot clobber the fixed `$a0`-`$a3`/`$v0`

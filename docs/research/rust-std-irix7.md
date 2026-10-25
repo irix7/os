@@ -1,5 +1,11 @@
 # Rust `std` for IRIX 7
 
+> **Update 2026-10-25:** the compile-only target spike has become a running
+> static `std` image (args, time, sleep, a tiny `std::fs` ramfs, `chdir`).
+> See [`std-hello-bringup.md`](std-hello-bringup.md).  The production POSIX
+> layer is the [relibc fork](https://github.com/irix7/relibc); its n32 Linux/QEMU
+> gate passes, while the native PAL and kernel threads/process/termios remain.
+
 **Status:** research report (decision-oriented)
 **Date:** 2026-10-24
 **Scope:** what “a Rust standard library for IRIX 7” can mean, which product is

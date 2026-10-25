@@ -379,7 +379,7 @@ write` for project automation).
 | Signed commits | Yes (optional) | Verify authorship |
 
 The security policy and threat model live in [`security.md`](security.md) and
-[`../SECURITY.md`](../SECURITY.md).
+[`../SECURITY.md`](../../SECURITY.md).
 
 ## 12. Discussions, wiki and pages
 

@@ -1,6 +1,13 @@
 # Rust `std` build spike for native IRIX 7
 
 **Status:** spike report (evidence; not a design decision)
+
+> **Update 2026-10-25:** this was compile-only when written.  A static Rust
+> `std` image now runs on the native target with args, time, sleep, a tiny
+> `std::fs` ramfs and `chdir` ([`std-hello-bringup.md`](std-hello-bringup.md)).
+> The production POSIX libc is now the [relibc fork](https://github.com/irix7/relibc)
+> on `irix7-n32`; the Linux syscall backend still has to become the IRIX PAL.
+
 **Date:** 2026-10-24
 **Scope:** build the `std` **rlib** — not link a program — for
 `targets/mips3-sgi-irix7-native-n32.json` from a local patched `rust-src` and a

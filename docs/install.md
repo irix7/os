@@ -76,8 +76,8 @@ The ROM boots from the PROM window (`0xBFC00000`), sizes and tests DRAM stackles
 up the serial console, LZ4-decompresses the embedded kernel to `0x8804_0000` and jumps to
 it. The ROM passes the RAM geometry in registers; there is no `BootInfo` structure. The
 kernel then owns the machine: Seeq/HPC3 networking, DHCP with renewals, DNS, NTP, ICMP,
-HTTP/HTTPS (TLS 1.3 with certificate verification), the telnet console, the REX3 menu and
-diagnostics, and the module loader.
+HTTP/HTTPS (TLS 1.3 with certificate verification), the telnet console, the REX3 boot
+log and diagnostics, and the module loader.
 
 ## Running tests
 
@@ -106,19 +106,21 @@ cargo build -Z build-std=core,alloc -Zjson-target-spec \
 | Milestone | Status |
 |-----------|--------|
 | M0 — Toolchain unblocked | Complete |
-| M1 — ROM netboot | Complete (superseded: the ROM is an assembly stub and the kernel owns networking) |
+| M1 — ROM boot + kernel networking | Complete (superseded: the ROM is an assembly stub and the kernel owns networking) |
 | M2 — Kernel core | In progress |
 
 Working on iris:
 
 - The assembly ROM sizes and tests all DRAM stacklessly, then decompresses and jumps to the
   n32 kernel at `0x8804_0000`.
-- The kernel prints `kernel: up`; the REX3 shows the boot menu and the PS/2 keyboard drives
-  it; "Run diagnostics" prints CPU, RAM and network state.
+- The kernel prints `kernel: up`; the REX3 paints the boot log full-screen and the
+  diagnostic inventory is available from the telnet console.  The kernel then
+  enters the native n32 image on SCSI target 2; the current image is a static
+  Rust `std` probe that exercises args, time, sleep and a small ramfs.
 - Seeq 8003 over HPC3 PDMA, DHCP (with renewal), DNS, NTP wall clock, ICMP ping.
 - HTTP/1.1 and HTTPS/TLS 1.3 with a verified chain and SHA-256 digests.
-- Telnet console on guest port 23 with `status`, `net`, `mem`, `time`, `echo`, `ntp`, `ping`,
-  `http`, `https`, `module`, `boot` and `reboot`.
+- Telnet console on guest port 23 with `status`, `diagnostics`, `net`, `mem`, `time`,
+  `echo`, `ntp`, `ping`, `http`, `https`, `module`, `boot` and `reboot`.
 - CP0 Compare timer and `WAIT` idle loop; the vCPU parks when idle.
 - Modules are flat images fetched over HTTPS into RAM, SHA-256 checked, and called through
   a versioned C service table.
@@ -126,15 +128,16 @@ Working on iris:
 M2 remaining:
 
 - calibrate CP0 Count against the 8254 reference;
-- page-fault handling and a real panic screen with a register dump;
-- grow the scheduler/capability framework into the user-object model.
+- general page-table refill and page-fault handling;
+- grow the scheduler/capability framework into the user-object and thread model;
+- real threads/TLS, `posix_spawn`, signals, termios and sockets.
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the development setup, clean-room rules, DCO
+See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the development setup, clean-room rules, DCO
 sign-off, pull request process and code style. Every commit must carry a DCO sign-off
 (`git commit -s`).
 
 ## Licence
 
-IRIX 7 is GPL-3.0. See [`LICENCE`](LICENCE) for details.
+IRIX 7 is GPL-3.0. See [`LICENCE`](../LICENCE) for details.
