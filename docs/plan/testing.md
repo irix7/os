@@ -25,7 +25,7 @@ Architecture CI additions:
 
 | Job | What | Required |
 |---|---|---|
-| `architecture-host` | `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`, `cap-engine`, `mesh-sim` tests | Yes |
+| `architecture-host` | `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`, `cas-store`, `cap-engine`, `agnostic-core`, `mesh-sim` tests | Yes |
 | `architecture-wasm32` | `sys-primitives`, `mesh-core`, `fabric`, `cas-core`, `cap-engine` check for wasm32 | Yes |
 | `wasm-host` | wasmi host imports, fuel exhaustion and typed calls | Yes |
 | `mesh-gates` | 1/2/8/128 policy gates and failure injection | Yes at Phase 3+ |
