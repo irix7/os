@@ -69,6 +69,24 @@ fn log(services: &Services, text: &[u8]) {
     (services.write)(text.as_ptr(), text.len());
 }
 
+fn write_dec(services: &Services, mut value: u64) {
+    let mut buf = [0u8; 20];
+    let mut len = 0;
+    if value == 0 {
+        (services.write)(b"0".as_ptr(), 1);
+        return;
+    }
+    while value > 0 && len < buf.len() {
+        buf[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        (services.write)(&buf[len], 1);
+    }
+}
+
 fn services() -> Option<&'static Services> {
     let ptr = SERVICES.load(Ordering::Acquire);
     if ptr.is_null() {
@@ -346,7 +364,13 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
             return &BAD;
         }
     };
-    match host.run_i32(GUEST, "run", 10_000_000) {
+    let started = (services.clock_ms)();
+    let result = host.run_i32(GUEST, "run", 10_000_000);
+    let elapsed = (services.clock_ms)().saturating_sub(started);
+    log(services, b"wasm: runtime=");
+    write_dec(services, elapsed);
+    log(services, b" ms\n");
+    match result {
         Ok(42) => {
             // SAFETY: the module owns this allocation; guest callbacks are done.
             if !unsafe { (*policy).is_committed() } {

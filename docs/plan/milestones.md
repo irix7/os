@@ -112,8 +112,8 @@ mesh traffic is instrumented and asserted on the M1 line.
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 520,076 bytes
-(4,212 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy and fat LTO is 520,052 bytes
+(4,236 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
@@ -127,13 +127,13 @@ The automatic queue, lookup and module multiplexer are still to come.
 no-module path and the slot-B Wasm-policy path; the native and Wasm
 root/actor/home/capability evidence match, MCP remains live in slot A, and
 `mesh=0/0/0` is asserted both before and after the optional Wasm probe and
-userland smoke. The rebuilt PROM is 520,076 of 524,288 bytes
-(4,212 free) and the Wasm module is 1,345,816 bytes, inside the
+userland smoke. The rebuilt PROM is 520,052 of 524,288 bytes
+(4,236 free) and the Wasm module is 1,345,976 bytes, inside the
 1,572,864-byte slot-B limit. The optional slot-B probe now runs after the
-readiness marker. MCP-only readiness measured 7.3–7.7 s; the full Wasm path
-measured 21.7–35.4 s. The readiness budget excludes the optional probe, while
-the full-path latency is recorded under #17 as a performance limitation rather
-than a readiness regression. **Real-Indy execution was not available in this
+readiness marker. MCP-only readiness measured 7.3–7.7 s. The instrumented Wasm
+path reports `autoload: wasm took 2140 ms` and `wasm: runtime=0 ms`; fetch and
+copy dominate, while the readiness budget excludes the optional probe. The
+full-path number is tracked under #214. **Real-Indy execution was not available in this
 workspace.** The exact limitation is hardware-specific: no physical Indy IP24
 or self-hosted lab runner was attached, so the gate cannot validate the real
 SCC, Seeq DMA, SCSI, REX3 or DS1386 timing and cache behaviour. The gate is

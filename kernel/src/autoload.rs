@@ -12,7 +12,7 @@
 
 use crate::nvram;
 use crate::sha256::Sha256;
-use crate::{console_println, http, module, scsi, tls};
+use crate::{console_println, console_write, http, module, scsi, tls};
 
 /// Outcome of the boot-time module autoload.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,13 +90,37 @@ pub fn boot_wasm() {
         return;
     };
     console_println("autoload: loading wasm module");
-    match run_slot(module::Slot::B, url, &digest) {
+    let started = crate::idle::uptime_ms();
+    let result = run_slot(module::Slot::B, url, &digest);
+    let elapsed = crate::idle::uptime_ms().saturating_sub(started);
+    console_write("autoload: wasm took ");
+    write_dec(elapsed);
+    console_println(" ms");
+    match result {
         Ok(0) => console_println("autoload: wasm returned"),
         Ok(_) => console_println("autoload: wasm returned non-zero"),
         Err(error) => {
             console_println("autoload: wasm failed");
             console_println(error);
         }
+    }
+}
+
+fn write_dec(mut value: u64) {
+    let mut buf = [0u8; 20];
+    let mut len = 0;
+    if value == 0 {
+        console_write("0");
+        return;
+    }
+    while value > 0 && len < buf.len() {
+        buf[len] = b'0' + (value % 10) as u8;
+        value /= 10;
+        len += 1;
+    }
+    while len > 0 {
+        len -= 1;
+        console_write(core::str::from_utf8(&buf[len..len + 1]).unwrap_or("?"));
     }
 }
 

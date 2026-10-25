@@ -147,7 +147,7 @@ the test runs `packages` and `packages install mcp` against the GitHub index.
 This is the primary diskless gate; a SCSI disk is not a boot, discovery or
 module prerequisite.
 
-A slot-B boot serves a 1,345,816-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,345,976-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...`,
 `m1: ... mesh=0/0/0`, the post-smoke `m1-post: mesh=0/0/0` line and
@@ -168,11 +168,12 @@ policy service.
 
 **Readiness and optional Wasm are measured separately.** With the local MCP
 fixture, MCP-only boots reached `BOOT-READY` in 7.3–7.7 s. The optional slot-B
-Wasm probe now starts after `BOOT-READY`; it added 21.7–35.4 s to the full
-run. The M1 readiness budget does not include that optional probe, so the
-readiness gate is not regressed by Wasm. The full slot-B path latency is
-recorded under #17 as a performance limitation; it is not a claim that the
-Wasm policy is cheap to load on the R4600.
+Wasm probe starts after `BOOT-READY`; the instrumented run reports
+`autoload: wasm took 2140 ms` and `wasm: runtime=0 ms`, so the module fetch and
+copy (not the guest policy) dominate. The full local path is about 9.4 s. The
+M1 readiness budget does not include that optional probe, so readiness is not
+regressed by Wasm. The full slot-B path is recorded under #214; it is not a
+claim that the Wasm policy is cheap to load on the R4600.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
 It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, the
