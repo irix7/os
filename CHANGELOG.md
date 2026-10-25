@@ -8,6 +8,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- A HACS-style, git-hosted package index at `packages/` lists digest-pinned
+  modules and a static `std` userland image.  `sash` gains `packages`,
+  `packages install NAME` and `mount`; the network commands are deferred outside
+  the telnet socket borrow.  A diskless boot lists the index and installs a
+  module with no SCSI disk attached.
+- The optional SCSI write cache is designed as a loadable module: it drains a
+  bounded, SHA-256-keyed RAM queue during its idle tick into a cache-owned SCSI
+  range.  It is never a boot prerequisite and never writes a data disk.  The
+  current image uses the RAM window; `block_write` and a module multiplexer are
+  future ABI work.
 - A static Rust `std` hello runs on the native n32 target: it prints through the
   kernel console, reads its initial `argv`, and exits.  This is the first
   end-to-end target/libc/loader gate.  It can also read a ramfs fixture through
@@ -54,9 +64,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   a user stack and enters through the provisional syscall ABI.  The image is
   attached at SCSI target 2; `user/hello` builds a minimal fixture and the
   automatic handoff returns to the console after exit.
-- The kernel's HTTP `erofs` debug command is now behind the `erofs-debug` feature
-  and off by default, keeping the PROM image small; the loadable `erofs` module is
-  the normal filesystem path.
+- The kernel's HTTP `erofs` debug command is behind the `erofs-debug` feature;
+  the current console image enables it so `sash mount` can inspect an EROFS
+  image over HTTPS Range.  The loadable `erofs` module remains the normal
+  local filesystem path.  The PROM is 520,840 of 524,288 bytes and CI enforces
+  the limit.
 - A user-mode smoke test: maps a fixed code and stack page, enters KSU user, takes
   a write syscall through the general exception vector (returning to user), then an
   exit syscall that returns through a kernel trampoline to the telnet command loop.
