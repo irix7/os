@@ -352,6 +352,63 @@ jobs:
           iris-ci --socket "$socket" quit
           wait "$pid"
 
+      - name: Boot ROM offline without a module
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-offline-no-module"
+          mkdir -p "$work"
+          cd "$work"
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+          EOF
+
+          python3 - "$work/nvram.bin" <<'PY'
+          import sys
+
+          env = b"net=off\0console=serial0\0\0"
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18886 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -50 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
       - name: Boot ROM and user hello
         env:
           IRIS_NO_IDLE: "1"
@@ -515,6 +572,8 @@ jobs:
           path: |
             ${{ runner.temp }}/iris-diskless/serial.log
             ${{ runner.temp }}/iris-diskless/iris.out
+            ${{ runner.temp }}/iris-offline-no-module/serial.log
+            ${{ runner.temp }}/iris-offline-no-module/iris.out
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
             ${{ runner.temp }}/iris-o32/serial.log

@@ -22,8 +22,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   capability over the root directory at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 519,572 bytes, leaving 4,716 bytes under the PROM limit; the
+  policy image is 519,712 bytes, leaving 4,576 bytes under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
+- A `net=off` boot with no local module now reports `BOOT-READY` with
+  `mcp=disabled`; it runs no module and leaves sash usable.
 
 ## [0.1.3] — 2026-10-25
 

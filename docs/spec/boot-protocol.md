@@ -249,13 +249,15 @@ emits exactly one readiness line per boot, after the RTC, network and
 boot-time module autoload have run:
 
 ```text
-BOOT-READY v=1 boot=<unix> kernel=up network=<up|off> mcp=<listening|local>
+BOOT-READY v=1 boot=<unix> kernel=up network=<up|off> mcp=<listening|local|disabled>
 ```
 
 `network=off` means the DS1386 environment set `net=off` and the kernel
 deliberately skipped the Seeq and DHCP.  `mcp=local` means the module came from
-the local SCSI `mcp.local` source rather than the network.  A boot that cannot
-satisfy the MCP prerequisite emits a distinct line instead:
+the local SCSI `mcp.local` source rather than the network.  `mcp=disabled` on a
+network-off boot means there was no local module and none was required; this is
+the M1 single-node boot, and no unverified module is run.  A network-up boot
+that cannot satisfy the module prerequisite emits a distinct line instead:
 
 ```text
 BOOT-NOT-READY v=1 boot=<unix> kernel=up network=<up|down|off> mcp=<disabled|failed> reason=<token>

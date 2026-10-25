@@ -144,6 +144,11 @@ the test runs `packages` and `packages install mcp` against the GitHub index.
 This is the primary diskless gate; a SCSI disk is not a boot, discovery or
 module prerequisite.
 
+A second boot uses `net=off`, attaches no SCSI disk and has no local module.
+It asserts the kernel's `m1:` policy line, `BOOT-READY` with `network=off` and
+`mcp=disabled`, the expected target-2 load failure and the sash prompt. This is
+the M1 no-network, no-module boot.
+
 The same job then runs the offline recovery image.  It wraps `user/hello` as a
 256 KiB SCSI target-2 image and appends the `logical` module to the same disk,
 writes an `mcp.local` NVRAM record, sets `net=off`, and waits for the module's

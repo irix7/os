@@ -40,6 +40,14 @@ pub fn boot() -> Status {
         return finish(load_local(&local[..n]));
     }
 
+    // A network-off M1 boot does not have a repository to consult and does
+    // not need MCP.  With no local module, report Disabled rather than a
+    // failed autoload; the console and local policy remain usable.
+    if crate::net::disabled() {
+        console_println("autoload: network off; no local module");
+        return Status::Disabled;
+    }
+
     let mut url = [0u8; 192];
     if let Some(n) = nvram::get("mcp.url", &mut url) {
         return boot_nvram(&url[..n]);
