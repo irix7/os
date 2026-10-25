@@ -1248,8 +1248,23 @@ name = "wasm-module"
 version = "0.1.0"
 dependencies = [
  "module-abi",
+ "sys-primitives",
  "wasm-host",
+ "wasm-policy-host",
  "wasmi",
+]
+
+[[package]]
+name = "wasm-policy-host"
+version = "0.1.0"
+dependencies = [
+ "agnostic-core",
+ "cas-core",
+ "cas-store",
+ "mesh-core",
+ "mesh-service",
+ "sys-primitives",
+ "wasm-host",
 ]
 
 [[package]]

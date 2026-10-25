@@ -1,0 +1,21 @@
+[package]
+license = "GPL-3.0-only"
+name = "wasm-policy-guest"
+version = "0.1.0"
+edition = "2021"
+description = "M1 local-policy guest for the slot-B Wasm core probe"
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = "z"
+lto = true
+strip = true
+codegen-units = 1
+
+# This is a guest image, not a workspace member.  It links the workspace
+# crates only through the `i7host` imports, so it has no Cargo dependencies.
+[workspace]

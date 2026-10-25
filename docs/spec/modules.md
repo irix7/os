@@ -158,7 +158,7 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
 
 - Two fixed slots. Loading into a slot overwrites that slot, clears its `.bss`, and
   drops that slot's tick callback; the other slot keeps running. Slot A holds MCP and
-  small probes; slot B holds the 1.45 MiB wasmi probe. There is no general relocatable
+  small probes; slot B holds the Wasm policy module. There is no general relocatable
   multiplexer, unload or destructor.
 - The loader is synchronous: the console is blocked for the duration of the fetch and the
   entry call. The tick callback runs on the idle loop, so it must be quick.
@@ -204,14 +204,20 @@ and returns non-zero to unregister. Swap `hello` for `ticker` in the two command
 hashes it with BLAKE3, and during idle ticks writes an `I7CACHE1` header and the sector
 to target 3, then verifies the readback. It is a probe, not the final package cache.
 
-`modules/wasm` is the first wasmi probe. It is linked for slot B, embeds a tiny Wasm
-module, instantiates it with the no_std interpreter, runs its `run` export and prints
-`wasm: host=1` / `wasm: run=42`. The guest calls the `i7host` version, clock, submit,
-poll, cancel, capability-check, console-write and yield imports through the no_std
-`wasm-host` crate. Its `HostHooks` bridge the clock and console to the kernel, and the
-guest checks that its submission produced a completion before returning. Load it with
-`module b ...`; slot A (MCP) remains live. It is a runtime and host-ABI proof, not the
-policy core or the final shim integration.
+`modules/wasm` is the slot-B Wasm core for M1. It is linked for slot B, embeds a
+small Rust guest, instantiates it with the no_std interpreter and runs its `run`
+export. The guest drives the local policy: it chooses the `/etc` namespace
+layout, stores `/etc/motd`, resolves the root home, derives the local actor,
+chooses the capability rights and validates the allow and deny cases. It prints
+`wasm: host=1`, reproducible `wasm-policy: root=... actor=... cap=ok home=...`
+evidence matching the native `m1:` line, and `wasm: run=42`. The guest imports
+only the `i7host` surface through the no_std `wasm-host` crate; the host side
+supplies the staged CAS/namespace, actor table, capability table, clock and
+console through `HostHooks::policy`. `commit` publishes the stage as one value
+and the module aborts on a guest trap or a non-42 result, so a failed policy
+leaves no partial object, actor or capability. Load it with `module b ...`;
+slot A (MCP) remains live. The kernel's native `m1:` policy remains the
+fallback. The image must stay within the 1,572,864-byte slot-B limit.
 
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local

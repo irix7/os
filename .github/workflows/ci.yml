@@ -29,6 +29,7 @@ jobs:
         run: |
           if [ -f Cargo.toml ]; then
             cargo fmt --all -- --check
+            (cd modules/wasm/guest && cargo fmt -- --check)
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -87,7 +88,8 @@ jobs:
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-service \
               -p mesh-sim -p fabric -p guest-abi -p cas-core -p cas-store \
-              -p cap-engine -p agnostic-core -p wasm-host
+              -p cap-engine -p agnostic-core -p wasm-host \
+              -p wasm-policy-host
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -263,6 +265,9 @@ jobs:
           export PATH="$HOME/.cargo/bin:$PATH"
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
+          cmp "$RUNNER_TEMP/policy-guest.wasm" modules/wasm/src/guest.wasm
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld" \
             cargo build --release -Z build-std=core,alloc \
               -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
@@ -271,7 +276,7 @@ jobs:
             target/mips3-sgi-irix7-n32/release/wasm-module "$RUNNER_TEMP/wasm.module"
           size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
           echo "wasm.module: $size bytes"
-          test "$size" -le 2097152
+          test "$size" -le 1572864
 
       - name: Setup IRIS
         id: iris
@@ -428,6 +433,31 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
+          python3 - "$work/serial.log" <<'PY'
+          import re
+          import sys
+
+          text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+          native = re.search(
+              r"^m1: root=([0-9a-f]{64}) .*? actor=([0-9a-f]{32}) .*? home=([0-9a-f]{32})",
+              text,
+              re.MULTILINE,
+          )
+          wasm = re.search(
+              r"^wasm-policy: root=([0-9a-f]{64}) actor=([0-9a-f]{32}) "
+              r"cap=ok home=([0-9a-f]{32}) "
+              r"objects=5 actors=1 queued=1 caps=1$",
+              text,
+              re.MULTILINE,
+          )
+          assert native, "missing native m1 policy line"
+          assert wasm, "missing Wasm policy evidence"
+          assert native.groups() == wasm.groups(), (
+              "Wasm policy does not match native policy: "
+              f"{native.groups()} != {wasm.groups()}"
+          )
+          print("wasm policy matches native root/actor/home:", native.groups()[0])
+          PY
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -678,6 +708,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: "modules-flat"
+      - name: Check the Wasm guest is reproducible
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
+          cmp "$RUNNER_TEMP/policy-guest.wasm" modules/wasm/src/guest.wasm
       - name: Build and flatten modules
         run: |
           set -euo pipefail
@@ -694,36 +729,43 @@ jobs:
           mkdir -p "$OUT"
           : > "$SIZES"
 
-          # module directory, package, build-std set. Every module links with
-          # its own modules/<module>/linker.ld at 0x88400000.
-          while read -r module package build_std; do
-            echo "=== $module ($package, build-std=$build_std) ==="
+          # module directory, package, build-std set, release opt-level.
+          # Every module links with its own modules/<module>/linker.ld.
+          while read -r module package build_std opt; do
+            echo "=== $module ($package, build-std=$build_std, opt=$opt) ==="
+            CARGO_PROFILE_RELEASE_OPT_LEVEL="$opt" \
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/$module/linker.ld" \
               cargo build --release -Z "build-std=$build_std" \
                 -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
                 --target "$TARGET" -p "$package"
             "$LLVM_OBJCOPY" -O binary "target/mips3-sgi-irix7-n32/release/$package" "$OUT/$module.module"
-            printf '%s\t%s\t%s\t%s\n' \
-              "$module" "$package" "$build_std" "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
+            printf '%s\t%s\t%s\t%s\t%s\n' \
+              "$module" "$package" "$build_std" "$opt" \
+              "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
             echo
           done <<'EOF'
-          hello  hello-module  core
-          ticker ticker-module core
-          block  block-module  core
-          mcp    mcp-module    core,alloc
-          erofs  erofs-module  core,alloc
-          logical logical-module core,alloc
-          cache  cache-module  core,alloc
-          wasm   wasm-module   core,alloc
+          hello  hello-module  core 2
+          ticker ticker-module core 2
+          block  block-module  core 2
+          mcp    mcp-module    core,alloc 2
+          erofs  erofs-module  core,alloc 2
+          logical logical-module core,alloc 2
+          cache  cache-module  core,alloc 2
+          wasm   wasm-module   core,alloc z
           EOF
 
-          echo "=== Module image sizes (limit $LIMIT bytes) ==="
-          printf '%-8s %-14s %-11s %12s %12s\n' module package build-std bytes limit
+          echo "=== Module image sizes (limit $LIMIT bytes, wasm slot limit 1572864) ==="
+          printf '%-8s %-14s %-11s %4s %12s %12s\n' module package build-std opt bytes limit
           failed=0
-          while IFS=$'\t' read -r module package build_std size; do
-            printf '%-8s %-14s %-11s %12s %12s\n' "$module" "$package" "$build_std" "$size" "$LIMIT"
-            if [ "$size" -gt "$LIMIT" ]; then
-              echo "::error::$module.module is $size bytes, over the $LIMIT-byte module area"
+          while IFS=$'\t' read -r module package build_std opt size; do
+            limit="$LIMIT"
+            if [ "$module" = wasm ]; then
+              limit=1572864
+            fi
+            printf '%-8s %-14s %-11s %4s %12s %12s\n' \
+              "$module" "$package" "$build_std" "$opt" "$size" "$limit"
+            if [ "$size" -gt "$limit" ]; then
+              echo "::error::$module.module is $size bytes, over the $limit-byte slot"
               failed=1
             fi
           done < "$SIZES"
@@ -731,10 +773,14 @@ jobs:
           {
             echo "### Module image sizes"
             echo
-            echo "| Module | Package | build-std | Bytes | Limit |"
-            echo "| --- | --- | --- | ---: | ---: |"
-            while IFS=$'\t' read -r module package build_std size; do
-              echo "| $module | $package | $build_std | $size | $LIMIT |"
+            echo "| Module | Package | build-std | opt | Bytes | Limit |"
+            echo "| --- | --- | --- | --- | ---: | ---: |"
+            while IFS=$'\t' read -r module package build_std opt size; do
+              limit="$LIMIT"
+              if [ "$module" = wasm ]; then
+                limit=1572864
+              fi
+              echo "| $module | $package | $build_std | $opt | $size | $limit |"
             done < "$SIZES"
           } >> "$SUMMARY"
 

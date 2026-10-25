@@ -1,0 +1,20 @@
+[package]
+license = "GPL-3.0-only"
+name = "wasm-policy-host"
+version = "0.1.0"
+edition = "2021"
+description = "Native primitives for the M1 Wasm local-policy guest"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+agnostic-core = { path = "../agnostic-core" }
+cas-core = { path = "../cas-core" }
+cas-store = { path = "../cas-store" }
+mesh-core = { path = "../mesh-core" }
+mesh-service = { path = "../mesh-service" }
+sys-primitives = { path = "../sys-primitives" }
+
+[dev-dependencies]
+wasm-host = { path = "../wasm-host" }

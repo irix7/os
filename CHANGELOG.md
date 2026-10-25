@@ -31,12 +31,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
   counter surface.
 - A `net=off` boot with no local module now reports `BOOT-READY` with
   `mcp=disabled`; it runs no module and leaves sash usable.
-- `modules/wasm` is a wasmi runtime probe: it compiles and runs an embedded
-  Wasm module on iris and prints `wasm: host=1` and `wasm: run=42`. The guest
-  calls the `i7host` version, clock, submit, poll, cancel, capability-check,
-  console-write and yield imports through the no_std `wasm-host` surface. Its
-  `HostHooks` bridge the clock and console to the kernel; the guest checks the
-  submission completion before returning. It is not the policy core.
+- `modules/wasm` is the slot-B Wasm core for M1. The guest drives a staged
+  local namespace/CAS, actor table and capability policy, and prints
+  `wasm: host=1`, `wasm-policy: root=... actor=... cap=ok home=...` and
+  `wasm: run=42`. The evidence matches the native `m1:` root, actor and home;
+  the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
+  A failed or trapped guest aborts the stage, so no partial object, actor or
+  capability is published. The module is 1,344,664 bytes, inside the
+  1,572,864-byte slot-B limit, and the PROM remains 519,508 bytes.
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
 
