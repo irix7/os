@@ -15,8 +15,10 @@ SCSI target 2. The released image is v0.1.3.
 The shared architecture crates are merged and host-tested:
 `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`,
 `cap-engine`, `guest-abi`, `wasm-host` and `mesh-sim`. The SDK owns
-`wasm-abi` v0.5.0 and the user SDK v0.4.0. The kernel does not yet run the Wasm
-core or join a mesh; those are the first two gates.
+`wasm-abi` v0.5.0 and the user SDK v0.4.0. A slot-B Wasm module now runs the
+local single-node policy on iris; the kernel does not yet host a resident Wasm
+core or join a mesh. The M1 software gate is iris-only, with the real-Indy
+limitation recorded in Phase 2.
 
 Native POSIX/relibc, the IRIX 6.5 container and ABI 10 modules remain native
 compatibility surfaces throughout.
@@ -96,10 +98,13 @@ every pull request. The static Rust `std` image also boots in that no-network
 local-module configuration and exits 0; the CI boot gate uses the smaller native
 hello until the std image is a build artifact. The kernel now starts the local
 namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
-remains the module probe. A wasmi runtime probe runs as a module; the Wasm
-policy core and general module multiplexer are still missing; a fixed A/B slot
-layout lets MCP and the Wasm probe coexist. Zero mesh traffic is now
-instrumented and asserted on the M1 line.
+remains the module probe. The slot-B Wasm module now runs the local policy
+from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses
+and checks the capability rights, and commits atomically. Its
+`wasm-policy: root=... actor=... cap=ok home=...` evidence matches the native
+`m1:` line, while MCP remains in slot A. The general module multiplexer is
+still missing; the fixed A/B layout is the current coexistence mechanism. Zero
+mesh traffic is instrumented and asserted on the M1 line.
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
@@ -116,6 +121,16 @@ downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
 a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
 `modules/cache` proves the idle write and readback on target 1 to target 3.
 The automatic queue, lookup and module multiplexer are still to come.
+
+**M1 software status (2026-10-26):** the iris gate boots the no-network,
+no-module path and the slot-B Wasm-policy path; the native and Wasm
+root/actor/home/capability evidence match, MCP remains live in slot A, and
+`mesh=0/0/0` is asserted. The rebuilt PROM is 519,480 of 524,288 bytes
+(4,808 free) and the Wasm module is 1,344,712 bytes, inside the
+1,572,864-byte slot-B limit. **Real-Indy execution was not available in this
+workspace.** The exact limitation is recorded here and in the changelog: no
+physical Indy or self-hosted lab runner was attached, so the gate is iris-only
+and must not be reported as a real-Indy pass.
 
 **Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
 and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms

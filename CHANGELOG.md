@@ -37,8 +37,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `wasm: run=42`. The evidence matches the native `m1:` root, actor and home;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
-  capability is published. The module is 1,344,664 bytes, inside the
-  1,572,864-byte slot-B limit, and the PROM remains 519,508 bytes.
+  capability is published. The module is 1,344,712 bytes in the local gate,
+  inside the 1,572,864-byte slot-B limit, and the rebuilt PROM remains
+  519,480 bytes (4,808 free).
+- The M1 software gate now boots both the no-network/no-module path and the
+  slot-B Wasm-policy path on iris, with zero mesh traffic and MCP still live
+  in slot A. Real-Indy hardware execution was not available in this workspace;
+  the M1 result is an iris gate with that limitation recorded, not a claim of
+  a real-Indy pass.
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
 

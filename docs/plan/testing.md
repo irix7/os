@@ -26,9 +26,11 @@ constructs no fabric frame. The loadable `logical` module runs the same policy
 on iris outside the compressed PROM; it prints its local root, actor and
 verified 1-of-1 capability, then ticks. The kernel now starts a local
 namespace/CAS, actor and capability policy at boot as well; the module remains
-the signed 1-of-1 probe. A wasmi runtime probe runs as a module; the Wasm
-policy core and module multiplexer are still missing. Mesh traffic is now
-instrumented and asserted zero on the M1 line. The fabric, capability, CAS and Wasm host crates have host tests;
+the signed 1-of-1 probe. The slot-B Wasm module now runs the local policy from
+a Rust guest through the staged `i7host` surface and prints evidence matching
+the native `m1:` line; the general module multiplexer is still missing. Mesh
+traffic is now instrumented and asserted zero on the M1 line. The fabric,
+capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:
@@ -145,7 +147,7 @@ the test runs `packages` and `packages install mcp` against the GitHub index.
 This is the primary diskless gate; a SCSI disk is not a boot, discovery or
 module prerequisite.
 
-A slot-B boot serves a 1,344,664-byte wasm module over local HTTP, sets
+A slot-B boot serves a 1,344,712-byte wasm module over local HTTP, sets
 `wasm.url` and `wasm.sha256` in NVRAM, and asserts `wasm: host=1`,
 `wasm: run=42`, `wasm-policy: root=... actor=... cap=ok home=...`,
 `m1: ... mesh=0/0/0` and `BOOT-READY` with MCP still listening. The CI
@@ -155,6 +157,13 @@ namespace, actor and capability choice; the host supplies only staged
 CAS/table primitives. A failed or trapped guest aborts the stage, so no
 partial policy is published. The image must stay within the
 1,572,864-byte slot-B limit.
+
+The no-network and slot-B policy boots are both part of the same `boot` CI
+job. The M1 software gate is reproducible from a clean checkout on iris. **No
+physical Indy was available in this workspace: the real-Indy execution gate
+is not claimed, and is recorded as the hardware limitation in §5.**
+The policy guest is a boot-time proof, not yet a resident or multiplexed
+policy service.
 
 A second boot uses `net=off`, attaches no SCSI disk and has no local module.
 It asserts the kernel's `m1:` policy line including `mesh=0/0/0`, `BOOT-READY`
