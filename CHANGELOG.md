@@ -26,10 +26,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `packages run NAME` fetches and verifies a userland image and enters it from
   RAM without a SCSI disk.
 - The kernel now starts a local namespace/CAS, actor table/run queue and a
-  capability over the root directory at boot; it prints `m1: ... cap=ok`.
+  capability bound to the root OID prefix at boot; it prints `m1: ... cap=ok`.
   The signed 1-of-1 policy remains a separate module probe.
 - Release builds use fat LTO.  The unreleased userland-install plus kernel M1
-  policy image is 514,560 bytes in CI (local 514,560), leaving 9,728 bytes
+  policy image is 514,792 bytes in CI (local 514,792), leaving 9,496 bytes
   under the PROM limit; the
   v0.1.3 release remains 520,840 bytes.
 - The module area has fixed A/B slots: 512 KiB for MCP/probes, 1.5 MiB for the
@@ -42,12 +42,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - `modules/wasm` is the slot-B Wasm core for M1. The guest drives a staged
   local namespace/CAS, actor table and capability policy, and prints
   `wasm: host=1`, `m1-wasm: root=... actor=... cap=ok rights=35 home=...` and
-  `wasm: run=42`. The evidence matches the native `m1:` root, actor, rights and home;
+  `wasm: run=42`. The guest chooses a distinct motd so its root differs; actor, rights and home match the native line;
   the host supplies only bulk CAS/table primitives through `HostHooks::policy`.
   A failed or trapped guest aborts the stage, so no partial object, actor or
   capability is published. The module is about 1.34 MiB (1,347,416 bytes in CI; local 1,347,416 in
   the local gate), inside the 1,572,864-byte slot-B limit, and the rebuilt PROM
-  remains 514,560 bytes in CI (local 514,560, 9,728 bytes free).
+  remains 514,792 bytes in CI (local 514,792, 9,496 bytes free).
 - The M1 software path now boots both the no-network/no-module path and the
   slot-B Wasm-policy path on iris, with zero mesh traffic and MCP loaded in
   slot A, including a post-smoke `m1-post: mesh=0/0/0` line. The checked-in

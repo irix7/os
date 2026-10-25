@@ -88,6 +88,13 @@ fn wasm() -> Option<&'static Bridge> {
     unsafe { WASM }
 }
 
+/// Drop a previously adopted bridge before slot B is cleared or replaced.
+pub fn forget_wasm() {
+    // SAFETY: single-threaded kernel; the next userland read falls back to the
+    // native policy until a new guest commits.
+    unsafe { WASM = None };
+}
+
 /// Adopt the committed wasm policy bridge if the module published one.
 pub fn adopt_wasm() {
     // SAFETY: the bridge record lives at the fixed end of the reserved slot B.

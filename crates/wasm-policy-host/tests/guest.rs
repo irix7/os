@@ -250,7 +250,11 @@ fn run_policy_guest() {
     let mut namespace = Namespace::new();
     namespace.create_dir_all("/etc").expect("etc");
     namespace
-        .put("/etc/motd", ObjectKind::Blob, b"Welcome to IRIX 7.\n")
+        .put(
+            "/etc/motd",
+            ObjectKind::Blob,
+            b"Welcome to IRIX 7 (Wasm).\n",
+        )
         .expect("motd");
     namespace.create_dir_all("/dev").expect("dev");
     namespace

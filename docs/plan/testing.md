@@ -155,7 +155,7 @@ A slot-B boot serves a 1,347,416-byte wasm module over local HTTP, sets
 `BOOT-READY` with MCP loaded. The checked-in v0.1.3 MCP release artifact has a known HTTP bug; a current-tree build answers when probed from a peer. A host-to-guest HTTP probe is not yet a CI gate. A second local boot uses `wasm.local`
 on SCSI target 2 with `net=off`, so the same boot asserts
 `BOOT-READY network=off mcp=disabled` and the Wasm policy evidence. The CI
-compares the `m1-wasm` root, actor, rights and home against the native `m1:` line
+compares the `m1-wasm` actor, rights and home against the native `m1:` line; the guest root must differ
 and checks `objects=9 actors=1 queued=1 caps=1`. The guest drives the
 namespace, actor and capability choice; the host supplies only staged
 CAS/table primitives. A failed or trapped guest aborts the stage, so no

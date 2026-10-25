@@ -464,14 +464,21 @@ jobs:
           )
           assert native, "missing native m1 policy line"
           assert wasm, "missing Wasm policy evidence"
-          assert native.groups() == wasm.groups(), (
-              "Wasm policy does not match native policy: "
-              f"{native.groups()} != {wasm.groups()}"
+          # The guest deliberately chooses a different motd, so its root OID
+          # must differ. Actor identity, rights and home are the policy values
+          # that must agree; the live bridge is proved by the distinct motd.
+          assert native.group(1) != wasm.group(1), (
+              "guest root is not distinct from native root: "
+              f"{native.group(1)}"
+          )
+          assert native.groups()[1:] == wasm.groups()[1:], (
+              "Wasm policy actor/rights/home differ from native: "
+              f"{native.groups()[1:]} != {wasm.groups()[1:]}"
           )
           assert native.group(3) == "35", "unexpected M1 rights"
           print(
-              "wasm policy matches native root/actor/rights/home:",
-              native.groups()[0],
+              "wasm policy has distinct root and matches actor/rights/home:",
+              wasm.group(1),
           )
           PY
           iris-ci --socket "$socket" quit
@@ -665,10 +672,11 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1-live: wasm-policy adopted' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from std' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'file=hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'write=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'chdir=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cwd=/etc' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7 (Wasm).' --timeout 30
           iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
           iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'entry=hello.txt' --timeout 30
@@ -729,6 +737,7 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'relative=Welcome to IRIX 7.' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'file=hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'stat_size=17' --timeout 30
           iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30

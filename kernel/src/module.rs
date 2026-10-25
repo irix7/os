@@ -87,6 +87,9 @@ pub fn area(slot: Slot) -> &'static mut [u8] {
 
 /// Zero one module slot before a download.
 pub fn clear(slot: Slot) {
+    if slot == Slot::B {
+        crate::logical::forget_wasm();
+    }
     // SAFETY: the region is reserved for modules and is not aliased.
     unsafe {
         core::ptr::write_bytes(slot_base(slot) as *mut u8, 0, slot_size(slot));

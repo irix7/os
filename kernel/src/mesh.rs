@@ -62,9 +62,9 @@ fn self_test() {
     note_frame();
     note_rpc();
     note_envelope();
-    debug_assert_eq!(frames(), 1);
-    debug_assert_eq!(rpcs(), 1);
-    debug_assert_eq!(envelopes(), 1);
+    assert_eq!(frames(), 1);
+    assert_eq!(rpcs(), 1);
+    assert_eq!(envelopes(), 1);
     // SAFETY: single-threaded boot path.
     unsafe {
         FRAMES = 0;

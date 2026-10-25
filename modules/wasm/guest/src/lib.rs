@@ -21,7 +21,7 @@ const RIGHT_INVOKE: i32 = 1 << 5;
 const RIGHT_MANAGE: i32 = 1 << 9;
 const RIGHTS: i32 = RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE;
 
-const MOTD: &[u8] = b"Welcome to IRIX 7.\n";
+const MOTD: &[u8] = b"Welcome to IRIX 7 (Wasm).\n";
 const ETC: &[u8] = b"/etc";
 const MOTD_PATH: &[u8] = b"/etc/motd";
 const DEV: &[u8] = b"/dev";
