@@ -99,6 +99,11 @@ impl Capability {
         self.rights
     }
 
+    /// The handle for this capability.  The table entry remains the authority.
+    pub const fn handle(&self) -> Cap {
+        self.cap
+    }
+
     pub fn has_right(&self, right: u32) -> bool {
         self.rights.0 & right == right
     }

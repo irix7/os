@@ -18,9 +18,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
   target 2 with HPC3 DMA, and leaves the user to `reboot`.
 - `packages run NAME` fetches and verifies a userland image and enters it from
   RAM without a SCSI disk.
-- Release builds use thin LTO.  The unreleased userland-install image is
-  499,804 bytes, leaving 24,484 bytes under the PROM limit; the v0.1.3 release
-  remains 520,840 bytes.
+- The kernel now starts a local namespace/CAS, actor table/run queue and a
+  capability over the root directory at boot; it prints `m1: ... cap=ok`.
+  The signed 1-of-1 policy remains a separate module probe.
+- Release builds use fat LTO.  The unreleased userland-install plus kernel M1
+  policy image is 519,572 bytes, leaving 4,716 bytes under the PROM limit; the
+  v0.1.3 release remains 520,840 bytes.
 
 ## [0.1.3] — 2026-10-25
 

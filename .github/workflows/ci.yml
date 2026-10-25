@@ -316,6 +316,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
@@ -413,8 +414,9 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          # The module prints before the readiness marker, and the default
-          # serial cursor does not rewind, so assert it first.
+          # The kernel M1 line and the module policy both print before the
+          # readiness marker, and the default serial cursor does not rewind.
+          iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
@@ -496,6 +498,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30

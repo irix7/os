@@ -24,8 +24,10 @@ boot; this is M1 boot evidence, not a mesh. A host integration test,
 namespace/CAS, actor directory/run queue and capability engine on one node and
 constructs no fabric frame. The loadable `logical` module runs the same policy
 on iris outside the compressed PROM; it prints its local root, actor and
-verified 1-of-1 capability, then ticks. The kernel itself does not start that
-policy yet. The fabric, capability, CAS and Wasm host crates have host tests;
+verified 1-of-1 capability, then ticks. The kernel now starts a local
+namespace/CAS, actor and capability policy at boot as well; the module remains
+the signed 1-of-1 probe. The Wasm core and zero-mesh instrumentation are still
+missing. The fabric, capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.
 
 Architecture CI additions:

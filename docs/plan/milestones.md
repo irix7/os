@@ -94,15 +94,18 @@ loads that module from the local SCSI target through an `mcp.local` NVRAM record
 with `net=off`, so the boot uses no network, and checks the policy and ticks on
 every pull request. The static Rust `std` image also boots in that no-network
 local-module configuration and exits 0; the CI boot gate uses the smaller native
-hello until the std image is a build artifact. The kernel itself does not start
-that policy yet.
+hello until the std image is a build artifact. The kernel now starts the local
+namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
+remains the module probe. The Wasm core, zero-mesh instrumentation and module
+multiplexer are still missing.
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with thin LTO is 499,804 bytes (24,484 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy and fat LTO is 519,572 bytes
+(4,716 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
