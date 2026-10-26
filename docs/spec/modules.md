@@ -315,6 +315,22 @@ Version 1 has exact versions only; ranges and a solver are not part of this
 format. Decoding rejects bad magic, an unsupported format version, truncation,
 trailing bytes, invalid UTF-8 and oversized records.
 
+### 8.2 Manifest footer v1 (implemented host slice)
+
+A module image may append its manifest record and a 16-byte footer:
+
+```text
+image bytes | manifest record | I7MF | u16 version=1 | u16 reserved=0
+            | u32 manifest offset | u32 manifest length
+```
+
+The manifest range must end exactly at the footer, and the record must decode
+as version 1. A standalone image has no footer. A present but malformed footer
+fails closed; it is not treated as an older standalone image. The image digest
+covers the image, manifest and footer; the footer has no separate checksum.
+
+The host implementation is `module_resolver::footer::{wrap, parse}`.
+
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
