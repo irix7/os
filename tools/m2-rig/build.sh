@@ -79,8 +79,8 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" 
 "$LLVM_OBJCOPY" -O binary \
   "$CARGO_TARGET_DIR/$TARGET/release/mcp-module" "$WORK/mcp.module"
 module_size="$(stat -c%s "$WORK/mcp.module")"
-if [ "$module_size" -gt 2097152 ]; then
-  echo "m2-rig: module is $module_size bytes, over the 2 MiB slot" >&2
+if [ "$module_size" -gt 524288 ]; then
+  echo "m2-rig: module is $module_size bytes, over the 512 KiB slot A" >&2
   exit 1
 fi
 echo "m2-rig: module $module_size bytes"

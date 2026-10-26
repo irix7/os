@@ -18,6 +18,7 @@ mod homes;
 mod join;
 mod nvram;
 mod probe;
+mod route;
 mod relay;
 mod rig;
 mod sha256;
@@ -98,7 +99,7 @@ Options:
   --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
   --timeout SECS   boot deadline (default: 180)
-  --fault MODE     none (default), no-peer or wrong-authority
+  --fault MODE     none (default), no-peer, wrong-authority or no-route
   --keep           with run, leave the nodes running
   --verbose        print extra detail
 
@@ -129,9 +130,9 @@ fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
         return Err(format!("PROM is {} bytes; the window is 524288", rom.len()));
     }
     let module = fs::read(&options.module).map_err(|error| format!("read MCP module: {error}"))?;
-    if module.len() > 2 * 1024 * 1024 {
+    if module.len() > 524_288 {
         return Err(format!(
-            "MCP module is {} bytes; the slot is 2 MiB",
+            "MCP module is {} bytes; slot A is 524288",
             module.len()
         ));
     }
@@ -229,13 +230,22 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         wait_join(&nodes, Duration::from_secs(60));
         wait_join_ack(&nodes, Duration::from_secs(20));
         wait_homes_serial(&nodes, Duration::from_secs(20));
+        std::thread::sleep(Duration::from_secs(10));
     } else if options.fault == Fault::WrongAuthority {
         wait_join_reject(&nodes, Duration::from_secs(30));
+        std::thread::sleep(Duration::from_secs(10));
     }
     let facts = snapshot_facts(&nodes);
     let keys = AuthorityKeys::lab();
     let join = join::evaluate(&nodes, &facts, &keys, options.fault, None);
     let home_inputs = collect_homes(options, &nodes, &facts, &join);
+    let route = match collect_route(options, &nodes, &join) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!("m2-rig: route: {error}");
+            None
+        }
+    };
     let homes = homes::evaluate(
         options.fault,
         home_inputs.before,
@@ -248,13 +258,17 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     let (probes, relays) = probe_two_way(&nodes)?;
     let http_ok = probes.iter().all(|probe| probe.ok);
     let mesh_ok = mesh.as_ref().is_none_or(|mesh| mesh.ok);
-    let passed = http_ok && mesh_ok && join.ok && homes.ok;
+    let route_ok = route.as_ref().is_some_and(|route| route.ok);
+    let passed = http_ok && mesh_ok && join.ok && homes.ok && route_ok;
     print_probe_table(&probes);
     if let Some(mesh) = &mesh {
         print_mesh_result(mesh);
     }
     print_join_result(&join);
     print_homes_result(&homes);
+    if let Some(route) = &route {
+        print_route_result(route);
+    }
     let error = if !http_ok {
         Some("one or both HTTP probes failed".to_string())
     } else if !mesh_ok {
@@ -263,6 +277,8 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         Some(join.message.clone())
     } else if !homes.ok {
         Some(homes.message.clone())
+    } else if !route_ok {
+        route.as_ref().map(|route| route.message.clone())
     } else {
         None
     };
@@ -276,6 +292,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         mesh_relay.as_ref(),
         Some(&join),
         Some(&homes),
+        route.as_ref(),
         None,
         "probe",
         if passed { "pass" } else { "fail" },
@@ -283,6 +300,66 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     )?;
     println!("evidence: {}", directory.display());
     Ok(if passed { 0 } else { 1 })
+}
+
+fn collect_route(
+    options: &Options,
+    nodes: &[Node],
+    join: &JoinEvidence,
+) -> Result<route::RouteEvidence, String> {
+    match options.fault {
+        Fault::None => {
+            if join.epoch.is_none() || join.digest.is_none() || join.members.len() != 2 {
+                return Err("join evidence is not a converged two-node view".into());
+            }
+            Ok(route::run(
+                &nodes[0],
+                &nodes[1],
+                &join.members,
+                join.epoch.unwrap_or(0),
+                join.digest.as_deref().unwrap_or_default(),
+                Duration::from_secs(180),
+            ))
+        }
+        Fault::NoRoute | Fault::NoPeer | Fault::WrongAuthority => {
+            route::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
+        }
+    }
+}
+
+fn print_route_result(route: &route::RouteEvidence) {
+    println!(
+        "route [{}]: {} ({})",
+        route.fault,
+        if route.ok { "pass" } else { "FAIL" },
+        route.message
+    );
+    for node in &route.nodes {
+        match &node.report {
+            Some(report) => println!(
+                "  {} HTTP {} state={} epoch={:?} old={:?} new={:?}                  moved={}/{} retries={} completes={} rejects={} results={}",
+                node.name,
+                node.status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                report.state,
+                report.view_epoch,
+                report.move_old.as_deref(),
+                report.move_new.as_deref(),
+                report.moved_local,
+                report.moved_remote,
+                report.retries,
+                report.completes,
+                report.rejects,
+                report.results.len()
+            ),
+            None => println!(
+                "  {} error={}",
+                node.name,
+                node.error.as_deref().unwrap_or("no report")
+            ),
+        }
+    }
 }
 
 fn run_and_probe(options: &Options) -> Result<i32, String> {
@@ -316,6 +393,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut probe_error = None;
     let mut join_error = None;
     let mut homes_error = None;
+    let mut route = None;
+    let mut route_error = None;
     let mut restart = None;
     let mut home_inputs = HomeInputs::default();
     let keys = AuthorityKeys::lab();
@@ -340,8 +419,13 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // there is no evidence that B installed what A signed.
             wait_join_ack(&nodes, Duration::from_secs(20));
             wait_homes_serial(&nodes, Duration::from_secs(20));
+            // The MCP HTTP slot is armed by the module tick after the join
+            // and homes logging settles.  Give it the same 10 s the guest HTTP
+            // probe uses before the first control-plane fetch.
+            std::thread::sleep(Duration::from_secs(10));
         } else if options.fault == Fault::WrongAuthority {
             wait_join_reject(&nodes, Duration::from_secs(30));
+            std::thread::sleep(Duration::from_secs(10));
         }
         facts = snapshot_facts(&nodes);
 
@@ -349,6 +433,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         home_inputs = collect_homes(options, &nodes, &facts, &join_before);
         if let Some(error) = home_inputs.error.take() {
             homes_error = Some(error);
+        }
+        match collect_route(options, &nodes, &join_before) {
+            Ok(value) => {
+                if !value.ok {
+                    route_error = Some(value.message.clone());
+                }
+                route = Some(value);
+            }
+            Err(error) => route_error = Some(error),
         }
 
         // The guest-level HTTP probe still runs before the member restart, as
@@ -382,7 +475,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     }
 
     let join = join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref());
-    if options.fault == Fault::None && join_error.is_none() {
+    if matches!(options.fault, Fault::None | Fault::NoRoute) && join_error.is_none() {
         if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
             home_inputs.after =
                 Some(homes::collect_current_serial(&nodes, &facts, epoch, digest, &join.members));
@@ -403,21 +496,25 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         Fault::NoPeer => true,
         _ => mesh.as_ref().is_some_and(|mesh| mesh.ok),
     };
+    let route_ok = route.as_ref().is_some_and(|route| route.ok);
     let passed = bring_up_error.is_none()
         && probe_error.is_none()
         && join_error.is_none()
         && homes_error.is_none()
+        && route_error.is_none()
         && probes.len() == 2
         && probes.iter().all(|probe| probe.ok)
         && mesh_ok
         && join.ok
-        && homes.ok;
+        && homes.ok
+        && route_ok;
     let verdict = if passed { "pass" } else { "fail" };
     let error = bring_up_error
         .as_deref()
         .or(probe_error.as_deref())
         .or(join_error.as_deref())
         .or(homes_error.as_deref())
+        .or(route_error.as_deref())
         .or_else(|| {
             mesh.as_ref()
                 .filter(|mesh| !mesh.ok)
@@ -425,6 +522,12 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         })
         .or_else(|| (!join.ok).then_some(join.message.as_str()))
         .or_else(|| (!homes.ok).then_some(homes.message.as_str()))
+        .or_else(|| {
+            route
+                .as_ref()
+                .filter(|route| !route.ok)
+                .map(|route| route.message.as_str())
+        })
         .map(str::to_string);
 
     // Let the emulated UART drain the last pass/reject line before the
@@ -444,6 +547,9 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     }
     print_join_result(&join);
     print_homes_result(&homes);
+    if let Some(route) = &route {
+        print_route_result(route);
+    }
     for (node, fact) in running.iter().zip(facts.iter()) {
         println!(
             "{}: {}",
@@ -462,6 +568,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         mesh_relay.as_ref(),
         Some(&join),
         Some(&homes),
+        route.as_ref(),
         Some(&fixture),
         "run",
         verdict,
@@ -587,7 +694,7 @@ fn collect_homes(
 ) -> HomeInputs {
     let mut inputs = HomeInputs::default();
     match options.fault {
-        Fault::None => {
+        Fault::None | Fault::NoRoute => {
             let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) else {
                 inputs.error = Some("join evidence has no epoch/digest for homes".into());
                 return inputs;
@@ -1215,6 +1322,7 @@ fn write_evidence(
     mesh_relay: Option<&MeshRelay>,
     join: Option<&JoinEvidence>,
     homes: Option<&HomesEvidence>,
+    route: Option<&route::RouteEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
     verdict: &str,
@@ -1261,6 +1369,7 @@ fn write_evidence(
         mesh,
         join,
         homes,
+        route,
         fixture,
         relays: &relay_logs,
         verdict,

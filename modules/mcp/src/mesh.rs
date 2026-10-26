@@ -26,6 +26,12 @@
 //! M2-2 member:  Completion/Hello JOIN_ACK
 //!
 //! M2-3:         GET /mesh/homes   confirmed rendezvous table, bounded
+//!
+//! M2-4 invoke:  Request/Invoke     Capability + stat body
+//! M2-4 home:    Response/Invoke    RESULT or bounded MOVED
+//! M2-4 move:    Request/RouteQuery root-signed one-object home lease move
+//! M2-4 ack:     Response/RouteQuery MOVE_ACK
+//! M2-4 rig:     GET /mesh/route    bounded report; ?step=N drives one step
 //! ```
 //!
 //! A Ping frame body must be the 16-byte source `NodeId`; a mismatch is a
@@ -43,14 +49,15 @@ use mesh_core::{fixture_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_M
 use mesh_join::{
     JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role, Tick, MAX_BODY as JOIN_BODY_MAX,
 };
+use mesh_route::{RouteNode, RouteSigner, Step as RouteStep, Wire as RouteWire};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
     StreamDecoder, WriteOutcome, RECEIVE_DEADLINE_MS,
 };
 use module_abi::Services;
 use sys_primitives::{
-    mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, OpCode,
-    StreamId, Tag,
+    mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, ObjectId,
+    OpCode, Status, StreamId, Tag,
 };
 
 /// Module TCP slot owned by the mesh listener when `mesh.peer` is present.
@@ -63,7 +70,7 @@ pub const HTTP_SLOT: u32 = 0;
 const READ_CHUNK: usize = 1024;
 const READS_PER_TICK: usize = 8;
 const PENDING_CAPACITY: u32 = 8;
-const LINE_CAP: usize = 256;
+const LINE_CAP: usize = 384;
 
 enum Phase {
     Arm,
@@ -73,6 +80,8 @@ enum Phase {
 
 struct Incoming {
     header: MeshHeader,
+    object: ObjectId,
+    status: Status,
     kind: MessageKind,
     opcode: OpCode,
     body_len: usize,
@@ -89,6 +98,7 @@ struct Mesh {
     stats: Stats,
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
+    route: Option<RouteNode>,
     home_count: u32,
     join_timeout_logged: bool,
     last_arm_log_ms: u64,
@@ -152,6 +162,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         line.push(b'\n');
         log(services, line.as_bytes());
     }
+    let route = route_config(services, self_id, join.as_ref(), home_count);
     let mesh = Mesh {
         phase: Phase::Arm,
         self_id,
@@ -163,6 +174,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         stats: Stats::default(),
         heartbeat: Heartbeat::m2(),
         join,
+        route,
         home_count,
         join_timeout_logged: false,
         last_arm_log_ms: 0,
@@ -194,6 +206,7 @@ pub fn tick(services: &Services) {
 /// convergence.  A table is served only from a confirmed snapshot and only
 /// when the optional `epoch=` query equals that snapshot's epoch; an older
 /// epoch is a `409` with no object lines.
+#[inline(never)]
 pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
     // SAFETY: the module is single-threaded and `MESH` is written once at
     // entry; no mutable reference to it is live here.
@@ -261,6 +274,152 @@ pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
         body.push(b'\n');
     }
     (200, body.len())
+}
+
+/// Render or drive `GET /mesh/route`.
+///
+/// A bare request returns a bounded snapshot of the route policy's in-memory
+/// report: the confirmed view, the object moved in each direction, every
+/// completed operation (object, home, epoch, value, attempt count and whether
+/// a `MOVED` was consumed), and the refusal/timeout counters.  `?step=N`
+/// drives one rig step (`1` remote stat, `2` move peer->self, `3` stale stat,
+/// `4` move self->peer, `5` stale stat).  The rig chooses the order; the route
+/// policy chooses the object from the confirmed rendezvous view.  It is not a
+/// directory and it is not persisted.
+#[inline(never)]
+pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    let step = match route_step(path) {
+        Ok(step) => step,
+        Err(()) => return route_line(out, 400, "state=bad-request reason=query"),
+    };
+    if let Some(step) = step {
+        return route_command(services, step, out);
+    }
+    // SAFETY: the module is single-threaded and `MESH` is written once at
+    // entry; no mutable reference to it is live here.
+    let mesh = unsafe { (&*core::ptr::addr_of!(MESH)).as_ref() };
+    let Some(mesh) = mesh else {
+        return route_line(out, 404, "state=disabled reason=peer");
+    };
+    let Some(route) = mesh.route.as_ref() else {
+        return route_line(out, 404, "state=disabled reason=config");
+    };
+    let report = route.report();
+    let mut body = Body::new(out);
+    body.str("mesh-route: state=enabled view_epoch=");
+    body.u64(report.view_epoch as u64);
+    body.str(" members=");
+    body.u64(report.view_members as u64);
+    body.str(" digest=");
+    body.digest(&report.view_digest);
+    body.push(b'\n');
+    body.str("mesh-route: move old=");
+    body.object_opt(&report.move_old);
+    body.str(" new=");
+    body.object_opt(&report.move_new);
+    body.push(b'\n');
+    for result in &report.results {
+        body.str("mesh-route: result object=");
+        body.hex(result.object.as_bytes());
+        body.str(" home=");
+        body.node(&result.home);
+        body.str(" home_epoch=");
+        body.u64(result.home_epoch as u64);
+        body.str(" value=");
+        body.hex(&result.value);
+        body.str(" attempts=");
+        body.u64(result.attempts as u64);
+        body.str(" moved=");
+        body.u64(if result.moved { 1 } else { 0 });
+        body.push(b'\n');
+    }
+    body.str("mesh-route: counters completes=");
+    body.u64(report.completes as u64);
+    body.str(" retries=");
+    body.u64(report.retries as u64);
+    body.str(" rejects=");
+    body.u64(report.rejects as u64);
+    body.str(" timeouts=");
+    body.u64(report.timeouts as u64);
+    body.str(" results=");
+    body.u64(report.results.len() as u64);
+    body.str(" moved_local=");
+    body.u64(report.moved_local as u64);
+    body.str(" moved_remote=");
+    body.u64(report.moved_remote as u64);
+    if let Some(reason) = report.last_reject {
+        body.str(" last_reject=");
+        body.str(reason.as_str());
+    }
+    body.push(b'\n');
+    (200, body.len())
+}
+
+fn route_step(path: &[u8]) -> Result<Option<u8>, ()> {
+    if path == b"/mesh/route" {
+        return Ok(None);
+    }
+    let Some(query) = path.strip_prefix(b"/mesh/route?") else {
+        return Err(());
+    };
+    let Some(value) = query.strip_prefix(b"step=") else {
+        return Err(());
+    };
+    if value.len() != 1 || !value[0].is_ascii_digit() {
+        return Err(());
+    }
+    Ok(Some(value[0] - b'0'))
+}
+
+#[inline(never)]
+fn route_command(services: &Services, step: u8, out: &mut [u8]) -> (u16, usize) {
+    // SAFETY: the module tick is single-threaded and no other reference to
+    // `MESH` is live while the HTTP handler runs.
+    let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
+        return route_line(out, 404, "state=disabled reason=peer");
+    };
+    let now = (services.clock_ms)();
+    let command = if let Some(join) = mesh.join.as_ref() {
+        let signer = JoinSigner(join);
+        mesh.route
+            .as_mut()
+            .map(|route| route.command(step, now, &signer))
+    } else {
+        None
+    };
+    let Some(step_result) = command else {
+        return route_line(out, 404, "state=disabled reason=config");
+    };
+    let rejected = step_result.events.iter().find_map(|event| match event {
+        mesh_route::Event::Reject { reason, .. } => Some(*reason),
+        _ => None,
+    });
+    mesh.dispatch_route(services, step_result, now);
+    let mut body = Body::new(out);
+    match rejected {
+        Some(reason) => {
+            body.str("mesh-route: rejected step=");
+            body.u64(step as u64);
+            body.str(" reason=");
+            body.str(reason.as_str());
+            body.push(b'\n');
+            (409, body.len())
+        }
+        None => {
+            body.str("mesh-route: started step=");
+            body.u64(step as u64);
+            body.push(b'\n');
+            (202, body.len())
+        }
+    }
+}
+
+fn route_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
+    let mut body = Body::new(out);
+    body.str("mesh-route: ");
+    body.str(state);
+    body.push(b'\n');
+    (status, body.len())
 }
 
 fn homes_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
@@ -352,6 +511,13 @@ impl<'a> Body<'a> {
 
     fn digest(&mut self, digest: &[u8; 16]) {
         self.hex(digest);
+    }
+
+    fn object_opt(&mut self, object: &Option<ObjectId>) {
+        match object {
+            Some(object) => self.hex(object.as_bytes()),
+            None => self.push(b'-'),
+        }
     }
 }
 
@@ -481,6 +647,16 @@ impl Mesh {
             _ => {}
         }
 
+        let route_step = if let Some(join) = self.join.as_ref() {
+            let signer = JoinSigner(join);
+            self.route.as_mut().map(|route| route.tick(now, &signer))
+        } else {
+            None
+        };
+        if let Some(step) = route_step {
+            self.dispatch_route(services, step, now);
+        }
+
         if self.heartbeat.due(now) {
             let destination = self.peer.unwrap_or(NodeId::ZERO);
             if self.queue_ping(
@@ -544,6 +720,8 @@ impl Mesh {
                     storage[..body.len()].copy_from_slice(body);
                     Incoming {
                         header: envelope.header,
+                        object: envelope.frame.header.object,
+                        status: envelope.frame.header.status,
                         kind: envelope.frame.header.kind,
                         opcode: envelope.frame.header.opcode,
                         body_len: body.len(),
@@ -597,12 +775,21 @@ impl Mesh {
                     return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
                 }
             }
+            (MessageKind::Request, OpCode::Invoke)
+            | (MessageKind::Response, OpCode::Invoke)
+            | (MessageKind::Request, OpCode::RouteQuery)
+            | (MessageKind::Response, OpCode::RouteQuery) => {
+                if self.route.is_none() {
+                    self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                    return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+                }
+            }
             _ => {
                 self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
                 return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
             }
         }
-        self.learn_peer(services, source)?;
+        self.learn_peer(services, source, now)?;
 
         match (incoming.kind, incoming.opcode) {
             (MessageKind::Request, OpCode::Ping) => {
@@ -651,9 +838,62 @@ impl Mesh {
                 };
                 self.after_join(services, outcome, source, now);
             }
+            (MessageKind::Request, OpCode::Invoke)
+            | (MessageKind::Response, OpCode::Invoke)
+            | (MessageKind::Request, OpCode::RouteQuery)
+            | (MessageKind::Response, OpCode::RouteQuery) => {
+                let step = if let Some(join) = self.join.as_ref() {
+                    let signer = JoinSigner(join);
+                    self.route.as_mut().map(|route| {
+                        route.on_wire(
+                            source,
+                            &incoming.header,
+                            incoming.object,
+                            incoming.kind,
+                            incoming.opcode,
+                            incoming.status,
+                            body,
+                            now,
+                            &signer,
+                        )
+                    })
+                } else {
+                    None
+                };
+                if let Some(step) = step {
+                    self.dispatch_route(services, step, now);
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    fn dispatch_route(&mut self, services: &Services, step: RouteStep, now: u64) {
+        for event in &step.events {
+            if let Some(route) = self.route.as_mut() {
+                route.note_event(event);
+            }
+        }
+        if let Some(wire) = step.send {
+            if !self.queue_route(wire, now) {
+                log(services, b"mesh-route: send-failed\n");
+            }
+        }
+        self.flush(services, now);
+    }
+
+    fn queue_route(&mut self, wire: RouteWire, now: u64) -> bool {
+        let Ok(mut frame) =
+            MessageFrame::inline(wire.kind, wire.opcode, StreamId(3), Tag(0), &wire.body)
+        else {
+            return false;
+        };
+        frame.header.object = wire.object;
+        frame.header.status = wire.status;
+        let header = wire.header(self.self_id);
+        let envelope = MeshEnvelope { header, frame };
+        self.queue.push_record(&envelope, now).is_ok()
     }
 
     fn after_join(
@@ -668,15 +908,18 @@ impl Mesh {
                 self.log_snapshot(services, "mesh-join: confirm", snapshot);
                 self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
                 self.log_homes(services, snapshot);
+                self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Converged(snapshot) => {
                 self.join_timeout_logged = false;
                 self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
                 self.log_homes(services, snapshot);
+                self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
                 self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                 self.log_homes(services, snapshot);
+                self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Refused { reason, epoch } => {
                 let mut line = Line::new();
@@ -737,6 +980,18 @@ impl Mesh {
         line.nodes(&snapshot.members);
         line.push(b'\n');
         log(services, line.as_bytes());
+    }
+
+    fn on_route_snapshot(&mut self, _services: &Services, snapshot: &MembershipSnapshot, now: u64) {
+        let Some(route) = self.route.as_mut() else {
+            return;
+        };
+        let Some(event) =
+            route.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest(), now)
+        else {
+            return;
+        };
+        route.note_event(&event);
     }
 
     fn log_homes(&self, services: &Services, snapshot: &MembershipSnapshot) {
@@ -884,7 +1139,12 @@ impl Mesh {
         self.queue.push_record(&envelope, now).is_ok()
     }
 
-    fn learn_peer(&mut self, services: &Services, source: NodeId) -> Result<(), TransportError> {
+    fn learn_peer(
+        &mut self,
+        services: &Services,
+        source: NodeId,
+        now: u64,
+    ) -> Result<(), TransportError> {
         match self.peer {
             None => {
                 self.peer = Some(source);
@@ -893,6 +1153,9 @@ impl Mesh {
                 line.node(&source);
                 line.push(b'\n');
                 log(services, line.as_bytes());
+                if let Some(route) = self.route.as_mut() {
+                    let _ = route.set_peer(source, now);
+                }
                 Ok(())
             }
             Some(peer) if peer == source => Ok(()),
@@ -1032,6 +1295,9 @@ impl Mesh {
         if let Some(join) = &mut self.join {
             join.on_link_down();
         }
+        if let Some(route) = self.route.as_mut() {
+            let _ = route.on_link_down();
+        }
 
         let mut line = Line::new();
         line.str("mesh-transport: disconnected reason=");
@@ -1068,6 +1334,10 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         (MessageKind::Request, OpCode::Hello)
         | (MessageKind::Response, OpCode::Hello)
         | (MessageKind::Completion, OpCode::Hello) => JOIN_BODY_MAX,
+        (MessageKind::Request, OpCode::Invoke)
+        | (MessageKind::Response, OpCode::Invoke)
+        | (MessageKind::Request, OpCode::RouteQuery)
+        | (MessageKind::Response, OpCode::RouteQuery) => mesh_route::MAX_BODY,
         _ => 16,
     }
 }
@@ -1076,6 +1346,65 @@ fn body_bytes(len: usize) -> &'static [u8] {
     // SAFETY: single-threaded module; JOIN_RX holds the current frame body and
     // the slice is consumed before the next record is decoded.
     unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(JOIN_RX) as *const u8, len) }
+}
+
+/// Build the M2 route policy when `mesh.route` is present.
+///
+/// Route policy is opt-in so a normal M2-3 boot keeps exactly the
+/// transport/join/homes behaviour.  The route node is still fail-closed: it
+/// has no view until the confirmed snapshot arrives, and a member never signs
+/// a capability or a home move.
+fn route_config(
+    services: &Services,
+    self_id: NodeId,
+    join: Option<&JoinNode>,
+    home_count: u32,
+) -> Option<RouteNode> {
+    let mut text = [0u8; 32];
+    let Some(len) = config(services, b"mesh.route", &mut text) else {
+        log(services, b"mesh-route: disabled reason=config\n");
+        return None;
+    };
+    let enabled = &text[..len] == b"1" || &text[..len] == b"probe";
+    if !enabled {
+        log(services, b"mesh-route: disabled reason=config\n");
+        return None;
+    }
+    let Some(join) = join else {
+        log(services, b"mesh-route: disabled reason=join\n");
+        return None;
+    };
+    let Some(route) = RouteNode::new(
+        self_id,
+        join.root(),
+        join.authority_key(),
+        matches!(join.role(), Role::Root),
+        home_count,
+    ) else {
+        log(services, b"mesh-route: disabled reason=config\n");
+        return None;
+    };
+    let mut line = Line::new();
+    line.str("mesh-route: enabled role=");
+    line.str(join.role().as_str());
+    line.str(" objects=");
+    line.u64(home_count as u64);
+    line.push(b'\n');
+    log(services, line.as_bytes());
+    Some(route)
+}
+
+/// The root-only signing seam for capability issuance and home moves.
+struct JoinSigner<'a>(&'a JoinNode);
+
+impl RouteSigner for JoinSigner<'_> {
+    fn key(&self) -> NodeKey {
+        self.0.authority_key()
+    }
+
+    fn sign(&self, message: &[u8]) -> Option<[u8; 64]> {
+        self.0.sign_authority(message)
+    }
 }
 
 /// Read the join configuration and build the state machine.

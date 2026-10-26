@@ -69,6 +69,8 @@ pub enum Fault {
     NoPeer,
     /// Give the member a valid but wrong root public key.
     WrongAuthority,
+    /// Join and homes are enabled, but `mesh.route` is absent.
+    NoRoute,
 }
 
 impl Fault {
@@ -78,6 +80,7 @@ impl Fault {
             "none" => Self::None,
             "no-peer" => Self::NoPeer,
             "wrong-authority" => Self::WrongAuthority,
+            "no-route" => Self::NoRoute,
             _ => return None,
         })
     }
@@ -88,11 +91,17 @@ impl Fault {
             Self::None => "none",
             Self::NoPeer => "no-peer",
             Self::WrongAuthority => "wrong-authority",
+            Self::NoRoute => "no-route",
         }
     }
 
     /// Whether the join is expected to converge in this mode.
     pub const fn joins(self) -> bool {
+        matches!(self, Self::None | Self::NoRoute)
+    }
+
+    /// Whether the remote capability route is expected to run.
+    pub const fn routes(self) -> bool {
         matches!(self, Self::None)
     }
 }
@@ -209,7 +218,7 @@ where
             "--fault" => {
                 let word = next_value(&mut iter, "--fault")?;
                 fault = Fault::parse(&word).ok_or_else(|| {
-                    "--fault must be none, no-peer or wrong-authority".to_string()
+                    "--fault must be none, no-peer, wrong-authority or no-route".to_string()
                 })?;
             }
             "--keep" => keep = true,
@@ -376,14 +385,22 @@ impl Node {
             if let Some(epoch) = mesh.epoch {
                 env.push(("mesh.epoch".into(), epoch.to_string()));
             }
+            // The DS1386 environment has only 298 bytes before the MAC slot.
+            // The M2-3 default is eight objects, so the route opt-in can omit
+            // the redundant key instead of pushing the environment over.
             if let Some(objects) = mesh.objects {
-                env.push(("mesh.obj".into(), objects.to_string()));
+                if objects != crate::homes::OBJECT_COUNT {
+                    env.push(("mesh.obj".into(), objects.to_string()));
+                }
             }
             if let Some(key) = &mesh.public_key {
                 env.push(("mesh.pub".into(), key.clone()));
             }
             if let Some(key) = &mesh.seed {
                 env.push(("mesh.key".into(), key.clone()));
+            }
+            if let Some(route) = &mesh.route {
+                env.push(("mesh.route".into(), route.clone()));
             }
         }
         env
@@ -407,6 +424,8 @@ pub struct MeshEnv {
     /// (`mesh.key`).  Only the root carries this; it is a lab fixture, not a
     /// secret store.
     pub seed: Option<String>,
+    /// The M2 route opt-in (`mesh.route`).  Absent keeps the M2-3 behaviour.
+    pub route: Option<String>,
 }
 
 /// The deterministic lab authority key pair.
@@ -462,6 +481,11 @@ pub fn mesh_environments(
             objects: Some(crate::homes::OBJECT_COUNT),
             public_key: None,
             seed: None,
+            route: if fault.routes() {
+                Some("1".into())
+            } else {
+                None
+            },
         };
         if index == 0 {
             env.seed = Some(authority.seed_hex.clone());
@@ -813,6 +837,10 @@ pub struct BootFacts {
     pub mesh_join_enabled: Option<String>,
     /// The `mesh-join: disabled` line.
     pub mesh_join_disabled: Option<String>,
+    /// The `mesh-route: enabled` line.
+    pub mesh_route_enabled: Option<String>,
+    /// The `mesh-route: disabled` line.
+    pub mesh_route_disabled: Option<String>,
     /// The `mesh-join: local` line from this boot.
     pub mesh_join_local: Option<String>,
     /// The first `mesh-join: request` line.
@@ -881,6 +909,14 @@ impl BootFacts {
             mesh_join_disabled: text
                 .lines()
                 .find(|line| line.contains("mesh-join: disabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_route_enabled: text
+                .lines()
+                .find(|line| line.contains("mesh-route: enabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_route_disabled: text
+                .lines()
+                .find(|line| line.contains("mesh-route: disabled "))
                 .map(|line| line.trim().to_string()),
             mesh_join_local: text
                 .lines()

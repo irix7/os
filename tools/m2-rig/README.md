@@ -6,13 +6,15 @@ print `BOOT-READY`, proves a two-way HTTP exchange through a Rust host relay, co
 two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, and drives
 the M2-2 signed join until both nodes report the same membership epoch and snapshot. It
 then fetches the M2-3 rendezvous home table from both kernels, checks the stale-epoch
-negative, and in the default `run` restarts the member and requires it to rejoin at the
+negative, drives the M2-4 remote capability route and its one-`MOVED` retry in both
+directions, and in the default `run` restarts the member and requires it to rejoin at the
 same epoch with the same table.
 
 - Runbook: [`../../docs/plan/m2-rig.md`](../../docs/plan/m2-rig.md)
 - Decisions: [`../../docs/adr/README.md`](../../docs/adr/README.md)
-  ([M2-ADR-0005](../../docs/adr/m2-0005-join-epoch.md) is the join/epoch design and
-  [M2-ADR-0006](../../docs/adr/m2-0006-homes.md) is the homes/evidence design)
+  ([M2-ADR-0005](../../docs/adr/m2-0005-join-epoch.md) is the join/epoch design,
+  [M2-ADR-0006](../../docs/adr/m2-0006-homes.md) is the homes/evidence design and
+  [M2-ADR-0007](../../docs/adr/m2-0007-route.md) is the route/`MOVED` design)
 - Harness crate: `Cargo.toml`, `src/`
 - Build helper: `build.sh`
 
@@ -32,10 +34,10 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 
 | Command | Purpose |
 |---|---|
-| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, restart the member and require the same epoch/table, stop, write evidence. |
+| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member and require the same epoch/table, stop, write evidence. |
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
-| `probe` | Probe HTTP, mesh framing, join and homes against running nodes; no restart. |
+| `probe` | Probe HTTP, mesh framing, join, homes and the route against running nodes; no restart. |
 | `down` | Stop both through their CI sockets. |
 | `print-config` | Print the derived instance, port and NVRAM table. |
 | `clean` | Remove the work directory (stop the nodes first). |
@@ -51,6 +53,7 @@ Options: `--work DIR`, `--repo DIR`, `--iris PATH`, `--iris-ci PATH`, `--rom PAT
 | `none` (default) | Full `mesh.*` configuration. | The join converges at epoch 2; both kernels serve the same homes; the member restarts and rejoins at the same epoch with the same table; `?epoch=1` is `409 stale` with no rows. |
 | `no-peer` | No `mesh.*` key at all. | No mesh listener and no join; `/mesh/homes` is `404 disabled`; the HTTP probe passes and the M1 `mesh=single` / `mesh=0/0/0` markers are preserved. |
 | `wrong-authority` | n1 has a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, keeps its seed view and serves `409 pending` with no homes. |
+| `no-route` | The join/homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both nodes log `mesh-route: disabled reason=config`, `/mesh/route` is `404 disabled`, and no route step or `MOVED` runs. |
 
 ## What it proves
 
@@ -79,9 +82,19 @@ Options: `--work DIR`, `--repo DIR`, `--iris PATH`, `--iris-ci PATH`, `--rom PAT
   restart; the MCP body is checked before the restart.
 - A stale-epoch negative: `GET /mesh/homes?epoch=1` after convergence is `409` with
   `state=stale` and no object rows on both kernels.
-- Fail-closed alternatives: `no-peer` keeps the M1/M2-0 path and has no homes endpoint,
-  and `wrong-authority` proves the member rejects an unauthenticated epoch and presents
-  no unconfirmed homes.
+- A real remote capability route: n0 issues a `cap-engine` capability for the first
+  n1-homed fixture object, n1 verifies it and serves the stat, and the rig recomputes the
+  value.
+- A bounded stale-home path: n0 signs a root-authorised move of that object from n1 to n0,
+  n1 enters `DRAINING` and answers `MOVED` with the next home epoch, and n0 retries exactly
+  once locally. The reverse move (n0 to n1) produces a local `MOVED` and a remote retry.
+- The route report: both kernels must carry the join-confirmed epoch, member count and
+  digest; the three result rows must name the expected object, home, epoch, attempt count,
+  `moved` flag and independently recomputed value; `rejects=0` and `timeouts=0`.
+- Fail-closed alternatives: `no-peer` keeps the M1/M2-0 path and has no homes or route
+  endpoint, `wrong-authority` proves the member rejects an unauthenticated epoch and
+  presents no unconfirmed homes, and `no-route` proves the route opt-in without weakening
+  the M2-1/M2-2/M2-3 markers.
 
 The kernel's `BOOT-READY` still says `mesh=single`: that is the M1 bootstrap view printed
 before any module runs. The confirmed membership is the module's `mesh-join: converged`
@@ -95,13 +108,15 @@ line. The rig never uses `mesh-sim` as evidence.
 | `mesh.peer` | Peer mesh port through this node's gateway; enables the listener and join. |
 | `mesh.authority` | The root's MAC-derived `NodeId`. |
 | `mesh.epoch` | Seed epoch (`1`). |
-| `mesh.obj` | Number of home-fixture objects, 1–32 (rig default 8). |
+| `mesh.obj` | Number of home-fixture objects, 1–32 (rig default 8; omitted when default). |
+| `mesh.route` | `1` enables the M2-4 remote capability route; absent preserves M2-3. |
 | `mesh.pub` | Root's Ed25519 public key, on the member. |
 | `mesh.key` | Root's Ed25519 seed, on the root only; a lab fixture, redacted in evidence. |
 | `console` | `serial0`. |
 
 The DS1386 environment has 298 bytes before the MAC slot, so the root stores only the
-seed and derives its public key. `--fault no-peer` omits every `mesh.*` key.
+seed and derives its public key, and the rig omits `mesh.obj` at its default of eight so
+the `mesh.route=1` opt-in fits. `--fault no-peer` omits every `mesh.*` key.
 
 ## Tests
 
@@ -115,9 +130,11 @@ two-node mesh environment), the deterministic authority key, instance-report par
 HTTP relay, the mesh relay's first-byte guard, the fixture, the probe transcript parser,
 the join-line parser, the independent snapshot digest, the join/restart oracle, the homes
 codec, independent fixture/rendezvous derivation, stale and pending bodies, before/after
-comparison and JSON escaping. The codec/authority/state-machine tests are in
-`crates/mesh-join`, and the placement/mismatch tests are in `crates/mesh-core`. The
-end-to-end test is the `run` command above; it needs iris and the built artefacts.
+comparison and JSON escaping. The route report parser, independent value oracle and
+five-step driver are in `src/route.rs`. The codec/authority/state-machine tests are in
+`crates/mesh-join`, the placement/mismatch tests are in `crates/mesh-core`, and the
+capability/lease/`MOVED` tests are in `crates/mesh-route`. The end-to-end test is the
+`run` command above; it needs iris and the built artefacts.
 
 ## Layout
 
@@ -127,6 +144,7 @@ end-to-end test is the `run` command above; it needs iris and the built artefact
 | `src/rig.rs` | Instance derivation, NVRAM, process control, serial facts. |
 | `src/join.rs` | Join/epoch oracle, independent snapshot digest, restart checks. |
 | `src/homes.rs` | Home-table codec, independent fixture/rendezvous oracle and checks. |
+| `src/route.rs` | Route report codec, independent value oracle and five-step driver. |
 | `src/relay.rs` | HTTP relay and the persistent mesh relay. |
 | `src/evidence.rs` | `summary.md` and `run.json`. |
 | `src/fixture.rs` | Loopback HTTP module fixture. |

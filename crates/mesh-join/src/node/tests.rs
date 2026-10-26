@@ -543,3 +543,19 @@ fn root_and_member_snapshot_digests_are_computed_from_the_same_canonical_bytes()
     };
     assert_eq!(root.canonical_bytes(), expected);
 }
+
+#[test]
+fn authority_signing_is_root_only_and_matches_the_configured_key() {
+    let pair = pair();
+    let root_key = pair.root.authority_key();
+    assert_eq!(root_key, key(9));
+    let message = b"IRIX7-M2-AUTHORITY-SEAM-v1";
+    let signature = pair
+        .root
+        .sign_authority(message)
+        .expect("the root can sign");
+    assert!(cap_engine::verify(&root_key, message, &signature).is_ok());
+
+    assert_eq!(pair.member.authority_key(), key(9));
+    assert_eq!(pair.member.sign_authority(message), None);
+}

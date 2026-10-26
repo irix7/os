@@ -252,6 +252,30 @@ impl JoinNode {
         }
     }
 
+    /// The configured authority public key.
+    ///
+    /// The root derives it from its signing key; the member holds the key
+    /// provisioned as `mesh.pub`.  A route or capability verifier can use this
+    /// without knowing which role this node has.
+    pub fn authority_key(&self) -> NodeKey {
+        match &self.engine {
+            Engine::Root(state) => state.authority.public_key(),
+            Engine::Member(state) => state.verifier.key(),
+        }
+    }
+
+    /// Sign one canonical authority message, or return `None` on a member.
+    ///
+    /// This is the root-only seam used by the M2 route layer for capability
+    /// issuance and the bounded home-move directive.  The seed never leaves
+    /// the join state.
+    pub fn sign_authority(&self, message: &[u8]) -> Option<[u8; 64]> {
+        match &self.engine {
+            Engine::Root(state) => Some(state.authority.sign(message)),
+            Engine::Member(_) => None,
+        }
+    }
+
     /// The number of sends of the current request.
     pub fn attempts(&self) -> u32 {
         match &self.engine {

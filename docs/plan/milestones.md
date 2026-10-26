@@ -193,6 +193,25 @@ node sets, epoch changes, distribution, mismatch detection and membership-change
 This is still not full M2: there is no leave/removal, no home move, no remote capability
 route, no `MOVED`, no lease fencing and no migration. See M2-ADR-0006.
 
+**M2-4 status (2026-10-27):** a capability issued at node A now routes to the confirmed
+rendezvous home on node B through the existing `mesh-core` home calculation and bounded
+route cache, with no central directory. `crates/mesh-route` defines the bounded `I7R1`
+invoke, result, `MOVED`, root-signed home-lease move, acknowledgement and error bodies over
+the unchanged M2-1 transport; the receiver checks a `cap-engine` Ed25519 capability
+(issuer, signature, subject, rights, validity, object generation and home/epoch fencing)
+before serving. A controlled root-signed one-object lease move puts the old home into
+`DRAINING`; it answers `MOVED` with exactly the next home epoch, a confirmed member and
+bounded lease/grace, and the sender retries exactly once. Repeated `MOVED`, stale or
+unknown epochs, a wrong home, a non-member target, malformed bodies, missing peers and
+capability mismatch fail closed. `tools/m2-rig` drives five steps on two real iris kernels:
+a remote stat at B, a wire `MOVED` with a local retry, and a local `MOVED` with a wire
+retry; it recomputes every fixture object, home, epoch pair and value independently and
+records both `GET /mesh/route` reports. `--fault no-route` preserves the M2-1/M2-2/M2-3
+markers, and `--fault no-peer` preserves the M1 path. The MCP module remains inside its
+512 KiB slot A. This is not full M2: L0 migration and failure/partition with lease fencing
+remain, and the controlled lease move is a lab fixture, not a general home-migration
+policy. See M2-ADR-0007.
+
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 
