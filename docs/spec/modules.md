@@ -388,7 +388,6 @@ is 522,908 bytes of 524,288 in this slice.
 
 ### 8.6 MCP runtime graph status
 
-
 The manager writes a `ModuleStatus` record at the fixed `0x883f_e000` status
 block. MCP's `GET /modules` reads it and returns the resolved graph/load result;
 before a manager has published, it returns `runtime manager: unavailable`. The

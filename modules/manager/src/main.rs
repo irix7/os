@@ -19,6 +19,7 @@ static VTABLE: ModuleVtable = ModuleVtable {
     tick: None,
 };
 
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "C" fn _start(services: *const Services) -> *const ModuleVtable {
     let Some(services) = (unsafe { services.as_ref() }) else {
