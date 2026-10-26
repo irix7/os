@@ -30,6 +30,7 @@ pub fn init() {
     debug_assert!(view.is_single());
     debug_assert_eq!(home_for(&ObjectId([0x5a; 32]), &view), Some(node));
 
+    self_test();
     crate::print_str("mesh: single node ");
     for byte in node.as_bytes() {
         crate::print_hex8(*byte);
@@ -54,6 +55,22 @@ pub fn note_rpc() {
 pub fn note_envelope() {
     // SAFETY: single-threaded kernel.
     unsafe { ENVELOPES = ENVELOPES.saturating_add(1) };
+}
+
+/// Prove the three counters are wired, then restore the zero baseline.
+fn self_test() {
+    note_frame();
+    note_rpc();
+    note_envelope();
+    assert_eq!(frames(), 1);
+    assert_eq!(rpcs(), 1);
+    assert_eq!(envelopes(), 1);
+    // SAFETY: single-threaded boot path.
+    unsafe {
+        FRAMES = 0;
+        RPCS = 0;
+        ENVELOPES = 0;
+    }
 }
 
 /// Mesh frames observed since boot.

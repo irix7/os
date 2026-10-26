@@ -25,6 +25,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
+use m1_policy_bridge::{bridge_address, Bridge, MAGIC, VERSION};
 use module_abi::{ModuleVtable, Services};
 use sys_primitives::{ActorId, NodeId};
 use wasm_host::{Host, HostHooks, PolicyHooks};
@@ -34,6 +35,8 @@ use wasm_policy_host::Policy;
 const GUEST: &[u8] = include_bytes!("guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
+/// Actor identity captured from the guest's `host_actor_spawn` call.
+static mut LIVE_ACTOR: [u8; 16] = [0; 16];
 
 struct ModuleAllocator;
 
@@ -233,7 +236,12 @@ fn hook_home(context: usize, oid: &[u8; 32], out: &mut [u8; 16]) -> i32 {
 
 fn hook_actor_spawn(context: usize, id: &[u8; 16]) -> i32 {
     match policy(context).map(|policy| policy.actor_spawn(ActorId(*id))) {
-        Some(Ok(())) => 0,
+        Some(Ok(())) => {
+            // SAFETY: the guest is synchronous on the module's single thread;
+            // the bridge reads this only after the policy commits.
+            unsafe { LIVE_ACTOR = *id };
+            0
+        }
         _ => -1,
     }
 }
@@ -310,6 +318,123 @@ fn hook_stats(context: usize, out: &mut [u32; 4]) -> i32 {
     }
 }
 
+unsafe extern "C" fn bridge_root(context: usize, out: *mut u8) -> i32 {
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    match policy.root() {
+        Ok(oid) => {
+            if out.is_null() {
+                return -1;
+            }
+            unsafe { core::ptr::copy_nonoverlapping(oid.as_bytes().as_ptr(), out, 32) };
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+unsafe extern "C" fn bridge_actor(context: usize, out: *mut u8) -> i32 {
+    if policy(context).is_none() || out.is_null() {
+        return -1;
+    }
+    // SAFETY: the bridge is read after commit; LIVE_ACTOR is module-owned.
+    let actor = unsafe { LIVE_ACTOR };
+    if actor.iter().all(|&byte| byte == 0) {
+        return -1;
+    }
+    unsafe { core::ptr::copy_nonoverlapping(actor.as_ptr(), out, actor.len()) };
+    0
+}
+
+unsafe extern "C" fn bridge_lookup(
+    context: usize,
+    path: *const u8,
+    len: usize,
+    out: *mut u8,
+) -> i32 {
+    if path.is_null() || out.is_null() || len == 0 || len > 160 {
+        return -1;
+    }
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    let bytes = unsafe { core::slice::from_raw_parts(path, len) };
+    let Ok(path) = core::str::from_utf8(bytes) else {
+        return -1;
+    };
+    match policy.lookup(path) {
+        Ok(oid) => {
+            unsafe { core::ptr::copy_nonoverlapping(oid.as_bytes().as_ptr(), out, 32) };
+            0
+        }
+        Err(_) => -1,
+    }
+}
+
+unsafe extern "C" fn bridge_get(
+    context: usize,
+    oid: *const u8,
+    kind_out: *mut i32,
+    out: *mut u8,
+    capacity: usize,
+) -> isize {
+    if oid.is_null() || kind_out.is_null() || out.is_null() || capacity > 512 {
+        return -1;
+    }
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    let mut bytes = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(oid, bytes.as_mut_ptr(), 32) };
+    let object = sys_primitives::ObjectId(bytes);
+    match policy.get(&object) {
+        Ok((kind, data)) => {
+            if data.len() > capacity {
+                return -1;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(data.as_ptr(), out, data.len());
+                *kind_out = kind as i32;
+            }
+            data.len() as isize
+        }
+        Err(_) => -1,
+    }
+}
+
+unsafe extern "C" fn bridge_authorize(context: usize, oid: *const u8, rights: u32) -> i32 {
+    if oid.is_null() {
+        return -1;
+    }
+    let Some(policy) = policy(context) else {
+        return -1;
+    };
+    let mut bytes = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(oid, bytes.as_mut_ptr(), 32) };
+    if policy.authorize(rights, &sys_primitives::ObjectId(bytes)) {
+        0
+    } else {
+        -1
+    }
+}
+
+unsafe fn publish_bridge(policy: *mut Policy) -> bool {
+    let bridge = Bridge {
+        magic: MAGIC,
+        version: VERSION,
+        reserved: 0,
+        context: policy as usize,
+        root: bridge_root,
+        actor: bridge_actor,
+        lookup: bridge_lookup,
+        get: bridge_get,
+        authorize: bridge_authorize,
+    };
+    unsafe { core::ptr::write_volatile(bridge_address() as *mut Bridge, bridge) };
+    true
+}
+
 /// # Safety
 /// `services` must point to a valid v11 kernel service table.
 #[no_mangle]
@@ -377,6 +502,10 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
                 // SAFETY: the module owns this allocation and the guest has returned.
                 unsafe { (*policy).abort() };
                 log(services, b"wasm: policy not committed\n");
+                return &BAD;
+            }
+            if !unsafe { publish_bridge(policy) } {
+                log(services, b"wasm: bridge failed\n");
                 return &BAD;
             }
             log(services, b"wasm: run=42\n");

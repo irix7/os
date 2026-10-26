@@ -15,6 +15,16 @@ capability ABI are separate, later work).
 TLS stays in the core. It is the transport that makes module downloads trustworthy, so the
 module command uses HTTPS by default.
 
+### 1.1 PROM freeze
+
+Once M1 is re-closed, the compressed PROM/kernel image is **frozen for new
+features**. Only correctness, security and hardware-enablement fixes may change
+it. New policy, runtime, transport, server, device and management features ship
+as downloadable modules through the package index, using the versioned service
+table. The M1 live-policy bridge is a transitional exception; future module
+work must not grow the kernel object graph. The stable module ABI and the
+package index replace ad-hoc PROM changes.
+
 ## 2. Transport and integrity
 
 1. The console command is
@@ -272,14 +282,22 @@ ticker: tick
 - TCP listen/accept/send/recv/state/close over the shared interface, so a module can serve
   a protocol without linking smoltcp.
 - The NTP wall clock (distinct from monotonic `clock_ms`).
-- A module manifest with a name and required ABI version.
+- A module manifest with a name, version, required ABI and exports.
+- Runtime module dependencies: a module declares exact `name`, `version` and
+  SHA-256 records; a downloadable module manager resolves the graph, verifies
+  every image, loads dependencies before dependents and publishes versioned C
+  export tables. This is required after M1 and is tracked in #217. It is not
+  implemented by the fixed-slot loader below.
 
 These are additive to the version 2 table.
 
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
-- More than two fixed slots or a relocatable multiplexer.
-- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or dependency resolution.
+- More than two fixed slots or a relocatable multiplexer in the M1 loader.
+- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or runtime
+  dependency resolution, until the module manager in #217 lands. Official
+  modules may bundle dependencies at build time in the interim, but that is not
+  a runtime dependency claim.
 - Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.

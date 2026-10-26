@@ -15,15 +15,12 @@ pub struct FileEntry {
     pub path: &'static [u8],
 }
 
-static FILES: [FileEntry; 2] = [
-    FileEntry {
-        path: b"/hello.txt",
-    },
-    FileEntry { path: b"/etc/motd" },
-];
-const INITIAL: [&[u8]; 2] = [b"hello from the IRIX 7 ramfs\n", b"Welcome to IRIX 7.\n"];
-static mut FILE_DATA: [[u8; FILE_CAPACITY]; 2] = [[0; FILE_CAPACITY]; 2];
-static mut FILE_LEN: [usize; 2] = [0; 2];
+static FILES: [FileEntry; 1] = [FileEntry {
+    path: b"/hello.txt",
+}];
+const INITIAL: [&[u8]; 1] = [b"hello from the IRIX 7 ramfs\n"];
+static mut FILE_DATA: [[u8; FILE_CAPACITY]; 1] = [[0; FILE_CAPACITY]; 1];
+static mut FILE_LEN: [usize; 1] = [0; 1];
 static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MAX_PIPES];
 static mut PIPE_HEAD: [usize; MAX_PIPES] = [0; MAX_PIPES];
 static mut PIPE_LEN: [usize; MAX_PIPES] = [0; MAX_PIPES];
@@ -97,6 +94,7 @@ pub enum Kind {
     Console,
     Null,
     File(u32),
+    Logical,
     Dir(u32),
     PipeRead(u32),
     PipeWrite(u32),
@@ -282,7 +280,11 @@ pub fn open_path(path: &[u8], flags: u32) -> i32 {
     };
     let path = &resolved[..len];
     if path == b"/dev/null" {
-        return install(Kind::Null);
+        return if crate::logical::device(path) {
+            install(Kind::Null)
+        } else {
+            -1
+        };
     }
     if path == b"/dev/tty" || path == b"/dev/console" {
         return 0;
@@ -292,6 +294,13 @@ pub fn open_path(path: &[u8], flags: u32) -> i32 {
     }
     if path == b"/etc" {
         return install(Kind::Dir(1));
+    }
+    if path == b"/etc/motd" {
+        return if crate::logical::open_file(path) {
+            install(Kind::Logical)
+        } else {
+            -1
+        };
     }
     if path == b"/dev" {
         return install(Kind::Dir(2));
@@ -340,6 +349,12 @@ pub fn dup(fd: i32) -> i32 {
 
 pub fn read(fd: i32, buffer: &mut [u8]) -> isize {
     match kind(fd) {
+        Kind::Logical => {
+            let offset = unsafe { OFFSET[fd as usize] };
+            let count = crate::logical::read_file(b"/etc/motd", offset, buffer).unwrap_or(0);
+            unsafe { OFFSET[fd as usize] += count };
+            count as isize
+        }
         Kind::File(index) => {
             let index = index as usize;
             let offset = unsafe { OFFSET[fd as usize] };
@@ -413,7 +428,7 @@ pub fn write(fd: i32, buffer: &[u8]) -> isize {
             }
             count as isize
         }
-        Kind::Console | Kind::Dir(_) | Kind::PipeRead(_) => -1,
+        Kind::Console | Kind::Dir(_) | Kind::PipeRead(_) | Kind::Logical => -1,
         Kind::Closed => -1,
     }
 }
@@ -442,6 +457,10 @@ pub fn set_winsize(fd: i32, value: &[u16; 4]) -> bool {
 pub fn metadata(fd: i32) -> Option<(u32, i64)> {
     match kind(fd) {
         Kind::File(index) => Some((0o100644, unsafe { FILE_LEN[index as usize] } as i64)),
+        Kind::Logical => Some((
+            0o100644,
+            crate::logical::file_size(b"/etc/motd").unwrap_or(0) as i64,
+        )),
         Kind::Console | Kind::Null => Some((0o020666, 0)),
         Kind::Dir(_) => Some((0o040755, 0)),
         Kind::PipeRead(_) | Kind::PipeWrite(_) => Some((0o010600, 0)),
@@ -458,6 +477,9 @@ pub fn metadata_path(path: &[u8]) -> Option<(u32, i64)> {
     }
     if path == b"/" || path == b"/etc" || path == b"/dev" {
         return Some((0o040755, 0));
+    }
+    if path == b"/etc/motd" {
+        return crate::logical::file_size(path).map(|size| (0o100644, size as i64));
     }
     FILES
         .iter()
