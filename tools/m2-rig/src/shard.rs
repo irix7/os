@@ -943,6 +943,39 @@ fn fallback_stale(expected: &Expected) -> ShardTable {
     }
 }
 
+/// Fetch one member's three HTTP surfaces as a unit.
+fn fetch_member_http(
+    node: &Node,
+    expected: &Expected,
+) -> Result<(u16, ShardTable, u16, homes::HomeTable, u16, ShardTable), String> {
+    let (shard_status, table) = fetch_shard(node, "/mesh/shard", Duration::from_secs(10))?;
+    let (homes_status, homes_table) =
+        homes::fetch_table(node, "/mesh/homes", Duration::from_secs(10))?;
+    let stale_epoch = expected.epoch.saturating_sub(1).max(1);
+    let stale_path = format!("/mesh/shard?epoch={stale_epoch}");
+    let (stale_status, stale_table) = fetch_shard(node, &stale_path, Duration::from_secs(10))?;
+    let homes_stale_path = format!("/mesh/homes?epoch={stale_epoch}");
+    let (homes_stale_status, homes_stale_table) =
+        homes::fetch_table(node, &homes_stale_path, Duration::from_secs(10))?;
+    if homes_stale_status != 409
+        || homes_stale_table.state != "stale"
+        || !homes_stale_table.rows.is_empty()
+    {
+        return Err(format!(
+            "{}: M2 /mesh/homes stale check is not a clean 409",
+            node.name
+        ));
+    }
+    Ok((
+        shard_status,
+        table,
+        homes_status,
+        homes_table,
+        stale_status,
+        stale_table,
+    ))
+}
+
 fn run_started(
     options: &Options,
     nodes: &[Node],
@@ -1089,16 +1122,12 @@ fn run_started(
             }
             (table, homes_table, stale_table)
         } else {
-            match fetch_shard(node, "/mesh/shard", Duration::from_secs(10)) {
-                Ok((status, table)) => {
+            match fetch_member_http(node, &expected) {
+                Ok((status, table, homes_status, homes_table, stale_status, stale_table)) => {
                     checks.extend(verify_current(node, &table, status, &expected, role)?);
-                    let (homes_status, homes_table) =
-                        homes::fetch_table(node, "/mesh/homes", Duration::from_secs(10))?;
                     verify_m2_homes(node, homes_status, &homes_table, &expected)?;
                     let stale_epoch = expected.epoch.saturating_sub(1).max(1);
                     let stale_path = format!("/mesh/shard?epoch={stale_epoch}");
-                    let (stale_status, stale_table) =
-                        fetch_shard(node, &stale_path, Duration::from_secs(10))?;
                     verify_stale(
                         node,
                         &stale_path,
@@ -1107,18 +1136,6 @@ fn run_started(
                         stale_epoch,
                         &expected,
                     )?;
-                    let homes_stale_path = format!("/mesh/homes?epoch={stale_epoch}");
-                    let (homes_stale_status, homes_stale_table) =
-                        homes::fetch_table(node, &homes_stale_path, Duration::from_secs(10))?;
-                    if homes_stale_status != 409
-                        || homes_stale_table.state != "stale"
-                        || !homes_stale_table.rows.is_empty()
-                    {
-                        return Err(format!(
-                            "{}: M2 /mesh/homes stale check is not a clean 409",
-                            node.name
-                        ));
-                    }
                     http_members += 1;
                     (table, homes_table, stale_table)
                 }
@@ -1126,7 +1143,7 @@ fn run_started(
                     let line = serial_converged(node, &expected)?;
                     let table = fallback_member_table(node, &expected, &line)?;
                     checks.push(format!(
-                        "{}: HTTP /mesh/shard unavailable ({error}); member serial epoch={} \
+                        "{}: member HTTP evidence unavailable ({error}); member serial epoch={} \
                          members={} digest={} owned={} from the root shard table",
                         node.name,
                         line.epoch,
