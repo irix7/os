@@ -50,6 +50,24 @@ Consequences:
   LL/SC-safe, PageMask uses the R4000 encodings, the trap frame is 64-bit and
   LL is cleared on traps.  Do not regress these in thread or process work.
 
+## Pre-release compatibility policy
+
+There are no deployed users or stable base. Treat every internal interface as **Version 1**
+and replace it outright when a better design exists. Do not add compatibility with an
+earlier in-tree version, old-peer/old-client fallback, dual-stack paths, format or schema
+migration, deprecation aliases, or version negotiation between two ends built from this
+repository. Update every in-tree producer/consumer atomically and delete the old path,
+tests and docs.
+
+This covers the ROM/kernel handoff and ABIs, syscalls, module/service table, manifests,
+package/index and signing formats, mesh transport/join/homes/routes/membership/migration,
+MCP wire/API, capability/namespace/CAS/actor/process/IPC interfaces, filesystems and
+installer formats, libc/POSIX shims, display/device interfaces, configuration and tooling.
+Only safety/security invariants, explicit external standards/hardware requirements, and
+the M1/M2/M3 marker evidence are preserved. External IRIX/POSIX compatibility is a product
+goal, not a reason to retain our own old versions. See
+[`docs/spec/pre-release.md`](docs/spec/pre-release.md).
+
 ## Other standing requirements
 
 - **Rust-first components.** Prefer a Rust implementation for every new

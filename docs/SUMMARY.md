@@ -17,6 +17,7 @@
 - [Native capability ABI](spec/native-abi.md)
 - [Native libc ABI](spec/native-libc.md)
 - [Driver interface](spec/driver-interface.md)
+- [Pre-release compatibility policy](spec/pre-release.md)
 
 ## Architecture decisions
 
