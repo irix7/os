@@ -27,6 +27,12 @@ jobs:
           components: rust-src, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: Build artefacts
+        env:
+          # Required: the release fails closed rather than publishing an
+          # unsigned runtime graph unless IRIX7_RELEASE_UNSIGNED=1 is set
+          # explicitly for a deliberate unsigned build.
+          MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
+          MODULE_SIGNING_EPOCH: ${{ vars.MODULE_SIGNING_EPOCH }}
         run: ./scripts/release/build.sh
       - name: Checksums
         run: |
@@ -59,16 +65,35 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           git fetch origin main --quiet
-          if git show origin/main:boot/config.conf 2>/dev/null | cmp -s - dist/boot-config.conf; then
-            echo "boot configuration already current on main"
+          if git show origin/main:boot/config.conf 2>/dev/null | cmp -s - dist/boot-config.conf \
+             && git show origin/main:packages/runtime-index.conf 2>/dev/null | cmp -s - dist/runtime/package-index.conf; then
+            echo "boot configuration and runtime index already current on main"
             exit 0
           fi
           mkdir -p "boot/modules/${tag}"
           cp dist/mcp.module "boot/modules/${tag}/mcp.module"
+          cp dist/runtime/manager.module "boot/modules/${tag}/manager.module"
+          cp dist/runtime/demo-dep.module "boot/modules/${tag}/demo-dep.module"
+          cp dist/runtime/demo-root.module "boot/modules/${tag}/demo-root.module"
+          cp dist/runtime/package-index.conf "boot/modules/${tag}/package-index.conf"
+          if [ -f dist/runtime/package-index.conf.sig ]; then
+            cp dist/runtime/package-index.conf.sig "boot/modules/${tag}/package-index.conf.sig"
+          fi
+          cp dist/runtime/release-trust.conf "boot/modules/${tag}/release-trust.conf"
+          cp dist/runtime/package-index.conf packages/runtime-index.conf
           cp dist/boot-config.conf boot/config.conf
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add boot/config.conf "boot/modules/${tag}/mcp.module"
+          git add boot/config.conf packages/runtime-index.conf \
+            "boot/modules/${tag}/mcp.module" \
+            "boot/modules/${tag}/manager.module" \
+            "boot/modules/${tag}/demo-dep.module" \
+            "boot/modules/${tag}/demo-root.module" \
+            "boot/modules/${tag}/package-index.conf" \
+            "boot/modules/${tag}/release-trust.conf"
+          if [ -f "boot/modules/${tag}/package-index.conf.sig" ]; then
+            git add "boot/modules/${tag}/package-index.conf.sig"
+          fi
           branch="release-config/${tag}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           git checkout -b "$branch"
           git commit -m "release: point boot config at ${tag}"

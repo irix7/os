@@ -349,6 +349,7 @@ unsafe extern "C" fn service_module_load(
     loaded.image_size = image_size;
     loaded.state = MODULE_STATE_LOADED;
     loaded.name_len = request.name_len;
+    loaded.version_len = request.version_len;
     // SAFETY: bounded request pointers copied synchronously.
     unsafe {
         core::ptr::copy_nonoverlapping(

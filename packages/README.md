@@ -7,14 +7,28 @@ without a JSON stack, and so a contribution is just a pull request.
 `index.conf` is the source of truth.  Each record is:
 
 ```text
-kind name version url sha256 description...
+kind name version url sha256 [depends=...] [abi=...] [region=N] \
+  [exports=...] [sig=epoch:128-hex] description...
 ```
 
 - `kind` is `module` or `userland`.
 - `url` is an immutable HTTPS URL (prefer a release asset or a raw commit URL).
 - `sha256` covers the exact bytes served at `url`.
+- `depends=` is an exact `name@version:sha256` list for the runtime manager.
+- `abi=`, `region=`, `exports=` and `sig=` are the v2 runtime fields described
+  in `docs/spec/packages.md`.
 - `description` is free text to the end of the line.
 - Records with the same name are newest first; `sash` loads the first match.
+
+`packages/runtime-modules.toml` is the release graph spec. The release build
+runs `tools/module-release` to wrap each image with its manifest v2 footer, sign
+it, and emit `dist/runtime/package-index.conf`, its detached signature and
+`release-trust.conf`. Those generated records carry the exact `depends=`,
+`abi=`, `region=`, `exports=` and `sig=` fields. The checked-in
+`packages/release-trust.conf` is the manager's embedded release policy; the
+private signing key is not in the repository. An unsigned release is possible
+only with an explicit `IRIX7_RELEASE_UNSIGNED=1` build and a policy that says
+`require-signatures=0`.
 
 The catalog includes module binaries under `modules/` and userland images under
 `userland/`; both are served as immutable raw files for the version recorded in

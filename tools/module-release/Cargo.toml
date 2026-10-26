@@ -1,0 +1,21 @@
+[package]
+name = "module-release"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Wrap, sign and index IRIX 7 runtime modules"
+publish = false
+
+# Standalone host tool: it is not part of the kernel workspace, so a plain
+# `cargo build` in the repository root does not cross-build it and the
+# cross-compilation gates stay unchanged.
+[workspace]
+
+[dependencies]
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+module-resolver = { path = "../../crates/module-resolver" }
+module-trust = { path = "../../crates/module-trust" }
+object = "0.37"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+toml = "0.8"

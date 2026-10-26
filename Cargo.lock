@@ -764,6 +764,8 @@ source = "git+https://github.com/irix7/os-sdk?tag=v0.7.0#801bd8340ba343d6f1c483b
 name = "module-resolver"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "module-trust",
  "sha2",
 ]
 
@@ -1020,11 +1022,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-demo-root-module"
+version = "0.1.0"
+dependencies = [
+ "module-abi",
+]
+
+[[package]]
 name = "runtime-manager-module"
 version = "0.1.0"
 dependencies = [
  "loader-abi",
  "module-abi",
+ "module-resolver",
+ "module-trust",
 ]
 
 [[package]]

@@ -1,9 +1,10 @@
 # module-resolver
 
-Host-testable first slice of the runtime module manifest and dependency work
-tracked in [#217](https://github.com/irix7/os/issues/217).
+Host-testable manifest, package-index and runtime-transaction core for the
+runtime module manager tracked in
+[#217](https://github.com/irix7/os/issues/217).
 
-This crate does **not** load or execute module images. It defines:
+The crate does not call the kernel loader itself. It defines:
 
 - `Manifest` / `Record`: name, exact version, ABI, exact dependencies with
   SHA-256 digests and export declarations;
@@ -16,20 +17,24 @@ This crate does **not** load or execute module images. It defines:
 - `footer::wrap` / `footer::parse`: an optional `I7MF` footer that locates the
   manifest record after a flat image, while leaving standalone images valid;
 - `manager::ModuleManager`: host model of atomic load, SHA-256 image
-  verification, reference counting and unload. It does not execute an image;
-- `index::parse_record`: package-index v2 records with optional exact
-  `depends=name@version:sha256,...` fields and duplicate/digest validation.
-
-Version 1 resolves exact versions only. Version ranges, a package-index parser,
-signature validation, relocation, slot allocation and a module manager are
-later slices.
+  verification, reference counting and unload;
+- `index::parse_record` and `index::PackageIndex::parse`: package-index v2
+  records with exact `depends=`, `abi=`, `region=`, `exports=` and `sig=`
+  fields, bounded to 64 KiB and 256 records;
+- `runtime::Plan` / `runtime::run`: the manager transaction over a
+  `RuntimeBackend`. It verifies every release signature, loads every image
+  before entering any of them, parses each manifest footer, checks the entry
+  offset and registered exports, executes dependencies before the root, and
+  unloads the whole set on any failure. Stale handles, digest mismatches,
+  oversized images, missing dependencies, cycles, ABI/region limits and export
+  mismatches are host tests.
 
 ```rust
-let order = module_resolver::resolve(&root, host_abi, &registry)?;
-for id in order.order {
-    // load and verify the exact image, then call it in this order
-}
+let index = module_resolver::index::PackageIndex::parse(bytes)?;
+let plan = module_resolver::runtime::Plan::from_index(&index, "demo-root", "1.0.0", host)?;
+let report = module_resolver::runtime::run(&plan, &policy, &mut backend)?;
 ```
 
-The root module is last in `Resolution::order`, so each dependency is loaded
-before its dependent.
+The root module is last in `Plan::nodes`, so each dependency is loaded and
+entered before its dependent. Modules are linked for one arena region; the
+index carries that region because the loader does not relocate images.
