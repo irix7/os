@@ -617,7 +617,11 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
         WAIT_REQUEST => {
             let slot = unsafe { CURRENT };
             let state = (services.tcp_state)(slot);
-            if state == 2 {
+            // A client may half-close immediately after its request.  In that
+            // case smoltcp reports the connection as closing (3) with the
+            // request still in the receive buffer.  Read it before closing;
+            // otherwise a fast FIN can lose a complete request.
+            if state == 2 || state == 3 {
                 if !unsafe { IN_CONN } {
                     unsafe {
                         REQ_LEN = 0;
@@ -636,7 +640,7 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                         unsafe {
                             REQ_LEN = used + n as usize;
                         }
-                    } else if n < 0 {
+                    } else if n < 0 && state == 2 {
                         (services.tcp_abort)(slot);
                         unsafe {
                             PHASE = ARM;
@@ -670,11 +674,11 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                             PHASE = WAIT_CLOSE;
                         }
                     }
-                }
-            } else if state == 3 {
-                (services.tcp_close)(slot);
-                unsafe {
-                    PHASE = CLOSING;
+                } else if state == 3 {
+                    (services.tcp_close)(slot);
+                    unsafe {
+                        PHASE = CLOSING;
+                    }
                 }
             } else if state == 0 {
                 unsafe {
