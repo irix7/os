@@ -348,6 +348,19 @@ root increments every module in its resolution; unloading decrements and
 removes only modules that reach zero. Slot allocation, relocation and execution
 remain in the downloadable module manager.
 
+### 8.4 Signatures and key epochs (host policy)
+
+`crates/module-trust` verifies Ed25519 signatures over a domain-separated image
+digest. A `SignatureRecord` names the key epoch. A `TrustStore` keeps live and
+revoked epochs; unknown, revoked or invalid signatures fail closed. A
+`Rotation` is signed by the current epoch key, must advance the epoch, must
+install a live key at the new epoch and may revoke the old key. Key rotation
+does not rewrite old module signatures; the manager verifies them against the
+recorded epoch.
+
+The downloadable module manager will perform this check before loading. Package
+index signatures and the release key policy remain to be integrated.
+
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).

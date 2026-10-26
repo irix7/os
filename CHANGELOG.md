@@ -24,6 +24,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   a module manifest with exact name/version/digest dependencies, a resolver,
   versioned export tables and a downloadable module manager. The current
   fixed-slot loader remains standalone-only.
+- Added `crates/module-trust`: Ed25519 module signatures over image digests,
+  epoch-addressed keys, fail-closed verification, signed key rotation and
+  revocation. Package-index signatures and manager integration remain future.
 - The first module-dependency slice adds `crates/module-resolver`: manifest
   records with exact versions, SHA-256 dependencies and export declarations; a
   deterministic resolver with fail-closed cycle, missing-record, digest and ABI
