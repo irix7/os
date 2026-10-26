@@ -40,7 +40,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The first module-dependency slice adds `crates/module-resolver`: manifest
   records with exact versions, SHA-256 dependencies and export declarations; a
   deterministic resolver with fail-closed cycle, missing-record, digest and ABI
-  checks; a bounded version 1 `I7MM` manifest codec; an optional `I7MF` image
+  checks; a bounded version 2 `I7MM` manifest codec with v1 compatibility; an optional `I7MF` image
   footer; a host manager model for atomic image verification and reference
   counting; a package-index v2 exact-dependency parser; and forty-one host
   tests. It does not load or execute an image.
