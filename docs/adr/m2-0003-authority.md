@@ -140,3 +140,21 @@ The relevant existing pieces are:
 - `mesh-service` host tests cover the membership state machine; `mesh-sim` covers the
   1/2-node policy. M2-2 must add the real two-kernel join and confirmation test.
 - The M2-0 report records the 1-of-1 decision and its limitations for the M2 gate review.
+
+## M2-2 implementation note
+
+**Status:** implemented for M2-2; see [M2-ADR-0005](m2-0005-join-epoch.md).
+
+The seam this ADR asked for now exists in `crates/mesh-join`: `AuthorityRoot` is the
+root's confirmed `mesh-service` table plus a `cap-engine::SigningAuthority`;
+`AuthorityVerifier` checks a confirmation against one configured `NodeKey`.  The
+confirmation is a versioned little-endian body carrying the full member list, epoch,
+subject, request nonce and incarnation, signed with Ed25519 over a domain-separated
+canonical form.  A member rejects a wrong root, a wrong key, a bad signature, a stale
+epoch and a same-epoch different list; it never increments the epoch itself.
+
+The 1-of-1 key is a lab fixture in NVRAM (`mesh.key` on the root, `mesh.pub` on the
+member), not a production key store.  The module ABI has `config_get` only, so the
+confirmed epoch is not persisted; M2-ADR-0005 records the precise member-restart,
+root-restart and both-restart rules.  The root-restart case fails closed with
+`epoch-regression` rather than lowering a member's confirmed view.

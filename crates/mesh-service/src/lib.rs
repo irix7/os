@@ -48,6 +48,21 @@ pub enum MembershipError {
     EpochOverflow,
     /// The node is not present in the local view.
     UnknownNode,
+    /// A confirmed view cannot be empty; every kernel replica includes itself.
+    #[cfg(feature = "confirmed")]
+    EmptyView,
+    /// A node ID is the all-zero sentinel.
+    #[cfg(feature = "confirmed")]
+    ZeroNode,
+    /// The same node appears more than once in a confirmed view.
+    #[cfg(feature = "confirmed")]
+    DuplicateNode,
+    /// A confirmed epoch is older than the local view.
+    #[cfg(feature = "confirmed")]
+    EpochRegression,
+    /// Two different member lists claim the same epoch.
+    #[cfg(feature = "confirmed")]
+    EpochConflict,
 }
 
 impl fmt::Display for MembershipError {
@@ -56,6 +71,16 @@ impl fmt::Display for MembershipError {
             Self::Capacity => f.write_str("membership capacity exceeded"),
             Self::EpochOverflow => f.write_str("membership epoch overflow"),
             Self::UnknownNode => f.write_str("unknown node"),
+            #[cfg(feature = "confirmed")]
+            Self::EmptyView => f.write_str("membership view is empty"),
+            #[cfg(feature = "confirmed")]
+            Self::ZeroNode => f.write_str("zero node identifier"),
+            #[cfg(feature = "confirmed")]
+            Self::DuplicateNode => f.write_str("duplicate node in membership view"),
+            #[cfg(feature = "confirmed")]
+            Self::EpochRegression => f.write_str("membership epoch regression"),
+            #[cfg(feature = "confirmed")]
+            Self::EpochConflict => f.write_str("conflicting membership epoch"),
         }
     }
 }
@@ -87,6 +112,73 @@ impl MembershipTable {
             .join(node, now_ns)
             .expect("a single-node membership always fits");
         table
+    }
+
+    /// Build a table from an authoritatively confirmed member list.
+    ///
+    /// This is the install path for an epoch confirmation: it sets the epoch
+    /// exactly as confirmed and does not advance it.  The authority root is the
+    /// only writer of the confirmed epoch; a local heartbeat or join must never
+    /// be used in place of this constructor.  Members are sorted by
+    /// `MembershipView`, so the table and its snapshot are deterministic.
+    #[cfg(feature = "confirmed")]
+    pub fn confirmed(epoch: u32, members: &[NodeId], now_ns: u64) -> Result<Self, MembershipError> {
+        let view = validated_view(members)?;
+        let mut table = Self::new(epoch);
+        table.populate(&view.nodes, now_ns);
+        Ok(table)
+    }
+
+    /// Replace the local view with an authoritatively confirmed snapshot.
+    ///
+    /// A lower epoch is rejected: after observing a newer epoch a node must
+    /// not move its confirmed membership backwards.  Re-installing the same
+    /// epoch is idempotent only when the member list is identical; a different
+    /// list at the same epoch is an equivocation and fails closed.  Liveness
+    /// state is left untouched on the idempotent path so a duplicate
+    /// confirmation cannot revive a node whose failure was already confirmed.
+    #[cfg(feature = "confirmed")]
+    pub fn install(
+        &mut self,
+        epoch: u32,
+        members: &[NodeId],
+        now_ns: u64,
+    ) -> Result<(), MembershipError> {
+        let view = validated_view(members)?;
+        if epoch < self.epoch {
+            return Err(MembershipError::EpochRegression);
+        }
+        if epoch == self.epoch {
+            let current: alloc::vec::Vec<NodeId> = self.nodes.keys().copied().collect();
+            if current == view.nodes {
+                return Ok(());
+            }
+            if self.nodes.is_empty() {
+                // A fresh table at the same epoch is an initial install, not
+                // an equivocation.
+                self.populate(&view.nodes, now_ns);
+                return Ok(());
+            }
+            return Err(MembershipError::EpochConflict);
+        }
+        self.epoch = epoch;
+        self.nodes.clear();
+        self.populate(&view.nodes, now_ns);
+        Ok(())
+    }
+
+    #[cfg(feature = "confirmed")]
+    fn populate(&mut self, members: &[NodeId], now_ns: u64) {
+        for node in members {
+            self.nodes.insert(
+                *node,
+                NodeRecord {
+                    state: NodeState::Alive,
+                    incarnation: 0,
+                    last_seen_ns: now_ns,
+                },
+            );
+        }
     }
 
     /// Current membership epoch.
@@ -214,9 +306,33 @@ impl MembershipTable {
     }
 }
 
+/// Validate a confirmed member list and return its canonical sorted view.
+#[cfg(feature = "confirmed")]
+fn validated_view(members: &[NodeId]) -> Result<MembershipView, MembershipError> {
+    if members.is_empty() {
+        return Err(MembershipError::EmptyView);
+    }
+    if members.len() > MAX_NODES {
+        return Err(MembershipError::Capacity);
+    }
+    let mut nodes = alloc::vec::Vec::with_capacity(members.len());
+    for node in members {
+        if node.is_zero() {
+            return Err(MembershipError::ZeroNode);
+        }
+        nodes.push(*node);
+    }
+    let view = MembershipView::new(0, nodes).ok_or(MembershipError::Capacity)?;
+    if view.nodes.len() != members.len() {
+        return Err(MembershipError::DuplicateNode);
+    }
+    Ok(view)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec;
     use alloc::vec::Vec;
     use mesh_core::home_for;
     use sys_primitives::ObjectId;
@@ -303,5 +419,90 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.len(), MAX_NODES);
         assert_eq!(first.nodes.first().copied(), Some(node(0)));
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn confirmed_view_sets_the_epoch_exactly() {
+        let table = MembershipTable::confirmed(7, &[node(2), node(1)], 10).expect("confirmed");
+        assert_eq!(table.epoch(), 7);
+        assert_eq!(table.active_count(), 2);
+        let view = table.snapshot();
+        assert_eq!(view.epoch, 7);
+        assert_eq!(view.nodes, vec![node(1), node(2)]);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn confirmed_view_rejects_bad_shapes() {
+        assert_eq!(
+            MembershipTable::confirmed(1, &[], 0).unwrap_err(),
+            MembershipError::EmptyView
+        );
+        assert_eq!(
+            MembershipTable::confirmed(1, &[NodeId::ZERO], 0).unwrap_err(),
+            MembershipError::ZeroNode
+        );
+        assert_eq!(
+            MembershipTable::confirmed(1, &[node(1), node(1)], 0).unwrap_err(),
+            MembershipError::DuplicateNode
+        );
+        let many: Vec<NodeId> = (0..=MAX_NODES)
+            .map(|i| {
+                let mut id = [0u8; 16];
+                id[0] = i as u8;
+                id[1] = (i >> 8) as u8;
+                NodeId(id)
+            })
+            .collect();
+        assert_eq!(
+            MembershipTable::confirmed(1, &many, 0).unwrap_err(),
+            MembershipError::Capacity
+        );
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn install_rejects_epoch_regression_and_equivocation() {
+        let mut table = MembershipTable::confirmed(4, &[node(1), node(2)], 0).expect("table");
+        assert_eq!(
+            table.install(3, &[node(1), node(2)], 0).unwrap_err(),
+            MembershipError::EpochRegression
+        );
+        assert_eq!(
+            table.install(4, &[node(1)], 0).unwrap_err(),
+            MembershipError::EpochConflict
+        );
+        // The identical epoch is idempotent and keeps the view.
+        table
+            .install(4, &[node(2), node(1)], 0)
+            .expect("idempotent");
+        assert_eq!(table.epoch(), 4);
+        assert_eq!(table.active_count(), 2);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn install_moves_forward_and_excludes_departed_members() {
+        let mut table = MembershipTable::confirmed(1, &[node(1)], 0).expect("table");
+        table.install(2, &[node(1), node(2)], 0).expect("join");
+        assert_eq!(table.epoch(), 2);
+        assert_eq!(table.snapshot().len(), 2);
+        table.install(3, &[node(2)], 0).expect("leave");
+        assert_eq!(table.epoch(), 3);
+        assert_eq!(table.snapshot().nodes, vec![node(2)]);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn idempotent_install_does_not_revive_a_failed_member() {
+        let mut table = MembershipTable::confirmed(2, &[node(1), node(2)], 0).expect("table");
+        table.fail(node(2)).expect("fail");
+        table.install(2, &[node(1), node(2)], 0).expect("duplicate");
+        assert_eq!(
+            table.get(node(2)).map(|record| record.state),
+            Some(NodeState::Failed)
+        );
+        assert_eq!(table.snapshot().len(), 1);
     }
 }

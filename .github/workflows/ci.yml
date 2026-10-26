@@ -89,8 +89,9 @@ jobs:
           if [ -f Cargo.toml ]; then
             cargo test -p kernel -p kernel-test -p boot-protocol-tests \
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
-              -p sys-primitives -p platform-api -p mesh-core -p mesh-service \
-              -p mesh-sim -p fabric -p guest-abi -p cas-core -p cas-store \
+              -p sys-primitives -p platform-api -p mesh-core -p mesh-join \
+              -p mesh-service -p mesh-sim -p fabric -p guest-abi -p cas-core \
+              -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
               -p wasm-policy-host -p module-resolver -p module-trust \
               -p runtime-m2-mesh-module -p runtime-m2-root-module

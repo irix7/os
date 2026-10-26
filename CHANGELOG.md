@@ -8,6 +8,19 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- M2-2 join and membership-epoch convergence. `crates/mesh-join` defines a
+  versioned little-endian `JoinRequest`/`EpochConfirm`/`JoinAck` exchange, an
+  Ed25519 authority proof through `cap-engine`, and a fail-closed state machine
+  that rejects a wrong root/key, a stale epoch, a same-epoch different member
+  list, replays and malformed bodies. `mesh-service` gains an
+  authority-confirmed install path behind the `confirmed` feature (off for the
+  kernel/ROM), and `tools/m2-rig` drives the handshake over the unchanged M2-1
+  mesh transport on two independent iris kernels. Both nodes converge on epoch
+  2 with the same two-member snapshot, the member restarts and rejoins at the
+  same epoch, `--fault wrong-authority` rejects with `bad-signature`, and
+  `--fault no-peer` preserves the M1 `mesh=single`/`mesh=0/0/0` path. The
+  confirmed epoch is not persisted (the module ABI has `config_get` only); the
+  restart rules and the remaining limits are in M2-ADR-0005.
 - The M2 runtime graph is now a real dependency pair in the signed index:
   `modules/m2-mesh` links `mesh-transport`/`sys-primitives` at arena region 2
   and exports `irix7.mesh.transport@1`; `modules/m2-root` at region 3 declares

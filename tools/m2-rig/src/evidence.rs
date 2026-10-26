@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::fixture::Fixture;
+use crate::join::JoinEvidence;
 use crate::nvram;
 use crate::relay::{lines as log_lines, SharedLog};
 use crate::rig::{copy_if_present, write_text, BootFacts, Node};
@@ -53,9 +54,16 @@ pub struct NodeEvidence {
 impl NodeEvidence {
     /// Capture a node and its boot facts.
     pub fn capture(node: &Node, facts: BootFacts) -> Self {
-        let nvram_env = std::fs::read(node.state_dir.join("nvram.bin"))
+        let mut nvram_env = std::fs::read(node.state_dir.join("nvram.bin"))
             .map(|image| nvram::parse(&image))
             .unwrap_or_default();
+        // The authority seed is a lab fixture, not production key material,
+        // but a published evidence bundle should not carry a signing key.
+        for (name, value) in &mut nvram_env {
+            if name == "mesh.key" {
+                *value = "<redacted lab seed>".into();
+            }
+        }
         Self {
             name: node.name.clone(),
             instance: node.instance,
@@ -154,6 +162,8 @@ pub struct Evidence<'a> {
     pub probes: &'a [ProbeEvidence],
     /// Mesh transport probe, when one ran.
     pub mesh: Option<&'a MeshProbeEvidence>,
+    /// Join and membership-epoch evidence, when one ran.
+    pub join: Option<&'a JoinEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
@@ -167,6 +177,12 @@ pub struct Evidence<'a> {
 /// Write the bundle and return its directory.
 pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
     let directory = evidence.work.join("evidence");
+    // A bundle is owned by exactly one run: never leave a stale relay log or
+    // first-boot transcript from a previous mode in the directory.
+    if directory.exists() {
+        std::fs::remove_dir_all(&directory)
+            .map_err(|error| format!("clear {}: {error}", directory.display()))?;
+    }
     std::fs::create_dir_all(&directory)
         .map_err(|error| format!("create {}: {error}", directory.display()))?;
 
@@ -205,6 +221,13 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
             &directory.join(format!("relay-{name}.log")),
             &format!("{text}\n"),
         )?;
+    }
+    if let Some(restart) = evidence.join.and_then(|join| join.restart.as_ref()) {
+        copy_if_present(
+            &restart.boot1_log,
+            &directory.join(format!("serial-{}-boot1.log", restart.node)),
+        )
+        .map_err(|error| format!("copy first-boot serial log: {error}"))?;
     }
 
     let json = render_json(evidence);
@@ -269,12 +292,25 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             node.telnet_port, node.http_port, node.mesh_port
         ));
         out.push_str(&format!(
-            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
+            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
             json_option(&node.facts.boot_ready),
             json_option(&node.facts.mcp),
             json_option(&node.facts.mesh),
             json_option(&node.facts.mesh_transport_listen),
             json_option(&node.facts.mesh_transport_pass),
+            json_strings(&node.facts.mesh_transport_disconnects),
+            json_option(&node.facts.mesh_join_enabled),
+            json_option(&node.facts.mesh_join_disabled),
+            json_option(&node.facts.mesh_join_local),
+            json_option(&node.facts.mesh_join_request),
+            json_strings(&node.facts.mesh_join_confirms),
+            json_option(&node.facts.mesh_join_converged),
+            json_strings(&node.facts.mesh_join_acks),
+            json_strings(&node.facts.mesh_join_acks_sent),
+            json_option(&node.facts.mesh_join_duplicate),
+            json_option(&node.facts.mesh_join_refused),
+            json_option(&node.facts.mesh_join_timeout),
+            json_option(&node.facts.mesh_join_reject),
             json_option(&node.facts.network_mac),
             json_option(&node.facts.network_ip),
             json_env(&node.nvram_env)
@@ -337,8 +373,90 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         }
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"join\": ");
+    match evidence.join {
+        Some(join) => out.push_str(&render_join_json(join)),
+        None => out.push_str("null"),
+    }
     out.push_str("\n}\n");
     out
+}
+
+fn render_join_json(join: &JoinEvidence) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"ok\": {}, \"fault\": \"{}\", \"message\": \"{}\", \"authority\": \"{}\", \"authority_key\": \"{}\", ",
+        join.ok,
+        json_escape(&join.fault),
+        json_escape(&join.message),
+        json_escape(&join.authority),
+        json_escape(&join.authority_key)
+    ));
+    out.push_str(&format!(
+        "\"epoch\": {}, \"digest\": {}, \"expected_digest\": {}, \"members\": {}, ",
+        join.epoch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".into()),
+        json_option(&join.digest),
+        json_option(&join.expected_digest),
+        json_strings(&join.members)
+    ));
+    out.push_str("\"nodes\": [");
+    for (index, node) in join.nodes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"role\": {}, \"enabled\": {}, \"disabled\": {}, \"local\": {}, \"request\": {}, \"confirms\": {}, \"converged\": {}, \"acks\": {}, \"acks_sent\": {}, \"duplicate\": {}, \"refused\": {}, \"timeout\": {}, \"reject\": {}}}",
+            json_escape(&node.name),
+            json_option(&node.role),
+            json_option(&node.enabled),
+            json_option(&node.disabled),
+            json_option(&node.local),
+            json_option(&node.request),
+            json_strings(&node.confirms),
+            json_option(&node.converged),
+            json_strings(&node.acks),
+            json_strings(&node.acks_sent),
+            json_option(&node.duplicate),
+            json_option(&node.refused),
+            json_option(&node.timeout),
+            json_option(&node.reject)
+        ));
+    }
+    out.push_str("], \"restart\": ");
+    match &join.restart {
+        Some(restart) => out.push_str(&format!(
+            "{{\"node\": \"{}\", \"boot1_log\": \"serial-{}-boot1.log\", \"first_epoch\": {}, \"rejoin_epoch\": {}, \"first_digest\": \"{}\", \"rejoin_digest\": \"{}\", \"request_last_epoch\": {}, \"confirm_epoch\": {}, \"same_epoch\": {}}}",
+            json_escape(&restart.node),
+            json_escape(&restart.node),
+            restart.first_epoch,
+            restart.rejoin_epoch,
+            json_escape(&restart.first_digest),
+            json_escape(&restart.rejoin_digest),
+            restart
+                .request_last_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart
+                .confirm_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart.same_epoch
+        )),
+        None => out.push_str("null"),
+    }
+    out.push('}');
+    out
+}
+
+fn json_strings(values: &[String]) -> String {
+    let entries: Vec<String> = values
+        .iter()
+        .map(|value| format!("\"{}\"", json_escape(value)))
+        .collect();
+    format!("[{}]", entries.join(", "))
 }
 
 fn json_env(env: &[(String, String)]) -> String {
@@ -503,6 +621,93 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             ));
         }
         out.push('\n');
+    }
+
+    if let Some(join) = evidence.join {
+        out.push_str("## Join and membership epoch\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Fault mode:** `{}`  \n**Authority:** `{}`  \n**Authority key:** `{}`\n\n",
+            if join.ok { "pass" } else { "FAIL" },
+            join.fault,
+            join.authority,
+            join.authority_key
+        ));
+        out.push_str(&format!("{}\n\n", join.message));
+        out.push_str(
+            "| Node | Role | Local line | Converged | Reject / refusal |\n|---|---|---|---|---|\n",
+        );
+        for node in &join.nodes {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                node.name,
+                node.role.as_deref().unwrap_or("-"),
+                node.local.as_deref().unwrap_or("-"),
+                node.converged.as_deref().unwrap_or("-"),
+                node.reject
+                    .as_deref()
+                    .or(node.refused.as_deref())
+                    .or(node.timeout.as_deref())
+                    .unwrap_or("-")
+            ));
+        }
+        out.push('\n');
+        if let (Some(epoch), Some(digest), Some(expected)) =
+            (join.epoch, &join.digest, &join.expected_digest)
+        {
+            out.push_str(&format!(
+                "Converged epoch `{epoch}`, members `{}`, digest `{digest}`, rig-recomputed digest `{expected}`.\n\n",
+                join.members.join(", ")
+            ));
+        }
+        if let Some(restart) = &join.restart {
+            out.push_str("### Member restart and rejoin\n\n");
+            out.push_str(
+                "| Node | First epoch | Rejoin epoch | First digest | Rejoin digest | Request last epoch | Root confirm epoch | Same |\n|---|---|---|---|---|---|---|---|\n",
+            );
+            out.push_str(&format!(
+                "| {} | {} | {} | `{}` | `{}` | {} | {} | {} |\n\n",
+                restart.node,
+                restart.first_epoch,
+                restart.rejoin_epoch,
+                restart.first_digest,
+                restart.rejoin_digest,
+                restart
+                    .request_last_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart
+                    .confirm_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart.same_epoch
+            ));
+            out.push_str(&format!(
+                "The first transcript is `serial-{}-boot1.log`; the current transcript is the rejoin boot.\n\n",
+                restart.node
+            ));
+        }
+        out.push_str("```text\n");
+        for node in &join.nodes {
+            for line in node
+                .enabled
+                .iter()
+                .chain(node.disabled.iter())
+                .chain(node.local.iter())
+                .chain(node.request.iter())
+                .chain(node.confirms.iter())
+                .chain(node.converged.iter())
+                .chain(node.acks.iter())
+                .chain(node.acks_sent.iter())
+                .chain(node.duplicate.iter())
+                .chain(node.refused.iter())
+                .chain(node.timeout.iter())
+                .chain(node.reject.iter())
+            {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out.push_str("```\n\n");
     }
 
     if let Some(fixture) = evidence.fixture {

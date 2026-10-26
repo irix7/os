@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Interim M2-1 mesh listener inside the MCP module.
+//! Interim M2 mesh listener and join handshake inside the MCP module.
 //!
 //! The M2 transport uses one module TCP slot for the HTTP control plane and the
 //! other for a mesh listener on guest port 7000.  The guest has no TCP
@@ -14,25 +14,38 @@
 //! The wire is the M2-1 contract: a 32-bit little-endian envelope length, then
 //! a `MeshEnvelope`.  `mesh-transport` owns the framing, bounds, deadlines,
 //! send queue and request tags.  This file owns the socket state machine and
-//! the M2-1 probe exchange:
+//! two exchanges:
 //!
 //! ```text
-//! connect:  Request/Ping (dst = zero, src = self)
-//!           Response/Ping (dst = requester, reply_to = request id)
-//! idle:     Control/Ping every 5 s
+//! M2-1 connect: Request/Ping (dst = zero, src = self)
+//!               Response/Ping (dst = requester, reply_to = request id)
+//! M2-1 idle:    Control/Ping every 5 s
+//!
+//! M2-2 member:  Request/Hello    JOIN_REQUEST
+//! M2-2 root:    Response/Hello   EPOCH_CONFIRM or EPOCH_REFUSED
+//! M2-2 member:  Completion/Hello JOIN_ACK
 //! ```
 //!
-//! A frame whose body is not the 16-byte source `NodeId` is rejected.  The
-//! first decoded peer request logs `mesh-transport: peer=...`; a completed
-//! response logs one `mesh-transport: pass ...` line for the rig evidence.
+//! A Ping frame body must be the 16-byte source `NodeId`; a mismatch is a
+//! protocol reject.  A join body is decoded by `mesh-join`, which owns the
+//! bounds, the authority signature and the membership table.  A semantic join
+//! rejection is logged and counted but does not tear down the M2-1 link: the
+//! ping/heartbeat path remains valid while the membership view stays unchanged.
+//!
+//! When `mesh.peer` is absent the mesh is disabled and nothing here runs.  When
+//! `mesh.peer` is present but `mesh.authority` (or its key) is missing, the
+//! transport still runs and only the join is disabled; that is the M2-1
+//! fallback, not a fake membership.
 
+use mesh_join::{JoinEvent, JoinMessage, JoinNode, Role, Tick, MAX_BODY as JOIN_BODY_MAX};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
     StreamDecoder, WriteOutcome, RECEIVE_DEADLINE_MS,
 };
 use module_abi::Services;
 use sys_primitives::{
-    mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, OpCode, StreamId, Tag,
+    mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, OpCode,
+    StreamId, Tag,
 };
 
 /// Module TCP slot owned by the mesh listener when `mesh.peer` is present.
@@ -45,7 +58,7 @@ pub const HTTP_SLOT: u32 = 0;
 const READ_CHUNK: usize = 1024;
 const READS_PER_TICK: usize = 8;
 const PENDING_CAPACITY: u32 = 8;
-const LINE_CAP: usize = 192;
+const LINE_CAP: usize = 256;
 
 enum Phase {
     Arm,
@@ -57,7 +70,6 @@ struct Incoming {
     header: MeshHeader,
     kind: MessageKind,
     opcode: OpCode,
-    body: [u8; 16],
     body_len: usize,
 }
 
@@ -71,10 +83,19 @@ struct Mesh {
     pending: PendingTable,
     stats: Stats,
     heartbeat: Heartbeat,
+    join: Option<JoinNode>,
+    join_timeout_logged: bool,
+    last_arm_log_ms: u64,
     pass_logged: bool,
     listen_logged: bool,
     last_rx_ms: u64,
 }
+
+/// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
+/// the frame loop's stack frame; the module is single-threaded.
+static mut JOIN_RX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
+/// Encode buffer for one outgoing join body.
+static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
@@ -85,7 +106,7 @@ pub fn enabled() -> bool {
     unsafe { ENABLED }
 }
 
-/// Initialise the listener from the service table.
+/// Initialise the listener and the join state from the service table.
 ///
 /// Returns false when `mesh.peer` is absent or the node identity cannot be
 /// read.  In that case the MCP module keeps both TCP slots and behaves exactly
@@ -98,15 +119,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         return false;
     };
     let mut peer = [0u8; 96];
-    let n = unsafe {
-        (services.config_get)(
-            b"mesh.peer".as_ptr(),
-            b"mesh.peer".len(),
-            peer.as_mut_ptr(),
-            peer.len(),
-        )
-    };
-    if n <= 0 {
+    if config(services, b"mesh.peer", &mut peer).is_none() {
         return false;
     }
     let Some(self_id) = identity(services) else {
@@ -114,6 +127,17 @@ pub unsafe fn init(services: *const Services) -> bool {
         return false;
     };
     let now = (services.clock_ms)();
+    let join = match join_config(services, self_id, now) {
+        Ok(join) => join,
+        Err(label) => {
+            let mut line = Line::new();
+            line.str("mesh-join: disabled reason=");
+            line.str(label);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+            None
+        }
+    };
     let mesh = Mesh {
         phase: Phase::Arm,
         self_id,
@@ -124,6 +148,9 @@ pub unsafe fn init(services: *const Services) -> bool {
         pending: PendingTable::new(PENDING_CAPACITY),
         stats: Stats::default(),
         heartbeat: Heartbeat::m2(),
+        join,
+        join_timeout_logged: false,
+        last_arm_log_ms: 0,
         pass_logged: false,
         listen_logged: false,
         last_rx_ms: now,
@@ -150,19 +177,30 @@ impl Mesh {
     fn tick(&mut self, services: &Services) {
         let now = (services.clock_ms)();
         match self.phase {
-            Phase::Arm => self.arm(services),
+            Phase::Arm => self.arm(services, now),
             Phase::Waiting => self.waiting(services, now),
             Phase::Connected => self.connected(services, now),
         }
     }
 
-    fn arm(&mut self, services: &Services) {
-        if unsafe { (services.tcp_listen)(MESH_SLOT, MESH_PORT) } == 0 {
+    fn arm(&mut self, services: &Services, now: u64) {
+        let state = (services.tcp_state)(MESH_SLOT);
+        let code = unsafe { (services.tcp_listen)(MESH_SLOT, MESH_PORT) };
+        if code == 0 {
             self.phase = Phase::Waiting;
             if !self.listen_logged {
                 self.listen_logged = true;
                 log(services, b"mesh-transport: listening on port 7000\n");
             }
+        } else if now.saturating_sub(self.last_arm_log_ms) >= 5_000 {
+            self.last_arm_log_ms = now;
+            let mut line = Line::new();
+            line.str("mesh-transport: listen retry state=");
+            line.u64(state as u64);
+            line.str(" code=");
+            line.i32(code);
+            line.push(b'\n');
+            log(services, line.as_bytes());
         }
     }
 
@@ -176,11 +214,16 @@ impl Mesh {
                 self.peer = None;
                 self.peer_confirmed = false;
                 self.pass_logged = false;
+                self.join_timeout_logged = false;
                 self.last_rx_ms = now;
                 self.heartbeat.reset(now);
                 self.phase = Phase::Connected;
                 log(services, b"mesh-transport: connected\n");
                 self.send_handshake(now);
+                let request = self.join.as_mut().and_then(|join| join.on_link_up(now));
+                if let Some(request) = request {
+                    self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                }
                 self.flush(services, now);
             }
             3 => {
@@ -230,6 +273,30 @@ impl Mesh {
                 self.reject(services, now, error);
                 return;
             }
+        }
+
+        let tick = self
+            .join
+            .as_mut()
+            .map(|join| (join.poll(now), join.attempts()));
+        match tick {
+            Some((Tick::Send(request), attempts)) => {
+                self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                let mut line = Line::new();
+                line.str("mesh-join: retry attempt=");
+                line.u64(attempts as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            Some((Tick::TimedOut, attempts)) if !self.join_timeout_logged => {
+                self.join_timeout_logged = true;
+                let mut line = Line::new();
+                line.str("mesh-join: timeout attempts=");
+                line.u64(attempts as u64);
+                line.str(" state=pending\n");
+                log(services, line.as_bytes());
+            }
+            _ => {}
         }
 
         if self.heartbeat.due(now) {
@@ -282,17 +349,22 @@ impl Mesh {
             if let Some(record) = self.decoder.next_record()? {
                 let incoming = {
                     let envelope = decode_record(record)?;
-                    if envelope.frame.body.len() > 16 {
+                    let body = envelope.frame.body;
+                    let limit =
+                        body_limit(envelope.frame.header.kind, envelope.frame.header.opcode);
+                    if body.len() > limit {
                         return Err(TransportError::Envelope(sys_primitives::Error::BadLength));
                     }
-                    let mut body = [0u8; 16];
-                    body[..envelope.frame.body.len()].copy_from_slice(envelope.frame.body);
+                    // SAFETY: single-threaded module; JOIN_RX is the only
+                    // frame-body buffer and the copied slice is read before
+                    // the next record is decoded.
+                    let storage = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_RX) };
+                    storage[..body.len()].copy_from_slice(body);
                     Incoming {
                         header: envelope.header,
                         kind: envelope.frame.header.kind,
                         opcode: envelope.frame.header.opcode,
-                        body,
-                        body_len: envelope.frame.body.len(),
+                        body_len: body.len(),
                     }
                 };
                 self.decoder.consume_record()?;
@@ -324,11 +396,31 @@ impl Mesh {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
             return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
-        if incoming.body_len != 16 || incoming.body != *incoming.header.src.as_bytes() {
-            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        let source = incoming.header.src;
+        let body = body_bytes(incoming.body_len);
+        match (incoming.kind, incoming.opcode) {
+            (MessageKind::Request, OpCode::Ping)
+            | (MessageKind::Response, OpCode::Ping)
+            | (MessageKind::Control, OpCode::Ping) => {
+                if body.len() != 16 || body != source.as_bytes() {
+                    self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                    return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+                }
+            }
+            (MessageKind::Request, OpCode::Hello)
+            | (MessageKind::Response, OpCode::Hello)
+            | (MessageKind::Completion, OpCode::Hello) => {
+                if self.join.is_none() {
+                    self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                    return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+                }
+            }
+            _ => {
+                self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+            }
         }
-        self.learn_peer(services, incoming.header.src)?;
+        self.learn_peer(services, source)?;
 
         match (incoming.kind, incoming.opcode) {
             (MessageKind::Request, OpCode::Ping) => {
@@ -336,7 +428,7 @@ impl Mesh {
                     now,
                     MessageKind::Response,
                     OpCode::Ping,
-                    incoming.header.src,
+                    source,
                     0,
                     incoming.header.request_id,
                     Tag(0),
@@ -348,11 +440,232 @@ impl Mesh {
                 self.peer_confirmed = true;
             }
             (MessageKind::Control, OpCode::Ping) => {}
-            _ => {
-                self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            (MessageKind::Request, OpCode::Hello)
+            | (MessageKind::Response, OpCode::Hello)
+            | (MessageKind::Completion, OpCode::Hello) => {
+                let message = match JoinMessage::decode(body) {
+                    Ok(message) => message,
+                    Err(error) => {
+                        self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                        let mut line = Line::new();
+                        line.str("mesh-join: reject reason=");
+                        line.str(error.as_str());
+                        line.push(b'\n');
+                        log(services, line.as_bytes());
+                        return Ok(());
+                    }
+                };
+                if message.expected_kind() != incoming.kind {
+                    let mut line = Line::new();
+                    line.str("mesh-join: reject reason=kind-mismatch body=");
+                    line.str(message.kind());
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    return Ok(());
+                }
+                let outcome = match &mut self.join {
+                    Some(join) => join.on_message(source, message, now),
+                    None => return Ok(()),
+                };
+                self.after_join(services, outcome, source, now);
             }
+            _ => {}
         }
         Ok(())
+    }
+
+    fn after_join(
+        &mut self,
+        services: &Services,
+        outcome: mesh_join::Outcome,
+        source: NodeId,
+        now: u64,
+    ) {
+        match &outcome.event {
+            JoinEvent::Confirmed(snapshot) => {
+                self.log_snapshot(services, "mesh-join: confirm", snapshot);
+                self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
+            }
+            JoinEvent::Converged(snapshot) => {
+                self.join_timeout_logged = false;
+                self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
+            }
+            JoinEvent::Duplicate(snapshot) => {
+                self.log_snapshot(services, "mesh-join: duplicate", snapshot);
+            }
+            JoinEvent::Refused { reason, epoch } => {
+                let mut line = Line::new();
+                line.str("mesh-join: refused reason=");
+                line.str(reason.as_str());
+                line.str(" root_epoch=");
+                line.u64(*epoch as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            JoinEvent::Acked {
+                node,
+                epoch,
+                digest,
+            } => {
+                let mut line = Line::new();
+                line.str("mesh-join: ack from=");
+                line.node(node);
+                line.str(" epoch=");
+                line.u64(*epoch as u64);
+                line.str(" digest=");
+                line.digest(digest);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            JoinEvent::Rejected(label) => {
+                // The envelope and frame were well formed; the membership
+                // policy rejected the body.  Keep this out of the transport
+                // reject counter, which the M2-1 pass line reports.
+                let mut line = Line::new();
+                line.str("mesh-join: reject reason=");
+                line.str(label);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            JoinEvent::None => {}
+        }
+        if let Some(reply) = outcome.reply {
+            self.send_join(services, reply, source, now);
+        }
+    }
+
+    fn log_snapshot(
+        &self,
+        services: &Services,
+        prefix: &str,
+        snapshot: &mesh_join::MembershipSnapshot,
+    ) {
+        let mut line = Line::new();
+        line.str(prefix);
+        line.str(" epoch=");
+        line.u64(snapshot.epoch as u64);
+        line.str(" members=");
+        line.u64(snapshot.len() as u64);
+        line.str(" digest=");
+        line.digest(&snapshot.digest());
+        line.str(" snapshot=");
+        line.nodes(&snapshot.members);
+        line.push(b'\n');
+        log(services, line.as_bytes());
+    }
+
+    fn send_join(
+        &mut self,
+        services: &Services,
+        message: JoinMessage,
+        reply_to_source: NodeId,
+        now: u64,
+    ) {
+        // SAFETY: single-threaded module; JOIN_TX is the only encode buffer and
+        // the bytes are copied into the send queue before the next message.
+        let buffer = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_TX) };
+        let len = match message.encode(buffer) {
+            Ok(len) => len,
+            Err(error) => {
+                let mut line = Line::new();
+                line.str("mesh-join: encode-failed reason=");
+                line.str(error.as_str());
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                return;
+            }
+        };
+        // The ack is sent by the member to the root, not to the member's own
+        // `node` field.
+        let ack_root = self
+            .join
+            .as_ref()
+            .map(|join| join.root())
+            .unwrap_or(NodeId::ZERO);
+        let (kind, destination, request_id, reply_to) = match &message {
+            JoinMessage::Request(request) => (MessageKind::Request, NodeId::ZERO, request.nonce, 0),
+            JoinMessage::Confirm(confirmation) => (
+                MessageKind::Response,
+                confirmation.subject,
+                confirmation.request_nonce,
+                confirmation.request_nonce,
+            ),
+            JoinMessage::Refused(refusal) => (
+                MessageKind::Response,
+                reply_to_source,
+                refusal.request_nonce,
+                refusal.request_nonce,
+            ),
+            JoinMessage::Ack(ack) => (
+                MessageKind::Completion,
+                ack_root,
+                ack.request_nonce,
+                ack.request_nonce,
+            ),
+        };
+        match &message {
+            JoinMessage::Request(request) => {
+                let attempts = self.join.as_ref().map(|join| join.attempts()).unwrap_or(0);
+                let mut line = Line::new();
+                line.str("mesh-join: request from=");
+                line.node(&self.self_id);
+                line.str(" incarnation=");
+                line.u64(request.incarnation);
+                line.str(" last_epoch=");
+                line.u64(request.last_epoch as u64);
+                line.str(" last_digest=");
+                line.digest(&request.last_digest);
+                line.str(" nonce=");
+                line.u64(request.nonce);
+                line.str(" attempt=");
+                line.u64(attempts as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            JoinMessage::Ack(ack) => {
+                let mut line = Line::new();
+                line.str("mesh-join: ack-sent epoch=");
+                line.u64(ack.epoch as u64);
+                line.str(" digest=");
+                line.digest(&ack.digest);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            _ => {}
+        }
+        let body = &buffer[..len];
+        if !self.queue_hello(kind, destination, request_id, reply_to, body, now) {
+            let mut line = Line::new();
+            line.str("mesh-join: send-failed kind=");
+            line.str(message.kind());
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
+        self.flush(services, now);
+    }
+
+    fn queue_hello(
+        &mut self,
+        kind: MessageKind,
+        destination: NodeId,
+        request_id: u64,
+        reply_to: u64,
+        body: &[u8],
+        now: u64,
+    ) -> bool {
+        let Ok(frame) = MessageFrame::inline(kind, OpCode::Hello, StreamId(2), Tag(0), body) else {
+            return false;
+        };
+        let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
+        header.flags = mesh_flags::PROBE;
+        if kind != MessageKind::Request {
+            header.flags |= mesh_flags::REPLY;
+        }
+        header.request_id = request_id;
+        header.reply_to = reply_to;
+        header.ttl = MeshHeader::MAX_HOPS;
+        let envelope = MeshEnvelope { header, frame };
+        self.queue.push_record(&envelope, now).is_ok()
     }
 
     fn learn_peer(&mut self, services: &Services, source: NodeId) -> Result<(), TransportError> {
@@ -497,8 +810,12 @@ impl Mesh {
         self.peer = None;
         self.peer_confirmed = false;
         self.pass_logged = false;
+        self.join_timeout_logged = false;
         self.last_rx_ms = now;
         self.phase = Phase::Arm;
+        if let Some(join) = &mut self.join {
+            join.on_link_down();
+        }
 
         let mut line = Line::new();
         line.str("mesh-transport: disconnected reason=");
@@ -530,29 +847,154 @@ impl ByteSink for ServiceSink<'_> {
     }
 }
 
+fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
+    match (kind, opcode) {
+        (MessageKind::Request, OpCode::Hello)
+        | (MessageKind::Response, OpCode::Hello)
+        | (MessageKind::Completion, OpCode::Hello) => JOIN_BODY_MAX,
+        _ => 16,
+    }
+}
+
+fn body_bytes(len: usize) -> &'static [u8] {
+    // SAFETY: single-threaded module; JOIN_RX holds the current frame body and
+    // the slice is consumed before the next record is decoded.
+    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(JOIN_RX) as *const u8, len) }
+}
+
+/// Read the join configuration and build the state machine.
+///
+/// The authority root is identified by `mesh.authority` (the MAC-derived
+/// `NodeId`).  The member needs `mesh.pub`; only the root has `mesh.key`.
+/// A missing or malformed key disables the join but
+/// leaves the M2-1 transport running, so an M2-1-only configuration is still
+/// valid.
+fn join_config(
+    services: &Services,
+    self_id: NodeId,
+    now: u64,
+) -> Result<Option<JoinNode>, &'static str> {
+    let mut text = [0u8; 128];
+    let Some(n) = config(services, b"mesh.authority", &mut text) else {
+        return Ok(None);
+    };
+    let Some(authority) = parse_node_id(&text[..n]) else {
+        return Err("authority");
+    };
+    let seed_epoch = match config(services, b"mesh.epoch", &mut text) {
+        Some(n) => parse_u32(&text[..n]).ok_or("epoch")?,
+        None => 1,
+    };
+    let configured_key =
+        config(services, b"mesh.pub", &mut text).and_then(|n| parse_key(&text[..n]));
+    let mut public_key = configured_key;
+    let join = if self_id == authority {
+        let Some(n) = config(services, b"mesh.key", &mut text) else {
+            return Err("authority-seed");
+        };
+        let Some(seed) = parse_seed(&text[..n]) else {
+            return Err("authority-seed");
+        };
+        let signing = mesh_join::SigningAuthority::from_bytes(&seed);
+        public_key = Some(signing.public());
+        // The root derives its public key; `mesh.pub` is optional here and is
+        // only a provisioning check when present.
+        if let Some(key) = configured_key {
+            if signing.public() != key {
+                return Err("key-mismatch");
+            }
+        }
+        JoinNode::new_root(self_id, signing, seed_epoch, now)
+    } else {
+        let Some(key) = configured_key else {
+            return Err("authority-key");
+        };
+        JoinNode::new_member(self_id, authority, key, seed_epoch, now)
+    };
+    let join = match join {
+        Ok(join) => join,
+        Err(error) => return Err(error.as_str()),
+    };
+
+    let role = join.role();
+    let mut line = Line::new();
+    line.str("mesh-join: enabled role=");
+    line.str(role.as_str());
+    line.str(" seed_epoch=");
+    line.u64(seed_epoch as u64);
+    line.str(" authority=");
+    line.node(&authority);
+    line.str(" key=");
+    if let Some(key) = public_key {
+        line.hex(&key.0);
+    } else {
+        line.str("-");
+    }
+    line.push(b'\n');
+    log(services, line.as_bytes());
+
+    let snapshot = join.snapshot();
+    let mut line = Line::new();
+    line.str("mesh-join: local role=");
+    line.str(role.as_str());
+    line.str(" epoch=");
+    line.u64(snapshot.epoch as u64);
+    line.str(" members=");
+    line.u64(snapshot.len() as u64);
+    line.str(" digest=");
+    line.digest(&snapshot.digest());
+    line.str(" snapshot=");
+    line.nodes(&snapshot.members);
+    line.str(match role {
+        Role::Root => " state=confirmed\n",
+        Role::Member => " state=pending\n",
+    });
+    log(services, line.as_bytes());
+    Ok(Some(join))
+}
+
+fn config(services: &Services, key: &[u8], out: &mut [u8]) -> Option<usize> {
+    let n = unsafe { (services.config_get)(key.as_ptr(), key.len(), out.as_mut_ptr(), out.len()) };
+    if n <= 0 {
+        None
+    } else {
+        Some((n as usize).min(out.len()))
+    }
+}
+
 fn identity(services: &Services) -> Option<NodeId> {
     let mut text = [0u8; 256];
     let n = unsafe { (services.info)(0, text.as_mut_ptr(), text.len()) };
     if n <= 0 {
         return None;
     }
-    parse_mac(&text[..n as usize])
-}
-
-fn parse_mac(text: &[u8]) -> Option<NodeId> {
+    let text = &text[..n as usize];
     let marker = b"mac: ";
     let start = text
         .windows(marker.len())
         .position(|window| window == marker)?
         + marker.len();
+    parse_mac_address(&text[start..])
+}
+
+fn parse_node_id(text: &[u8]) -> Option<NodeId> {
+    if text.contains(&b':') {
+        return parse_mac_address(text);
+    }
     let mut id = [0u8; 16];
-    let mut index = start;
+    parse_hex(text, &mut id)?;
+    Some(NodeId(id))
+}
+
+fn parse_mac_address(text: &[u8]) -> Option<NodeId> {
+    let mut id = [0u8; 16];
+    let mut index = 0;
     for byte in id.iter_mut().take(6) {
         let high = hex(text.get(index)?)?;
         let low = hex(text.get(index + 1)?)?;
         *byte = (high << 4) | low;
         index += 2;
-        if index < start + 17 {
+        if index < 17 {
             if text.get(index) != Some(&b':') {
                 return None;
             }
@@ -560,6 +1002,44 @@ fn parse_mac(text: &[u8]) -> Option<NodeId> {
         }
     }
     Some(NodeId(id))
+}
+
+fn parse_key(text: &[u8]) -> Option<NodeKey> {
+    let mut key = [0u8; 32];
+    parse_hex(text, &mut key)?;
+    Some(NodeKey(key))
+}
+
+fn parse_seed(text: &[u8]) -> Option<[u8; 32]> {
+    let mut seed = [0u8; 32];
+    parse_hex(text, &mut seed)?;
+    Some(seed)
+}
+
+fn parse_hex(text: &[u8], out: &mut [u8]) -> Option<()> {
+    if text.len() != out.len() * 2 {
+        return None;
+    }
+    for (index, byte) in out.iter_mut().enumerate() {
+        let high = hex(&text[index * 2])?;
+        let low = hex(&text[index * 2 + 1])?;
+        *byte = (high << 4) | low;
+    }
+    Some(())
+}
+
+fn parse_u32(text: &[u8]) -> Option<u32> {
+    if text.is_empty() {
+        return None;
+    }
+    let mut value = 0u32;
+    for byte in text {
+        if !byte.is_ascii_digit() {
+            return None;
+        }
+        value = value.checked_mul(10)?.checked_add((byte - b'0') as u32)?;
+    }
+    Some(value)
 }
 
 fn hex(byte: &u8) -> Option<u8> {
@@ -622,9 +1102,35 @@ impl Line {
         }
     }
 
+    fn i32(&mut self, value: i32) {
+        if value < 0 {
+            self.push(b'-');
+            self.u64(value.unsigned_abs() as u64);
+        } else {
+            self.u64(value as u64);
+        }
+    }
+
     fn node(&mut self, node: &NodeId) {
+        self.hex(node.as_bytes());
+    }
+
+    fn nodes(&mut self, nodes: &[NodeId]) {
+        for (index, node) in nodes.iter().enumerate() {
+            if index > 0 {
+                self.push(b',');
+            }
+            self.node(node);
+        }
+    }
+
+    fn digest(&mut self, digest: &[u8; 16]) {
+        self.hex(digest);
+    }
+
+    fn hex(&mut self, bytes: &[u8]) {
         const HEX: &[u8; 16] = b"0123456789ABCDEF";
-        for byte in node.as_bytes() {
+        for byte in bytes {
             self.push(HEX[(byte >> 4) as usize]);
             self.push(HEX[(byte & 0x0f) as usize]);
         }

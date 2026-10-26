@@ -114,6 +114,36 @@ pub fn node_key(signing: &SigningKey) -> NodeKey {
     NodeKey(signing.verifying_key().to_bytes())
 }
 
+/// A node's Ed25519 signing key.
+///
+/// The key is a capability-engine primitive so callers do not link the
+/// signature library directly: `cap-engine` owns the algorithm and the trust
+/// store.  The key material never leaves the authority node in M2; the public
+/// half is distributed as a `NodeKey`.
+#[derive(Clone)]
+pub struct SigningAuthority {
+    key: SigningKey,
+}
+
+impl SigningAuthority {
+    /// Build a signing authority from a 32-byte Ed25519 seed.
+    pub fn from_bytes(bytes: &[u8; 32]) -> Self {
+        Self {
+            key: SigningKey::from_bytes(bytes),
+        }
+    }
+
+    /// The public key peers use to verify this authority's signatures.
+    pub fn public(&self) -> NodeKey {
+        node_key(&self.key)
+    }
+
+    /// Sign an arbitrary protocol message.
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.key.sign(message).to_bytes()
+    }
+}
+
 /// Sign a capability's 256-byte signed prefix in place.
 pub fn sign_capability(signing: &SigningKey, capability: &mut Capability) {
     let signature = signing.sign(&capability.signed_bytes());
@@ -434,6 +464,24 @@ mod tests {
         assert!(store.contains(&public));
         assert!(store.remove(&public));
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn signing_authority_signs_arbitrary_messages() {
+        let authority = SigningAuthority::from_bytes(&[9u8; 32]);
+        let public = authority.public();
+        let message = b"IRIX7-M2-EPOCH-v1 epoch=2";
+        let signature = authority.sign(message);
+        assert!(verify(&public, message, &signature).is_ok());
+        assert_eq!(
+            verify(&public, b"other", &signature),
+            Err(KeyError::BadSignature)
+        );
+        let other = SigningAuthority::from_bytes(&[10u8; 32]);
+        assert_eq!(
+            verify(&other.public(), message, &signature),
+            Err(KeyError::BadSignature)
+        );
     }
 
     fn authority(i: u8) -> SigningKey {

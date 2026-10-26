@@ -24,3 +24,4 @@ sys-primitives = { path = "../../crates/sys-primitives" }
 erofs = { path = "../../crates/erofs" }
 block-cache = { path = "../../crates/block-cache" }
 overlay = { path = "../../crates/overlay" }
+mesh-join = { path = "../../crates/mesh-join" }

@@ -25,6 +25,7 @@
 - [M2-ADR-0002 — transport](adr/m2-0002-transport.md)
 - [M2-ADR-0003 — authority](adr/m2-0003-authority.md)
 - [M2-ADR-0004 — actor runtime](adr/m2-0004-actor-runtime.md)
+- [M2-ADR-0005 — join and epoch](adr/m2-0005-join-epoch.md)
 
 ## Plan
 
