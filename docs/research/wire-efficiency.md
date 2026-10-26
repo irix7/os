@@ -1,3 +1,9 @@
+> **Pre-release correction (2026-10-27):** IRIX 7 has no deployed users, peers or stable
+> internal contracts. Ignore every compatibility, version-negotiation, dual-stack,
+> old-peer or migration recommendation in this study. The next wire design is **v1**;
+> replace the unshipped M2/M3 formats freely where it improves efficiency. See
+> [`docs/spec/pre-release.md`](../spec/pre-release.md).
+
 # Wire efficiency: IRIX 7 custom protocols, transport paths and a v2 design space
 
 **Status:** research / design input. No production wire format was changed.
@@ -85,8 +91,8 @@ host number is a lower bound and the document says so wherever it matters.
 | 1 | Event-driven RX (Seeq interrupt or short adaptive poll while a socket is active) instead of the 10 ms `wait` gate | kernel | 10.0 ms → ~0.03–0.5 ms per exchange (20–330×) | **[M]** 10.0 ms vs 0.030 ms | none on the wire |
 | 2 | Remove the `max_burst_size = Some(1)` window clamp | kernel | bulk 1.4 KB/RTT → up to the 16 KiB TX ring per RTT (~11×) | **[C]** smoltcp clamp, **[D]** | none on the wire |
 | 3 | HTTP keep-alive (or a length-prefixed control channel) on the MCP slot | module | 40 ms → ~10 ms per tool call (4×), 25 → 100 req/s | **[M]** 40.0 ms vs 10.0 ms tick | server-initiated; no client change needed |
-| 4 | v2 compact record header (32 B) with optional TLVs | wire | 324 → 39 B/record; keepalive 340 → 39 B (8.7×); invoke 656 → 87 B with a capability handle (7.5×) | **[C]** exact v1 layout, **[D]** | version nibble + magic, negotiated in `Hello` |
-| 5 | Sign the epoch snapshot once per epoch, not per member | join | O(N) → O(1) signatures per refresh | **[C]** `authority.rs:295` | new confirmation body version |
+| 4 | v2 compact record header (32 B) with optional TLVs | wire | 324 → 39 B/record; keepalive 340 → 39 B (8.7×); invoke 656 → 87 B with a capability handle (7.5×) | **[C]** exact v1 layout, **[D]** | version nibble + magic; v1 is the only target |
+| 5 | Sign the epoch snapshot once per epoch, not per member | join | O(N) → O(1) signatures per refresh | **[C]** `authority.rs:295` | new confirmation body |
 | 6 | Batch/coalesce: several records per `tcp_send`, one flush per tick, pipelined tags | module | removes per-message syscalls; enables N-deep pipelining | **[M]** tick dominates | none |
 | 7 | Table-driven CRC32C (same polynomial, same value) | sys-primitives | 2–4× on header validation | **[M]** 20.5 → 10.2 µs per KiB | **none** — identical CRC value |
 | 8 | Remove the M3 hub's 128 B / 2 ms chunk writer | host rig | 8.5–45 ms → <1 ms per forwarded record | **[M]** | none |
@@ -727,17 +733,13 @@ win. Useful as a step 1 if indices are contentious.
 latency win (330×) is far larger than any byte win, so this is defensible for M3. It
 leaves the 95 % overhead on heartbeats and the 320-byte capability re-send.
 
-### 6.2 Version negotiation
+### 6.2 No compatibility layer
 
-- Record magic stays distinct (`I7M1` for v1, `I7M2` for v2) so a v1 decoder that sees a
-  v2 record fails with `BadMagic` and poisons the link rather than misparsing.
-- Both sides advertise `framing = [1, 2]` in a v1 `Hello` (the existing body has flags
-  spare: `wire.rs:36-37` prefix has a u16 `flags` field fixed to zero). The first record
-  on a link is always v1; v2 starts on the first record after both sides ack.
-- A node that only speaks v1 keeps working unchanged; the v2 peer simply never upgrades.
-- Everything versioned separately: the record header (v2), the join body (`I7J2`), the
-  route body (`I7R2`) and the migration body (`I7M1`→`I7M2`). A v2 record can carry a v1
-  body; that is the migration path.
+There are no deployed peers or clients. Do not add magic-based negotiation, `Hello`
+framing vectors, mixed-version records or dual-stack paths. Pick the compact record,
+join, route and migration layouts that are best for the shipped tree, update every in-tree
+producer/consumer atomically and delete the old decoders. Record the chosen format as v1
+in this document and in the evidence; the version numbers are for reproducibility only.
 
 ### 6.3 Transport: direct peer versus relay-first
 
@@ -925,18 +927,18 @@ clients that ask for it (`Connection: close` request header), so the change is a
 
 Ownership: kernel. Every step needs the M1 boot gate and the M2/M3 rig gates green.
 
-### Phase 3 — wire v2 (negotiated)
+### Phase 3 — wire v1 replacement
 
 | Step | Change | Acceptance |
 |---|---|---|
-| 3.1 | Define `I7M2` record + 32-byte header + TLV; add codec + fuzz tests | round-trip byte-exact; `wire_sizes.rs` extended |
-| 3.2 | Negotiate in `Hello` flags; v1 stays the default | a v1-only peer completes join and route unchanged |
+| 3.1 | Define the compact v1 record + 32-byte header + TLV; add codec + fuzz tests | round-trip byte-exact; `wire_sizes.rs` extended |
+| 3.2 | Replace the old record/join/route/migration encoders atomically | all in-tree users compile and pass the current M1/M2/M3 markers |
 | 3.3 | Membership-index NodeIds, capability handles installed at handshake | keepalive ≤ 40 B, invoke ≤ 96 B |
 | 3.4 | One CRC over the record; table implementation | header bytes do not change |
-| 3.5 | Join v2: sign the snapshot once, push on change, delta refresh | root signatures per epoch = 1; refresh ≤ 100 B when unchanged |
+| 3.5 | Join v1: sign the snapshot once, push on change, delta refresh | root signatures per epoch = 1; refresh ≤ 100 B when unchanged |
 
-Ownership: shared crates + module. Dual-stack for at least one release; the ADR must
-record the v1 sunset rule.
+Ownership: shared crates + module. No compatibility layer or old-peer path; delete the
+old encoders and tests after the atomic switch.
 
 ### Phase 4 — security and observability
 
@@ -954,8 +956,8 @@ Every phase must keep these green:
 |---|---|---|
 | M1 boot | `BOOT-READY ... mesh=single`, `m1-post: mesh=0/0/0` | no accidental mesh in a plain boot |
 | M1 module load | `m2-mesh: entered interface=irix7.mesh.transport version=1 probe=ok`, `status=ok root=m2-root@1.0.0 nodes=2 signatures=ed25519` | the runtime dependency graph is unchanged |
-| M2 join | `mesh-join: converged ... epoch=2 members=2`, same digest on both nodes | wire stays compatible |
-| M2 route | the five `/mesh/route?step=N` steps, one `MOVED`, `ack-mismatch` and stale-epoch negatives | the `MOVED` contract |
+| M2 join | `mesh-join: converged ... epoch=2 members=2`, same digest on both nodes | the current join contract, not an old wire version |
+| M2 route | the five `/mesh/route?step=N` steps, one `MOVED`, `ack-mismatch` and stale-epoch negatives | the current `MOVED` contract |
 | M2 migrate | eleven `/mesh/migrate?step=N` steps, same state hash at each boundary | the migration contract |
 | M2 failure | `suspect` 6 s, `failed` 12 s, home recompute, lease fencing, partition rule | the failure contract |
 | M3 shard | `/mesh/shard` on both kernels with the same epoch and digest; 1/2/8/128-node policy gate | the shard contract |
@@ -1010,12 +1012,12 @@ Every phase must keep these green:
 ### 8.5 ABI and versioning
 
 - `module-abi` is pinned at `v0.7.0`; adding `next_deadline_ms` or `tcp_connect` is an ABI
-  bump and a service-table layout change. Every module must be rebuilt (the compile-time
-  offset assertions in `abi/` catch a mismatch).
-- The wire version and the ABI version are independent; do not couple them.
-- The `Stats` struct is a plain data type in `mesh-transport`; adding fields is a
-  source-compatible change for the module but not for any external consumer that
-  serialises it (none today).
+  change. Every in-tree module is rebuilt from the same tree; no old module service table
+  is retained.
+- The wire format and ABI are both pre-release v1; do not add compatibility shims between
+  their old and new layouts.
+- The `Stats` struct is a plain in-tree data type in `mesh-transport`; change it and all
+  users together.
 
 ### 8.6 Real-Indy constraints
 
