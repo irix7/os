@@ -24,6 +24,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   a module manifest with exact name/version/digest dependencies, a resolver,
   versioned export tables and a downloadable module manager. The current
   fixed-slot loader remains standalone-only.
+- Added the kernel loader/arena table (`loader-abi`, at `0x883f_f000`) and its
+  HTTP/TLS load, fetch and cache-safe enter services. This is the explicit
+  freeze exception for the runtime module manager; the manager itself and all
+  resolution/signature policy remain downloadable. PROM: 522,500/524,288.
 - Added `crates/module-trust`: Ed25519 module signatures over image digests,
   epoch-addressed keys, fail-closed verification, signed key rotation and
   revocation. Package-index signatures and manager integration remain future.
