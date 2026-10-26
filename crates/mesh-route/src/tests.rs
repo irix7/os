@@ -100,6 +100,7 @@ impl Pair {
             let step = self.b.on_wire(
                 A,
                 &header,
+                wire.trace,
                 wire.object,
                 wire.kind,
                 wire.opcode,
@@ -115,6 +116,7 @@ impl Pair {
             let step = self.a.on_wire(
                 B,
                 &header,
+                wire.trace,
                 wire.object,
                 wire.kind,
                 wire.opcode,
@@ -198,6 +200,7 @@ impl Pair {
             request_id,
             reply_to: 0,
             body: buffer[..len].to_vec(),
+            trace: None,
         }
     }
 
@@ -206,6 +209,7 @@ impl Pair {
         self.b.on_wire(
             A,
             &header,
+            wire.trace,
             wire.object,
             wire.kind,
             wire.opcode,
@@ -401,6 +405,7 @@ fn a_second_moved_is_rejected() {
         request_id,
         reply_to: request_id,
         body: body[..len].to_vec(),
+        trace: None,
     };
     pair.to_a.push_back(wire);
     pair.deliver();
@@ -635,6 +640,7 @@ fn home_moves_require_the_authority_and_the_confirmed_view() {
         request_id: 1,
         reply_to: 0,
         body: body[..len].to_vec(),
+        trace: None,
     };
     let step = pair.deliver_raw(wire);
     let ack = RouteBody::decode(&step.send.as_ref().expect("move ack").body).expect("body");

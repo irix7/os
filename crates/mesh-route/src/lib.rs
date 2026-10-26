@@ -69,8 +69,8 @@ use mesh_core::{
     fixture_objects, home_for, MembershipView, ObjectRoute, RouteCache, HOME_FIXTURE_MAX,
 };
 use sys_primitives::{
-    mesh_flags, Capability, MeshHeader, MessageKind, NodeId, NodeKey, ObjectId, PrincipalId,
-    Rights, Status,
+    mesh_flags, Capability, FrameHeader, MeshHeader, MessageKind, NodeId, NodeKey, ObjectId,
+    PrincipalId, Rights, Status, TraceContext,
 };
 
 pub use wire::{
@@ -225,6 +225,13 @@ pub struct Wire {
     pub reply_to: u64,
     /// Encoded route body.
     pub body: Vec<u8>,
+    /// W3C trace context carried by the enclosing `MessageFrame`.
+    ///
+    /// The mesh header has no trace fields; the fabric frame does. A caller
+    /// that wraps this record in a `MessageFrame` applies the context with
+    /// [`Wire::apply_trace`]. Responses inherit the request trace id and use a
+    /// fresh child span.
+    pub trace: Option<TraceContext>,
 }
 
 /// Operation code re-exported so callers do not depend on `sys-primitives`.
@@ -247,6 +254,35 @@ impl Wire {
         header.ttl = MeshHeader::MAX_HOPS;
         header
     }
+
+    /// Copy this record's trace context into a fabric frame header.
+    ///
+    /// A record without a trace leaves the frame header untouched, so the
+    /// untraced M2 path keeps its exact previous bytes.
+    pub fn apply_trace(&self, header: &mut FrameHeader) {
+        let Some(trace) = self.trace else {
+            return;
+        };
+        header.flags |= sys_primitives::flags::TRACE;
+        header.trace_flags = trace.flags;
+        header.trace_id = trace.trace_id;
+        header.span_id = trace.span_id;
+    }
+}
+
+/// Deterministic child span for a response to `request_id`.
+///
+/// A response keeps the request trace id but never reuses the request span
+/// id. The value is derived rather than random so a host test and a serial
+/// transcript can recompute it.
+fn response_span(request_id: u64) -> [u8; 8] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"IRIX7-M2-TRACE-RESPONSE-v1");
+    hasher.update(&request_id.to_le_bytes());
+    let digest = hasher.finalize();
+    let mut span = [0u8; 8];
+    span.copy_from_slice(&digest.as_bytes()[..8]);
+    span
 }
 
 /// One state change the module should log, or a test should inspect.
@@ -757,6 +793,7 @@ struct PendingOp {
     deadline_ms: u64,
     attempt: u8,
     moved: bool,
+    trace: Option<TraceContext>,
 }
 
 struct PendingMove {
@@ -1291,6 +1328,34 @@ impl RouteNode {
         now_ms: u64,
         signer: &dyn RouteSigner,
     ) -> Step {
+        self.begin_operation_with_trace(object, operation, None, now_ms, signer)
+    }
+
+    /// Begin one operation carrying a W3C trace context.
+    ///
+    /// The context is placed on the outbound `MessageFrame` and inherited by
+    /// the home's response. A `MOVED` retry keeps the same trace id.
+    #[inline(never)]
+    pub fn begin_operation_traced(
+        &mut self,
+        object: ObjectId,
+        operation: u16,
+        trace: TraceContext,
+        now_ms: u64,
+        signer: &dyn RouteSigner,
+    ) -> Step {
+        self.begin_operation_with_trace(object, operation, Some(trace), now_ms, signer)
+    }
+
+    #[inline(never)]
+    fn begin_operation_with_trace(
+        &mut self,
+        object: ObjectId,
+        operation: u16,
+        trace: Option<TraceContext>,
+        now_ms: u64,
+        signer: &dyn RouteSigner,
+    ) -> Step {
         if self.pending.is_some() {
             return reject(Some(object), Reason::Busy);
         }
@@ -1309,7 +1374,7 @@ impl RouteNode {
         let Some(route) = self.route_for(&object, now_ms) else {
             return reject(Some(object), Reason::Fixture);
         };
-        self.start_attempt(object, route, operation, 1, false, now_ms, signer)
+        self.start_attempt(object, route, operation, 1, false, trace, now_ms, signer)
     }
 
     /// The first fixture object whose confirmed rendezvous home is `home`.
@@ -1465,7 +1530,7 @@ impl RouteNode {
             src_epoch: header.src_epoch,
             epoch: self.epoch,
         });
-        let mut served = self.serve_invoke(src, &header, wire.object, invoke, now_ms);
+        let mut served = self.serve_invoke(src, &header, wire.trace, wire.object, invoke, now_ms);
         step.events.append(&mut served.events);
         if served.send.is_some() {
             step.send = served.send;
@@ -1509,14 +1574,17 @@ impl RouteNode {
     ///
     /// The caller has already validated the `MeshEnvelope` header, CRC,
     /// `frame_len` and the M2-1 record bound, and has identified `src` as the
-    /// configured peer.  This function owns the route body bounds and the
-    /// replay, epoch and authority checks.
+    /// configured peer.  `trace` is read from the enclosing `MessageFrame`
+    /// header; a response must carry the same trace id when the request did.
+    /// This function owns the route body bounds and the replay, epoch and
+    /// authority checks.
     #[allow(clippy::too_many_arguments)]
     #[inline(never)]
     pub fn on_wire(
         &mut self,
         src: NodeId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         object: ObjectId,
         kind: MessageKind,
         opcode: OpCode,
@@ -1548,13 +1616,15 @@ impl RouteNode {
                     Err(_) => return reject(Some(object), Reason::Malformed),
                 };
                 self.last_request = header.request_id;
-                self.serve_invoke(src, header, object, invoke, now_ms)
+                self.serve_invoke(src, header, trace, object, invoke, now_ms)
             }
             (MessageKind::Response, OpCode::Invoke) => {
                 if header.reply_to == 0 || header.reply_to != self.pending_request() {
                     return reject(Some(object), Reason::UnknownRequest);
                 }
-                self.handle_invoke_response(src, header, object, status, body, now_ms, signer)
+                self.handle_invoke_response(
+                    src, header, trace, object, status, body, now_ms, signer,
+                )
             }
             (MessageKind::Request, OpCode::RouteQuery) => {
                 if let Err(reason) = self.accept_request_header(header) {
@@ -1565,7 +1635,7 @@ impl RouteNode {
                     Err(_) => return reject(Some(object), Reason::Malformed),
                 };
                 self.last_request = header.request_id;
-                self.handle_move_request(src, header, object, directive, now_ms)
+                self.handle_move_request(src, header, trace, object, directive, now_ms)
             }
             (MessageKind::Response, OpCode::RouteQuery) => {
                 if header.reply_to == 0 || header.reply_to != self.pending_request() {
@@ -1609,6 +1679,7 @@ impl RouteNode {
         operation: u16,
         attempt: u8,
         moved: bool,
+        trace: Option<TraceContext>,
         now_ms: u64,
         signer: &dyn RouteSigner,
     ) -> Step {
@@ -1632,9 +1703,9 @@ impl RouteNode {
             // the cache entry is stale and the object is re-resolved locally.
             self.cache.invalidate(&object);
             return match self.route_for(&object, now_ms) {
-                Some(fresh) => {
-                    self.start_attempt(object, fresh, operation, attempt, moved, now_ms, signer)
-                }
+                Some(fresh) => self.start_attempt(
+                    object, fresh, operation, attempt, moved, trace, now_ms, signer,
+                ),
                 None => reject(Some(object), Reason::NotCurrent),
             };
         }
@@ -1645,6 +1716,7 @@ impl RouteNode {
                 operation,
                 attempt,
                 moved,
+                trace,
                 now_ms,
                 signer,
                 None,
@@ -1659,7 +1731,7 @@ impl RouteNode {
             return reject(Some(object), Reason::PeerMismatch);
         }
         match self.send_invoke(
-            object, route, operation, attempt, moved, now_ms, signer, None,
+            object, route, operation, attempt, moved, trace, now_ms, signer, None,
         ) {
             Ok(wire) => Step::new().with_send(wire),
             Err(reason) => reject(Some(object), reason),
@@ -1675,6 +1747,7 @@ impl RouteNode {
         operation: u16,
         attempt: u8,
         moved: bool,
+        trace: Option<TraceContext>,
         now_ms: u64,
         signer: &dyn RouteSigner,
         capability: Option<Capability>,
@@ -1706,6 +1779,7 @@ impl RouteNode {
             request_id,
             reply_to: 0,
             body: buffer[..len].to_vec(),
+            trace,
         };
         // Keep the last frame this node put on the wire.  A delayed duplicate
         // of it is the stale-lease evidence after a membership change.  This
@@ -1721,6 +1795,7 @@ impl RouteNode {
             deadline_ms: now_ms.saturating_add(OPERATION_DEADLINE_MS),
             attempt,
             moved,
+            trace,
         })));
         Ok(wire)
     }
@@ -1734,6 +1809,7 @@ impl RouteNode {
         operation: u16,
         attempt: u8,
         moved: bool,
+        trace: Option<TraceContext>,
         now_ms: u64,
         signer: &dyn RouteSigner,
         capability: Option<Capability>,
@@ -1843,6 +1919,7 @@ impl RouteNode {
                         operation,
                         attempt + 1,
                         true,
+                        trace,
                         now_ms,
                         signer,
                         Some(capability),
@@ -1854,6 +1931,7 @@ impl RouteNode {
                         operation,
                         attempt + 1,
                         true,
+                        trace,
                         now_ms,
                         signer,
                         Some(capability),
@@ -2005,25 +2083,26 @@ impl RouteNode {
         &mut self,
         src: NodeId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         object: ObjectId,
         invoke: Invoke,
         now_ms: u64,
     ) -> Step {
         if invoke.operation != OP_STAT && invoke.operation != OP_COMMIT {
-            return self.error_reply(src, object, header, Reason::WrongOperation);
+            return self.error_reply(src, object, header, trace, Reason::WrongOperation);
         }
         // A mutable commit needs a current authoritative view *here*.  A home
         // that cannot confirm the current view is unavailable, not a second
         // authority.
         if invoke.operation == OP_COMMIT && !self.mutable_available_at(now_ms) {
-            return self.error_reply(src, object, header, Reason::NoAuthority);
+            return self.error_reply(src, object, header, trace, Reason::NoAuthority);
         }
         let capability = invoke.capability;
         if capability.object != object || capability.object_epoch != header.object_epoch {
-            return self.error_reply(src, object, header, Reason::WrongObject);
+            return self.error_reply(src, object, header, trace, Reason::WrongObject);
         }
         if header.home != self.self_id {
-            return self.error_reply(src, object, header, Reason::WrongHome);
+            return self.error_reply(src, object, header, trace, Reason::WrongHome);
         }
         let Some(lease) = self.home_lease(&object).copied() else {
             let reason = if home_for(&object, &self.view) == Some(self.self_id) {
@@ -2031,7 +2110,7 @@ impl RouteNode {
             } else {
                 Reason::NotHome
             };
-            return self.error_reply(src, object, header, reason);
+            return self.error_reply(src, object, header, trace, reason);
         };
         if !lease.valid_at(now_ms) {
             self.drop_home_lease(&object);
@@ -2040,24 +2119,24 @@ impl RouteNode {
             } else {
                 Reason::NotHome
             };
-            return self.error_reply(src, object, header, reason);
+            return self.error_reply(src, object, header, trace, reason);
         }
         if header.object_epoch < lease.object_epoch {
-            return self.error_reply(src, object, header, Reason::StaleObjectEpoch);
+            return self.error_reply(src, object, header, trace, Reason::StaleObjectEpoch);
         }
         if header.object_epoch > lease.object_epoch {
-            return self.error_reply(src, object, header, Reason::UnknownEpoch);
+            return self.error_reply(src, object, header, trace, Reason::UnknownEpoch);
         }
         if header.home_epoch < lease.home_epoch {
-            return self.error_reply(src, object, header, Reason::StaleEpoch);
+            return self.error_reply(src, object, header, trace, Reason::StaleEpoch);
         }
         if header.home_epoch > lease.home_epoch {
-            return self.error_reply(src, object, header, Reason::UnknownEpoch);
+            return self.error_reply(src, object, header, trace, Reason::UnknownEpoch);
         }
         if let Err(reason) =
             self.verify_capability(&capability, src, invoke.operation, &lease, now_ms)
         {
-            return self.error_reply(src, object, header, reason);
+            return self.error_reply(src, object, header, trace, reason);
         }
         match lease.state {
             LeaseState::Active => {
@@ -2077,12 +2156,13 @@ impl RouteNode {
                 };
                 let mut body = [0u8; InvokeResult::LEN];
                 let Ok(len) = result.encode(&mut body) else {
-                    return self.error_reply(src, object, header, Reason::Malformed);
+                    return self.error_reply(src, object, header, trace, Reason::Malformed);
                 };
                 let wire = self.reply_wire(
                     src,
                     object,
                     header,
+                    trace,
                     MessageKind::Response,
                     OpCode::Invoke,
                     Status::Ok,
@@ -2106,7 +2186,7 @@ impl RouteNode {
                 let grace_ms = lease.remaining_ms(now_ms);
                 if lease_ms == 0 || grace_ms == 0 {
                     self.drop_home_lease(&object);
-                    return self.error_reply(src, object, header, Reason::NotHome);
+                    return self.error_reply(src, object, header, trace, Reason::NotHome);
                 }
                 let moved = Moved {
                     object,
@@ -2121,12 +2201,13 @@ impl RouteNode {
                 };
                 let mut body = [0u8; Moved::LEN];
                 let Ok(len) = moved.encode(&mut body) else {
-                    return self.error_reply(src, object, header, Reason::Malformed);
+                    return self.error_reply(src, object, header, trace, Reason::Malformed);
                 };
                 let wire = self.reply_wire(
                     src,
                     object,
                     header,
+                    trace,
                     MessageKind::Response,
                     OpCode::Invoke,
                     Status::Stale,
@@ -2156,6 +2237,7 @@ impl RouteNode {
         dst: NodeId,
         object: ObjectId,
         request: &MeshHeader,
+        trace: Option<TraceContext>,
         kind: MessageKind,
         opcode: OpCode,
         status: Status,
@@ -2179,6 +2261,7 @@ impl RouteNode {
             request_id: request.request_id,
             reply_to: request.request_id,
             body,
+            trace: trace.map(|context| context.child(response_span(request.request_id))),
         }
     }
 
@@ -2188,6 +2271,7 @@ impl RouteNode {
         dst: NodeId,
         object: ObjectId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         reason: Reason,
     ) -> Step {
         let body = RouteErrorBody {
@@ -2203,6 +2287,7 @@ impl RouteNode {
             dst,
             object,
             header,
+            trace,
             MessageKind::Response,
             OpCode::Invoke,
             status_for(reason),
@@ -2223,6 +2308,7 @@ impl RouteNode {
         &mut self,
         _src: NodeId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         object: ObjectId,
         status: Status,
         body: &[u8],
@@ -2232,6 +2318,11 @@ impl RouteNode {
         let Some(Pending::Op(pending)) = self.pending.take() else {
             return reject(Some(object), Reason::UnknownRequest);
         };
+        if let Some(expected) = pending.trace {
+            if trace.map(|context| context.trace_id) != Some(expected.trace_id) {
+                return self.fail_op(pending.object, Reason::TraceMismatch);
+            }
+        }
         if header.flags & mesh_flags::MOVED != 0 || status == Status::Stale {
             let moved = match Moved::decode(body) {
                 Ok(moved) => moved,
@@ -2282,6 +2373,7 @@ impl RouteNode {
                     pending.operation,
                     pending.attempt + 1,
                     true,
+                    pending.trace,
                     now_ms,
                     signer,
                     Some(pending.capability),
@@ -2358,12 +2450,21 @@ impl RouteNode {
         &mut self,
         src: NodeId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         object: ObjectId,
         directive: HomeMove,
         now_ms: u64,
     ) -> Step {
         if src != self.authority_id {
-            return self.move_ack(src, header, directive, false, Reason::WrongSubject, now_ms);
+            return self.move_ack(
+                src,
+                header,
+                trace,
+                directive,
+                false,
+                Reason::WrongSubject,
+                now_ms,
+            );
         }
         if object != directive.object
             || header.home != directive.old_home
@@ -2371,23 +2472,34 @@ impl RouteNode {
             || header.object_epoch != directive.object_epoch
             || header.src_epoch != self.epoch
         {
-            return self.move_ack(src, header, directive, false, Reason::BadMove, now_ms);
+            return self.move_ack(
+                src,
+                header,
+                trace,
+                directive,
+                false,
+                Reason::BadMove,
+                now_ms,
+            );
         }
         match self.apply_move(&directive, now_ms) {
             Ok(event) => {
-                let mut step = self.move_ack(src, header, directive, true, Reason::None, now_ms);
+                let mut step =
+                    self.move_ack(src, header, trace, directive, true, Reason::None, now_ms);
                 step.events.insert(0, event);
                 step
             }
-            Err(reason) => self.move_ack(src, header, directive, false, reason, now_ms),
+            Err(reason) => self.move_ack(src, header, trace, directive, false, reason, now_ms),
         }
     }
 
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn move_ack(
         &mut self,
         dst: NodeId,
         header: &MeshHeader,
+        trace: Option<TraceContext>,
         directive: HomeMove,
         accepted: bool,
         reason: Reason,
@@ -2410,6 +2522,7 @@ impl RouteNode {
             dst,
             directive.object,
             header,
+            trace,
             MessageKind::Response,
             OpCode::RouteQuery,
             if accepted {
@@ -2835,6 +2948,7 @@ impl RouteNode {
             request_id,
             reply_to: 0,
             body: body[..len].to_vec(),
+            trace: None,
         };
         self.pending = Some(Pending::Move(Box::new(PendingMove {
             directive,
@@ -2873,6 +2987,7 @@ fn status_for(reason: Reason) -> Status {
         | Reason::BadMove
         | Reason::UnknownRequest
         | Reason::PeerMismatch
+        | Reason::TraceMismatch
         | Reason::WrongOperation => Status::Protocol,
         Reason::NoPeer | Reason::LinkDown | Reason::Busy => Status::Again,
         Reason::Timeout => Status::TimedOut,

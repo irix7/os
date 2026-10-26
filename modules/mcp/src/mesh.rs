@@ -64,7 +64,7 @@ use mesh_transport::{
 use module_abi::Services;
 use sys_primitives::{
     mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, ObjectId,
-    OpCode, Status, StreamId, Tag,
+    OpCode, Status, StreamId, Tag, TraceContext,
 };
 
 // The authority write lease must expire before the membership failure window,
@@ -85,6 +85,13 @@ pub const HTTP_SLOT: u32 = 0;
 
 const READ_CHUNK: usize = 1024;
 const READS_PER_TICK: usize = 8;
+/// Live MCP pending-tag capacity.
+///
+/// M2 keeps at most one route operation plus a few link-control frames in
+/// flight per connection, so eight tags cover the live module. This is not
+/// the fabric conformance capacity: `crates/fabric` proves the tag model at
+/// 10,000 outstanding tags, and that result must not be read as a claim that
+/// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
 const LINE_CAP: usize = 384;
 
@@ -96,6 +103,7 @@ enum Phase {
 
 struct Incoming {
     header: MeshHeader,
+    trace: Option<TraceContext>,
     object: ObjectId,
     status: Status,
     kind: MessageKind,
@@ -1257,12 +1265,23 @@ impl Mesh {
                     // the next record is decoded.
                     let storage = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_RX) };
                     storage[..body.len()].copy_from_slice(body);
+                    let frame_header = envelope.frame.header;
+                    let trace = if frame_header.flags & sys_primitives::flags::TRACE != 0 {
+                        Some(TraceContext {
+                            trace_id: frame_header.trace_id,
+                            span_id: frame_header.span_id,
+                            flags: frame_header.trace_flags,
+                        })
+                    } else {
+                        None
+                    };
                     Incoming {
                         header: envelope.header,
-                        object: envelope.frame.header.object,
-                        status: envelope.frame.header.status,
-                        kind: envelope.frame.header.kind,
-                        opcode: envelope.frame.header.opcode,
+                        trace,
+                        object: frame_header.object,
+                        status: frame_header.status,
+                        kind: frame_header.kind,
+                        opcode: frame_header.opcode,
                         body_len: body.len(),
                     }
                 };
@@ -1469,6 +1488,7 @@ impl Mesh {
                         route.on_wire(
                             source,
                             &incoming.header,
+                            incoming.trace,
                             incoming.object,
                             incoming.kind,
                             incoming.opcode,
@@ -1536,6 +1556,7 @@ impl Mesh {
         };
         frame.header.object = wire.object;
         frame.header.status = wire.status;
+        wire.apply_trace(&mut frame.header);
         let header = wire.header(self.self_id);
         let envelope = MeshEnvelope { header, frame };
         self.queue.push_record(&envelope, now).is_ok()

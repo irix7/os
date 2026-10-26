@@ -128,6 +128,8 @@ pub enum Reason {
     /// The node is the rendezvous home but holds no current lease, so the
     /// object is unavailable here.
     NotCurrent = 27,
+    /// A response did not carry the trace id of its traced request.
+    TraceMismatch = 28,
 }
 
 impl Reason {
@@ -162,6 +164,7 @@ impl Reason {
             25 => Self::WrongOperation,
             26 => Self::NoAuthority,
             27 => Self::NotCurrent,
+            28 => Self::TraceMismatch,
             _ => return None,
         })
     }
@@ -202,6 +205,7 @@ impl Reason {
             Self::WrongOperation => "wrong-operation",
             Self::NoAuthority => "no-authority",
             Self::NotCurrent => "not-current",
+            Self::TraceMismatch => "trace-mismatch",
         }
     }
 }
