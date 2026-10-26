@@ -180,7 +180,7 @@ mod tests {
         // The largest member: public key, shard count and the route opt-in.
         let image = image(
             &[
-                ("mcp.url", "http://192.168.7.1:9771/mcp.module"),
+                ("mcp.url", "http://192.168.7.1:11171/mcp.module"),
                 ("mcp.sha256", &sha),
                 ("console", "serial0"),
                 ("mesh.peer", "192.168.7.1:1"),
