@@ -62,7 +62,7 @@ jobs:
         id: open_pr
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && steps.sync.outputs.changed == 'true'
         continue-on-error: true
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
           branch: roadmap/sync
@@ -94,4 +94,4 @@ jobs:
     steps:
       - name: Deploy
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
