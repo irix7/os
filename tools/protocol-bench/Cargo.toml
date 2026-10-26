@@ -1,0 +1,22 @@
+[package]
+name = "protocol-bench"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Host benchmark for the IRIX 7 mesh wire format and transport paths"
+publish = false
+
+# Standalone host tool, like tools/m2-rig: it is not part of the kernel
+# workspace, so a plain `cargo build` in the repository root does not build it
+# and the cross-compilation gates stay unchanged.
+[workspace]
+
+[dependencies]
+sys-primitives = { path = "../../crates/sys-primitives" }
+mesh-transport = { path = "../../crates/mesh-transport" }
+mesh-join = { path = "../../crates/mesh-join" }
+mesh-route = { path = "../../crates/mesh-route" }
+mesh-migrate = { path = "../../crates/mesh-migrate" }
+
+[profile.release]
+opt-level = 3
