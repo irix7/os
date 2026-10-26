@@ -24,7 +24,7 @@
 //! confirmed epoch is in memory for one boot.  That is a documented M2 limit,
 //! not a silent assumption.
 
-use mesh_service::{MembershipError, MembershipTable};
+use mesh_service::{FailureDetector, MembershipError, MembershipTable, NodeState};
 use sys_primitives::{NodeId, NodeKey};
 
 use crate::authority::{
@@ -96,6 +96,42 @@ pub enum JoinEvent {
         /// The installed digest.
         digest: [u8; 16],
     },
+    /// A member has missed its heartbeat window; it is still routable.
+    Suspect {
+        /// The silent member.
+        node: NodeId,
+        /// The confirmed epoch at the transition.
+        epoch: u32,
+    },
+    /// The failure detector confirmed a member unavailable.
+    Failed {
+        /// The failed member.
+        node: NodeId,
+        /// The confirmed epoch at the transition.
+        epoch: u32,
+    },
+    /// A suspect member answered again before failure was confirmed.
+    Recovered {
+        /// The recovered member.
+        node: NodeId,
+        /// The confirmed epoch.
+        epoch: u32,
+    },
+    /// The root removed a failed member and advanced the epoch exactly once.
+    Removed {
+        /// The removed member.
+        node: NodeId,
+        /// The new confirmed view.
+        snapshot: MembershipSnapshot,
+    },
+    /// A member lost contact with the authority.  It cannot confirm a new
+    /// epoch and must not create a second authoritative home.
+    AuthorityLost {
+        /// The unreachable authority root.
+        node: NodeId,
+        /// The last confirmed epoch the member keeps.
+        epoch: u32,
+    },
     /// The message was not acceptable; the view did not change.
     Rejected(&'static str),
 }
@@ -134,6 +170,16 @@ struct MemberState {
     attempts: u32,
     timed_out: bool,
     converged: Option<MembershipSnapshot>,
+    detector: FailureDetector,
+    /// The root's current liveness state in this member's local view.
+    root_state: NodeState,
+    /// Monotonic time of the last accepted frame from the root.
+    root_seen_ms: u64,
+    /// Whether the root's liveness is tracked (after the first confirmation).
+    root_tracked: bool,
+    /// Whether this member currently has an authoritative view.  A lost
+    /// authority is restored only by a fresh signed confirmation.
+    authority_current: bool,
 }
 
 enum Engine {
@@ -200,6 +246,11 @@ impl JoinNode {
                 attempts: 0,
                 timed_out: false,
                 converged: None,
+                detector: FailureDetector::m2(),
+                root_state: NodeState::Alive,
+                root_seen_ms: now_ms,
+                root_tracked: false,
+                authority_current: false,
             }),
         })
     }
@@ -284,6 +335,160 @@ impl JoinNode {
         }
     }
 
+    /// Whether this node holds a view it can still treat as current.
+    ///
+    /// The authority root is the 1-of-1 authority, so its confirmed view is
+    /// current by construction.  A member is current only while it is in
+    /// contact with the authority and has installed a confirmation.  A member
+    /// that cannot reach the root keeps its last confirmed view for reads but
+    /// must not create a new home or accept a mutable commit.
+    pub fn authority_current(&self) -> bool {
+        match &self.engine {
+            Engine::Root(_) => true,
+            Engine::Member(state) => state.authority_current,
+        }
+    }
+
+    /// Whether a mutable object may be committed on this node right now.
+    ///
+    /// This is the M2 availability rule: a mutable commit needs a current
+    /// authoritative view *and* the home lease checked by the route layer.
+    /// The side of a partition without the authority fails closed.
+    pub fn mutable_available(&self) -> bool {
+        self.authority_current() && self.converged().is_some()
+    }
+
+    /// Note one accepted frame from a confirmed peer.
+    ///
+    /// This is the membership heartbeat path: any well-formed frame from the
+    /// peer is proof of life, and the join/route frames already cross the link
+    /// every tick.  A stale or failed record is not revived by a bare frame.
+    pub fn observe_peer(&mut self, node: NodeId, now_ms: u64) -> Option<JoinEvent> {
+        if node.is_zero() || node == self.self_id {
+            return None;
+        }
+        match &mut self.engine {
+            Engine::Root(state) => {
+                if !state.authority.is_member(node) {
+                    return None;
+                }
+                let observe = state.authority.observe(node, now_ms);
+                let epoch = state.authority.epoch();
+                if matches!(observe, mesh_service::Observe::Revived) {
+                    return Some(JoinEvent::Recovered { node, epoch });
+                }
+                None
+            }
+            Engine::Member(state) => {
+                if node != self.root || !state.root_tracked {
+                    return None;
+                }
+                let epoch = state.table.epoch();
+                state.root_seen_ms = now_ms;
+                if state.root_state == NodeState::Suspect {
+                    state.root_state = NodeState::Alive;
+                    if state.authority_current {
+                        return Some(JoinEvent::Recovered { node, epoch });
+                    }
+                }
+                None
+            }
+        }
+    }
+
+    /// Ask for a fresh join confirmation after authority was lost.
+    ///
+    /// The member never confirms itself.  When a frame from the authority
+    /// arrives on a live link, this creates a new signed request (new nonce
+    /// and incarnation) so the root can re-admit or re-confirm the member.
+    /// Returns `None` while a request is already outstanding.
+    pub fn request_rejoin(&mut self, now_ms: u64) -> Option<JoinRequest> {
+        let self_id = self.self_id;
+        let root = self.root;
+        let sequence = self.sequence.wrapping_add(1);
+        match &mut self.engine {
+            Engine::Member(state)
+                if state.root_tracked
+                    && !state.authority_current
+                    && state.outstanding.is_none() =>
+            {
+                self.sequence = sequence;
+                Some(state.new_attempt(self_id, root, now_ms, sequence))
+            }
+            _ => None,
+        }
+    }
+
+    /// Advance the failure detector and return the state changes to log.
+    ///
+    /// The root removes members whose failure was confirmed and advances the
+    /// membership epoch exactly once per removal.  A member never removes the
+    /// root: losing the authority is not a membership change, so it records
+    /// `AuthorityLost` and keeps the last confirmed view.
+    pub fn poll_failures(&mut self, now_ms: u64) -> alloc::vec::Vec<JoinEvent> {
+        let mut events = alloc::vec::Vec::new();
+        match &mut self.engine {
+            Engine::Root(state) => {
+                let epoch = state.authority.epoch();
+                for transition in state.authority.expire(now_ms) {
+                    let event = match transition.state {
+                        NodeState::Suspect => JoinEvent::Suspect {
+                            node: transition.node,
+                            epoch,
+                        },
+                        NodeState::Failed => JoinEvent::Failed {
+                            node: transition.node,
+                            epoch,
+                        },
+                        NodeState::Alive => continue,
+                    };
+                    events.push(event);
+                }
+                for removal in state.authority.remove_failed() {
+                    state.converged = removal.snapshot.clone();
+                    events.push(JoinEvent::Removed {
+                        node: removal.node,
+                        snapshot: removal.snapshot,
+                    });
+                }
+            }
+            Engine::Member(state) => {
+                if !state.root_tracked {
+                    return events;
+                }
+                let epoch = state.table.epoch();
+                let next = state
+                    .detector
+                    .next_state(state.root_state, state.root_seen_ms, now_ms);
+                match next {
+                    NodeState::Suspect if state.root_state == NodeState::Alive => {
+                        state.root_state = NodeState::Suspect;
+                        events.push(JoinEvent::Suspect {
+                            node: state.verifier.root(),
+                            epoch,
+                        });
+                    }
+                    NodeState::Failed if state.root_state != NodeState::Failed => {
+                        state.root_state = NodeState::Failed;
+                        events.push(JoinEvent::Failed {
+                            node: state.verifier.root(),
+                            epoch,
+                        });
+                        if state.authority_current {
+                            state.authority_current = false;
+                            events.push(JoinEvent::AuthorityLost {
+                                node: state.verifier.root(),
+                                epoch,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        events
+    }
+
     /// Start a new link.  A member begins a fresh join attempt; the root waits
     /// for a request.
     pub fn on_link_up(&mut self, now_ms: u64) -> Option<JoinRequest> {
@@ -297,6 +502,13 @@ impl JoinNode {
                 state.outstanding = None;
                 state.attempts = 0;
                 state.timed_out = false;
+                // A new link is a fresh chance to hear the authority.  It does
+                // not restore authority by itself: only a signed confirmation
+                // can do that.
+                state.root_seen_ms = now_ms;
+                if state.root_state != NodeState::Failed {
+                    state.root_state = NodeState::Alive;
+                }
                 Some(state.new_attempt(self_id, root, now_ms, sequence))
             }
         }
@@ -466,6 +678,13 @@ impl MemberState {
                 {
                     return Outcome::rejected(membership_label(error));
                 }
+                // A verified confirmation is the only path that makes a
+                // member's view authoritative again.  It also clears the
+                // failure clock for the link that carried it.
+                self.root_tracked = true;
+                self.root_seen_ms = now_ms;
+                self.root_state = NodeState::Alive;
+                self.authority_current = true;
                 if duplicate {
                     // The same epoch and list are already installed.  This is
                     // the terminal answer for a reconnect/rejoin; do not keep

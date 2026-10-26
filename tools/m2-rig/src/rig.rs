@@ -71,6 +71,12 @@ pub enum Fault {
     WrongAuthority,
     /// Join and homes are enabled, but `mesh.route` is absent.
     NoRoute,
+    /// Kill the member after the route steps: the root must fail, fence and
+    /// continue on its own.
+    KillPeer,
+    /// Cut only the mesh link: both kernels stay alive and must not create two
+    /// authoritative homes.
+    Partition,
 }
 
 impl Fault {
@@ -81,6 +87,8 @@ impl Fault {
             "no-peer" => Self::NoPeer,
             "wrong-authority" => Self::WrongAuthority,
             "no-route" => Self::NoRoute,
+            "kill-peer" => Self::KillPeer,
+            "partition" => Self::Partition,
             _ => return None,
         })
     }
@@ -92,17 +100,24 @@ impl Fault {
             Self::NoPeer => "no-peer",
             Self::WrongAuthority => "wrong-authority",
             Self::NoRoute => "no-route",
+            Self::KillPeer => "kill-peer",
+            Self::Partition => "partition",
         }
     }
 
     /// Whether the join is expected to converge in this mode.
     pub const fn joins(self) -> bool {
-        matches!(self, Self::None | Self::NoRoute)
+        !matches!(self, Self::NoPeer | Self::WrongAuthority)
     }
 
     /// Whether the remote capability route is expected to run.
     pub const fn routes(self) -> bool {
-        matches!(self, Self::None)
+        matches!(self, Self::None | Self::KillPeer | Self::Partition)
+    }
+
+    /// Whether the mode drives a one-node failure or a partition.
+    pub const fn failures(self) -> bool {
+        matches!(self, Self::KillPeer | Self::Partition)
     }
 }
 
@@ -382,8 +397,13 @@ impl Node {
             if let Some(authority) = &mesh.authority {
                 env.push(("mesh.authority".into(), authority.clone()));
             }
+            // The module defaults the seed epoch to 1; the DS1386 environment
+            // has 298 bytes before the MAC slot, so the M2-6 opt-in reuses the
+            // default instead of spending 13 bytes restating it.
             if let Some(epoch) = mesh.epoch {
-                env.push(("mesh.epoch".into(), epoch.to_string()));
+                if epoch != 1 {
+                    env.push(("mesh.epoch".into(), epoch.to_string()));
+                }
             }
             // The DS1386 environment has only 298 bytes before the MAC slot.
             // The M2-3 default is eight objects, so the route opt-in can omit
@@ -401,6 +421,9 @@ impl Node {
             }
             if let Some(route) = &mesh.route {
                 env.push(("mesh.route".into(), route.clone()));
+            }
+            if let Some(fail) = &mesh.fail {
+                env.push(("mesh.fail".into(), fail.clone()));
             }
         }
         env
@@ -426,6 +449,9 @@ pub struct MeshEnv {
     pub seed: Option<String>,
     /// The M2 route opt-in (`mesh.route`).  Absent keeps the M2-3 behaviour.
     pub route: Option<String>,
+    /// The M2-6 failure-detection opt-in (`mesh.fail`).  Absent keeps the
+    /// M2-2 same-epoch rejoin behaviour.
+    pub fail: Option<String>,
 }
 
 /// The deterministic lab authority key pair.
@@ -482,6 +508,11 @@ pub fn mesh_environments(
             public_key: None,
             seed: None,
             route: if fault.routes() {
+                Some("1".into())
+            } else {
+                None
+            },
+            fail: if fault.failures() {
                 Some("1".into())
             } else {
                 None
@@ -963,9 +994,7 @@ impl BootFacts {
                 .map(|line| line.trim().to_string()),
             mesh_homes_lines: text
                 .lines()
-                .filter(|line| {
-                    line.contains("mesh-homes: ") || line.contains("mesh-home: ")
-                })
+                .filter(|line| line.contains("mesh-homes: ") || line.contains("mesh-home: "))
                 .map(|line| line.trim().to_string())
                 .collect(),
             network_mac: find("network: mac "),
@@ -1046,6 +1075,30 @@ pub fn wait_boot(options: &Options, nodes: &mut [RunningNode]) -> Result<Vec<Boo
         facts.push(fact);
     }
     Ok(facts)
+}
+
+/// Stop a node the way a failure does: SIGKILL, no clean shutdown.
+///
+/// A clean `quit` would let the peer observe an orderly close before the
+/// heartbeat window elapses.  The failure slice needs the process to vanish
+/// without protocol notice, so the survivor's detector, not the socket close,
+/// decides when the member is suspect and failed.
+pub fn kill_node(running: &mut RunningNode) -> Result<(), String> {
+    running
+        .child
+        .kill()
+        .map_err(|error| format!("kill {}: {error}", running.node.name))?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match running.child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(Duration::from_millis(100));
+            }
+            Ok(None) => return Err(format!("{} did not exit after SIGKILL", running.node.name)),
+            Err(error) => return Err(format!("wait {}: {error}", running.node.name)),
+        }
+    }
 }
 
 /// Stop a node cleanly through its CI socket, then wait for the process.

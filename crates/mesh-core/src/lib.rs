@@ -430,6 +430,11 @@ impl RouteCache {
         self.map.insert(*route.object.as_bytes(), route);
     }
 
+    /// Every cached route, in key order.
+    pub fn iter(&self) -> impl Iterator<Item = &ObjectRoute> {
+        self.map.values()
+    }
+
     /// Remove a route (for example, after `MOVED` or `STALE`).
     pub fn invalidate(&mut self, object: &ObjectId) {
         self.map.remove(object.as_bytes());

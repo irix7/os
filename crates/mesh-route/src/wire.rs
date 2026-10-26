@@ -54,8 +54,14 @@ pub const KIND_MOVE_ACK: u8 = 5;
 /// A terminal refusal.
 pub const KIND_ERROR: u8 = 6;
 
-/// The only operation in this slice: a deterministic fixture stat.
+/// The read operation: a deterministic fixture stat.
 pub const OP_STAT: u16 = 1;
+/// The mutable operation: a deterministic fixture commit.
+///
+/// A commit needs a current authoritative view and a current home lease at the
+/// destination.  It is the M2 instrument for the partition rule: the side
+/// without the authority fails closed instead of creating a second home.
+pub const OP_COMMIT: u16 = 2;
 
 /// Domain separator covered by the home-move signature.
 pub const HOME_MOVE_DOMAIN: &[u8] = b"IRIX7-M2-HOME-MOVE-v1";
@@ -116,6 +122,12 @@ pub enum Reason {
     PeerMismatch = 24,
     /// The operation code is not supported.
     WrongOperation = 25,
+    /// The node cannot confirm a current authoritative view, so a mutable
+    /// commit is unavailable.  It is not a redirect and not a second home.
+    NoAuthority = 26,
+    /// The node is the rendezvous home but holds no current lease, so the
+    /// object is unavailable here.
+    NotCurrent = 27,
 }
 
 impl Reason {
@@ -148,6 +160,8 @@ impl Reason {
             23 => Self::UnknownRequest,
             24 => Self::PeerMismatch,
             25 => Self::WrongOperation,
+            26 => Self::NoAuthority,
+            27 => Self::NotCurrent,
             _ => return None,
         })
     }
@@ -186,6 +200,8 @@ impl Reason {
             Self::UnknownRequest => "unknown-request",
             Self::PeerMismatch => "peer-mismatch",
             Self::WrongOperation => "wrong-operation",
+            Self::NoAuthority => "no-authority",
+            Self::NotCurrent => "not-current",
         }
     }
 }

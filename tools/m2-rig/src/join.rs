@@ -307,7 +307,7 @@ pub fn evaluate(
                         .into();
             }
         }
-        Fault::None | Fault::NoRoute => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
             let root = match evidence.nodes[0]
                 .converged
                 .as_deref()

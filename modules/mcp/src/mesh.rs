@@ -52,13 +52,22 @@ use mesh_join::{
 use mesh_route::{RouteNode, RouteSigner, Step as RouteStep, Wire as RouteWire};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
-    StreamDecoder, WriteOutcome, RECEIVE_DEADLINE_MS,
+    StreamDecoder, WriteOutcome, HEARTBEAT_INTERVAL_MS, RECEIVE_DEADLINE_MS,
 };
 use module_abi::Services;
 use sys_primitives::{
     mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, ObjectId,
     OpCode, Status, StreamId, Tag,
 };
+
+// The authority write lease must expire before the membership failure window,
+// so an isolated old home stops accepting commits before the root can re-home
+// the object.  One heartbeat (5 s) plus the write lease (6 s) is 11 s, inside
+// the 12 s failure window.
+const _: () = assert!(mesh_route::WRITE_LEASE_MS < mesh_join::FAIL_AFTER_MS);
+const _: () = assert!(
+    mesh_transport::HEARTBEAT_INTERVAL_MS + mesh_route::WRITE_LEASE_MS < mesh_join::FAIL_AFTER_MS
+);
 
 /// Module TCP slot owned by the mesh listener when `mesh.peer` is present.
 pub const MESH_SLOT: u32 = 1;
@@ -99,6 +108,8 @@ struct Mesh {
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
     route: Option<RouteNode>,
+    /// Whether the M2-6 failure detector is enabled (`mesh.fail=1`).
+    failures: bool,
     home_count: u32,
     join_timeout_logged: bool,
     last_arm_log_ms: u64,
@@ -163,6 +174,17 @@ pub unsafe fn init(services: *const Services) -> bool {
         log(services, line.as_bytes());
     }
     let route = route_config(services, self_id, join.as_ref(), home_count);
+    let failures = failure_config(services);
+    // With failure detection enabled the transport timeout is a backstop, not
+    // the failure path: a partition pauses the seam for longer than the M2-1
+    // 30 s heartbeat timeout, and the membership detector (12 s) is what
+    // declares the peer failed.  Keeping the session alive lets the same
+    // connection carry the rejoin when the seam returns.
+    let heartbeat = if failures {
+        Heartbeat::new(HEARTBEAT_INTERVAL_MS, 300_000)
+    } else {
+        Heartbeat::m2()
+    };
     let mesh = Mesh {
         phase: Phase::Arm,
         self_id,
@@ -172,9 +194,10 @@ pub unsafe fn init(services: *const Services) -> bool {
         queue: SendQueue::new(),
         pending: PendingTable::new(PENDING_CAPACITY),
         stats: Stats::default(),
-        heartbeat: Heartbeat::m2(),
+        heartbeat,
         join,
         route,
+        failures,
         home_count,
         join_timeout_logged: false,
         last_arm_log_ms: 0,
@@ -305,6 +328,7 @@ pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16,
         return route_line(out, 404, "state=disabled reason=config");
     };
     let report = route.report();
+    let now = (services.clock_ms)();
     let mut body = Body::new(out);
     body.str("mesh-route: state=enabled view_epoch=");
     body.u64(report.view_epoch as u64);
@@ -313,6 +337,38 @@ pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16,
     body.str(" digest=");
     body.digest(&report.view_digest);
     body.push(b'\n');
+    body.str("mesh-route: authority state=");
+    body.str(if route.authority_current() {
+        "current"
+    } else {
+        "lost"
+    });
+    body.str(" epoch=");
+    body.u64(route.epoch() as u64);
+    body.str(" mutable=");
+    body.u64(if route.mutable_available_at(now) {
+        1
+    } else {
+        0
+    });
+    body.str(" write_lease_ms=");
+    body.u64(route.write_lease_remaining(now) as u64);
+    body.push(b'\n');
+    for fence in &report.fence_rows {
+        body.str("mesh-route: fence object=");
+        body.hex(fence.object.as_bytes());
+        body.str(" stale_home=");
+        body.node(&fence.stale_home);
+        body.str(" stale_home_epoch=");
+        body.u64(fence.stale_home_epoch as u64);
+        body.str(" home=");
+        body.node(&fence.home);
+        body.str(" home_epoch=");
+        body.u64(fence.home_epoch as u64);
+        body.str(" reason=");
+        body.str(fence.reason);
+        body.push(b'\n');
+    }
     body.str("mesh-route: move old=");
     body.object_opt(&report.move_old);
     body.str(" new=");
@@ -325,6 +381,8 @@ pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16,
         body.node(&result.home);
         body.str(" home_epoch=");
         body.u64(result.home_epoch as u64);
+        body.str(" op=");
+        body.str(mesh_route::operation_label(result.operation));
         body.str(" value=");
         body.hex(&result.value);
         body.str(" attempts=");
@@ -347,6 +405,16 @@ pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16,
     body.u64(report.moved_local as u64);
     body.str(" moved_remote=");
     body.u64(report.moved_remote as u64);
+    body.str(" fences=");
+    body.u64(report.fences as u64);
+    body.str(" commits=");
+    body.u64(report.commits as u64);
+    body.str(" replays=");
+    body.u64(report.replays as u64);
+    if let Some(reason) = report.last_replay {
+        body.str(" last_replay=");
+        body.str(reason.as_str());
+    }
     if let Some(reason) = report.last_reject {
         body.str(" last_reject=");
         body.str(reason.as_str());
@@ -365,10 +433,14 @@ fn route_step(path: &[u8]) -> Result<Option<u8>, ()> {
     let Some(value) = query.strip_prefix(b"step=") else {
         return Err(());
     };
-    if value.len() != 1 || !value[0].is_ascii_digit() {
+    if value.is_empty() || value.len() > 2 || !value.iter().all(|byte| byte.is_ascii_digit()) {
         return Err(());
     }
-    Ok(Some(value[0] - b'0'))
+    let mut step = 0u8;
+    for byte in value {
+        step = step.saturating_mul(10).saturating_add(*byte - b'0');
+    }
+    Ok(Some(step))
 }
 
 #[inline(never)]
@@ -524,10 +596,100 @@ impl<'a> Body<'a> {
 impl Mesh {
     fn tick(&mut self, services: &Services) {
         let now = (services.clock_ms)();
+        // Failure detection runs in every phase: a partition may leave the
+        // link down, and a killed peer never reconnects.  The detector uses the
+        // same membership/heartbeat path as the join.
+        self.poll_membership(services, now);
         match self.phase {
             Phase::Arm => self.arm(services, now),
             Phase::Waiting => self.waiting(services, now),
             Phase::Connected => self.connected(services, now),
+        }
+    }
+
+    /// Advance the bounded failure detector and log every transition.
+    fn poll_membership(&mut self, services: &Services, now: u64) {
+        if !self.failures {
+            return;
+        }
+        let Some(join) = self.join.as_mut() else {
+            return;
+        };
+        let events = join.poll_failures(now);
+        if events.is_empty() {
+            return;
+        }
+        let mut removed = None;
+        let mut lost = false;
+        for event in &events {
+            match event {
+                JoinEvent::Suspect { node, epoch } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: suspect node=");
+                    line.node(node);
+                    line.str(" epoch=");
+                    line.u64(*epoch as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinEvent::Failed { node, epoch } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: failed node=");
+                    line.node(node);
+                    line.str(" epoch=");
+                    line.u64(*epoch as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinEvent::Recovered { node, epoch } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: recovered node=");
+                    line.node(node);
+                    line.str(" epoch=");
+                    line.u64(*epoch as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinEvent::Removed { node, snapshot } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: removed node=");
+                    line.node(node);
+                    line.str(" epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.str(" digest=");
+                    line.digest(&snapshot.digest());
+                    line.str(" snapshot=");
+                    line.nodes(&snapshot.members);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    removed = Some(snapshot.clone());
+                }
+                JoinEvent::AuthorityLost { node, epoch } => {
+                    lost = true;
+                    let mut line = Line::new();
+                    line.str("mesh-fail: authority state=lost epoch=");
+                    line.u64(*epoch as u64);
+                    line.str(" root=");
+                    line.node(node);
+                    line.str(" mutable=0 reads=lease\n");
+                    log(services, line.as_bytes());
+                }
+                _ => {}
+            }
+        }
+        if lost {
+            if let Some(route) = self.route.as_mut() {
+                if let Some(event) = route.on_authority_lost() {
+                    route.note_event(&event);
+                    log_route_event(services, &event);
+                }
+            }
+        }
+        if let Some(snapshot) = removed {
+            self.log_homes(services, &snapshot);
+            self.on_route_snapshot(services, &snapshot, now);
         }
     }
 
@@ -790,6 +952,40 @@ impl Mesh {
             }
         }
         self.learn_peer(services, source, now)?;
+        // Only the configured authority renews a member's write lease.  A
+        // frame from another member proves that member is alive, not that the
+        // authority still holds the view.
+        let authority = self.join.as_ref().map(|join| join.root());
+        if authority == Some(source) {
+            if let Some(route) = self.route.as_mut() {
+                route.on_peer_frame(now);
+            }
+        }
+        let rejoin = if let Some(join) = self.join.as_mut() {
+            let was_current = join.authority_current();
+            if let Some(JoinEvent::Recovered { node, epoch }) = join.observe_peer(source, now) {
+                let mut line = Line::new();
+                line.str("mesh-fail: recovered node=");
+                line.node(&node);
+                line.str(" epoch=");
+                line.u64(epoch as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            // Only a non-join frame triggers a fresh request.  A join
+            // confirmation must be processed against the request it answers;
+            // creating a new request first would make its nonce mismatch.
+            if !was_current && source == join.root() && incoming.opcode != OpCode::Hello {
+                join.request_rejoin(now)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(request) = rejoin {
+            self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+        }
 
         match (incoming.kind, incoming.opcode) {
             (MessageKind::Request, OpCode::Ping) => {
@@ -832,10 +1028,40 @@ impl Mesh {
                     log(services, line.as_bytes());
                     return Ok(());
                 }
+                let converged_before = self
+                    .join
+                    .as_ref()
+                    .map(|join| join.converged().is_some())
+                    .unwrap_or(false);
+                let before = self
+                    .join
+                    .as_ref()
+                    .map(|join| join.authority_current())
+                    .unwrap_or(false);
                 let outcome = match &mut self.join {
                     Some(join) => join.on_message(source, message, now),
                     None => return Ok(()),
                 };
+                let after = self
+                    .join
+                    .as_ref()
+                    .map(|join| join.authority_current())
+                    .unwrap_or(false);
+                if converged_before && !before && after {
+                    if let Some(join) = self.join.as_ref() {
+                        let mut line = Line::new();
+                        line.str("mesh-fail: authority state=restored epoch=");
+                        line.u64(join.epoch() as u64);
+                        line.str(" mutable=1\n");
+                        log(services, line.as_bytes());
+                    }
+                    if let Some(route) = self.route.as_mut() {
+                        if let Some(event) = route.on_authority_restored() {
+                            route.note_event(&event);
+                            log_route_event(services, &event);
+                        }
+                    }
+                }
                 self.after_join(services, outcome, source, now);
             }
             (MessageKind::Request, OpCode::Invoke)
@@ -874,6 +1100,7 @@ impl Mesh {
             if let Some(route) = self.route.as_mut() {
                 route.note_event(event);
             }
+            log_route_event(services, event);
         }
         if let Some(wire) = step.send {
             if !self.queue_route(wire, now) {
@@ -955,7 +1182,12 @@ impl Mesh {
                 line.push(b'\n');
                 log(services, line.as_bytes());
             }
-            JoinEvent::None => {}
+            JoinEvent::Suspect { .. }
+            | JoinEvent::Failed { .. }
+            | JoinEvent::Recovered { .. }
+            | JoinEvent::Removed { .. }
+            | JoinEvent::AuthorityLost { .. }
+            | JoinEvent::None => {}
         }
         if let Some(reply) = outcome.reply {
             self.send_join(services, reply, source, now);
@@ -982,16 +1214,19 @@ impl Mesh {
         log(services, line.as_bytes());
     }
 
-    fn on_route_snapshot(&mut self, _services: &Services, snapshot: &MembershipSnapshot, now: u64) {
+    fn on_route_snapshot(&mut self, services: &Services, snapshot: &MembershipSnapshot, now: u64) {
         let Some(route) = self.route.as_mut() else {
             return;
         };
-        let Some(event) =
+        let Some(step) =
             route.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest(), now)
         else {
             return;
         };
-        route.note_event(&event);
+        for event in &step.events {
+            route.note_event(event);
+            log_route_event(services, event);
+        }
     }
 
     fn log_homes(&self, services: &Services, snapshot: &MembershipSnapshot) {
@@ -1329,6 +1564,34 @@ impl ByteSink for ServiceSink<'_> {
     }
 }
 
+/// Log the route state changes a failure or partition produces.
+///
+/// The full bounded report is still served by `GET /mesh/route`; these lines
+/// make the fence and authority transitions visible in the serial transcript
+/// as well.
+fn log_route_event(services: &Services, event: &mesh_route::Event) {
+    match event {
+        mesh_route::Event::Fence { .. }
+        | mesh_route::Event::Authority { .. }
+        | mesh_route::Event::Replay { .. }
+        | mesh_route::Event::Reject { .. } => {
+            let mut line = Line::new();
+            line.str(&alloc_format(event));
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
+        _ => {}
+    }
+}
+
+/// Format one route event without `alloc`.
+fn alloc_format(event: &mesh_route::Event) -> alloc::string::String {
+    use core::fmt::Write as _;
+    let mut text = alloc::string::String::new();
+    let _ = write!(&mut text, "{event}");
+    text
+}
+
 fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
     match (kind, opcode) {
         (MessageKind::Request, OpCode::Hello)
@@ -1346,6 +1609,25 @@ fn body_bytes(len: usize) -> &'static [u8] {
     // SAFETY: single-threaded module; JOIN_RX holds the current frame body and
     // the slice is consumed before the next record is decoded.
     unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(JOIN_RX) as *const u8, len) }
+}
+
+/// Read the M2-6 failure-detection opt-in.
+///
+/// Failure detection is opt-in so the M2-2 same-epoch rejoin check (a member
+/// restart shorter than the failure window) keeps its original behaviour when
+/// the key is absent.  The failure fault modes set `mesh.fail=1`.
+fn failure_config(services: &Services) -> bool {
+    let mut text = [0u8; 8];
+    let enabled = config(services, b"mesh.fail", &mut text).is_some_and(|len| &text[..len] == b"1");
+    log(
+        services,
+        if enabled {
+            b"mesh-fail: enabled\n"
+        } else {
+            b"mesh-fail: disabled reason=config\n"
+        },
+    );
+    enabled
 }
 
 /// Build the M2 route policy when `mesh.route` is present.

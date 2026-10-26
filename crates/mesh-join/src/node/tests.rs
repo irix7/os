@@ -559,3 +559,215 @@ fn authority_signing_is_root_only_and_matches_the_configured_key() {
     assert_eq!(pair.member.authority_key(), key(9));
     assert_eq!(pair.member.sign_authority(message), None);
 }
+
+fn events_named(events: &[JoinEvent], label: &str) -> usize {
+    events
+        .iter()
+        .filter(|event| {
+            matches!(
+                (label, event),
+                ("suspect", JoinEvent::Suspect { .. })
+                    | ("failed", JoinEvent::Failed { .. })
+                    | ("removed", JoinEvent::Removed { .. })
+                    | ("lost", JoinEvent::AuthorityLost { .. })
+                    | ("recovered", JoinEvent::Recovered { .. })
+            )
+        })
+        .count()
+}
+
+#[test]
+fn root_removes_a_failed_member_at_boundaries_and_only_once() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    assert_eq!(pair.root.epoch(), 2);
+    assert_eq!(pair.root.snapshot().len(), 2);
+
+    // One millisecond before the boundary nothing changes.
+    assert!(pair
+        .root
+        .poll_failures(1_000 + crate::SUSPECT_AFTER_MS - 1)
+        .is_empty());
+    // Exactly at the boundary the node is suspect and still routable.
+    let suspect = pair.root.poll_failures(1_000 + crate::SUSPECT_AFTER_MS);
+    assert_eq!(events_named(&suspect, "suspect"), 1);
+    assert_eq!(pair.root.epoch(), 2);
+    assert_eq!(pair.root.snapshot().len(), 2);
+    // The suspect transition is not repeated.
+    assert!(pair
+        .root
+        .poll_failures(1_000 + crate::SUSPECT_AFTER_MS + 1)
+        .is_empty());
+
+    let failed = pair.root.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    assert_eq!(events_named(&failed, "failed"), 1);
+    assert_eq!(events_named(&failed, "removed"), 1);
+    assert_eq!(pair.root.epoch(), 3);
+    assert_eq!(pair.root.snapshot().members, vec![pair.root_id]);
+    assert_eq!(pair.root.snapshot().digest(), pair.root.snapshot().digest());
+    // A duplicate failure, or a bare heartbeat, cannot remove or revive.
+    assert!(pair
+        .root
+        .poll_failures(1_000 + crate::FAIL_AFTER_MS * 4)
+        .is_empty());
+    assert_eq!(pair.root.epoch(), 3);
+    assert_eq!(pair.root.observe_peer(pair.member_id, 60_000), None);
+    assert_eq!(pair.root.epoch(), 3);
+    assert_eq!(pair.root.snapshot().len(), 1);
+}
+
+#[test]
+fn removal_moves_only_the_failed_nodes_homes() {
+    use mesh_core::{fixture_objects, home_for};
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    let before = pair.root.snapshot();
+    let objects = fixture_objects(32);
+    let before_homes: Vec<NodeId> = objects
+        .iter()
+        .map(|object| home_for(object, &before.view()).expect("home"))
+        .collect();
+    pair.root.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    let after = pair.root.snapshot();
+    let after_homes: Vec<NodeId> = objects
+        .iter()
+        .map(|object| home_for(object, &after.view()).expect("home"))
+        .collect();
+    let mut moved = 0;
+    for (object, (old, new)) in objects.iter().zip(before_homes.iter().zip(&after_homes)) {
+        // No object may remain homed at the failed node, and an object that
+        // was already homed at the survivor must not churn.
+        assert_ne!(
+            *new, pair.member_id,
+            "object {object:?} still homes at the removed node"
+        );
+        if *old == pair.member_id {
+            moved += 1;
+        } else {
+            assert_eq!(old, new);
+        }
+    }
+    assert!(
+        moved > 0,
+        "the failed node must have homed some fixture objects"
+    );
+}
+
+#[test]
+fn member_loses_authority_without_removing_the_root() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    assert!(pair.member.authority_current());
+    assert!(pair.member.mutable_available());
+    let confirmed = pair.member.snapshot();
+
+    let suspect = pair.member.poll_failures(1_000 + crate::SUSPECT_AFTER_MS);
+    assert_eq!(events_named(&suspect, "suspect"), 1);
+    // A suspect authority is still current and routable.
+    assert!(pair.member.authority_current());
+    assert!(pair.member.mutable_available());
+
+    let lost = pair.member.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    assert_eq!(events_named(&lost, "failed"), 1);
+    assert_eq!(events_named(&lost, "lost"), 1);
+    assert!(!pair.member.authority_current());
+    assert!(!pair.member.mutable_available());
+    // The member does not remove the root and does not advance the epoch.
+    assert_eq!(pair.member.epoch(), confirmed.epoch);
+    assert_eq!(pair.member.snapshot(), confirmed);
+    assert_eq!(pair.member.converged(), Some(&confirmed));
+    // The loss is reported once, not once per tick.
+    assert!(pair
+        .member
+        .poll_failures(1_000 + crate::FAIL_AFTER_MS * 3)
+        .is_empty());
+    // A bare heartbeat does not restore authority; only a signed confirmation
+    // does.
+    assert_eq!(pair.member.observe_peer(pair.root_id, 90_000), None);
+    assert!(!pair.member.authority_current());
+}
+
+#[test]
+fn member_rejoin_after_removal_is_a_new_epoch_and_restores_service() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    pair.root.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    assert_eq!(pair.root.epoch(), 3);
+    assert_eq!(pair.root.snapshot().len(), 1);
+    // The member still holds its last confirmed view at epoch 2.
+    assert_eq!(pair.member.epoch(), 2);
+    assert_eq!(pair.member.snapshot().len(), 2);
+
+    let request = pair.member.on_link_up(30_000).expect("rejoin request");
+    assert_eq!(request.last_epoch, 2);
+    let outcome = pair
+        .root
+        .on_message(pair.member_id, JoinMessage::Request(request), 30_000);
+    let confirmation = match outcome.reply {
+        Some(JoinMessage::Confirm(confirmation)) => confirmation,
+        other => panic!("expected confirmation, got {other:?}"),
+    };
+    assert_eq!(confirmation.epoch, 4);
+    assert_eq!(confirmation.members, vec![pair.root_id, pair.member_id]);
+    let outcome = pair
+        .member
+        .on_message(pair.root_id, JoinMessage::Confirm(confirmation), 30_000);
+    assert!(matches!(outcome.event, JoinEvent::Converged(_)));
+    assert_eq!(pair.member.epoch(), 4);
+    assert_eq!(pair.root.epoch(), 4);
+    assert_eq!(pair.root.snapshot(), pair.member.snapshot());
+    assert!(pair.member.authority_current());
+    assert!(pair.member.mutable_available());
+    assert!(pair.root.mutable_available());
+}
+
+#[test]
+fn a_suspect_authority_recovery_does_not_advance_the_epoch() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    let epoch = pair.member.epoch();
+    let suspect = pair.member.poll_failures(1_000 + crate::SUSPECT_AFTER_MS);
+    assert_eq!(events_named(&suspect, "suspect"), 1);
+    // A frame arrives before the failure boundary: the suspect state clears.
+    let recovered = pair
+        .member
+        .observe_peer(pair.root_id, 1_000 + crate::SUSPECT_AFTER_MS + 1)
+        .expect("recovered event");
+    assert!(matches!(recovered, JoinEvent::Recovered { .. }));
+    assert!(pair.member.authority_current());
+    assert!(pair
+        .member
+        .poll_failures(1_000 + crate::FAIL_AFTER_MS)
+        .is_empty());
+    assert_eq!(pair.member.epoch(), epoch);
+}
+
+#[test]
+fn a_member_requests_one_rejoin_after_losing_the_authority() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    // Both sides see the silence: the root removes the member (epoch 3) and
+    // the member loses authority without changing its own view.
+    pair.root.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    assert_eq!(pair.root.epoch(), 3);
+    pair.member.poll_failures(1_000 + crate::FAIL_AFTER_MS);
+    assert!(!pair.member.authority_current());
+    let request = pair.member.request_rejoin(30_000).expect("rejoin request");
+    assert_eq!(request.last_epoch, 2);
+    assert_eq!(request.node, pair.member_id);
+    // One outstanding request: a second frame does not create another.
+    assert!(pair.member.request_rejoin(30_100).is_none());
+    let outcome = pair
+        .root
+        .on_message(pair.member_id, JoinMessage::Request(request), 30_000);
+    let confirmation = match outcome.reply {
+        Some(JoinMessage::Confirm(confirmation)) => confirmation,
+        other => panic!("expected confirmation, got {other:?}"),
+    };
+    assert_eq!(confirmation.epoch, 4);
+    let outcome = pair
+        .member
+        .on_message(pair.root_id, JoinMessage::Confirm(confirmation), 30_000);
+    assert!(matches!(outcome.event, JoinEvent::Converged(_)));
+    assert!(pair.member.authority_current());
+}

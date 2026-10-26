@@ -49,11 +49,15 @@ impl Pair {
         let key = signer.public();
         let mut a = RouteNode::new(A, A, key, true, 8).expect("route node A");
         let mut b = RouteNode::new(B, A, key, false, 8).expect("route node B");
-        if let Some(event) = a.on_snapshot(2, &[A, B], DIGEST, 0) {
-            a.note_event(&event);
+        if let Some(step) = a.on_snapshot(2, &[A, B], DIGEST, 0) {
+            for event in &step.events {
+                a.note_event(event);
+            }
         }
-        if let Some(event) = b.on_snapshot(2, &[A, B], DIGEST, 0) {
-            b.note_event(&event);
+        if let Some(step) = b.on_snapshot(2, &[A, B], DIGEST, 0) {
+            for event in &step.events {
+                b.note_event(event);
+            }
         }
         a.set_peer(B, 0);
         b.set_peer(A, 0);
@@ -156,6 +160,7 @@ impl Pair {
                     object_epoch: OBJECT_EPOCH,
                     lease_until: 0,
                 },
+                OP_STAT,
                 1,
                 &self.signer,
             )
@@ -576,9 +581,9 @@ fn capability_mismatches_fail_closed() {
     );
     request_id += 1;
 
-    // A different operation is unsupported.
+    // An unsupported operation is refused (2 is the supported commit code).
     let capability = pair.capability(object, B, 2);
-    let wire = pair.invoke(object, B, 2, request_id, 2, capability);
+    let wire = pair.invoke(object, B, 2, request_id, 99, capability);
     assert_eq!(
         error_reason(&pair.deliver_raw(wire)),
         Reason::WrongOperation
@@ -937,6 +942,487 @@ fn an_oversize_route_body_is_rejected_before_it_is_decoded() {
         event,
         Event::Reject {
             reason: Reason::Malformed,
+            ..
+        }
+    )));
+}
+
+fn other_digest(byte: u8) -> [u8; 16] {
+    [byte; 16]
+}
+
+#[test]
+fn a_membership_change_fences_a_stale_route_and_never_contacts_the_removed_home() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // A remote read establishes a cached route to B and puts one frame on the
+    // wire.  Deliver and complete it so nothing is pending.
+    let step = pair.a.begin_operation(object, pair.now, &pair.signer);
+    assert!(step.send.is_some());
+    pair.record(step, true);
+    pair.deliver();
+    assert_eq!(pair.a.report().completes, 0);
+    assert!(pair.a.cached_route(&object, pair.now).is_some());
+
+    // B is removed from the confirmed view at epoch 3.
+    let step = pair
+        .a
+        .on_snapshot(3, &[A], other_digest(0x11), pair.now + 1)
+        .expect("snapshot step");
+    assert!(step.send.is_none());
+    let fence = step
+        .events
+        .iter()
+        .find_map(|event| match event {
+            Event::Fence {
+                object: fenced,
+                stale_home,
+                stale_home_epoch,
+                home,
+                home_epoch,
+                reason,
+            } if *fenced == object => {
+                Some((*stale_home, *stale_home_epoch, *home, *home_epoch, *reason))
+            }
+            _ => None,
+        })
+        .expect("a fence row for the object");
+    assert_eq!(fence, (B, 2, A, 3, "left-view"));
+    for event in &step.events {
+        pair.a.note_event(event);
+    }
+    assert!(pair.a.report().fences >= 1);
+    assert!(pair
+        .a
+        .report()
+        .fence_rows
+        .iter()
+        .any(|row| row.object == object && row.stale_home == B && row.home == A));
+
+    // The next read is re-routed locally, with no frame to the removed node
+    // and no timeout: the survivor does not wait for the failed peer.
+    let step = pair.a.begin_operation(object, pair.now + 2, &pair.signer);
+    assert!(step.send.is_none(), "a fenced route must not send");
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Result {
+            home,
+            attempts: 1,
+            moved: false,
+            ..
+        } if *home == A
+    )));
+    assert_eq!(pair.a.report().timeouts, 0);
+    assert_eq!(pair.a.report().rejects, 0);
+    // The route cache now names the survivor.
+    assert_eq!(
+        pair.a
+            .cached_route(&object, pair.now + 2)
+            .map(|route| route.home),
+        Some(A)
+    );
+}
+
+#[test]
+fn a_duplicate_snapshot_is_idempotent_and_does_not_repeat_a_fence() {
+    let mut pair = Pair::new();
+    let step = pair
+        .a
+        .on_snapshot(3, &[A], other_digest(0x22), pair.now)
+        .expect("snapshot");
+    for event in &step.events {
+        pair.a.note_event(event);
+    }
+    let fences = pair.a.report().fences;
+    assert!(pair
+        .a
+        .on_snapshot(3, &[A], other_digest(0x22), pair.now + 1)
+        .is_none());
+    assert_eq!(pair.a.report().fences, fences);
+    // A lower epoch is a regression and never fences or relabels.
+    assert!(pair
+        .a
+        .on_snapshot(2, &[A, B], DIGEST, pair.now + 2)
+        .is_none());
+    assert_eq!(pair.a.epoch(), 3);
+}
+
+#[test]
+fn a_replayed_stale_lease_frame_is_refused_by_the_epoch_fence() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // Step 1 sends the frame that a delayed duplicate would carry.
+    let step = pair.a.command(1, pair.now, &pair.signer);
+    assert!(step.send.is_some());
+    pair.record(step, true);
+    pair.deliver();
+    assert!(pair
+        .a
+        .report()
+        .results
+        .iter()
+        .any(|row| row.object == object));
+
+    // The member leaves the view; the saved frame names the old epoch.
+    let step = pair
+        .a
+        .on_snapshot(3, &[A], other_digest(0x33), pair.now + 1)
+        .expect("snapshot");
+    for event in &step.events {
+        pair.a.note_event(event);
+    }
+    let step = pair.a.command(7, pair.now + 2, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.send.is_none(), "a stale frame must not be answered");
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Replay {
+            reason: Reason::StaleEpoch,
+            src_epoch: 2,
+            epoch: 3,
+        }
+    )));
+    assert_eq!(pair.a.report().replays, 1);
+    assert_eq!(pair.a.report().last_replay, Some(Reason::StaleEpoch));
+    assert_eq!(pair.a.report().rejects, 1);
+    assert_eq!(pair.a.report().timeouts, 0);
+}
+
+#[test]
+fn a_mutable_commit_requires_a_current_authoritative_view() {
+    let mut pair = Pair::new();
+    let object = local_object();
+    // Current view: the local commit completes at the authority.
+    let step = pair
+        .a
+        .begin_operation_with(object, OP_COMMIT, pair.now, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.send.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Result {
+            home,
+            operation: OP_COMMIT,
+            ..
+        } if *home == A
+    )));
+    assert_eq!(pair.a.report().commits, 1);
+
+    // Loss of the authority fails the mutable path closed immediately...
+    let events = pair.a.on_authority_lost().expect("authority lost");
+    pair.a.note_event(&events);
+    assert!(!pair.a.mutable_available_at(pair.now + 1));
+    let step = pair
+        .a
+        .begin_operation_with(object, OP_COMMIT, pair.now + 1, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.send.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::NoAuthority,
+            ..
+        }
+    )));
+    // ...while a read is still served from the unexpired lease.
+    let step = pair.a.begin_operation(object, pair.now + 2, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Result {
+            operation: OP_STAT,
+            ..
+        }
+    )));
+    // After lease expiry the object is unavailable, not re-homed.
+    let step = pair
+        .a
+        .begin_operation(object, pair.now + HOME_LEASE_MS + 1, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.send.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::NotCurrent,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn an_isolated_home_refuses_a_remote_commit_without_moving_the_object() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // A is the root and can issue the commit capability; B is the home.
+    let mut capability = pair.capability(object, B, 2);
+    capability.rights = Rights::READ.union(Rights::WRITE);
+    capability.signature = pair.signer.sign(&capability.signed_bytes());
+    let wire = pair.invoke(object, B, 2, 1, OP_COMMIT, capability);
+    let step = pair.deliver_raw(wire.clone());
+    pair.record(step.clone(), false);
+    assert_eq!(step.send.as_ref().map(|wire| wire.status), Some(Status::Ok));
+    assert!(pair.b.report().completes >= 1);
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Complete {
+            operation: OP_COMMIT,
+            ..
+        }
+    )));
+
+    // The member loses the authority; the same commit is now unavailable.
+    pair.b.on_authority_lost();
+    let mut capability = pair.capability(object, B, 2);
+    capability.rights = Rights::READ.union(Rights::WRITE);
+    capability.signature = pair.signer.sign(&capability.signed_bytes());
+    let wire = pair.invoke(object, B, 2, 5, OP_COMMIT, capability);
+    let step = pair.deliver_raw(wire);
+    pair.record(step.clone(), false);
+    assert_eq!(error_reason(&step), Reason::NoAuthority);
+    // The lease and home are unchanged: no second authoritative home.
+    let lease = pair.b.home_lease(&object).expect("lease");
+    assert_eq!(lease.home, B);
+    assert_eq!(lease.home_epoch, 2);
+    assert_eq!(lease.state, LeaseState::Active);
+    // A read under the unexpired lease is still allowed.
+    let mut capability = pair.capability(object, B, 2);
+    capability.signature = pair.signer.sign(&capability.signed_bytes());
+    let wire = pair.invoke(object, B, 2, 6, OP_STAT, capability);
+    let step = pair.deliver_raw(wire);
+    pair.record(step.clone(), false);
+    assert_eq!(step.send.as_ref().map(|wire| wire.status), Some(Status::Ok));
+}
+
+#[test]
+fn only_the_authority_renews_leases_and_expiry_makes_the_object_unavailable() {
+    let mut pair = Pair::new();
+    let remote = remote_object();
+    let local = local_object();
+    let future = pair.now + HOME_LEASE_MS + 1;
+
+    // The authority renews its own homes from its confirmed view.
+    pair.a.tick(future, &pair.signer);
+    let step = pair.a.begin_operation(local, future, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::Result { .. })));
+
+    // The member cannot: its lease expires and the object is not re-homed.
+    pair.b.on_authority_lost();
+    pair.b.tick(future, &pair.signer);
+    assert!(pair.b.home_lease(&remote).is_none());
+    let step = pair.b.begin_operation(remote, future + 1, &pair.signer);
+    pair.record(step.clone(), false);
+    assert!(step.send.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::NotCurrent,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn the_removed_node_is_never_used_as_a_router() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // A stale cached route to B exists.
+    let _ = pair.a.begin_operation(object, pair.now, &pair.signer);
+    pair.deliver();
+    // After the view change the removed node has no lease, so it cannot
+    // answer MOVED for an object it no longer homes.
+    pair.b
+        .on_snapshot(3, &[A], other_digest(0x44), pair.now + 1);
+    let capability = pair.capability(object, B, 2);
+    let wire = pair.invoke(object, B, 2, 9, OP_STAT, capability);
+    let step = pair.deliver_raw(wire);
+    assert!(step.send.is_none(), "the removed node does not answer");
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::StaleEpoch,
+            ..
+        }
+    )));
+    assert!(!pair
+        .b_events
+        .iter()
+        .any(|event| matches!(event, Event::Moved { .. })));
+}
+
+#[test]
+fn the_write_lease_expires_before_the_failure_window() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // The member's write lease was renewed at the snapshot (t=0).
+    assert_eq!(WRITE_LEASE_MS, 6_000);
+    assert!(pair.b.mutable_available_at(WRITE_LEASE_MS));
+    assert!(!pair.b.mutable_available_at(WRITE_LEASE_MS + 1));
+    // A commit at the home after the write lease expired fails closed even
+    // though the read lease is still valid.
+    pair.now = WRITE_LEASE_MS + 1;
+    let mut capability = pair.capability(object, B, 2);
+    capability.rights = Rights::READ.union(Rights::WRITE);
+    capability.signature = pair.signer.sign(&capability.signed_bytes());
+    let wire = pair.invoke(object, B, 2, 20, OP_COMMIT, capability);
+    let step = pair.deliver_raw(wire);
+    assert_eq!(error_reason(&step), Reason::NoAuthority);
+
+    // A read is still served from the unexpired home lease.
+    let capability = pair.capability(object, B, 2);
+    let wire = pair.invoke(object, B, 2, 21, OP_STAT, capability);
+    let step = pair.deliver_raw(wire);
+    assert_eq!(step.send.as_ref().map(|wire| wire.status), Some(Status::Ok));
+
+    // One accepted frame renews the write lease; the commit completes.
+    pair.b.on_peer_frame(pair.now);
+    let mut capability = pair.capability(object, B, 2);
+    capability.rights = Rights::READ.union(Rights::WRITE);
+    capability.signature = pair.signer.sign(&capability.signed_bytes());
+    let wire = pair.invoke(object, B, 2, 22, OP_COMMIT, capability);
+    let step = pair.deliver_raw(wire);
+    assert_eq!(step.send.as_ref().map(|wire| wire.status), Some(Status::Ok));
+}
+
+#[test]
+fn the_write_lease_is_shorter_than_the_failure_window() {
+    // `mesh_service::FAIL_AFTER_MS` is 12 s (two missed 5 s heartbeats) and
+    // the module carries a compile-time assertion that the write lease is
+    // shorter.  The handover argument: after the link is cut the old home can
+    // accept a commit for at most WRITE_LEASE_MS after its last frame, while
+    // the root re-homes only after 12 s of silence.  In the worst case the
+    // member's last received frame is one heartbeat (5 s) later than the
+    // root's last received frame:
+    //   member writes until root_last + 5 s + 6 s = root_last + 11 s
+    //   root re-homes at root_last + 12 s
+    // so the old home is fenced before the new home can exist.
+    const FAIL_AFTER_MS: u64 = 12_000;
+    const HEARTBEAT_MS: u64 = 5_000;
+    const _: () = assert!(WRITE_LEASE_MS < FAIL_AFTER_MS);
+    const _: () = assert!(HEARTBEAT_MS + WRITE_LEASE_MS < FAIL_AFTER_MS);
+}
+
+#[test]
+fn a_fresh_operation_at_a_moved_home_is_not_mistaken_for_a_stale_token() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    // Move the object from B to A using the root-signed directive.
+    let step = pair.a.start_move(object, B, A, 2, pair.now, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    // Step 3-style retry uses the old-home token and succeeds.
+    let step = pair.a.begin_operation(object, pair.now + 1, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    // A later fresh read at the new home issues a current-home token; it must
+    // be accepted, not treated as a stale capability.
+    let step = pair.a.begin_operation(object, pair.now + 2, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step.send.is_none());
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Result { home, .. } if *home == A
+    )));
+    assert!(!pair.a_events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::StaleCapability,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn step_6_reroutes_the_object_of_the_last_stale_wire_frame() {
+    let mut pair = Pair::new();
+    let remote = remote_object();
+    let local = local_object();
+    // The M2-4 sequence, compressed: step 1 remote stat, step 2 move to A,
+    // step 3 stale stat, step 4 move to B, step 5 local MOVED with a wire
+    // retry.  The last frame on the wire names B for `local`.
+    let step = pair.a.begin_operation(remote, pair.now, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    let step = pair.a.start_move(remote, B, A, 2, pair.now, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    let step = pair.a.begin_operation(remote, pair.now, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    let step = pair.a.start_move(local, A, B, 2, pair.now, &pair.signer);
+    pair.record(step, true);
+    pair.deliver();
+    let step = pair.a.begin_operation(local, pair.now, &pair.signer);
+    pair.record(step.clone(), true);
+    assert_eq!(step.send.as_ref().map(|wire| wire.dst), Some(B));
+    pair.deliver();
+
+    // The member leaves the view.  The root must re-route `local` locally.
+    let step = pair
+        .a
+        .on_snapshot(3, &[A], other_digest(0x55), pair.now + 1)
+        .expect("snapshot");
+    for event in &step.events {
+        pair.a.note_event(event);
+    }
+    let step = pair.a.command(6, pair.now + 2, &pair.signer);
+    assert!(
+        step.send.is_none(),
+        "step 6 must not contact the removed node"
+    );
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Result {
+            object,
+            home,
+            attempts: 1,
+            moved: false,
+            ..
+        } if *object == local && *home == A
+    )));
+    assert!(!step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::NotCurrent | Reason::NoPeer,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn authority_frames_renew_read_leases_but_loss_stops_them() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    let initial = pair.b.home_lease(&object).expect("lease").lease_until_ms;
+    // A frame from the authority renews the read lease on the existing home.
+    pair.b.on_peer_frame(100_000);
+    let renewed = pair.b.home_lease(&object).expect("lease").lease_until_ms;
+    assert!(renewed > initial);
+    assert!(renewed >= 100_000 + HOME_LEASE_MS);
+    // The authority renews its own read leases at half-life and serves a read.
+    let local = local_object();
+    let future = pair.now + HOME_LEASE_MS + 1;
+    pair.a.tick(future, &pair.signer);
+    let step = pair.a.begin_operation(local, future, &pair.signer);
+    pair.record(step.clone(), true);
+    assert!(step
+        .events
+        .iter()
+        .any(|event| matches!(event, Event::Result { .. })));
+    // After authority loss no frame renews the member's lease; the object is
+    // dropped and is unavailable at the renewed expiry.
+    pair.b.on_authority_lost();
+    pair.b.tick(renewed + 1, &pair.signer);
+    assert!(pair.b.home_lease(&object).is_none());
+    let step = pair.b.begin_operation(object, renewed + 2, &pair.signer);
+    pair.record(step.clone(), false);
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Reject {
+            reason: Reason::NoAuthority | Reason::NotCurrent,
             ..
         }
     )));

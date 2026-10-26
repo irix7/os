@@ -59,9 +59,12 @@ read/write, deadline, heartbeat, backoff and tag-release tests live in
 restart rules live in `crates/mesh-join`; the home-lease, capability, `MOVED` and replay
 tests live in `crates/mesh-route`. The M2-4 rig drives a remote stat, a wire `MOVED` with
 a local retry and a local `MOVED` with a wire retry on both kernels, and `no-route`
-preserves the M2-1/M2-2/M2-3 markers. Homes, capability routes and migration are
-M2-3..M2-6; M2-4 is the capability route, while L0 migration and failure/partition
-fencing remain M2-5/M2-6. The rig is a manual command until the M2-8 CI job wraps it; the
+preserves the M2-1/M2-2/M2-3 markers. The M2-6 rig adds `kill-peer` and `partition`: the
+bounded suspect/failed/removed transition, the recomputed one-member homes, a fence row,
+a `stale-epoch` refusal of a replayed lease frame, a local commit without a quorum, and
+the isolated member's `no-authority` commit with a read from its unexpired lease, followed
+by a rejoin at a new epoch. L0 migration remains M2-5; failure/partition fencing is
+M2-6. The rig is a manual command until the M2-8 CI job wraps it; the
 evidence bundle under `target/m2-rig/evidence/` is the review artefact.
 
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)

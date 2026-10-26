@@ -28,6 +28,241 @@ pub enum NodeState {
     Failed,
 }
 
+impl NodeState {
+    /// A short stable label for logs and evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Alive => "alive",
+            Self::Suspect => "suspect",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// Time without an accepted heartbeat before a member becomes suspect.
+///
+/// The M2-1 heartbeat cadence is 5 s.  One missed heartbeat plus a margin is
+/// the suspect boundary; two missed heartbeats is the failure boundary.  Both
+/// are bounded, deterministic and independent of wall-clock time.
+pub const SUSPECT_AFTER_MS: u64 = 6_000;
+
+/// Time without an accepted heartbeat before a member is confirmed failed.
+pub const FAIL_AFTER_MS: u64 = 12_000;
+
+/// One liveness transition produced by [`FailureDetector::tick`].
+///
+/// A transition is emitted exactly once per state change.  A duplicate
+/// heartbeat never produces a transition, and a node that is already failed
+/// does not produce a second `Failed`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Transition {
+    /// The node whose liveness changed.
+    pub node: NodeId,
+    /// The new state.
+    pub state: NodeState,
+    /// Milliseconds since the last accepted heartbeat at the transition.
+    pub silent_ms: u64,
+}
+
+/// How an observed heartbeat was applied by the failure detector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Observe {
+    /// The record was refreshed and the node is alive.
+    Fresh,
+    /// A suspect node was revived by a current heartbeat.
+    Revived,
+    /// The incarnation is older than the recorded one; the heartbeat is a
+    /// replay and was ignored.
+    Stale,
+    /// The node is not in the local view.
+    Unknown,
+    /// The node was already confirmed failed.  Only a new join may re-admit it;
+    /// a bare heartbeat must not revive a member in the confirmed view.
+    RequiresJoin,
+}
+
+impl Observe {
+    /// A short stable label for logs and evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Fresh => "fresh",
+            Self::Revived => "revived",
+            Self::Stale => "stale",
+            Self::Unknown => "unknown",
+            Self::RequiresJoin => "requires-join",
+        }
+    }
+}
+
+/// The bounded, deterministic failure detector policy.
+///
+/// This is the one failure model: it drives the existing
+/// [`MembershipTable`] state machine and adds no second directory or
+/// liveness store.  It is stateless; the `MembershipTable` owns the records.
+/// Both the authority root and a member use the same boundaries, so they agree
+/// on when a silent peer is suspect or failed.
+///
+/// Fail-closed rules:
+///
+/// * A heartbeat with a stale incarnation is ignored; a replay cannot refresh
+///   a record.
+/// * A failed node is never revived by a bare heartbeat.  Re-admission is a
+///   membership change and therefore needs a new authority-confirmed join.
+/// * The detector never removes a node from the table.  A removal (and the
+///   epoch advance that goes with it) is a separate, authority-owned step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FailureDetector {
+    suspect_after_ms: u64,
+    fail_after_ms: u64,
+}
+
+impl FailureDetector {
+    /// Create a detector with explicit boundaries.
+    ///
+    /// Returns `None` unless `0 < suspect < fail` and `fail` is non-zero, so a
+    /// zero or inverted window cannot mark a live node failed immediately.
+    pub const fn new(suspect_after_ms: u64, fail_after_ms: u64) -> Option<Self> {
+        if suspect_after_ms == 0 || fail_after_ms == 0 || suspect_after_ms >= fail_after_ms {
+            return None;
+        }
+        Some(Self {
+            suspect_after_ms,
+            fail_after_ms,
+        })
+    }
+
+    /// The M2 policy: suspect after one missed heartbeat, failed after two.
+    pub const fn m2() -> Self {
+        Self {
+            suspect_after_ms: SUSPECT_AFTER_MS,
+            fail_after_ms: FAIL_AFTER_MS,
+        }
+    }
+
+    /// The suspect boundary in milliseconds.
+    pub const fn suspect_after_ms(&self) -> u64 {
+        self.suspect_after_ms
+    }
+
+    /// The failure boundary in milliseconds.
+    pub const fn fail_after_ms(&self) -> u64 {
+        self.fail_after_ms
+    }
+
+    /// Apply a heartbeat to `table`.
+    ///
+    /// A replay with an older incarnation is ignored.  A failed record is not
+    /// revived: the caller must run a join.
+    pub fn observe(
+        &self,
+        table: &mut MembershipTable,
+        node: NodeId,
+        incarnation: u64,
+        now_ns: u64,
+    ) -> Observe {
+        let Some(record) = table.get(node) else {
+            return Observe::Unknown;
+        };
+        if record.state == NodeState::Failed {
+            return Observe::RequiresJoin;
+        }
+        if incarnation < record.incarnation {
+            return Observe::Stale;
+        }
+        let previous = record.state;
+        if table.heartbeat(node, incarnation, now_ns).is_err() {
+            return Observe::Unknown;
+        }
+        if previous == NodeState::Suspect {
+            Observe::Revived
+        } else {
+            Observe::Fresh
+        }
+    }
+
+    /// The next liveness state for a node last heard at `last_seen_ms`.
+    ///
+    /// This is the single transition rule.  It is `const` and pure so a member
+    /// that cannot mutate its confirmed table (it may not remove the
+    /// authority) can apply the same boundaries without inventing a second
+    /// model.
+    pub const fn next_state(
+        &self,
+        current: NodeState,
+        last_seen_ms: u64,
+        now_ms: u64,
+    ) -> NodeState {
+        if matches!(current, NodeState::Failed) {
+            return NodeState::Failed;
+        }
+        let silent = now_ms.saturating_sub(last_seen_ms);
+        if silent >= self.fail_after_ms {
+            NodeState::Failed
+        } else if silent >= self.suspect_after_ms {
+            NodeState::Suspect
+        } else {
+            NodeState::Alive
+        }
+    }
+
+    /// Advance every remote record in `table` to its deterministic liveness
+    /// state.  `self_id` is the observing node; a node must never mark itself
+    /// suspect or failed, because that would remove it from its own snapshot.
+    ///
+    /// Boundaries are inclusive: a node silent for exactly
+    /// `suspect_after_ms` is suspect, and one silent for exactly
+    /// `fail_after_ms` is failed.  Failed records are excluded from
+    /// [`MembershipTable::snapshot`] by the table itself.
+    pub fn tick(
+        &self,
+        table: &mut MembershipTable,
+        self_id: NodeId,
+        now_ms: u64,
+    ) -> alloc::vec::Vec<Transition> {
+        let mut transitions = alloc::vec::Vec::new();
+        let nodes: alloc::vec::Vec<(NodeId, NodeRecord)> = table
+            .nodes
+            .iter()
+            .filter(|(node, _)| **node != self_id)
+            .map(|(node, record)| (*node, *record))
+            .collect();
+        for (node, record) in nodes {
+            let next = self.next_state(record.state, record.last_seen_ns, now_ms);
+            if next == record.state {
+                continue;
+            }
+            let silent_ms = now_ms.saturating_sub(record.last_seen_ns);
+            // A tick that crosses both boundaries still reports the path:
+            // suspect first, then failed.  The module can skip over the 6 s
+            // window (a slow emulated tick), but the state machine must remain
+            // observable and the rig must be able to assert suspect -> failed.
+            if next == NodeState::Failed
+                && record.state == NodeState::Alive
+                && table.suspect(node).unwrap_or(false)
+            {
+                transitions.push(Transition {
+                    node,
+                    state: NodeState::Suspect,
+                    silent_ms,
+                });
+            }
+            let changed = match next {
+                NodeState::Suspect => table.suspect(node),
+                NodeState::Failed => table.fail(node),
+                NodeState::Alive => Ok(true),
+            };
+            if changed.unwrap_or(false) {
+                transitions.push(Transition {
+                    node,
+                    state: next,
+                    silent_ms,
+                });
+            }
+        }
+        transitions
+    }
+}
+
 /// One member's local liveness record.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NodeRecord {
@@ -197,6 +432,14 @@ impl MembershipTable {
     /// Look up a record.
     pub fn get(&self, node: NodeId) -> Option<&NodeRecord> {
         self.nodes.get(&node)
+    }
+
+    /// Every local record, in canonical node order.
+    ///
+    /// This includes failed nodes, which [`MembershipTable::snapshot`] omits.
+    /// It is the view a failure detector needs in order to remove them.
+    pub fn records(&self) -> impl Iterator<Item = (NodeId, NodeRecord)> + '_ {
+        self.nodes.iter().map(|(node, record)| (*node, *record))
     }
 
     /// Add a node or revive a failed one. Returns true when the node was new.
@@ -491,6 +734,150 @@ mod tests {
         table.install(3, &[node(2)], 0).expect("leave");
         assert_eq!(table.epoch(), 3);
         assert_eq!(table.snapshot().nodes, vec![node(2)]);
+    }
+
+    #[test]
+    fn detector_boundaries_are_exact_and_bounded() {
+        let detector = FailureDetector::new(100, 200).expect("detector");
+        assert_eq!(detector.suspect_after_ms(), 100);
+        assert_eq!(detector.fail_after_ms(), 200);
+        assert_eq!(FailureDetector::new(0, 10), None);
+        assert_eq!(FailureDetector::new(10, 10), None);
+        assert_eq!(FailureDetector::new(11, 10), None);
+        assert_eq!(FailureDetector::new(10, 0), None);
+
+        let mut table = MembershipTable::single(node(1), 0);
+        table.join(node(2), 0).expect("join");
+        assert_eq!(table.epoch(), 2);
+        assert_eq!(
+            detector.next_state(NodeState::Alive, 0, 99),
+            NodeState::Alive
+        );
+        assert_eq!(
+            detector.next_state(NodeState::Alive, 0, 100),
+            NodeState::Suspect
+        );
+        assert_eq!(
+            detector.next_state(NodeState::Suspect, 0, 199),
+            NodeState::Suspect
+        );
+        assert_eq!(
+            detector.next_state(NodeState::Suspect, 0, 200),
+            NodeState::Failed
+        );
+        // The pure transition rule skips straight to Failed; `tick` still
+        // reports the suspect step before it so the path is observable.
+        assert_eq!(
+            detector.next_state(NodeState::Alive, 0, 200),
+            NodeState::Failed
+        );
+        assert!(detector.tick(&mut table, node(1), 99).is_empty());
+        assert!(detector.tick(&mut table, node(1), 100).iter().any(|event| {
+            event.node == node(2) && event.state == NodeState::Suspect && event.silent_ms == 100
+        }));
+        // The suspect transition happens once.
+        assert!(detector.tick(&mut table, node(1), 101).is_empty());
+        let failed = detector.tick(&mut table, node(1), 200);
+        assert!(failed
+            .iter()
+            .any(|event| event.node == node(2) && event.state == NodeState::Failed));
+        assert_eq!(
+            table.get(node(2)).map(|record| record.state),
+            Some(NodeState::Failed)
+        );
+        assert_eq!(table.snapshot().nodes, vec![node(1)]);
+        // Duplicate failure is idempotent.
+        assert!(detector.tick(&mut table, node(1), 500).is_empty());
+    }
+
+    #[test]
+    fn a_slow_tick_reports_suspect_then_failed() {
+        let detector = FailureDetector::new(100, 200).expect("detector");
+        let mut table = MembershipTable::single(node(1), 0);
+        table.join(node(2), 0).expect("join");
+        // The module did not tick at the suspect boundary; the transition is
+        // still reported in order.
+        let events = detector.tick(&mut table, node(1), 250);
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].node, node(2));
+        assert_eq!(events[0].state, NodeState::Suspect);
+        assert_eq!(events[0].silent_ms, 250);
+        assert_eq!(events[1].state, NodeState::Failed);
+        assert_eq!(
+            table.get(node(2)).map(|record| record.state),
+            Some(NodeState::Failed)
+        );
+        assert!(detector.tick(&mut table, node(1), 300).is_empty());
+    }
+
+    #[test]
+    fn detector_ignores_replayed_heartbeats_and_requires_a_join_after_failure() {
+        let detector = FailureDetector::new(100, 200).expect("detector");
+        let mut table = MembershipTable::single(node(1), 0);
+        table.join(node(2), 0).expect("join");
+        table.heartbeat(node(2), 7, 50).expect("heartbeat");
+        // A lower incarnation is a replay and does not refresh the record.
+        assert_eq!(
+            detector.observe(&mut table, node(2), 6, 150),
+            Observe::Stale
+        );
+        assert_eq!(
+            table.get(node(2)).map(|record| record.last_seen_ns),
+            Some(50)
+        );
+        // The same incarnation is a current heartbeat, not a replay.
+        assert_eq!(
+            detector.observe(&mut table, node(2), 7, 150),
+            Observe::Fresh
+        );
+        assert_eq!(
+            table.get(node(2)).map(|record| record.last_seen_ns),
+            Some(150)
+        );
+        // A suspect node is revived by a current heartbeat.
+        table.suspect(node(2)).expect("suspect");
+        assert_eq!(
+            detector.observe(&mut table, node(2), 8, 160),
+            Observe::Revived
+        );
+        // A failed node is not revived by a bare heartbeat; re-admission is a
+        // join and therefore a new epoch.
+        table.fail(node(2)).expect("fail");
+        assert_eq!(
+            detector.observe(&mut table, node(2), 9, 170),
+            Observe::RequiresJoin
+        );
+        assert_eq!(
+            table.get(node(2)).map(|record| record.state),
+            Some(NodeState::Failed)
+        );
+        assert_eq!(
+            detector.observe(&mut table, node(3), 1, 170),
+            Observe::Unknown
+        );
+    }
+
+    #[test]
+    fn detector_suspect_recovery_cancels_the_failure() {
+        let detector = FailureDetector::new(100, 200).expect("detector");
+        let mut table = MembershipTable::single(node(1), 0);
+        table.join(node(2), 0).expect("join");
+        assert_eq!(detector.tick(&mut table, node(1), 100).len(), 1);
+        assert!(detector.observe(&mut table, node(2), 1, 150) == Observe::Revived);
+        assert_eq!(
+            table.get(node(2)).map(|record| record.state),
+            Some(NodeState::Alive)
+        );
+        // The timer restarted at the heartbeat, so silence is measured from it.
+        assert!(detector.tick(&mut table, node(1), 249).is_empty());
+        assert_eq!(
+            detector.tick(&mut table, node(1), 250)[0].state,
+            NodeState::Suspect
+        );
+        assert_eq!(
+            detector.tick(&mut table, node(1), 350)[0].state,
+            NodeState::Failed
+        );
     }
 
     #[cfg(feature = "confirmed")]

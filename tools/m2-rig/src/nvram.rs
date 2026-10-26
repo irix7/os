@@ -156,8 +156,8 @@ mod tests {
                 ("console", "serial0"),
                 ("mesh.peer", "192.168.0.1:9712"),
                 ("mesh.authority", "08:00:69:4d:32:00"),
-                ("mesh.epoch", "1"),
                 ("mesh.route", "1"),
+                ("mesh.fail", "1"),
                 ("mesh.key", &key),
             ],
             MAC,
@@ -168,6 +168,9 @@ mod tests {
         assert!(parsed
             .iter()
             .any(|(name, value)| name == "mesh.route" && value == "1"));
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "mesh.fail" && value == "1"));
     }
 
     #[test]

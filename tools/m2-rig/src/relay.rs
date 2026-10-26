@@ -189,6 +189,7 @@ pub struct MeshRelay {
     /// Connection and byte log.
     pub log: SharedLog,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
 }
 
 impl MeshRelay {
@@ -204,13 +205,32 @@ impl MeshRelay {
     /// Reusing the log keeps the whole run's relay history in one file.
     pub fn start_with_log(a: SocketAddr, b: SocketAddr, log: SharedLog) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
         note(&log, format!("mesh-relay targets {a} <-> {b}"));
         let thread_log = log.clone();
         let thread_stop = stop.clone();
+        let thread_paused = paused.clone();
         thread::Builder::new()
             .name("m2-mesh-relay".into())
-            .spawn(move || supervisor(a, b, thread_log, thread_stop))?;
-        Ok(Self { log, stop })
+            .spawn(move || supervisor(a, b, thread_log, thread_stop, thread_paused))?;
+        Ok(Self { log, stop, paused })
+    }
+
+    /// Stop forwarding bytes without closing either guest session.
+    ///
+    /// This is the partition seam: the TCP sessions stay alive, the modules
+    /// see no frames and the membership detector declares the peer suspect and
+    /// failed.  The iris port forward cannot reliably reopen a half-open guest
+    /// session, so a partition must not tear the session down.
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::SeqCst);
+        note(&self.log, "mesh-relay paused by the partition fault");
+    }
+
+    /// Resume forwarding on the same sessions.
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::SeqCst);
+        note(&self.log, "mesh-relay resumed by the partition fault");
     }
 }
 
@@ -220,11 +240,17 @@ impl Drop for MeshRelay {
     }
 }
 
-fn supervisor(a: SocketAddr, b: SocketAddr, log: SharedLog, stop: Arc<AtomicBool>) {
+fn supervisor(
+    a: SocketAddr,
+    b: SocketAddr,
+    log: SharedLog,
+    stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+) {
     let mut delay = MESH_RETRY_MIN;
     let mut warm = false;
     while !stop.load(Ordering::SeqCst) {
-        match session(a, b, &log, &stop, warm) {
+        match session(a, b, &log, &stop, &paused, warm) {
             Ok(()) => {
                 note(&log, "mesh-relay session ended");
                 delay = MESH_RETRY_MIN;
@@ -264,6 +290,7 @@ fn session(
     b: SocketAddr,
     log: &SharedLog,
     stop: &Arc<AtomicBool>,
+    paused: &Arc<AtomicBool>,
     warm: bool,
 ) -> Result<(), String> {
     let a = connect_retry(a, stop)?;
@@ -305,6 +332,7 @@ fn session(
         barrier.clone(),
         ready_tx.clone(),
         stop.clone(),
+        paused.clone(),
         fail.clone(),
         activity.clone(),
         started,
@@ -318,6 +346,7 @@ fn session(
         barrier,
         ready_tx,
         stop.clone(),
+        paused.clone(),
         fail.clone(),
         activity,
         started,
@@ -393,6 +422,7 @@ fn pump_mesh(
     barrier: Arc<Barrier>,
     ready: mpsc::Sender<bool>,
     stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
     fail: Arc<AtomicBool>,
     activity: Arc<AtomicU64>,
     started: Instant,
@@ -461,6 +491,16 @@ fn pump_mesh(
             loop {
                 if stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
                     break;
+                }
+                if paused.load(Ordering::SeqCst) {
+                    // A partition drops frames, not the session.  Keep the
+                    // idle timer from closing the link while the seam is cut.
+                    activity.store(
+                        started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                        Ordering::SeqCst,
+                    );
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
                 }
                 match from.read(&mut buffer) {
                     Ok(0) => {
