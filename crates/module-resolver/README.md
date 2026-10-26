@@ -9,7 +9,9 @@ This crate does **not** load or execute module images. It defines:
   SHA-256 digests and export declarations;
 - `Registry`: a set of verified records;
 - `resolve`: deterministic dependency order, with fail-closed handling for
-  missing records, digest mismatches, ABI mismatches and cycles.
+  missing records, digest mismatches, ABI mismatches and cycles;
+- `Manifest::encode` / `Manifest::decode`: the version 1 little-endian manifest
+  record (`I7MM`), with a 64 KiB bound and strict truncation/UTF-8 checks.
 
 Version 1 resolves exact versions only. Version ranges, a package-index parser,
 signature validation, relocation, slot allocation and a module manager are

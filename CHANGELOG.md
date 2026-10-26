@@ -19,7 +19,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The first module-dependency slice adds `crates/module-resolver`: manifest
   records with exact versions, SHA-256 dependencies and export declarations; a
   deterministic resolver with fail-closed cycle, missing-record, digest and ABI
-  checks; and nine host tests. It does not load or execute an image.
+  checks; a bounded version 1 `I7MM` manifest codec; and eighteen host tests. It
+  does not load or execute an image.
 - The ROM freeze policy is recorded: after M1 is re-closed, the compressed
   PROM/kernel image no longer gains features; policy, runtime, transport,
   servers and devices ship as downloadable modules.
