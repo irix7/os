@@ -103,6 +103,90 @@ fn two_nodes_converge_on_one_epoch_and_snapshot() {
 }
 
 #[test]
+fn eight_members_converge_through_bounded_signed_refresh() {
+    let root_id = node(1);
+    let member_ids: Vec<NodeId> = (2..=8).map(node).collect();
+    let mut root = JoinNode::new_root(root_id, signing(9), 1, 0).expect("root");
+    let mut members: Vec<JoinNode> = member_ids
+        .iter()
+        .map(|id| JoinNode::new_member(*id, root_id, key(9), 1, 0).expect("member"))
+        .collect();
+
+    // Each member joins in turn.  Every request advances the root epoch once;
+    // an earlier member keeps the smaller view it confirmed at that time.
+    for (index, (member, member_id)) in members.iter_mut().zip(&member_ids).enumerate() {
+        let now = 1_000 + index as u64;
+        let request = member.on_link_up(now).expect("request");
+        let outcome = root.on_message(*member_id, JoinMessage::Request(request), now);
+        let confirmation = match outcome.reply {
+            Some(JoinMessage::Confirm(confirmation)) => confirmation,
+            other => panic!("expected confirmation, got {other:?}"),
+        };
+        assert_eq!(confirmation.epoch, 2 + index as u32);
+        let outcome = member.on_message(root_id, JoinMessage::Confirm(confirmation), now);
+        assert!(matches!(outcome.event, JoinEvent::Converged(_)));
+        let ack = match outcome.reply {
+            Some(JoinMessage::Ack(ack)) => ack,
+            other => panic!("expected ack, got {other:?}"),
+        };
+        let outcome = root.on_message(*member_id, JoinMessage::Ack(ack), now);
+        assert!(matches!(outcome.event, JoinEvent::Acked { .. }));
+    }
+
+    // The later members advanced the epoch past the earlier members' views.
+    assert_eq!(root.epoch(), 8);
+    assert_eq!(root.snapshot().len(), 8);
+    assert_eq!(members[0].epoch(), 2);
+    assert_eq!(members[6].epoch(), 8);
+
+    // Every converged member now re-asks on the same signed path.  The root
+    // confirms its current epoch and full list; it does not advance again.
+    let refresh_at = 1_000 + REFRESH_INTERVAL_MS + 10;
+    for (index, (member, member_id)) in members.iter_mut().zip(&member_ids).enumerate() {
+        let request = match member.poll(refresh_at) {
+            Tick::Refresh(request) => request,
+            other => panic!("member {index} expected a refresh, got {other:?}"),
+        };
+        assert_eq!(request.last_epoch, member.epoch());
+        let outcome = root.on_message(*member_id, JoinMessage::Request(request), refresh_at);
+        let confirmation = match outcome.reply {
+            Some(JoinMessage::Confirm(confirmation)) => confirmation,
+            other => panic!("expected confirmation, got {other:?}"),
+        };
+        assert_eq!(confirmation.epoch, 8);
+        let outcome = member.on_message(root_id, JoinMessage::Confirm(confirmation), refresh_at);
+        assert!(
+            matches!(
+                outcome.event,
+                JoinEvent::Converged(ref snapshot)
+                    | JoinEvent::Refreshed(ref snapshot)
+                    if snapshot.epoch == 8 && snapshot.len() == 8
+            ),
+            "member {index} did not install the eight-node view: {:?}",
+            outcome.event
+        );
+        if let Some(JoinMessage::Ack(ack)) = outcome.reply {
+            let outcome = root.on_message(*member_id, JoinMessage::Ack(ack), refresh_at);
+            assert!(matches!(outcome.event, JoinEvent::Acked { .. }));
+        } else {
+            panic!("member {index} did not acknowledge the refresh");
+        }
+    }
+
+    let root_snapshot = root.snapshot();
+    assert_eq!(root.epoch(), 8, "a refresh must not advance the epoch");
+    for (index, member) in members.iter().enumerate() {
+        assert_eq!(
+            member.snapshot(),
+            root_snapshot,
+            "member {index} did not converge on the root snapshot"
+        );
+        assert_eq!(member.snapshot().digest(), root_snapshot.digest());
+        assert!(member.authority_current());
+    }
+}
+
+#[test]
 fn wrong_authority_key_fails_closed() {
     let root_id = node(1);
     let member_id = node(2);
@@ -164,8 +248,13 @@ fn duplicate_confirmation_is_idempotent_and_a_new_epoch_is_not() {
     assert!(matches!(outcome.event, JoinEvent::Duplicate(ref snapshot) if snapshot.epoch == 2));
     assert_eq!(pair.member.epoch(), 2);
     assert_eq!(pair.member.snapshot(), pair.root.snapshot());
-    // The duplicate is terminal; the member does not retry the rejoin.
-    assert_eq!(pair.member.poll(2_000 + RETRY_INTERVAL_MS * 2), Tick::Idle);
+    // The duplicate is terminal for the rejoin attempt.  M3 then schedules one
+    // bounded epoch refresh; it does not retry the same request.
+    assert_eq!(pair.member.poll(2_000 + RETRY_INTERVAL_MS - 1), Tick::Idle);
+    match pair.member.poll(2_000 + REFRESH_INTERVAL_MS) {
+        Tick::Refresh(request) => assert_eq!(request.last_epoch, 2),
+        other => panic!("expected a refresh, got {other:?}"),
+    }
     let _ = first;
 }
 
@@ -325,6 +414,7 @@ fn retry_reuses_the_request_and_then_times_out() {
                 sends += 1;
             }
             Tick::TimedOut => break,
+            Tick::Refresh(_) => panic!("a pending request must not refresh"),
             Tick::Idle => panic!("expected progress"),
         }
         assert!(sends <= MAX_ATTEMPTS);
@@ -354,6 +444,7 @@ fn partition_after_convergence_keeps_the_last_view() {
         match pair.member.poll(now) {
             Tick::Send(_) => {}
             Tick::TimedOut => break,
+            Tick::Refresh(_) => panic!("a pending rejoin must not refresh"),
             Tick::Idle => panic!("expected progress"),
         }
     }
@@ -446,6 +537,39 @@ fn malformed_or_misaddressed_messages_do_not_change_the_view() {
     );
     assert_eq!(outcome.event, JoinEvent::Rejected("ack-mismatch"));
     assert_eq!(pair.root.epoch(), 2);
+}
+
+#[test]
+fn an_ack_for_an_older_epoch_is_stale_not_an_equivocation() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    // A later member joins and advances the root before the first member's
+    // ack reaches it.  The ack is for the epoch that was current when issued.
+    let outcome = pair.root.on_message(
+        node(3),
+        JoinMessage::Request(JoinRequest {
+            node: node(3),
+            incarnation: 1,
+            last_epoch: 1,
+            last_digest: [0u8; 16],
+            nonce: 2,
+        }),
+        2_000,
+    );
+    assert!(matches!(outcome.event, JoinEvent::Confirmed(_)));
+    assert_eq!(pair.root.epoch(), 3);
+    let outcome = pair.root.on_message(
+        pair.member_id,
+        JoinMessage::Ack(JoinAck {
+            node: pair.member_id,
+            epoch: 2,
+            digest: pair.member.snapshot().digest(),
+            request_nonce: 1,
+        }),
+        2_001,
+    );
+    assert_eq!(outcome.event, JoinEvent::Rejected("ack-stale"));
+    assert_eq!(pair.root.epoch(), 3);
 }
 
 #[test]

@@ -30,12 +30,14 @@
 - [M2-ADR-0007 — remote capability route](adr/m2-0007-route.md)
 - [M2-ADR-0008 — failure, fencing and partition](adr/m2-0008-failure-fence.md)
 - [M2-ADR-0009 — L0 actor migration](adr/m2-0009-actor-migration.md)
+- [M3-ADR-0001 — first shard slice](adr/m3-0001-shard-slice.md)
 
 ## Plan
 
 - [Plan index](plan/README.md)
 - [Milestones](plan/milestones.md)
 - [M2 two-node rig](plan/m2-rig.md)
+- [M3 first shard slice](plan/m3-rig.md)
 - [Roadmap tree (interactive)](roadmap-tree.md)
 - [GitHub operating model](plan/github.md)
 - [Risk register](plan/risks.md)

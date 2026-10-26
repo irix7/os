@@ -16,6 +16,7 @@ mod evidence;
 mod failure;
 mod fixture;
 mod homes;
+mod hub;
 mod join;
 mod migrate;
 mod nvram;
@@ -24,6 +25,7 @@ mod relay;
 mod rig;
 mod route;
 mod sha256;
+mod shard;
 
 use std::fs;
 use std::net::Ipv4Addr;
@@ -38,7 +40,7 @@ use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
 use rig::{
     derive_nodes, git, mesh_environments, read_serial, run_ci, start_cpu, start_node, wait_boot,
-    wait_ci_ready, write_nvram, Action, AuthorityKeys, BootFacts, Fault, Node, Options,
+    wait_ci_ready, write_nvram, Action, AuthorityKeys, BootFacts, Fault, MeshEnv, Node, Options,
     RunningNode,
 };
 
@@ -66,8 +68,12 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     };
 
+    if options.action != Action::Shard && options.nodes != 2 {
+        return Err("--nodes applies to the shard command; the M2 run is two-node".into());
+    }
     match options.action {
         Action::Run => run_and_probe(&options),
+        Action::Shard => shard::run(&options),
         Action::Up => up(&options),
         Action::Down => down(&options),
         Action::Status => status(&options),
@@ -79,13 +85,14 @@ fn run() -> Result<i32, String> {
 
 fn print_help() {
     println!(
-        "m2-rig — two independent IRIX 7 kernels over a Rust host relay
+        "m2-rig — independent IRIX 7 kernels over a Rust host relay
 
 Usage:
   m2-rig <command> [options]
 
 Commands:
-  run           start both nodes, probe HTTP and mesh framing, stop, write evidence
+  run           start both M2 nodes, probe HTTP/mesh/join/route, write evidence
+  shard         start the M3 shard slice (two real kernels by default)
   up            start both nodes and leave them running
   down          stop both nodes through their CI sockets
   status        show lifecycle state and boot markers
@@ -101,15 +108,19 @@ Options:
   --rom PATH       PROM image (default: <work>/irix7-rom.bin)
   --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
+  --nodes N        shard kernels, 2..=8 (default: 2)
+  --hub            shard: use the experimental multi-node host link switch
   --timeout SECS   boot deadline (default: 180)
   --fault MODE     none (default), no-peer, wrong-authority, no-route,
                    kill-peer or partition
-  --keep           with run, leave the nodes running
+  --keep           with run or shard, leave the nodes running
   --verbose        print extra detail
 
 Workflow:
   tools/m2-rig/build.sh
   cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \\
+    --iris <iris> --iris-ci <iris-ci>
+  cargo run --manifest-path tools/m2-rig/Cargo.toml -- shard \\
     --iris <iris> --iris-ci <iris-ci>
 "
     );
@@ -1187,6 +1198,27 @@ fn start_all(
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
     let (environments, _authority, _wrong) = mesh_environments(nodes, options.fault);
+    start_all_with(
+        options,
+        nodes,
+        &environments,
+        fixture_port,
+        module_sha256,
+        running,
+    )
+}
+
+fn start_all_with(
+    options: &Options,
+    nodes: &[Node],
+    environments: &[Option<MeshEnv>],
+    fixture_port: u16,
+    module_sha256: &str,
+    running: &mut Vec<RunningNode>,
+) -> Result<(), String> {
+    if environments.len() != nodes.len() {
+        return Err("environment count does not match the node count".into());
+    }
     for (node, environment) in nodes.iter().zip(environments.iter()) {
         write_nvram(node, fixture_port, module_sha256, environment.as_ref())?;
     }

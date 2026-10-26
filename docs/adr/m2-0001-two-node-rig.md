@@ -60,6 +60,11 @@ must not use it as a substitute.
    | `n0` | 9100 | 9101/9102 | 9700 | 9701 | 9702 |
    | `n1` | 9200 | 9201/9202 | 9710 | 9711 | 9712 |
 
+   **Implementation note (2026-10-27):** the forward block moved to `base+1000` so it
+   cannot collide with the eight-node monitor block at `base+600`.  The current table is
+   `10100/10101/10102` and `10110/10111/10112` for the default base; the reasoning above
+   is unchanged.
+
    The CI sockets are `<state-dir>/iris.sock`; they are the control plane, not the data
    plane.
 

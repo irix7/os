@@ -45,7 +45,10 @@
 //! transport still runs and only the join is disabled; that is the M2-1
 //! fallback, not a fake membership.
 
-use mesh_core::{fixture_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_MAX};
+use mesh_core::{
+    fixture_objects, shard_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_MAX,
+    MAX_NODES as MAX_MESH_NODES, SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
+};
 use mesh_join::{
     JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role, Tick, MAX_BODY as JOIN_BODY_MAX,
 };
@@ -104,6 +107,13 @@ struct Mesh {
     phase: Phase,
     self_id: NodeId,
     peer: Option<NodeId>,
+    /// Every source accepted on this link, in first-seen order.
+    ///
+    /// M2 has one peer per link.  The M3 host hub multiplexes the member links
+    /// onto the root's single mesh slot, so the root sees several source
+    /// `NodeId`s on one byte stream.  A member still sees only the root.
+    peers: [NodeId; MAX_MESH_NODES],
+    peer_count: usize,
     peer_confirmed: bool,
     decoder: StreamDecoder,
     queue: SendQueue,
@@ -116,6 +126,7 @@ struct Mesh {
     /// Whether the M2-6 failure detector is enabled (`mesh.fail=1`).
     failures: bool,
     home_count: u32,
+    shard_count: u32,
     join_timeout_logged: bool,
     last_arm_log_ms: u64,
     pass_logged: bool,
@@ -160,6 +171,7 @@ pub unsafe fn init(services: *const Services) -> bool {
     };
     let now = (services.clock_ms)();
     let home_count = home_object_count(services);
+    let shard_count = shard_object_count(services);
     let join = match join_config(services, self_id, now) {
         Ok(join) => join,
         Err(label) => {
@@ -177,6 +189,13 @@ pub unsafe fn init(services: *const Services) -> bool {
         line.u64(home_count as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
+        if shard_count > 0 {
+            let mut line = Line::new();
+            line.str("mesh-shard: configured set=m3-v1 count=");
+            line.u64(shard_count as u64);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
     }
     let route = route_config(services, self_id, join.as_ref(), home_count);
     let migrate = migrate_config(services, self_id, join.as_ref());
@@ -195,6 +214,8 @@ pub unsafe fn init(services: *const Services) -> bool {
         phase: Phase::Arm,
         self_id,
         peer: None,
+        peers: [NodeId::ZERO; MAX_MESH_NODES],
+        peer_count: 0,
         peer_confirmed: false,
         decoder: StreamDecoder::new(),
         queue: SendQueue::new(),
@@ -206,6 +227,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         migrate,
         failures,
         home_count,
+        shard_count,
         join_timeout_logged: false,
         last_arm_log_ms: 0,
         pass_logged: false,
@@ -304,6 +326,115 @@ pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
         body.push(b'\n');
     }
     (200, body.len())
+}
+
+/// Render `GET /mesh/shard` for the M3 shard slice.
+///
+/// The node reports the confirmed epoch and membership digest, the per-member
+/// owner counts and only its own home assignments.  Every row is derived by
+/// `mesh_core::HomeTable` from the same confirmed snapshot; no directory is
+/// queried and no owner is asked for its list.  A stale `epoch=` is refused
+/// with no rows, exactly as `/mesh/homes` does.
+#[inline(never)]
+pub fn shard_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    // SAFETY: the module is single-threaded and `MESH` is written once at
+    // entry; no mutable reference to it is live here.
+    let mesh = unsafe { (&*core::ptr::addr_of!(MESH)).as_ref() };
+    let Some(mesh) = mesh else {
+        return shard_line(out, 404, "state=disabled reason=peer");
+    };
+    if mesh.shard_count == 0 {
+        return shard_line(out, 404, "state=disabled reason=config");
+    }
+    let requested = match query_epoch(path) {
+        Ok(epoch) => epoch,
+        Err(()) => return shard_line(out, 400, "state=bad-request reason=query"),
+    };
+    let Some(join) = mesh.join.as_ref() else {
+        return shard_line(out, 404, "state=disabled reason=join");
+    };
+    let Some(snapshot) = join.converged() else {
+        let local = join.snapshot();
+        let mut body = Body::new(out);
+        body.str("mesh-shard: state=pending epoch=");
+        body.u64(local.epoch as u64);
+        body.str(" members=");
+        body.u64(local.len() as u64);
+        body.str(" digest=");
+        body.digest(&local.digest());
+        body.str(" count=0 owned=0\n");
+        return (409, body.len());
+    };
+    let objects = shard_objects(mesh.shard_count);
+    let Some(table) = HomeTable::new(&snapshot.view(), snapshot.digest(), &objects) else {
+        return shard_line(out, 500, "state=error reason=membership");
+    };
+    if let Some(requested) = requested {
+        if requested != table.epoch {
+            let mut body = Body::new(out);
+            body.str("mesh-shard: state=stale requested_epoch=");
+            body.u64(requested as u64);
+            body.str(" epoch=");
+            body.u64(table.epoch as u64);
+            body.str(" members=");
+            body.u64(snapshot.len() as u64);
+            body.str(" digest=");
+            body.digest(&table.membership);
+            body.str(" count=0 owned=0\n");
+            return (409, body.len());
+        }
+    }
+    let balance = table.balance();
+    let owned = table.owned_by(mesh.self_id);
+    let mut body = Body::new(out);
+    body.str("mesh-shard: state=current object_set=m3-v1 role=");
+    body.str(join.role().as_str());
+    body.str(" node=");
+    body.node(&mesh.self_id);
+    body.str(" epoch=");
+    body.u64(table.epoch as u64);
+    body.str(" members=");
+    body.u64(snapshot.len() as u64);
+    body.str(" digest=");
+    body.digest(&table.membership);
+    body.str(" count=");
+    body.u64(table.len() as u64);
+    body.str(" owners=");
+    body.u64(balance.owners as u64);
+    body.str(" owned=");
+    body.u64(owned.len() as u64);
+    body.str(" min=");
+    body.u64(balance.min as u64);
+    body.str(" max=");
+    body.u64(balance.max as u64);
+    body.push(b'\n');
+    for member in &snapshot.members {
+        body.str("mesh-shard-owner: node=");
+        body.node(member);
+        body.str(" count=");
+        body.u64(table.owned_count(*member) as u64);
+        body.push(b'\n');
+    }
+    for entry in &owned {
+        body.str("mesh-shard-owned: object=");
+        body.hex(entry.object.as_bytes());
+        body.str(" home=");
+        body.node(&entry.home);
+        body.str(" epoch=");
+        body.u64(table.epoch as u64);
+        body.str(" digest=");
+        body.digest(&table.membership);
+        body.push(b'\n');
+    }
+    (200, body.len())
+}
+
+fn shard_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
+    let mut body = Body::new(out);
+    body.str("mesh-shard: ");
+    body.str(state);
+    body.push(b'\n');
+    (status, body.len())
 }
 
 /// Render or drive `GET /mesh/migrate`.
@@ -723,12 +854,10 @@ fn homes_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
 }
 
 fn query_epoch(path: &[u8]) -> Result<Option<u32>, ()> {
-    if path == b"/mesh/homes" {
+    let Some(question) = path.iter().position(|byte| *byte == b'?') else {
         return Ok(None);
-    }
-    let Some(query) = path.strip_prefix(b"/mesh/homes?") else {
-        return Err(());
     };
+    let query = &path[question + 1..];
     let mut epoch = None;
     for part in query.split(|byte| *byte == b'&') {
         if part.is_empty() {
@@ -942,6 +1071,8 @@ impl Mesh {
                 self.queue.clear();
                 self.pending = PendingTable::new(PENDING_CAPACITY);
                 self.peer = None;
+                self.peers = [NodeId::ZERO; MAX_MESH_NODES];
+                self.peer_count = 0;
                 self.peer_confirmed = false;
                 self.pass_logged = false;
                 self.join_timeout_logged = false;
@@ -968,6 +1099,19 @@ impl Mesh {
     fn connected(&mut self, services: &Services, now: u64) {
         if (services.tcp_state)(MESH_SLOT) != 2 {
             self.disconnect(services, now, "closed");
+            return;
+        }
+
+        // A TCP read can contain several records, and `feed` processes one
+        // complete record per iteration before it pushes the rest into the
+        // decoder.  Drain the decoder every tick as well, otherwise a burst
+        // (for example seven join requests arriving while the root is signing)
+        // leaves complete records queued with no further `tcp_recv` bytes to
+        // trigger them, and the 10 s receive deadline eventually closes a
+        // healthy link.  The M2 two-node path usually read one record at a
+        // time and did not expose this.
+        if let Err(error) = self.feed(services, &[], now) {
+            self.reject(services, now, error);
             return;
         }
 
@@ -1015,6 +1159,14 @@ impl Mesh {
                 let mut line = Line::new();
                 line.str("mesh-join: retry attempt=");
                 line.u64(attempts as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+            Some((Tick::Refresh(request), _)) => {
+                self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                let mut line = Line::new();
+                line.str("mesh-join: refresh epoch=");
+                line.u64(request.last_epoch as u64);
                 line.push(b'\n');
                 log(services, line.as_bytes());
             }
@@ -1117,6 +1269,10 @@ impl Mesh {
                 self.decoder.consume_record()?;
                 self.stats.frames_received = self.stats.frames_received.saturating_add(1);
                 self.handle(services, incoming, now)?;
+                // A socket read can contain several records.  Process every
+                // complete record before pushing more bytes, so a burst cannot
+                // strand a queued record behind the next read.
+                continue;
             }
             if offset >= bytes.len() {
                 return Ok(());
@@ -1271,10 +1427,16 @@ impl Mesh {
                     .as_ref()
                     .map(|join| join.authority_current())
                     .unwrap_or(false);
+                let epoch_before = self.join.as_ref().map(|join| join.epoch()).unwrap_or(0);
                 let outcome = match &mut self.join {
                     Some(join) => join.on_message(source, message, now),
                     None => return Ok(()),
                 };
+                let full_view = self
+                    .join
+                    .as_ref()
+                    .map(|join| join.epoch() > epoch_before)
+                    .unwrap_or(false);
                 let after = self
                     .join
                     .as_ref()
@@ -1295,7 +1457,7 @@ impl Mesh {
                         }
                     }
                 }
-                self.after_join(services, outcome, source, now);
+                self.after_join(services, outcome, source, now, full_view);
             }
             (MessageKind::Request, OpCode::Invoke)
             | (MessageKind::Response, OpCode::Invoke)
@@ -1413,23 +1575,52 @@ impl Mesh {
         outcome: mesh_join::Outcome,
         source: NodeId,
         now: u64,
+        full_view: bool,
     ) {
         match &outcome.event {
             JoinEvent::Confirmed(snapshot) => {
+                // A routine refresh from an existing member does not advance
+                // the epoch.  Still log the signed confirmation epoch (the M2
+                // restart oracle reads it), but do not repeat the full home
+                // and shard tables every five seconds: that serial volume can
+                // starve the module tick on the emulated MIPS target.
                 self.log_snapshot(services, "mesh-join: confirm", snapshot);
-                self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
-                self.log_homes(services, snapshot);
+                if full_view {
+                    self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
+                    self.log_homes(services, snapshot);
+                    self.log_shard(services, snapshot, false);
+                } else {
+                    self.log_snapshot(services, "mesh-join: duplicate", snapshot);
+                }
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Converged(snapshot) => {
                 self.join_timeout_logged = false;
                 self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
                 self.log_homes(services, snapshot);
+                self.log_shard(services, snapshot, false);
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
                 self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                 self.log_homes(services, snapshot);
+                self.log_shard(services, snapshot, false);
+                self.on_route_snapshot(services, snapshot, now);
+            }
+            JoinEvent::Refreshed(snapshot) => {
+                // Routine M3 refresh: another member joined and advanced the
+                // epoch.  The full table is available at `/mesh/homes` and
+                // `/mesh/shard`; the serial line only records convergence.
+                let mut line = Line::new();
+                line.str("mesh-join: refreshed epoch=");
+                line.u64(snapshot.epoch as u64);
+                line.str(" members=");
+                line.u64(snapshot.len() as u64);
+                line.str(" digest=");
+                line.digest(&snapshot.digest());
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                self.log_shard(services, snapshot, false);
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Refused { reason, epoch } => {
@@ -1540,6 +1731,69 @@ impl Mesh {
         for entry in &table.entries {
             let mut line = Line::new();
             line.str("mesh-home: object=");
+            line.hex(entry.object.as_bytes());
+            line.str(" home=");
+            line.node(&entry.home);
+            line.str(" epoch=");
+            line.u64(table.epoch as u64);
+            line.str(" digest=");
+            line.digest(&table.membership);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
+    }
+
+    /// Log the bounded M3 shard view from the same confirmed snapshot.
+    ///
+    /// `rows` is false for a routine refresh: the header still proves the node
+    /// is on the current epoch and digest, but the per-object rows do not
+    /// repeat every five seconds in the serial transcript.
+    fn log_shard(&self, services: &Services, snapshot: &MembershipSnapshot, rows: bool) {
+        if self.shard_count == 0 {
+            return;
+        }
+        let objects = shard_objects(self.shard_count);
+        let Some(table) = HomeTable::new(&snapshot.view(), snapshot.digest(), &objects) else {
+            return;
+        };
+        let balance = table.balance();
+        let owned = table.owned_by(self.self_id);
+        let mut header = Line::new();
+        header.str("mesh-shard: state=current object_set=m3-v1 epoch=");
+        header.u64(table.epoch as u64);
+        header.str(" members=");
+        header.u64(snapshot.len() as u64);
+        header.str(" digest=");
+        header.digest(&table.membership);
+        header.str(" count=");
+        header.u64(table.len() as u64);
+        header.str(" owners=");
+        header.u64(balance.owners as u64);
+        header.str(" owned=");
+        header.u64(owned.len() as u64);
+        header.str(" min=");
+        header.u64(balance.min as u64);
+        header.str(" max=");
+        header.u64(balance.max as u64);
+        header.str(" node=");
+        header.node(&self.self_id);
+        header.push(b'\n');
+        log(services, header.as_bytes());
+        if !rows {
+            return;
+        }
+        for member in &snapshot.members {
+            let mut line = Line::new();
+            line.str("mesh-shard-owner: node=");
+            line.node(member);
+            line.str(" count=");
+            line.u64(table.owned_count(*member) as u64);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
+        for entry in &owned {
+            let mut line = Line::new();
+            line.str("mesh-shard-owned: object=");
             line.hex(entry.object.as_bytes());
             line.str(" home=");
             line.node(&entry.home);
@@ -1672,28 +1926,43 @@ impl Mesh {
         source: NodeId,
         now: u64,
     ) -> Result<(), TransportError> {
-        match self.peer {
-            None => {
-                self.peer = Some(source);
-                let mut line = Line::new();
-                line.str("mesh-transport: peer=");
-                line.node(&source);
-                line.push(b'\n');
-                log(services, line.as_bytes());
-                if let Some(route) = self.route.as_mut() {
-                    let _ = route.set_peer(source, now);
-                }
-                if let Some(migrate) = self.migrate.as_mut() {
-                    let _ = migrate.set_peer(source);
-                }
-                Ok(())
+        if self.peer_count > 0 && self.peers[..self.peer_count].contains(&source) {
+            return Ok(());
+        }
+        if self.peer_count >= MAX_MESH_NODES {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if self.join.as_ref().map(|join| join.role()) == Some(Role::Member)
+            && self.peer.is_some()
+            && self.peer != Some(source)
+        {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        // A member link has exactly one source, the root.  A root link may see
+        // every member when the M3 host hub multiplexes the star onto the
+        // root's single mesh slot.  The first source remains the route and
+        // migration peer; the join state handles each member by `src`.
+        if self.peer.is_none() {
+            self.peer = Some(source);
+            if let Some(route) = self.route.as_mut() {
+                let _ = route.set_peer(source, now);
             }
-            Some(peer) if peer == source => Ok(()),
-            Some(_) => {
-                self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-                Err(TransportError::Envelope(sys_primitives::Error::Protocol))
+            if let Some(migrate) = self.migrate.as_mut() {
+                let _ = migrate.set_peer(source);
             }
         }
+        self.peers[self.peer_count] = source;
+        self.peer_count += 1;
+        let mut line = Line::new();
+        line.str("mesh-transport: peer=");
+        line.node(&source);
+        line.str(" peers=");
+        line.u64(self.peer_count as u64);
+        line.push(b'\n');
+        log(services, line.as_bytes());
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1812,11 +2081,16 @@ impl Mesh {
         if matches!(self.phase, Phase::Connected) {
             self.stats.disconnects = self.stats.disconnects.saturating_add(1);
         }
+        let buffered = self.decoder.buffered_len();
+        let expected = self.decoder.expected_record_len();
+        let poisoned = self.decoder.is_poisoned();
         (services.tcp_abort)(MESH_SLOT);
         self.decoder.reset();
         self.queue.clear();
         self.pending = PendingTable::new(PENDING_CAPACITY);
         self.peer = None;
+        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
+        self.peer_count = 0;
         self.peer_confirmed = false;
         self.pass_logged = false;
         self.join_timeout_logged = false;
@@ -1835,6 +2109,15 @@ impl Mesh {
         let mut line = Line::new();
         line.str("mesh-transport: disconnected reason=");
         line.str(reason);
+        line.str(" buffered=");
+        line.u64(buffered as u64);
+        line.str(" expected=");
+        match expected {
+            Some(expected) => line.u64(expected as u64),
+            None => line.push(b'-'),
+        }
+        line.str(" poisoned=");
+        line.u64(poisoned as u64);
         line.str(" rx_frames=");
         line.u64(self.stats.frames_received);
         line.str(" tx_frames=");
@@ -2338,6 +2621,23 @@ fn home_object_count(services: &Services) -> u32 {
     match parse_u32(&text[..len]) {
         Some(value) if (1..=HOME_FIXTURE_MAX).contains(&value) => value,
         _ => HOME_FIXTURE_DEFAULT,
+    }
+}
+
+/// Read the optional M3 shard-evidence object count.
+///
+/// `mesh.shard=<count>` enables `/mesh/shard`.  The value is bounded to
+/// [`SHARD_FIXTURE_MAX`]; an invalid or out-of-range value falls back to
+/// [`SHARD_FIXTURE_DEFAULT`] rather than disabling the endpoint.  Absence
+/// keeps the M2 evidence surface exactly as it was.
+fn shard_object_count(services: &Services) -> u32 {
+    let mut text = [0u8; 32];
+    let Some(len) = config(services, b"mesh.shard", &mut text) else {
+        return 0;
+    };
+    match parse_u32(&text[..len]) {
+        Some(value) if (1..=SHARD_FIXTURE_MAX).contains(&value) => value,
+        _ => SHARD_FIXTURE_DEFAULT,
     }
 }
 

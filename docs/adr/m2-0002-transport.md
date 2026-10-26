@@ -74,7 +74,8 @@ is not M2 work.
    ```
 
    The guest's own gateway is the only host address its NAT can reach. The rig writes
-   `mesh.peer` as `192.168.0.1:9712` for `n0` and `192.168.1.1:9702` for `n1`. A future
+   `mesh.peer` as `192.168.0.1:10112` for `n0` and `192.168.1.1:10102` for `n1` after the
+   eight-node port-block move; the key's presence is what enables the listener. A future
    rendezvous or gossip layer can replace the static key; M2 must not depend on
    broadcast.
 

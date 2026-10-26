@@ -732,7 +732,7 @@ fn json_option(value: &Option<String>) -> String {
         .unwrap_or_else(|| "null".into())
 }
 
-fn json_escape(text: &str) -> String {
+pub(crate) fn json_escape(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     for character in text.chars() {
         match character {

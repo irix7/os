@@ -174,6 +174,32 @@ mod tests {
     }
 
     #[test]
+    fn full_eight_node_shard_environment_fits() {
+        let sha = "a".repeat(64);
+        let key = "b".repeat(64);
+        // The largest member: public key, shard count and the route opt-in.
+        let image = image(
+            &[
+                ("mcp.url", "http://192.168.7.1:9771/mcp.module"),
+                ("mcp.sha256", &sha),
+                ("console", "serial0"),
+                ("mesh.peer", "192.168.7.1:1"),
+                ("mesh.authority", "08:00:69:4d:32:00"),
+                ("mesh.pub", &key),
+                ("mesh.shard", "128"),
+                ("mesh.route", "1"),
+            ],
+            MAC,
+        )
+        .expect("the M3 shard member environment fits before the MAC slot");
+        let parsed = parse(&image);
+        assert_eq!(parsed.len(), 8);
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "mesh.shard" && value == "128"));
+    }
+
+    #[test]
     fn mac_round_trip() {
         let text = mac_string(&MAC);
         assert_eq!(text, "08:00:69:4d:32:00");
