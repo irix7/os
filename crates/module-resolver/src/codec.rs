@@ -24,7 +24,9 @@ use crate::{Abi, Dependency, Export, Manifest, ModuleId};
 /// Manifest record magic.
 pub const MAGIC: [u8; 4] = *b"I7MM";
 /// Manifest record format version.
-pub const FORMAT_VERSION: u16 = 1;
+pub const FORMAT_VERSION: u16 = 2;
+/// Legacy manifest record version, decode-only.
+pub const FORMAT_VERSION_V1: u16 = 1;
 /// Maximum encoded manifest record length.
 pub const MAX_RECORD: usize = 64 * 1024;
 
@@ -88,13 +90,14 @@ impl From<FromUtf8Error> for DecodeError {
 }
 
 impl Manifest {
-    /// Encode this manifest as a version 1 record.
+    /// Encode this manifest as a version 2 record.
     pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
         let mut out = Vec::new();
         out.extend_from_slice(&MAGIC);
         push_u16(&mut out, FORMAT_VERSION)?;
         push_u16(&mut out, self.abi.major)?;
         push_u16(&mut out, self.abi.minor)?;
+        push_u32(&mut out, self.entry_offset)?;
         push_string(&mut out, &self.id.name)?;
         push_string(&mut out, &self.id.version)?;
         push_u16(&mut out, checked_len(self.dependencies.len())?)?;
@@ -107,6 +110,7 @@ impl Manifest {
         for export in &self.exports {
             push_string(&mut out, &export.interface)?;
             push_u16(&mut out, export.version)?;
+            push_u32(&mut out, export.offset)?;
         }
         if out.len() > MAX_RECORD {
             return Err(EncodeError::TooLarge);
@@ -114,7 +118,7 @@ impl Manifest {
         Ok(out)
     }
 
-    /// Decode one complete version 1 manifest record.
+    /// Decode a version 1 or version 2 manifest record.
     pub fn decode(bytes: &[u8]) -> Result<Self, DecodeError> {
         if bytes.len() > MAX_RECORD {
             return Err(DecodeError::TooLarge);
@@ -126,11 +130,16 @@ impl Manifest {
         if reader.take(4)? != MAGIC {
             return Err(DecodeError::BadMagic);
         }
-        let version = reader.u16()?;
-        if version != FORMAT_VERSION {
-            return Err(DecodeError::UnsupportedVersion(version));
+        let format = reader.u16()?;
+        if format != FORMAT_VERSION && format != FORMAT_VERSION_V1 {
+            return Err(DecodeError::UnsupportedVersion(format));
         }
         let abi = Abi::new(reader.u16()?, reader.u16()?);
+        let entry_offset = if format == FORMAT_VERSION {
+            reader.u32()?
+        } else {
+            0
+        };
         let name = reader.string()?;
         let module_version = reader.string()?;
         let dependency_count = reader.u16()? as usize;
@@ -154,7 +163,13 @@ impl Manifest {
         let mut exports = Vec::with_capacity(export_count);
         for _ in 0..export_count {
             let interface = reader.string()?;
-            exports.push(Export::new(interface, reader.u16()?));
+            let export_version = reader.u16()?;
+            let offset = if format == FORMAT_VERSION {
+                reader.u32()?
+            } else {
+                0
+            };
+            exports.push(Export::new(interface, export_version).with_offset(offset));
         }
         if reader.remaining() != 0 {
             return Err(DecodeError::TrailingBytes);
@@ -162,6 +177,7 @@ impl Manifest {
         Ok(Self {
             id: ModuleId::new(name, module_version),
             abi,
+            entry_offset,
             dependencies,
             exports,
         })
@@ -173,6 +189,11 @@ fn checked_len(len: usize) -> Result<u16, EncodeError> {
 }
 
 fn push_u16(out: &mut Vec<u8>, value: u16) -> Result<(), EncodeError> {
+    out.extend_from_slice(&value.to_le_bytes());
+    Ok(())
+}
+
+fn push_u32(out: &mut Vec<u8>, value: u32) -> Result<(), EncodeError> {
     out.extend_from_slice(&value.to_le_bytes());
     Ok(())
 }
@@ -207,6 +228,11 @@ impl<'a> Reader<'a> {
     fn u16(&mut self) -> Result<u16, DecodeError> {
         let bytes = self.take(2)?;
         Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    fn u32(&mut self) -> Result<u32, DecodeError> {
+        let bytes = self.take(4)?;
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     fn string(&mut self) -> Result<String, DecodeError> {
@@ -246,6 +272,15 @@ mod tests {
     }
 
     #[test]
+    fn v2_round_trips_entry_and_export_offsets() {
+        let manifest = Manifest::new("manager", "1.0.0", ABI)
+            .with_entry_offset(16)
+            .with_export(Export::new("irix7.mesh", 2).with_offset(64));
+        let encoded = manifest.encode().expect("encode");
+        assert_eq!(Manifest::decode(&encoded).expect("decode"), manifest);
+    }
+
+    #[test]
     fn format_is_little_endian_and_deterministic() {
         let encoded = manifest().encode().expect("encode");
         assert_eq!(&encoded[..4], &MAGIC);
@@ -263,10 +298,10 @@ mod tests {
     #[test]
     fn unsupported_version_is_rejected() {
         let mut encoded = manifest().encode().expect("encode");
-        encoded[4..6].copy_from_slice(&2u16.to_le_bytes());
+        encoded[4..6].copy_from_slice(&3u16.to_le_bytes());
         assert_eq!(
             Manifest::decode(&encoded),
-            Err(DecodeError::UnsupportedVersion(2))
+            Err(DecodeError::UnsupportedVersion(3))
         );
     }
 
@@ -289,7 +324,7 @@ mod tests {
     fn invalid_utf8_is_rejected() {
         let mut encoded = manifest().encode().expect("encode");
         // The manifest name starts after the 12-byte header and its length.
-        encoded[12] = 0xff;
+        encoded[16] = 0xff;
         assert_eq!(Manifest::decode(&encoded), Err(DecodeError::InvalidUtf8));
     }
 
@@ -304,7 +339,7 @@ mod tests {
         let mut encoded = manifest().encode().expect("encode");
         // Overwrite the dependency count with u16::MAX; the reader must reject
         // it as truncated before allocating a matching vector.
-        let header = 4 + 2 + 2 + 2;
+        let header = 4 + 2 + 2 + 2 + 4;
         let name_len = u16::from_le_bytes([encoded[header], encoded[header + 1]]) as usize;
         let version_offset = header + 2 + name_len;
         let version_len =

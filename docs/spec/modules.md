@@ -300,26 +300,28 @@ ticker: tick
 
 These are additive to the version 2 table.
 
-### 8.1 Manifest record v1 (implemented host slice)
+### 8.1 Manifest record v2
 
 `crates/module-resolver` encodes a manifest record as little-endian bytes:
 
 ```text
-I7MM | u16 format=1 | u16 abi major | u16 abi minor
+I7MM | u16 format=2 | u16 abi major | u16 abi minor
+     | u32 entry_offset
      | u16 name length | UTF-8 name
      | u16 version length | UTF-8 version
      | u16 dependency count
      | (u16 name length, name, u16 version length, version, 32-byte SHA-256)*
      | u16 export count
-     | (u16 interface length, interface, u16 export version)*
+     | (u16 interface length, interface, u16 export version, u32 table offset)*
 ```
 
-The record is limited to 64 KiB. Dependency and export counts are bounded by the
-remaining bytes before a vector is reserved. Strings must be UTF-8. There is no
-CRC in the record: the enclosing module image digest is the integrity boundary.
-Version 1 has exact versions only; ranges and a solver are not part of this
-format. Decoding rejects bad magic, an unsupported format version, truncation,
-trailing bytes, invalid UTF-8 and oversized records.
+`entry_offset` and export table offsets are image-relative and 4-byte aligned;
+zero entry means legacy `_start`, zero export offset means a declaration with no
+table. The record is limited to 64 KiB. Counts are bounded by remaining bytes
+before a vector is reserved. Strings must be UTF-8. There is no CRC in the
+record: the enclosing image digest is the integrity boundary. Version 1 records
+remain decode-only with zero entry/export offsets; the encoder emits v2.
+Dependency versions are exact; ranges and a solver are not part of this format.
 
 ### 8.2 Manifest footer v1 (implemented host slice)
 
