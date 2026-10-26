@@ -21,7 +21,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   deterministic resolver with fail-closed cycle, missing-record, digest and ABI
   checks; a bounded version 1 `I7MM` manifest codec; an optional `I7MF` image
   footer; a host manager model for atomic image verification and reference
-  counting; and thirty-three host tests. It does not load or execute an image.
+  counting; a package-index v2 exact-dependency parser; and forty-one host
+  tests. It does not load or execute an image.
 - The ROM freeze policy is recorded: after M1 is re-closed, the compressed
   PROM/kernel image no longer gains features; policy, runtime, transport,
   servers and devices ship as downloadable modules.

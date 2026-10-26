@@ -15,7 +15,9 @@ This crate does **not** load or execute module images. It defines:
 - `footer::wrap` / `footer::parse`: an optional `I7MF` footer that locates the
   manifest record after a flat image, while leaving standalone images valid;
 - `manager::ModuleManager`: host model of atomic load, SHA-256 image
-  verification, reference counting and unload. It does not execute an image.
+  verification, reference counting and unload. It does not execute an image;
+- `index::parse_record`: package-index v2 records with optional exact
+  `depends=name@version:sha256,...` fields and duplicate/digest validation.
 
 Version 1 resolves exact versions only. Version ranges, a package-index parser,
 signature validation, relocation, slot allocation and a module manager are
