@@ -920,6 +920,12 @@ fn handle_request(services: &Services, slot: u32) {
         send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
+    if !is_post && (path == b"/mesh/migrate" || path.starts_with(b"/mesh/migrate?")) {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::migrate_response(services, path, response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
+        return;
+    }
 
     let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
     let (content_type, n) = if is_post && path.starts_with(b"/mcp") {

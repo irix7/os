@@ -1,0 +1,16 @@
+[package]
+name = "mesh-migrate"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "M2 L0 stackless actor state, migration lease and wire protocol"
+
+[lib]
+name = "mesh_migrate"
+path = "src/lib.rs"
+
+[dependencies]
+sys-primitives = { path = "../sys-primitives" }
+mesh-core = { path = "../mesh-core" }
+cap-engine = { path = "../cap-engine" }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }

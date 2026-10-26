@@ -212,17 +212,36 @@ markers, and `--fault no-peer` preserves the M1 path. The MCP module remains ins
 remain, and the controlled lease move is a lab fixture, not a general home-migration
 policy. See M2-ADR-0007.
 
+**M2-5 status (2026-10-27):** a native stackless actor now migrates at a message boundary
+between the two kernels in both directions. `crates/mesh-migrate` owns the fixed 248-byte
+little-endian actor state, the placement-independent BLAKE3 hash, the deterministic
+actor/message fixture, the root-signed `ActorMove` directive, the `I7M1` bodies and the
+`PREPARE/READY/STATE/COMMIT/ABORT` lease state machine. The actor state carries the queued
+message, the unacknowledged message and one serialised capability handle; live TLS,
+sockets, file descriptors, threads, processes and timers are not migrated. `tools/m2-rig`
+drives eleven steps on two real iris kernels: it seeds at n0 with message 11 queued and
+message 10 unacknowledged, moves n0→n1, compares the same canonical state hash at both
+ends, resumes the queued message, refuses a stale delivery at the old root, duplicate-
+delivers at the member, queues message 12, moves back n1→n0, resumes it, refuses a stale
+wire delivery at the old member, duplicate-delivers at the root and refuses a tampered
+capability. The rig recomputes the identity, home, message chain and hash independently.
+`mesh.route=2` is the opt-in; `no-peer`, `no-route` and `wrong-authority` preserve the
+earlier markers, and `kill-peer`/`partition` keep the M2-6 scenario. The MCP module remains
+inside 512 KiB. This is still a bounded L0 proof, not live-state migration, L2
+arbitrary-safepoint migration, a general actor scheduler or a persistent directory. See
+M2-ADR-0009.
+
 **Status (2026-10-27):** the two-kernel rig now covers M2-1 transport, M2-2 join/epoch,
-M2-3 rendezvous homes, M2-4 remote capability routing with one `MOVED` retry, and M2-6
-failure/partition with lease fencing.  The failure detector is the existing
+M2-3 rendezvous homes, M2-4 remote capability routing with one `MOVED` retry, M2-5 L0
+actor migration in both directions, and M2-6 failure/partition with lease fencing.  The failure detector is the existing
 `mesh-service` state machine (suspect at 6 s, failed at 12 s); the root removes a failed
 member with one epoch advance, cached routes and leases naming the removed node are fenced
 locally, and the survivor's data path continues without a quorum.  A 6 s authority write
 lease, shorter than the 12 s failure window, stops an isolated home committing before the
 root can re-home the object; reads remain available only under the existing unexpired home
 lease.  `--fault kill-peer` and `--fault partition` are the real-kernel evidence.  L0
-migration (M2-5), gossip/epoch push, a persisted epoch and linearisable write handover
-remain open.
+migration (M2-5) is implemented above; gossip/epoch push, a persisted epoch, a general
+actor scheduler and linearisable write handover remain open.
 
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.

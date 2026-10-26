@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use crate::fixture::Fixture;
 use crate::homes::HomesEvidence;
 use crate::join::JoinEvidence;
+use crate::migrate::MigrateEvidence;
 use crate::nvram;
 use crate::relay::{lines as log_lines, SharedLog};
 use crate::rig::{copy_if_present, write_text, BootFacts, Node};
@@ -170,6 +171,8 @@ pub struct Evidence<'a> {
     pub homes: Option<&'a HomesEvidence>,
     /// Remote capability-route evidence, when one ran.
     pub route: Option<&'a RouteEvidence>,
+    /// L0 actor-migration evidence, when that scenario ran.
+    pub migration: Option<&'a MigrateEvidence>,
     /// Failure/partition evidence, when that fault mode ran.
     pub failure: Option<&'a crate::failure::FailureEvidence>,
     /// Module fixture, when the run started one.
@@ -300,7 +303,7 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             node.telnet_port, node.http_port, node.mesh_port
         ));
         out.push_str(&format!(
-            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"mesh_route_enabled\": {}, \"mesh_route_disabled\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
+            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"mesh_route_enabled\": {}, \"mesh_route_disabled\": {}, \"mesh_migrate_enabled\": {}, \"mesh_migrate_disabled\": {}, \"mesh_migrate_lines\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
             json_option(&node.facts.boot_ready),
             json_option(&node.facts.mcp),
             json_option(&node.facts.mesh),
@@ -321,6 +324,9 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             json_option(&node.facts.mesh_join_reject),
             json_option(&node.facts.mesh_route_enabled),
             json_option(&node.facts.mesh_route_disabled),
+            json_option(&node.facts.mesh_migrate_enabled),
+            json_option(&node.facts.mesh_migrate_disabled),
+            json_strings(&node.facts.mesh_migrate_lines),
             json_option(&node.facts.network_mac),
             json_option(&node.facts.network_ip),
             json_env(&node.nvram_env)
@@ -398,6 +404,11 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         Some(route) => out.push_str(&render_route_json(route)),
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"migration\": ");
+    match evidence.migration {
+        Some(migration) => out.push_str(&render_migration_json(migration)),
+        None => out.push_str("null"),
+    }
     out.push_str(",\n  \"failure\": ");
     match evidence.failure {
         Some(failure) => out.push_str(&render_failure_json(failure)),
@@ -425,6 +436,46 @@ fn render_expected_view(view: &Option<crate::failure::ExpectedView>) -> String {
             json_escape(&row.home)
         ));
         if index + 1 < view.table.rows.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
+    out
+}
+
+fn render_migration_json(migration: &MigrateEvidence) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"ok\": {}, \"fault\": \"{}\", \"actor\": {}, \"home\": {}, \"boundary_hash\": {}, \"return_hash\": {}, \"message\": \"{}\", ",
+        migration.ok,
+        json_escape(&migration.fault),
+        json_option(&migration.actor),
+        json_option(&migration.home),
+        json_option(&migration.boundary_hash),
+        json_option(&migration.return_hash),
+        json_escape(&migration.message)
+    ));
+    out.push_str(&format!("\"steps\": {}, ", json_strings(&migration.steps)));
+    out.push_str(&format!(
+        "\"checks\": {}, ",
+        json_strings(&migration.checks)
+    ));
+    out.push_str("\"nodes\": [");
+    for (index, node) in migration.nodes.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"status\": {}, \"report\": {}, \"error\": {}}}",
+            json_escape(&node.name),
+            node.status
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            node.report
+                .as_ref()
+                .map(|report| format!("\"{}\"", json_escape(&report.raw)))
+                .unwrap_or_else(|| "null".into()),
+            json_option(&node.error)
+        ));
+        if index + 1 < migration.nodes.len() {
             out.push(',');
         }
     }
@@ -1171,6 +1222,50 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         out.push_str("```\n\n");
     }
 
+    if let Some(migration) = evidence.migration {
+        out.push_str("## L0 actor migration\n\n");
+        out.push_str(&format!(
+            "**{}** (fault `{}`). Actor `{}`, home `{}`.\n\n",
+            if migration.ok { "pass" } else { "FAIL" },
+            migration.fault,
+            migration.actor.as_deref().unwrap_or("-"),
+            migration.home.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!("{}\n\n", migration.message));
+        out.push_str(&format!(
+            "Boundary hash `{}`, return hash `{}`.\n\n",
+            migration.boundary_hash.as_deref().unwrap_or("-"),
+            migration.return_hash.as_deref().unwrap_or("-")
+        ));
+        if !migration.steps.is_empty() {
+            out.push_str("### Steps\n\n```text\n");
+            for step in &migration.steps {
+                out.push_str(step);
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
+        out.push_str("### Checks\n\n");
+        for check in &migration.checks {
+            out.push_str(&format!("- {check}\n"));
+        }
+        out.push('\n');
+        out.push_str("### Node reports\n\n");
+        for node in &migration.nodes {
+            out.push_str(&format!(
+                "#### {} (HTTP {})\n\n```text\n{}\n```\n\n",
+                node.name,
+                node.status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                node.report
+                    .as_ref()
+                    .map(|report| report.raw.as_str())
+                    .or(node.error.as_deref())
+                    .unwrap_or("no report")
+            ));
+        }
+    }
     if let Some(failure) = evidence.failure {
         out.push_str("## Failure, fencing and partition\n\n");
         out.push_str(&format!(
