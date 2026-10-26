@@ -45,11 +45,13 @@ Architecture CI additions:
 
 The first `mesh-real` rung is the [M2 two-node rig](m2-rig.md) in `tools/m2-rig`. It
 starts **two independent iris processes**, asserts `BOOT-READY`, distinct MACs, NodeIds
-and guest addresses, and runs a two-way TCP probe through the host relay. It is evidence
-for the M2-0 foundation only: it deliberately leaves both nodes at `mesh=single` and does
-not implement join, membership, homes, capability routes or migration. Those are
-M2-1..M2-5. The rig is a manual command until the M2-8 CI job wraps it; the evidence
-bundle under `target/m2-rig/evidence/` is the review artefact.
+and guest addresses, runs a two-way HTTP probe through the host relay, and connects the
+two guest mesh listeners so both kernels exchange framed `MeshEnvelope` records. M2-1's
+framing, short read/write, deadline, heartbeat, backoff and tag-release tests live in
+`crates/mesh-transport`. The rig deliberately leaves both nodes at `mesh=single`: join,
+membership, homes, capability routes and migration are M2-2..M2-5. The rig is a manual
+command until the M2-8 CI job wraps it; the evidence bundle under
+`target/m2-rig/evidence/` is the review artefact.
 
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
 and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.

@@ -8,6 +8,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- M2-1 adds the first real mesh transport: a `no_std` `mesh-transport` crate for
+  4-byte little-endian length-prefixed `MeshEnvelope` records (64 KiB bound), bounded
+  incremental decode, short-write send queue, receive/send/heartbeat deadlines,
+  reconnect backoff, counters and request-tag cancellation, with host tests. The combined
+  MCP+mesh module keeps HTTP on module TCP slot 0 and listens for the mesh on guest port
+  7000 in slot 1 when `mesh.peer` is present. The M2 rig adds a first-byte-guarded mesh
+  relay and a two-node framing probe; both nodes still print `mesh=single`. No PROM,
+  kernel, ROM or module-ABI change.
 - M1 is complete on iris after the final scope decision: the downloadable
   Wasm module host is the M1 platform seam, the live bridge drives userland
   objects/devices and adopts the guest actor, and real-Indy validation remains

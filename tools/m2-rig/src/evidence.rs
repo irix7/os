@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use crate::fixture::Fixture;
 use crate::nvram;
-use crate::relay::{lines as log_lines, Relay};
+use crate::relay::{lines as log_lines, SharedLog};
 use crate::rig::{copy_if_present, write_text, BootFacts, Node};
 
 /// One node as recorded in the bundle.
@@ -104,6 +104,30 @@ pub struct ProbeEvidence {
     pub raw: Vec<u8>,
 }
 
+/// One node's mesh transport probe result.
+#[derive(Clone, Debug)]
+pub struct MeshNodeProbe {
+    /// `n0` or `n1`.
+    pub name: String,
+    /// The `mesh-transport: listening` line, if seen.
+    pub listen: Option<String>,
+    /// The `mesh-transport: pass` line, if seen.
+    pub pass: Option<String>,
+}
+
+/// The two-node mesh framing probe.
+#[derive(Clone, Debug)]
+pub struct MeshProbeEvidence {
+    /// Whether both nodes decoded a frame from the other and passed.
+    pub ok: bool,
+    /// Human-readable result or failure.
+    pub message: String,
+    /// The host forward pair the relay connected to.
+    pub relay: String,
+    /// Per-node transport lines.
+    pub nodes: Vec<MeshNodeProbe>,
+}
+
 /// Everything the bundle needs.
 pub struct Evidence<'a> {
     /// Rig work directory.
@@ -128,10 +152,12 @@ pub struct Evidence<'a> {
     pub nodes: &'a [NodeEvidence],
     /// Probe results.
     pub probes: &'a [ProbeEvidence],
+    /// Mesh transport probe, when one ran.
+    pub mesh: Option<&'a MeshProbeEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
-    pub relays: &'a [(String, &'a Relay)],
+    pub relays: &'a [(String, SharedLog)],
     /// `pass` or `fail`.
     pub verdict: &'a str,
     /// Top-level error, if any.
@@ -174,7 +200,7 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
         write_text(&directory.join("fixture.log"), &format!("{fixture_log}\n"))?;
     }
     for (name, relay) in evidence.relays {
-        let text = log_lines(&relay.log).join("\n");
+        let text = log_lines(relay).join("\n");
         write_text(
             &directory.join(format!("relay-{name}.log")),
             &format!("{text}\n"),
@@ -243,10 +269,12 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             node.telnet_port, node.http_port, node.mesh_port
         ));
         out.push_str(&format!(
-            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
+            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
             json_option(&node.facts.boot_ready),
             json_option(&node.facts.mcp),
             json_option(&node.facts.mesh),
+            json_option(&node.facts.mesh_transport_listen),
+            json_option(&node.facts.mesh_transport_pass),
             json_option(&node.facts.network_mac),
             json_option(&node.facts.network_ip),
             json_env(&node.nvram_env)
@@ -285,7 +313,31 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         }
         out.push('\n');
     }
-    out.push_str("  ]\n}\n");
+    out.push_str("  ],\n  \"mesh\": ");
+    match evidence.mesh {
+        Some(mesh) => {
+            out.push_str(&format!(
+                "{{\"ok\": {}, \"message\": \"{}\", \"relay\": \"{}\", \"nodes\": [",
+                mesh.ok,
+                json_escape(&mesh.message),
+                json_escape(&mesh.relay)
+            ));
+            for (index, node) in mesh.nodes.iter().enumerate() {
+                out.push_str(&format!(
+                    "{{\"name\": \"{}\", \"listen\": {}, \"pass\": {}}}",
+                    json_escape(&node.name),
+                    json_option(&node.listen),
+                    json_option(&node.pass)
+                ));
+                if index + 1 < mesh.nodes.len() {
+                    out.push(',');
+                }
+            }
+            out.push_str("]}");
+        }
+        None => out.push_str("null"),
+    }
+    out.push_str("\n}\n");
     out
 }
 
@@ -376,6 +428,12 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         if let Some(line) = &node.facts.mesh {
             out.push_str(&format!("- `{line}`\n"));
         }
+        if let Some(line) = &node.facts.mesh_transport_listen {
+            out.push_str(&format!("- `{line}`\n"));
+        }
+        if let Some(line) = &node.facts.mesh_transport_pass {
+            out.push_str(&format!("- `{line}`\n"));
+        }
         if let Some(line) = &node.facts.network_mac {
             out.push_str(&format!("- `{line}`\n"));
         }
@@ -427,6 +485,26 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         ));
     }
 
+    if let Some(mesh) = evidence.mesh {
+        out.push_str("## Mesh transport probe\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Relay:** `{}`\n\n",
+            if mesh.ok { "pass" } else { "FAIL" },
+            mesh.relay
+        ));
+        out.push_str(&format!("{}\n\n", mesh.message));
+        out.push_str("| Node | Listening | Pass line |\n|---|---|---|\n");
+        for node in &mesh.nodes {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                node.name,
+                node.listen.as_deref().unwrap_or("-"),
+                node.pass.as_deref().unwrap_or("-")
+            ));
+        }
+        out.push('\n');
+    }
+
     if let Some(fixture) = evidence.fixture {
         out.push_str("## Module fixture\n\n```text\n");
         for line in fixture.lines() {
@@ -439,7 +517,7 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
     out.push_str("## Relays\n\n");
     for (name, relay) in evidence.relays {
         out.push_str(&format!("### {name}\n\n```text\n"));
-        for line in log_lines(&relay.log) {
+        for line in log_lines(relay) {
             out.push_str(&line);
             out.push('\n');
         }

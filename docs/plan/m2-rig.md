@@ -1,10 +1,11 @@
 # M2 two-node rig — runbook
 
-**Status:** working
-**Scope:** M2-0 foundation. The rig starts two independent kernels, proves both reach
-`BOOT-READY` with distinct identities, and proves a two-way TCP exchange through the
-chosen path. It does not implement join, membership, route cache, migration or
-capabilities.
+**Status:** working; M2-1 transport probe added
+**Scope:** M2-0 foundation plus the M2-1 transport slice. The rig starts two independent
+kernels, proves both reach `BOOT-READY` with distinct identities, proves a two-way HTTP
+exchange through the chosen path, and connects the two guest mesh listeners so the
+kernels exchange framed `MeshEnvelope` records in both directions. It does not implement
+join, membership, route cache, migration or capabilities.
 
 The decisions behind the rig are [M2-ADR-0001](../adr/m2-0001-two-node-rig.md),
 [M2-ADR-0002](../adr/m2-0002-transport.md), [M2-ADR-0003](../adr/m2-0003-authority.md)
@@ -29,7 +30,9 @@ source /path/to/toolchain/env.sh   # rustup nightly-2026-10-03 + rust-src
 tools/m2-rig/build.sh
 ```
 
-`build.sh` writes:
+`build.sh` defaults the kernel opt level to `z`, matching CI: the M1 remediation no
+longer fits the 512 KiB PROM window at `opt-level=s`. `M2_RIG_OPT_LEVEL` can override it.
+It writes:
 
 | Artefact | Purpose |
 |---|---|
@@ -53,8 +56,8 @@ cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
   --iris /path/to/iris --iris-ci /path/to/iris-ci
 ```
 
-`run` starts both nodes, waits for readiness, probes both directions, stops the nodes and
-writes `target/m2-rig/evidence/`.
+`run` starts both nodes, waits for readiness, probes both directions, runs the mesh
+framing probe, stops the nodes and writes `target/m2-rig/evidence/`.
 
 The lifecycle commands:
 
@@ -62,7 +65,7 @@ The lifecycle commands:
 |---|---|
 | `up` | Start both nodes, wait for readiness, leave them running. |
 | `status` | Show `iris-ci` state and the boot markers for both nodes. |
-| `probe` | Probe both directions against running nodes and write evidence. |
+| `probe` | Probe both directions (HTTP and mesh framing) against running nodes and write evidence. |
 | `down` | Send `iris-ci quit` to both and wait for the processes. |
 | `run` | `up` + `probe` + `down` + evidence. |
 | `print-config` | Print the derived instance/port table and the NVRAM keys without starting. |
@@ -104,6 +107,36 @@ M2-ADR-0001.
 There is no broadcast, multicast or ARP between the two guests. Each guest can reach only
 its own NAT gateway; the relay and the peer's forward are the seam.
 
+## Mesh transport path (M2-1)
+
+The combined MCP+mesh module listens on guest port 80 for HTTP (module TCP slot 0) and
+guest port 7000 for the mesh (module TCP slot 1) when NVRAM contains `mesh.peer`. The guest
+has no TCP connect primitive, so **both nodes listen** and the host relay initiates both
+sides:
+
+```text
+guest n0 (192.168.0.2):7000
+  <- n0 forward 127.0.0.1:9702
+  <- Rust mesh relay
+  -> 127.0.0.1:9712 (n1 forward)
+  -> guest n1 (192.168.1.2):7000
+```
+
+The relay is still a dumb byte pump. It waits until it has read first bytes from both
+guests before writing in either direction, which avoids the early-data race in the iris
+port forward. Its idle timeout is 120 s and the modules send a 5 s heartbeat, so it is
+separate from the 5 s HTTP probe relay.
+
+The modules exchange `Request/Ping` and `Response/Ping` on connect, then `Control/Ping`
+heartbeats. The wire is the M2-ADR-0002 contract: a 32-bit little-endian envelope length
+followed by exactly that many `MeshEnvelope` bytes, with a 64 KiB bound. Each envelope body
+is the source's 16-byte `NodeId`; a node rejects a body that does not match the header.
+The pass line names the peer `NodeId`, frame/byte counters and `rejects=0`.
+
+This listen-only bootstrap is a documented M2-1 deviation from the lower-`NodeId`-initiates
+rule; the guest cannot connect until a kernel/module connect service exists. See the
+implementation note in M2-ADR-0002.
+
 ## NVRAM keys
 
 The rig writes a DS1386 image per node. The keys are:
@@ -112,7 +145,7 @@ The rig writes a DS1386 image per node. The keys are:
 |---|---|
 | `mcp.url` | The node's own gateway plus the fixture port: `http://192.168.<n>.1:<port>/mcp.module`. |
 | `mcp.sha256` | SHA-256 of the fresh module. |
-| `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:9712` for `n0`, `192.168.1.1:9702` for `n1`. |
+| `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:9712` for `n0`, `192.168.1.1:9702` for `n1`. Its presence enables the guest mesh listener. M2-1 learns the peer `NodeId` from the first envelope; M2-2 will use the address for join. |
 | `mesh.authority` | Node 0's MAC; the 1-of-1 authority root. |
 | `mesh.epoch` | Initial confirmed epoch, `1`. |
 | `console` | `serial0`. |
@@ -136,6 +169,21 @@ connection. The module arms its first listener on a later idle tick, and the emu
 MIPS CPU is slow enough that a shorter settle made the probe flaky. This is a rig
 settle, not a kernel readiness contract.
 
+The M2-1 mesh probe adds these serial lines (the listening line can follow the `sash>`
+prompt):
+
+```text
+mesh-transport: enabled
+mesh-transport: listening on port 7000
+mesh-transport: connected
+mesh-transport: peer=<16-byte peer NodeId>
+mesh-transport: pass peer=<peer NodeId> rx_frames=N tx_frames=N rx_bytes=N tx_bytes=N rejects=0 connects=N
+```
+
+The rig requires both nodes to log `listening` and `pass`, verifies that each pass line
+names the other node's derived `NodeId`, and requires non-zero frame counts and
+`rejects=0`.
+
 The evidence bundle contains:
 
 | File | Content |
@@ -145,7 +193,8 @@ The evidence bundle contains:
 | `serial-n0.log`, `serial-n1.log` | Full serial transcripts. |
 | `stdout-n0.log`, `stderr-n0.log`, etc. | Emulator output. |
 | `probe-n0-to-n1.{txt,raw}`, `probe-n1-to-n0.{txt,raw}` | Telnet transcripts, clean and raw. |
-| `relay-n0-to-n1.log`, `relay-n1-to-n0.log` | Connection and byte counts. |
+| `relay-n0-to-n1.log`, `relay-n1-to-n0.log` | HTTP probe connection and byte counts. |
+| `relay-mesh.log` | Mesh relay connection, first-byte, byte-count and reconnect log. |
 | `fixture.log` | Module fetches by both guests. |
 
 A successful probe line is:
@@ -165,8 +214,17 @@ digest changes with the uptime; the status and byte count are the pass criteria.
 - **Plain TCP, no TLS.** The mesh transport decision defers TLS; the rig runs on host
   loopback. Do not present it as a secure multi-node deployment.
 - **The probe relay has a 5 s quiet-period close.** It is suitable for the MCP HTTP/1.0
-  probe, not for a persistent mesh link. M2-1 needs a mesh relay mode with a long idle
-  timeout and a heartbeat, or the direct forward once the early-data race is fixed.
+  probe, not for a persistent mesh link. M2-1 adds a separate mesh relay with a 120 s
+  idle timeout, first-byte guard and module-generated heartbeat.
+- **The guest cannot connect.** Both modules listen and the host relay initiates. The
+  lower-`NodeId`-initiates rule is not exercised until a connect service or fixed forward
+  path exists.
+- **The mesh listener owns module TCP slot 1.** When `mesh.peer` is present MCP uses only
+  slot 0 for HTTP; without it the original two-slot MCP behaviour is unchanged. The
+  single HTTP slot cannot pre-arm the next connection during the close handshake, so a
+  back-to-back HTTP client can be refused in that gap. The M2-0 probe uses one request per
+  direction and is unaffected. Runtime module dependencies (#217) are not available, so
+  this is a fixed share, not a slot manager.
 - **The relay is a host single point of failure.** It is a laboratory seam, not the
   production data path.
 - **The checked-in v0.1.3 MCP module is not used.** It loads and prints `mcp: listening`
@@ -177,30 +235,26 @@ digest changes with the uptime; the status and byte count are the pass criteria.
 - **The guests still print `mesh=single`.** That is the M1 bootstrap view. M2-2 adds the
   join and the epoch; M2-0 deliberately does not fake a two-node membership view.
 
-## M2-1 handoff
+## M2-1 status and handoff
 
-M2-1 can start against the running rig:
+M2-1 is implemented in `crates/mesh-transport`, `modules/mcp` and `tools/m2-rig`:
 
-1. Read `mesh.peer`, `mesh.authority` and `mesh.epoch` from NVRAM (the kernel's
-   `nvram::get` is the accessor).
-2. Add a TCP listener on guest port 7000 and a connect path to `mesh.peer`. The host
-   forwards for port 7000 already exist (`base+602` and `base+612`).
-3. Frame `MeshEnvelope` with a 4-byte little-endian length prefix. Enforce a 64 KiB
-   record bound, the per-record deadline and the send deadline. Do not rely on connection
-   close to delimit a record.
-4. Use the lower `NodeId` as the initiator (byte-wise compare) and the higher as the
-   listener. Reconnect with exponential backoff.
-5. Add counters for frames, bytes, connects, disconnects, deadlines and cancelled tags;
-   the M2 gate wants observable mesh traffic, not a silent path.
-6. Extend the rig with a mesh relay mode (long idle timeout) or use the direct forward and
-   document the early-data result. Keep the 5 s probe relay separate.
-7. Do not implement join, epoch confirmation, homes, capabilities or migration in M2-1;
-   those are M2-2 through M2-5.
+- the codec/framing, 64 KiB bound, short-read/short-write handling, deadlines, heartbeat,
+  reconnect backoff, counters and request-tag cancellation are host-tested;
+- the combined MCP+mesh module owns module TCP slot 1 only when `mesh.peer` is present;
+- the rig runs a two-node framing probe through the 120 s mesh relay and records the
+  pass lines and peer `NodeId`s in the evidence bundle.
+
+What remains for M2-2 and later: join and epoch confirmation, membership convergence,
+homes, remote capabilities, actor migration and failure/partition behaviour. M2-1 does
+not construct a `MembershipView`, change the `mesh: single node` marker, or implement a
+remote route.
 
 ## Troubleshooting
 
 - If `up` fails before `BOOT-READY`, read `target/m2-rig/n0/stdout` and
-  `target/m2-rig/n0/serial.log` (and `n1`). The harness prints the same tails on failure.
+  `target/m2-rig/n0/iris-serial.log` (and `n1`). The harness prints the same tails on
+  failure.
 - If a port is busy, run `down` first, then check `ss -ltnp` for the block.
 - If the fixture fetch fails, check `target/m2-rig/evidence/fixture.log` and the guest
   serial `autoload:` lines. The module digest in NVRAM must match the served file.
@@ -208,3 +262,7 @@ M2-1 can start against the running rig:
   peer answered and the relay closed after the quiet period; `relay target ... failed`
   means the peer forward was not listening; `relay up closed after 0` means the guest did
   not send a request.
+- If the mesh probe fails, inspect `evidence/relay-mesh.log` and the guest
+  `mesh-transport:` lines. No `listening` line means `mesh.peer` was absent or the module
+  did not tick; no `pass` line means the peer `NodeId`/frame exchange did not complete;
+  `rejects=` above zero means a framing or header check failed and the link was reset.

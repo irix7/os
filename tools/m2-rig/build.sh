@@ -18,14 +18,15 @@
 #   CARGO              cargo binary (default: cargo)
 #   CC                 host C compiler used by build scripts (optional)
 #   CARGO_TARGET_DIR   override the target directory
-#   M2_RIG_OPT_LEVEL   kernel opt level (default: s)
+#   M2_RIG_OPT_LEVEL   kernel opt level (default: z, matching CI; the M1
+#                      remediation no longer fits the PROM at opt-level s)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 WORK="${1:-${M2_RIG_WORK:-$REPO/target/m2-rig}}"
 CARGO="${CARGO:-cargo}"
-OPT_LEVEL="${M2_RIG_OPT_LEVEL:-s}"
+OPT_LEVEL="${M2_RIG_OPT_LEVEL:-z}"
 
 mkdir -p "$WORK"
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$WORK/target}"

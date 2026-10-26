@@ -1,0 +1,12 @@
+[package]
+name = "mesh-transport"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "M2 mesh record framing, send queue, deadlines and request tags"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sys-primitives = { path = "../sys-primitives" }

@@ -22,12 +22,12 @@ mod sha256;
 
 use std::fs;
 use std::net::Ipv4Addr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use evidence::{Evidence, NodeEvidence, ProbeEvidence};
+use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
 use fixture::Fixture;
 use probe::{ProbeError, ProbeOutcome};
-use relay::Relay;
+use relay::{MeshRelay, Relay};
 use rig::{
     derive_nodes, git, read_serial, run_ci, start_cpu, start_node, wait_boot, wait_ci_ready,
     write_nvram, Action, BootFacts, Node, Options, RunningNode,
@@ -76,11 +76,11 @@ Usage:
   m2-rig <command> [options]
 
 Commands:
-  run           start both nodes, probe both directions, stop, write evidence
+  run           start both nodes, probe HTTP and mesh framing, stop, write evidence
   up            start both nodes and leave them running
   down          stop both nodes through their CI sockets
   status        show lifecycle state and boot markers
-  probe         probe both directions against running nodes
+  probe         probe HTTP and mesh framing against running nodes
   print-config  print the derived instance and NVRAM table
   clean         remove the rig work directory
 
@@ -214,18 +214,30 @@ fn status(options: &Options) -> Result<i32, String> {
 fn probe_only(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
     let (probes, relays) = probe_two_way(&nodes)?;
-    let passed = probes.iter().all(|probe| probe.ok);
+    let (mesh, mesh_relay) = probe_mesh(&nodes);
+    let http_ok = probes.iter().all(|probe| probe.ok);
+    let passed = http_ok && mesh.ok;
     print_probe_table(&probes);
+    print_mesh_result(&mesh);
+    let error = if !http_ok {
+        Some("one or both HTTP probes failed")
+    } else if !mesh.ok {
+        Some(mesh.message.as_str())
+    } else {
+        None
+    };
     let directory = write_evidence(
         options,
         &nodes,
         &[],
         &probes,
         &relays,
+        Some(&mesh),
+        mesh_relay.as_ref(),
         None,
         "probe",
         if passed { "pass" } else { "fail" },
-        None,
+        error,
     )?;
     println!("evidence: {}", directory.display());
     Ok(if passed { 0 } else { 1 })
@@ -258,6 +270,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
 
     let mut probes = Vec::new();
     let mut relays = Vec::new();
+    let mut mesh = None;
+    let mut mesh_relay = None;
     let mut probe_error = None;
     if bring_up_error.is_none() {
         match probe_two_way(&nodes) {
@@ -267,6 +281,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             }
             Err(error) => probe_error = Some(error),
         }
+        let (value, relay) = probe_mesh(&nodes);
+        mesh = Some(value);
+        mesh_relay = relay;
+        // The mesh probe appends lines after the boot facts were captured;
+        // re-read the transcripts so the evidence bundle carries them.
+        facts = nodes
+            .iter()
+            .map(|node| BootFacts::from_serial(&read_serial(node)))
+            .collect();
     } else {
         // Keep the evidence useful even when a node never booted: record what
         // the serial logs show and do not invent a probe result.
@@ -275,14 +298,21 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         }
     }
 
+    let mesh_ok = mesh.as_ref().is_some_and(|mesh| mesh.ok);
     let passed = bring_up_error.is_none()
         && probe_error.is_none()
         && probes.len() == 2
-        && probes.iter().all(|probe| probe.ok);
+        && probes.iter().all(|probe| probe.ok)
+        && mesh_ok;
     let verdict = if passed { "pass" } else { "fail" };
     let error = bring_up_error
         .as_deref()
         .or(probe_error.as_deref())
+        .or_else(|| {
+            mesh.as_ref()
+                .filter(|mesh| !mesh.ok)
+                .map(|mesh| mesh.message.as_str())
+        })
         .map(str::to_string);
 
     if !options.keep {
@@ -293,6 +323,9 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     }
 
     print_probe_table(&probes);
+    if let Some(mesh) = &mesh {
+        print_mesh_result(mesh);
+    }
     for (node, fact) in running.iter().zip(facts.iter()) {
         println!(
             "{}: {}",
@@ -307,6 +340,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         &facts,
         &probes,
         &relays,
+        mesh.as_ref(),
+        mesh_relay.as_ref(),
         Some(&fixture),
         "run",
         verdict,
@@ -433,6 +468,163 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
     ))
 }
 
+/// Wait for the two guest mesh listeners to exchange framed envelopes through
+/// the host mesh relay.
+///
+/// This is the M2-1 framing probe: the guests generate and decode the
+/// `MeshEnvelope` records themselves; the relay only pumps bytes.  The pass
+/// line includes the peer `NodeId`, frame counts and reject count, so the rig
+/// can prove that each kernel decoded a header from the other real node.
+fn probe_mesh(nodes: &[Node]) -> (MeshProbeEvidence, Option<MeshRelay>) {
+    let relay_text = format!(
+        "127.0.0.1:{} <-> 127.0.0.1:{}",
+        nodes[0].mesh_port, nodes[1].mesh_port
+    );
+    let relay = match MeshRelay::start(
+        (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+        (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+    ) {
+        Ok(relay) => relay,
+        Err(error) => {
+            return (
+                MeshProbeEvidence {
+                    ok: false,
+                    message: format!("start mesh relay: {error}"),
+                    relay: relay_text,
+                    nodes: nodes
+                        .iter()
+                        .map(|node| MeshNodeProbe {
+                            name: node.name.clone(),
+                            listen: None,
+                            pass: None,
+                        })
+                        .collect(),
+                },
+                None,
+            )
+        }
+    };
+
+    let deadline = Instant::now() + Duration::from_secs(45);
+    loop {
+        let facts: Vec<BootFacts> = nodes
+            .iter()
+            .map(|node| BootFacts::from_serial(&read_serial(node)))
+            .collect();
+        if facts.iter().all(|fact| fact.mesh_transport_pass.is_some()) {
+            break;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let facts: Vec<BootFacts> = nodes
+        .iter()
+        .map(|node| BootFacts::from_serial(&read_serial(node)))
+        .collect();
+    let mut errors = Vec::new();
+    for (index, fact) in facts.iter().enumerate() {
+        let node = &nodes[index];
+        if fact.mesh_transport_listen.is_none() {
+            errors.push(format!("{}: no mesh-transport listening line", node.name));
+        }
+        match &fact.mesh_transport_pass {
+            None => errors.push(format!("{}: no mesh-transport pass line", node.name)),
+            Some(line) => {
+                let expected = nodes[1 - index].node_id_string();
+                if !line
+                    .to_ascii_uppercase()
+                    .contains(&format!("PEER={expected}"))
+                {
+                    errors.push(format!(
+                        "{}: peer NodeId is not {}: {line}",
+                        node.name, expected
+                    ));
+                }
+                if !line.contains("rejects=0") {
+                    errors.push(format!(
+                        "{}: transport reject counter is not zero",
+                        node.name
+                    ));
+                }
+                if counter(line, "rx_frames=").unwrap_or(0) == 0 {
+                    errors.push(format!("{}: no received frames", node.name));
+                }
+                if counter(line, "tx_frames=").unwrap_or(0) == 0 {
+                    errors.push(format!("{}: no sent frames", node.name));
+                }
+            }
+        }
+    }
+    let relay_lines = relay::lines(&relay.log);
+    if !relay_lines
+        .iter()
+        .any(|line| line.contains("established after first bytes both ways"))
+    {
+        errors.push("mesh relay did not establish first bytes in both directions".into());
+    }
+
+    let pass_lines = nodes
+        .iter()
+        .zip(facts.iter())
+        .filter_map(|(node, fact)| {
+            fact.mesh_transport_pass
+                .as_ref()
+                .map(|line| format!("{}: {line}", node.name))
+        })
+        .collect::<Vec<_>>();
+    let message = if errors.is_empty() {
+        format!(
+            "both kernels exchanged framed MeshEnvelopes and decoded the peer NodeId ({})",
+            pass_lines.join("; ")
+        )
+    } else {
+        errors.join("; ")
+    };
+    (
+        MeshProbeEvidence {
+            ok: errors.is_empty(),
+            message,
+            relay: relay_text,
+            nodes: nodes
+                .iter()
+                .zip(facts.iter())
+                .map(|(node, fact)| MeshNodeProbe {
+                    name: node.name.clone(),
+                    listen: fact.mesh_transport_listen.clone(),
+                    pass: fact.mesh_transport_pass.clone(),
+                })
+                .collect(),
+        },
+        Some(relay),
+    )
+}
+
+fn counter(line: &str, key: &str) -> Option<u64> {
+    let start = line.find(key)? + key.len();
+    let digits: String = line[start..]
+        .chars()
+        .take_while(|character| character.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+fn print_mesh_result(mesh: &MeshProbeEvidence) {
+    println!(
+        "mesh {}: {} ({})",
+        mesh.relay,
+        if mesh.ok { "pass" } else { "FAIL" },
+        mesh.message
+    );
+    for node in &mesh.nodes {
+        if let Some(line) = &node.pass {
+            println!("  {line}");
+        }
+    }
+}
+
 fn probe_evidence(
     from: &Node,
     to: &Node,
@@ -515,9 +707,13 @@ fn print_config(options: &Options) -> Result<i32, String> {
         println!("  mesh.epoch=1");
         println!("  console=serial0");
     }
-    println!("probe relays are allocated on ephemeral loopback ports at probe time");
-    println!("n0 -> n1 target: 127.0.0.1:{}", nodes[1].http_port);
-    println!("n1 -> n0 target: 127.0.0.1:{}", nodes[0].http_port);
+    println!("HTTP probe relays are allocated on ephemeral loopback ports at probe time");
+    println!("n0 -> n1 HTTP target: 127.0.0.1:{}", nodes[1].http_port);
+    println!("n1 -> n0 HTTP target: 127.0.0.1:{}", nodes[0].http_port);
+    println!(
+        "mesh relay: 127.0.0.1:{} <-> 127.0.0.1:{}",
+        nodes[0].mesh_port, nodes[1].mesh_port
+    );
     Ok(0)
 }
 
@@ -549,6 +745,8 @@ fn write_evidence(
     facts: &[BootFacts],
     probes: &[ProbeEvidence],
     relays: &[(String, Relay)],
+    mesh: Option<&MeshProbeEvidence>,
+    mesh_relay: Option<&MeshRelay>,
     fixture: Option<&Fixture>,
     action: &str,
     verdict: &str,
@@ -573,10 +771,13 @@ fn write_evidence(
     ));
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let commit = git(&options.repo, &["rev-parse", "HEAD"]);
-    let relay_refs: Vec<(String, &Relay)> = relays
+    let mut relay_logs: Vec<(String, relay::SharedLog)> = relays
         .iter()
-        .map(|(name, relay)| (name.clone(), relay))
+        .map(|(name, relay)| (name.clone(), relay.log.clone()))
         .collect();
+    if let Some(relay) = mesh_relay {
+        relay_logs.push(("mesh".into(), relay.log.clone()));
+    }
     let bundle = Evidence {
         work: &options.work,
         action,
@@ -589,8 +790,9 @@ fn write_evidence(
         module_sha256: &module_sha,
         nodes: &node_evidence,
         probes,
+        mesh,
         fixture,
-        relays: &relay_refs,
+        relays: &relay_logs,
         verdict,
         error,
     };

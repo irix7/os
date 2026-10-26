@@ -161,3 +161,32 @@ is not M2 work.
 - The M2-0 direct-path observation (early data reset) is recorded in M2-ADR-0001; it is
   the reason the probe uses the relay and the reason M2-1 must not assume a direct
   forward behaves like a normal listening socket.
+
+## M2-1 implementation note — listen-only bootstrap
+
+**Status:** implemented for M2-1; this note records a deliberate interim deviation.
+
+The M2-1 transport ships inside the existing MCP module, not as a new PROM feature.
+The kernel exposes only two module TCP slots and no client-connect service. MCP used
+both slots to pre-arm the next HTTP connection. M2-1 resolves the ownership conflict as
+follows:
+
+- The combined MCP+mesh module keeps **HTTP on module TCP slot 0** and gives **module TCP
+  slot 1 to a mesh listener on guest port 7000** when NVRAM contains `mesh.peer`.
+- Without `mesh.peer`, the mesh listener is disabled and MCP keeps its original two-slot
+  behaviour. A normal boot is unchanged.
+- Both nodes listen. The host `tools/m2-rig` mesh relay connects to both guest-7000 host
+  forwards and pumps bytes between them. This is the only supported M2-1 path because the
+  guest has no TCP connect primitive. The lower-`NodeId`-initiates rule is therefore not
+  exercised; it becomes relevant again when a connect service or a fixed early-data path
+  exists. The relay is still a dumb byte pump, not a directory or membership service.
+- The relay waits until it has read first bytes from **both** guests before writing either
+  direction. That avoids the iris port-forward early-data race recorded in M2-ADR-0001.
+  Its idle timeout is 120 s, and the modules generate a heartbeat every 5 s, so the 5 s
+  HTTP probe relay is not reused for the mesh link.
+- The M2-1 probe is `Request/Ping` followed by `Response/Ping`; an idle link carries
+  `Control/Ping`. The 16-byte body is the source `NodeId`, and the rig checks that each
+  node's pass line names the other node's derived `NodeId`.
+- Module TCP slot 1 is now a shared resource when the mesh is enabled: a future module that
+  wants to use it must coordinate with MCP or replace this combined module. Runtime module
+  dependencies (#217) are not available, so M2-1 does not claim a general slot manager.

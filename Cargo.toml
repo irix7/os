@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["kernel-test", "crates/boot-protocol-tests", "crates/erofs", "crates/block-cache", "crates/overlay", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/native-abi", "crates/sys-primitives", "crates/platform-api", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/fabric", "crates/guest-abi", "crates/cas-core", "crates/cas-store", "crates/cap-engine", "crates/agnostic-core", "crates/m1-policy-bridge", "crates/module-resolver", "crates/wasm-host", "crates/wasm-policy-host", "rom", "kernel", "modules/hello", "modules/ticker", "modules/mcp", "modules/block", "modules/erofs", "modules/logical", "modules/cache", "modules/wasm"]
+members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/guest-abi", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-transport", "crates/module-resolver", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "modules/block", "modules/cache", "modules/erofs", "modules/hello", "modules/logical", "modules/mcp", "modules/ticker", "modules/wasm", "rom"]
 # The target-only kernel, ROM and flat modules cannot link as host binaries.
 # Plain `cargo build`/`cargo test` therefore means the host-testable crates;
 # the cross and release jobs select kernel/ROM/module packages explicitly.
@@ -15,6 +15,7 @@ default-members = [
   "crates/irix7-libc",
   "crates/native-abi",
   "crates/sys-primitives",
+  "crates/mesh-transport",
   "crates/platform-api",
   "crates/mesh-core",
   "crates/mesh-service",
