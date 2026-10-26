@@ -45,6 +45,20 @@ pub const HOME_FIXTURE_DEFAULT: u32 = 8;
 /// Hard bound on the configured M2 home-evidence object count.
 pub const HOME_FIXTURE_MAX: u32 = 32;
 
+/// Domain separator for the fixed M3 shard-evidence object set.
+///
+/// This is a second *fixture*, not a second placement model: every object is
+/// still assigned by [`home_for`] from the confirmed membership view.  The M2
+/// set stays at 32 objects so its evidence body is unchanged; the shard set is
+/// larger so eight nodes each have a measurable share.
+pub const SHARD_FIXTURE_DOMAIN: &[u8] = b"IRIX7-M3-SHARD-OBJECT-v1";
+
+/// Default number of objects in the M3 shard-evidence set.
+pub const SHARD_FIXTURE_DEFAULT: u32 = 64;
+
+/// Hard bound on the configured M3 shard-evidence object count.
+pub const SHARD_FIXTURE_MAX: u32 = 256;
+
 /// A membership snapshot.  It is immutable; a new epoch is a new value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MembershipView {
@@ -165,6 +179,29 @@ pub fn fixture_objects(count: u32) -> Vec<ObjectId> {
         .collect()
 }
 
+/// Derive one object in the fixed M3 shard-evidence set.
+///
+/// `object = BLAKE3-256("IRIX7-M3-SHARD-OBJECT-v1" || index u32 LE)`.  The
+/// derivation is independent of the membership, so the same test object exists
+/// before and after a membership change and only its rendezvous winner moves.
+pub fn shard_fixture_object(index: u32) -> ObjectId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(SHARD_FIXTURE_DOMAIN);
+    hasher.update(&index.to_le_bytes());
+    let hash = hasher.finalize();
+    ObjectId(*hash.as_bytes())
+}
+
+/// Build the configured M3 shard-evidence set.
+///
+/// The count is clamped to [`SHARD_FIXTURE_MAX`].  It is a bounded fixture,
+/// not a directory and not a replication factor.
+pub fn shard_objects(count: u32) -> Vec<ObjectId> {
+    (0..count.min(SHARD_FIXTURE_MAX))
+        .map(shard_fixture_object)
+        .collect()
+}
+
 /// One object-to-home mapping under a confirmed membership view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct HomeEntry {
@@ -220,6 +257,61 @@ impl HomeTable {
     /// Whether the table has no objects.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
+    }
+
+    /// The entries this node owns, in the table's object order.
+    ///
+    /// A node derives its own shard from the same [`HomeTable`] every node
+    /// computes; there is no directory query and no per-node assignment list.
+    pub fn owned_by(&self, node: NodeId) -> Vec<HomeEntry> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.home == node)
+            .copied()
+            .collect()
+    }
+
+    /// The number of objects this node owns.
+    pub fn owned_count(&self, node: NodeId) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.home == node)
+            .count()
+    }
+
+    /// Assignment counts for nodes that own at least one object, in node order.
+    ///
+    /// A node with no objects is absent; callers that need every confirmed
+    /// member should also call [`HomeTable::owned_count`] with that member.
+    pub fn owner_counts(&self) -> Vec<(NodeId, usize)> {
+        let mut counts: BTreeMap<NodeId, usize> = BTreeMap::new();
+        for entry in &self.entries {
+            *counts.entry(entry.home).or_insert(0) += 1;
+        }
+        counts.into_iter().collect()
+    }
+
+    /// The smallest and largest non-empty shard in this table.
+    ///
+    /// This is descriptive evidence, not a placement rule: the rendezvous
+    /// hash, not a balancer, chooses every home.
+    pub fn balance(&self) -> ShardBalance {
+        let counts = self.owner_counts();
+        let mut min = usize::MAX;
+        let mut max = 0;
+        for (_, count) in &counts {
+            min = min.min(*count);
+            max = max.max(*count);
+        }
+        if counts.is_empty() {
+            min = 0;
+        }
+        ShardBalance {
+            objects: self.entries.len(),
+            owners: counts.len(),
+            min,
+            max,
+        }
     }
 
     /// Look up one object's home in this table.
@@ -284,6 +376,19 @@ impl HomeTable {
         }
         Ok(())
     }
+}
+
+/// A bounded summary of how a home table is split across its owners.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShardBalance {
+    /// Number of objects in the table.
+    pub objects: usize,
+    /// Number of nodes that own at least one object.
+    pub owners: usize,
+    /// Smallest non-empty shard (0 for an empty table).
+    pub min: usize,
+    /// Largest shard (0 for an empty table).
+    pub max: usize,
 }
 
 /// Why a table cannot answer a query at the requested epoch.
@@ -783,6 +888,148 @@ mod tests {
         }
         assert!(moved > 0, "the removed node must have owned some objects");
         assert!(stayed > 0, "other homes must not churn");
+    }
+
+    fn shard_view(count: u8, epoch: u32) -> MembershipView {
+        MembershipView::new(epoch, (1..=count).map(node).collect()).expect("view")
+    }
+
+    #[test]
+    fn shard_fixture_is_deterministic_distinct_and_bounded() {
+        let first = shard_objects(SHARD_FIXTURE_DEFAULT);
+        let second = shard_objects(SHARD_FIXTURE_DEFAULT);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), SHARD_FIXTURE_DEFAULT as usize);
+        let mut sorted = first.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), first.len());
+        assert_eq!(shard_objects(0).len(), 0);
+        assert_eq!(
+            shard_objects(SHARD_FIXTURE_MAX + 100).len(),
+            SHARD_FIXTURE_MAX as usize
+        );
+        // The shard fixture is deliberately a different space from the M2
+        // evidence set.
+        assert_ne!(shard_fixture_object(0), fixture_object(0));
+    }
+
+    #[test]
+    fn one_two_eight_and_128_node_shards_have_one_owner_per_object() {
+        for (count, objects) in [
+            (1u8, SHARD_FIXTURE_DEFAULT),
+            (2, SHARD_FIXTURE_DEFAULT),
+            (8, 1024),
+            (128, 2048),
+        ] {
+            let view = shard_view(count, 7);
+            let ids = shard_objects(objects);
+            let table = HomeTable::new(&view, digest(count), &ids).expect("table");
+            assert_eq!(table.len(), ids.len());
+            for (entry, object) in table.entries.iter().zip(&ids) {
+                assert_eq!(entry.object, *object);
+                assert!(view.contains(entry.home), "home must be a member");
+            }
+            let mut owned = 0;
+            for member in &view.nodes {
+                owned += table.owned_count(*member);
+            }
+            assert_eq!(owned, table.len(), "every object has exactly one owner");
+        }
+    }
+
+    #[test]
+    fn eight_node_shards_are_balanced_and_every_node_owns_something() {
+        let view = shard_view(8, 8);
+        let table = HomeTable::new(&view, digest(8), &shard_objects(SHARD_FIXTURE_MAX))
+            .expect("shard table");
+        let balance = table.balance();
+        assert_eq!(balance.objects, SHARD_FIXTURE_MAX as usize);
+        assert_eq!(balance.owners, 8);
+        assert!(balance.min > 0, "every node must own at least one object");
+        let average = balance.objects / balance.owners;
+        assert!(
+            balance.max <= average * 3 / 2,
+            "rendezvous shard is unexpectedly skewed: {balance:?}"
+        );
+        for member in &view.nodes {
+            assert!(table.owned_count(*member) > 0);
+        }
+    }
+
+    #[test]
+    fn a_node_computes_its_own_shard_without_a_directory() {
+        let view = shard_view(8, 8);
+        let ids = shard_objects(SHARD_FIXTURE_DEFAULT);
+        let table = HomeTable::new(&view, digest(9), &ids).expect("table");
+        // Member order is irrelevant: the same view and fixture produce the
+        // same table on every node.
+        let mut shuffled = view.nodes.clone();
+        shuffled.reverse();
+        let other_view = MembershipView::new(view.epoch, shuffled).expect("view");
+        let other = HomeTable::new(&other_view, digest(9), &ids).expect("table");
+        assert_eq!(table, other);
+        // Each node filters the same table locally.  No row is fetched from a
+        // directory or from the owner.
+        for member in &view.nodes {
+            let owned: Vec<_> = table
+                .entries
+                .iter()
+                .filter(|entry| entry.home == *member)
+                .copied()
+                .collect();
+            assert_eq!(table.owned_by(*member), owned);
+            assert_eq!(table.owned_count(*member), owned.len());
+        }
+    }
+
+    #[test]
+    fn removing_and_adding_a_node_moves_only_its_objects() {
+        let eight = shard_view(8, 9);
+        let seven = shard_view(7, 10);
+        let ids = shard_objects(1024);
+        let before = HomeTable::new(&eight, digest(1), &ids).expect("before");
+        let after = HomeTable::new(&seven, digest(2), &ids).expect("after");
+        let removed = node(8);
+        let mut moved = 0;
+        let mut stayed = 0;
+        for (old, new) in before.entries.iter().zip(&after.entries) {
+            assert_eq!(old.object, new.object);
+            if old.home == removed {
+                moved += 1;
+                assert_ne!(new.home, removed);
+            } else {
+                stayed += 1;
+                assert_eq!(old.home, new.home);
+            }
+        }
+        assert!(moved > 0, "the removed node must have owned objects");
+        assert!(stayed > 0, "other shards must not churn");
+
+        // Re-admitting the node moves only the objects whose winner changes.
+        let again = HomeTable::new(&eight, digest(3), &ids).expect("again");
+        let mut returned = 0;
+        for (seven_row, eight_row) in after.entries.iter().zip(&again.entries) {
+            if seven_row.home != eight_row.home {
+                returned += 1;
+                assert_eq!(eight_row.home, removed);
+            }
+        }
+        assert!(returned > 0);
+    }
+
+    #[test]
+    fn a_shard_table_is_only_current_at_its_own_epoch() {
+        let view = shard_view(8, 12);
+        let table = HomeTable::new(&view, digest(12), &shard_objects(64)).expect("table");
+        assert_eq!(table.at_epoch(12), Ok(&table));
+        assert_eq!(
+            table.at_epoch(11),
+            Err(HomeEpochError::Stale {
+                requested: 11,
+                current: 12
+            })
+        );
     }
 
     #[test]

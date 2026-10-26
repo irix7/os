@@ -266,6 +266,22 @@ the POSIX bridge and ABI 10 compatibility bridge (ABI 11 adds block_write).
 **Exit:** M2 full; M3 sharded homes, CAS fetch, placement, two-node failure;
 L0 migration both ways; compatibility suite.
 
+**Status (2026-10-27, first shard slice):** the object home set is sharded by the existing
+`mesh-core::home_for` over an opt-in M3 fixture (`mesh.shard`), with a bounded
+`GET /mesh/shard` surface that reports the confirmed epoch, membership digest, per-node
+owner counts and only the local node's assignments.  A converged member now re-asks the
+authority on a bounded signed refresh, so an earlier member learns a later join without a
+push protocol or a second epoch writer.  Host tests cover 1/2/8/128 nodes, balance,
+churn-induced movement, duplicate/stale epochs and a no-directory local shard view; one
+eight-member join/refresh test runs the real state machine.  Two real iris kernels pass
+the slice: epoch 2, the same 32-object table, per-node rows, stale-epoch refusal, the M2
+`/mesh/homes` surface and one remote stat with one attempt and no `MOVED`.  Eight iris
+kernels boot, but the experimental host link switch exposed a guest smoltcp receive
+truncation on the root's single mesh slot, so **eight-node convergence is not claimed on
+real kernels**; that transport fix and the full M3 gate (CAS fetch, placement, two-node
+failure, churn, GPU path) remain.  See [M3-ADR-0001](../adr/m3-0001-shard-slice.md) and
+[`m3-rig.md`](m3-rig.md).
+
 ### Phase 6 — x86_64 PC shim
 
 Limine/UEFI boot, ACPI/APIC, e1000e, AHCI/NVMe, framebuffer and serial. Reuse

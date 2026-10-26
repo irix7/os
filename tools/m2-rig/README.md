@@ -13,6 +13,10 @@ hash at each boundary. `--fault kill-peer` and `--fault partition` replace the
 restart with the M2-6 failure scenario: a bounded suspect/failed/removal transition,
 locally recomputed homes, lease fencing and the mutable-object partition rule.
 
+The `shard` command is the first M3 slice: two real kernels converge on the same
+rendezvous table and serve `/mesh/shard`, while the 1/2/8/128-node shard policy is a host
+gate.  Eight live kernels are not claimed; see the M3 runbook.
+
 - Runbook: [`../../docs/plan/m2-rig.md`](../../docs/plan/m2-rig.md)
 - Decisions: [`../../docs/adr/README.md`](../../docs/adr/README.md)
   ([M2-ADR-0005](../../docs/adr/m2-0005-join-epoch.md) is the join/epoch design,
@@ -20,7 +24,8 @@ locally recomputed homes, lease fencing and the mutable-object partition rule.
   [M2-ADR-0007](../../docs/adr/m2-0007-route.md) is the route/`MOVED` design and
   [M2-ADR-0008](../../docs/adr/m2-0008-failure-fence.md) is the failure/fence/partition
   design and [M2-ADR-0009](../../docs/adr/m2-0009-actor-migration.md) is the L0 actor
-  migration design)
+  migration design, and [M3-ADR-0001](../../docs/adr/m3-0001-shard-slice.md) is the first
+  shard slice and its real-kernel limit)
 - Harness crate: `Cargo.toml`, `src/`
 - Build helper: `build.sh`
 
@@ -41,6 +46,7 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 | Command | Purpose |
 |---|---|
 | `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member (default), drive the eleven migration steps, stop, write evidence. In `kill-peer`/`partition` it runs the failure scenario instead of the restart and does not drive migration. |
+| `shard` | Start `--nodes` kernels (two by default), join them through the M2 relay, verify `/mesh/shard`, `/mesh/homes`, the stale-epoch negative and one remote stat, stop, write the M3 evidence bundle. `--hub` enables the experimental multi-node link switch; see [`../../docs/plan/m3-rig.md`](../../docs/plan/m3-rig.md). |
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
 | `probe` | Probe HTTP, mesh framing, join, homes and the route against running nodes; no restart. |
@@ -49,8 +55,9 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 | `clean` | Remove the work directory (stop the nodes first). |
 
 Options: `--work DIR`, `--repo DIR`, `--iris PATH`, `--iris-ci PATH`, `--rom PATH`,
-`--module PATH`, `--base-port N`, `--timeout SECS`, `--fault MODE`, `--keep`,
-`--verbose`.
+`--module PATH`, `--base-port N`, `--nodes N`, `--hub`, `--timeout SECS`,
+`--fault MODE`, `--keep`, `--verbose`.  Host forward ports now start at `base+1000` so
+the eight-node monitor block (`base+600`) cannot collide.
 
 `--fault` selects a negative-evidence mode:
 

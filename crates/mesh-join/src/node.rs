@@ -38,6 +38,16 @@ use crate::wire::{
 pub const RETRY_INTERVAL_MS: u64 = 5_000;
 /// Maximum sends of one join request, including the first.
 pub const MAX_ATTEMPTS: u32 = 5;
+/// Interval at which a converged member asks the authority for the current
+/// epoch again.
+///
+/// M2 only asked on link-up; that is enough for two nodes, because a second
+/// join advances the epoch and the first member would never hear about it.  M3
+/// keeps the same signed confirmation and the same root-only epoch writer, but
+/// a converged member re-asks on this bounded interval so a seven-member join
+/// converges without a push protocol or a second authority.  The request is the
+/// same `JoinRequest`; the root answers with the current epoch and full list.
+pub const REFRESH_INTERVAL_MS: u64 = 5_000;
 
 /// Which side of the 1-of-1 authority this node is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +75,12 @@ pub enum Tick {
     Idle,
     /// Send (or resend) the same join request.
     Send(JoinRequest),
+    /// Send a new signed request for the current epoch.
+    ///
+    /// A refresh is not a retry: it has a new nonce and incarnation, and it is
+    /// only produced after a member has converged.  The authority still decides
+    /// the epoch and the member list.
+    Refresh(JoinRequest),
     /// The attempt budget is exhausted; log once and keep the last view.
     TimedOut,
 }
@@ -80,6 +96,12 @@ pub enum JoinEvent {
     Converged(MembershipSnapshot),
     /// The member re-installed the same confirmed view.
     Duplicate(MembershipSnapshot),
+    /// A bounded refresh re-installed the same confirmed view.
+    ///
+    /// This is the routine M3 case after another member joined: unlike
+    /// `Duplicate` it is not a rejoin event, so the module does not repeat the
+    /// full home table in the serial log.
+    Refreshed(MembershipSnapshot),
     /// The authority refused the request; no view changed.
     Refused {
         /// The refusal reason.
@@ -156,6 +178,8 @@ impl Outcome {
 struct Outstanding {
     request: JoinRequest,
     sent_ms: u64,
+    /// Whether this attempt is a routine epoch refresh rather than a rejoin.
+    refresh: bool,
 }
 
 struct RootState {
@@ -180,6 +204,12 @@ struct MemberState {
     /// Whether this member currently has an authoritative view.  A lost
     /// authority is restored only by a fresh signed confirmation.
     authority_current: bool,
+    /// When the next bounded epoch refresh is due.
+    ///
+    /// `None` means no refresh is scheduled: before the first confirmation,
+    /// after a rejection, and after a link loss.  A refresh is still a signed
+    /// join request; it never advances the epoch by itself.
+    refresh_at_ms: Option<u64>,
 }
 
 enum Engine {
@@ -251,6 +281,7 @@ impl JoinNode {
                 root_seen_ms: now_ms,
                 root_tracked: false,
                 authority_current: false,
+                refresh_at_ms: None,
             }),
         })
     }
@@ -413,7 +444,7 @@ impl JoinNode {
                     && state.outstanding.is_none() =>
             {
                 self.sequence = sequence;
-                Some(state.new_attempt(self_id, root, now_ms, sequence))
+                Some(state.new_attempt(self_id, root, now_ms, sequence, false))
             }
             _ => None,
         }
@@ -502,6 +533,7 @@ impl JoinNode {
                 state.outstanding = None;
                 state.attempts = 0;
                 state.timed_out = false;
+                state.refresh_at_ms = None;
                 // A new link is a fresh chance to hear the authority.  It does
                 // not restore authority by itself: only a signed confirmation
                 // can do that.
@@ -509,7 +541,7 @@ impl JoinNode {
                 if state.root_state != NodeState::Failed {
                     state.root_state = NodeState::Alive;
                 }
-                Some(state.new_attempt(self_id, root, now_ms, sequence))
+                Some(state.new_attempt(self_id, root, now_ms, sequence, false))
             }
         }
     }
@@ -521,14 +553,29 @@ impl JoinNode {
             state.outstanding = None;
             state.attempts = 0;
             state.timed_out = false;
+            state.refresh_at_ms = None;
         }
     }
 
-    /// Retry the outstanding request after the interval, up to the budget.
+    /// Retry the outstanding request after the interval, up to the budget, and
+    /// start one bounded epoch refresh after a converged member's interval.
     pub fn poll(&mut self, now_ms: u64) -> Tick {
+        let self_id = self.self_id;
+        let root = self.root;
         match &mut self.engine {
             Engine::Root(_) => Tick::Idle,
-            Engine::Member(state) => state.poll(now_ms),
+            Engine::Member(state) => {
+                let tick = state.poll(now_ms);
+                if !matches!(tick, Tick::Idle) {
+                    return tick;
+                }
+                if !state.refresh_due(now_ms) {
+                    return Tick::Idle;
+                }
+                let sequence = self.sequence.wrapping_add(1);
+                self.sequence = sequence;
+                Tick::Refresh(state.new_attempt(self_id, root, now_ms, sequence, true))
+            }
         }
     }
 
@@ -583,6 +630,17 @@ impl RootState {
             JoinMessage::Ack(ack) => {
                 if ack.node != src {
                     return Outcome::rejected("ack-subject");
+                }
+                if ack.epoch < self.converged.epoch {
+                    // A later join advanced the epoch before this ack arrived.
+                    // The member acknowledged a confirmation that was correct
+                    // when issued; it is stale, not an equivocation.  Ignore
+                    // it and let the member's next refresh confirm the current
+                    // view.
+                    return Outcome {
+                        reply: None,
+                        event: JoinEvent::Rejected("ack-stale"),
+                    };
                 }
                 if ack.epoch != self.converged.epoch || ack.digest != self.converged.digest() {
                     return Outcome::rejected("ack-mismatch");
@@ -645,6 +703,7 @@ impl MemberState {
                 let Some(outstanding) = &self.outstanding else {
                     return Outcome::rejected("no-outstanding-request");
                 };
+                let refresh = outstanding.refresh;
                 let previous = self.snapshot();
                 let expectation = Expectation {
                     subject: self_id,
@@ -685,6 +744,7 @@ impl MemberState {
                 self.root_seen_ms = now_ms;
                 self.root_state = NodeState::Alive;
                 self.authority_current = true;
+                self.refresh_at_ms = Some(now_ms.saturating_add(REFRESH_INTERVAL_MS));
                 if duplicate {
                     // The same epoch and list are already installed.  This is
                     // the terminal answer for a reconnect/rejoin; do not keep
@@ -694,7 +754,11 @@ impl MemberState {
                     self.timed_out = false;
                     return Outcome {
                         reply: Some(JoinMessage::Ack(ack)),
-                        event: JoinEvent::Duplicate(snapshot),
+                        event: if refresh {
+                            JoinEvent::Refreshed(snapshot)
+                        } else {
+                            JoinEvent::Duplicate(snapshot)
+                        },
                     };
                 }
                 self.outstanding = None;
@@ -736,6 +800,7 @@ impl MemberState {
         root: NodeId,
         now_ms: u64,
         sequence: u64,
+        refresh: bool,
     ) -> JoinRequest {
         let (nonce, incarnation) = attempt_ids(self_id, root, now_ms, sequence);
         let snapshot = self.snapshot();
@@ -749,10 +814,32 @@ impl MemberState {
         self.outstanding = Some(Outstanding {
             request,
             sent_ms: now_ms,
+            refresh,
         });
         self.attempts = 1;
         self.timed_out = false;
+        self.refresh_at_ms = None;
         request
+    }
+
+    /// Whether a converged, authoritative member should ask for the current
+    /// epoch again.
+    ///
+    /// The first call after a confirmation schedules the interval; later calls
+    /// are due only at the boundary.  A member that has lost the authority or
+    /// has never converged never starts a refresh on its own; the rejoin path
+    /// handles that case.
+    fn refresh_due(&mut self, now_ms: u64) -> bool {
+        if !self.authority_current || self.converged.is_none() || self.outstanding.is_some() {
+            return false;
+        }
+        match self.refresh_at_ms {
+            None => {
+                self.refresh_at_ms = Some(now_ms.saturating_add(REFRESH_INTERVAL_MS));
+                false
+            }
+            Some(at) => now_ms >= at,
+        }
     }
 }
 

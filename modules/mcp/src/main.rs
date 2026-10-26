@@ -914,6 +914,12 @@ fn handle_request(services: &Services, slot: u32) {
         send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
+    if !is_post && (path == b"/mesh/shard" || path.starts_with(b"/mesh/shard?")) {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::shard_response(path, response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
+        return;
+    }
     if !is_post && (path == b"/mesh/route" || path.starts_with(b"/mesh/route?")) {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let (status, n) = mesh::route_response(services, path, response);

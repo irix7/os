@@ -126,10 +126,12 @@ the evidence.
 
 | Node | Monitor | Serial A/B | Telnet | MCP HTTP | Mesh |
 |---|---|---|---|---|---|
-| `n0` | `base` | `base+1/+2` | `base+600` | `base+601` | `base+602` |
-| `n1` | `base+100` | `base+101/+102` | `base+610` | `base+611` | `base+612` |
+| `n0` | `base` | `base+1/+2` | `base+1000` | `base+1001` | `base+1002` |
+| `n1` | `base+100` | `base+101/+102` | `base+1010` | `base+1011` | `base+1012` |
 
-The default base is `9100`.
+The default base is `9100`, so n0's MCP forward is 10101.  The forward block moved from
+`base+600` to `base+1000` because the old start collided with the eight-node monitor block
+(`base+600` is node 6).
 
 ## Network path
 
@@ -137,13 +139,13 @@ The default base is `9100`.
 guest n0 (192.168.0.2)
   -> n0 NAT gateway 192.168.0.1:<relay>
   -> host 127.0.0.1:<relay>          (Rust byte relay)
-  -> host 127.0.0.1:9711             (n1's port forward)
+  -> host 127.0.0.1:10111             (n1's port forward)
   -> guest n1 (192.168.1.2):80       (MCP status page)
 
 guest n1 (192.168.1.2)
   -> n1 NAT gateway 192.168.1.1:<relay>
   -> host 127.0.0.1:<relay>          (Rust byte relay)
-  -> host 127.0.0.1:9701             (n0's port forward)
+  -> host 127.0.0.1:10101             (n0's port forward)
   -> guest n0 (192.168.0.2):80       (MCP status page)
 ```
 
@@ -164,9 +166,9 @@ sides:
 
 ```text
 guest n0 (192.168.0.2):7000
-  <- n0 forward 127.0.0.1:9702
+  <- n0 forward 127.0.0.1:10102
   <- Rust mesh relay
-  -> 127.0.0.1:9712 (n1 forward)
+  -> 127.0.0.1:10112 (n1 forward)
   -> guest n1 (192.168.1.2):7000
 ```
 
@@ -517,7 +519,7 @@ The rig writes a DS1386 image per node. The keys are:
 |---|---|
 | `mcp.url` | The node's own gateway plus the fixture port: `http://192.168.<n>.1:<port>/mcp.module`. |
 | `mcp.sha256` | SHA-256 of the fresh module. |
-| `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:9712` for `n0`, `192.168.1.1:9702` for `n1`. Its presence enables the guest mesh listener and the join. |
+| `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:10112` for `n0`, `192.168.1.1:10102` for `n1`. Its presence enables the guest mesh listener and the join. |
 | `mesh.authority` | Node 0's MAC; the 1-of-1 authority root. |
 | `mesh.epoch` | Initial seed epoch, `1`. The rig omits it at the module default of 1. |
 | `mesh.obj` | Number of M2 home-fixture objects, `1`–`32` (the rig uses the default `8` and omits the key so the route opt-in fits). |
@@ -841,7 +843,7 @@ linearisable writes across a partition.
   instead of `stale-epoch`, the saved frame came from the current epoch, so the failure
   happened before the M2-4 sequence completed.
 - If the homes check fails, fetch the endpoint by hand:
-  `curl -sS http://127.0.0.1:9701/mesh/homes` and `...:9711/mesh/homes`. A
+  `curl -sS http://127.0.0.1:10101/mesh/homes` and `...:10111/mesh/homes`. A
   `state=pending` member has not installed a confirmation; a `404 disabled` means
   `mesh.peer` was absent; a `state=stale` response is the expected answer for
   `?epoch=1` after the epoch advanced. Compare the `mesh-home:` rows with

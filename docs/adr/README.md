@@ -1,8 +1,8 @@
-# Architecture decision records — M2 working series
+# Architecture decision records — M2 and M3 working series
 
 **Status:** living index
-**Scope:** the decisions M2 needs before the join, transport, route-cache, migration and
-failure work can start.
+**Scope:** the decisions M2 needed for join, transport, route-cache, migration and failure,
+and the first M3 shard decision.
 
 The project's main ADR series is numbered from **ADR-0021** onward for the architecture
 decisions D1–D31 in [`../spec/architecture.md`](../spec/architecture.md) §2.2; see
@@ -22,8 +22,11 @@ next free global number.
 | [M2-ADR-0007](m2-0007-route.md) | Remote capability routing, home leases and the one-`MOVED` retry | Accepted for M2, limited |
 | [M2-ADR-0008](m2-0008-failure-fence.md) | Bounded failure detection, lease fencing and the no-second-home partition rule | Accepted for M2, limited |
 | [M2-ADR-0009](m2-0009-actor-migration.md) | L0 stackless-actor state, root-signed move and the message-boundary lease protocol | Accepted for M2, limited |
+| [M3-ADR-0001](m3-0001-shard-slice.md) | First sharded home slice: one rendezvous table, signed epoch refresh, two-kernel real limit | Accepted for this slice, limited |
 
-The practical runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md). The harness is [`tools/m2-rig`](../../tools/m2-rig/README.md).
+The practical M2 runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md); the M3 first-slice
+runbook is [`../plan/m3-rig.md`](../plan/m3-rig.md). The harness is
+[`tools/m2-rig`](../../tools/m2-rig/README.md).
 
 ## Template
 

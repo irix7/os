@@ -30,6 +30,9 @@ pub const TELNET_GUEST_PORT: u16 = 23;
 pub enum Action {
     /// Start both nodes, probe both directions, stop, and write evidence.
     Run,
+    /// Start the M3 shard slice: `--nodes` kernels, join through the direct
+    /// two-node relay (or the experimental hub), shard evidence and one route.
+    Shard,
     /// Start both nodes and leave them running.
     Up,
     /// Stop both nodes.
@@ -49,6 +52,7 @@ impl Action {
     pub fn parse(word: &str) -> Option<Self> {
         Some(match word {
             "run" => Self::Run,
+            "shard" => Self::Shard,
             "up" => Self::Up,
             "down" => Self::Down,
             "status" => Self::Status,
@@ -149,6 +153,10 @@ pub struct Options {
     pub module: PathBuf,
     /// First monitor port block.
     pub base_port: u16,
+    /// Number of nodes for the M3 shard scenario.
+    pub nodes: u32,
+    /// Use the experimental host hub for more than two real kernels.
+    pub hub: bool,
     /// Boot deadline.
     pub timeout: Duration,
     /// Join-path fault mode.
@@ -177,9 +185,14 @@ impl Options {
     }
 
     /// The first host-forward port for one node.
+    ///
+    /// Monitor blocks are `base + instance * 100` and use up to
+    /// `base + 700` for eight nodes.  The forward block starts at
+    /// `base + 1000` so the two ranges cannot overlap at any node count the
+    /// rig supports (M2's two-node layout grew into the M3 eight-node one).
     pub fn forward_base(&self, instance: u32) -> u16 {
         self.base_port
-            .saturating_add(600)
+            .saturating_add(1000)
             .saturating_add((instance as u16).saturating_mul(10))
     }
 
@@ -212,6 +225,8 @@ where
     let mut rom = None;
     let mut module = None;
     let mut base_port = 9100u16;
+    let mut nodes = 2u32;
+    let mut hub = false;
     let mut timeout = Duration::from_secs(180);
     let mut fault = Fault::None;
     let mut keep = false;
@@ -233,6 +248,15 @@ where
                     .parse()
                     .map_err(|_| "--base-port must be a TCP port".to_string())?;
             }
+            "--nodes" => {
+                nodes = next_value(&mut iter, "--nodes")?
+                    .parse()
+                    .map_err(|_| "--nodes must be 2..=8".to_string())?;
+                if !(2..=8).contains(&nodes) {
+                    return Err("--nodes must be 2..=8".into());
+                }
+            }
+            "--hub" => hub = true,
             "--timeout" => {
                 let seconds: u64 = next_value(&mut iter, "--timeout")?
                     .parse()
@@ -284,6 +308,8 @@ where
         rom,
         module,
         base_port,
+        nodes,
+        hub,
         timeout,
         fault,
         keep,
@@ -422,6 +448,9 @@ impl Node {
                     env.push(("mesh.obj".into(), objects.to_string()));
                 }
             }
+            if let Some(shard) = mesh.shard {
+                env.push(("mesh.shard".into(), shard.to_string()));
+            }
             if let Some(key) = &mesh.public_key {
                 env.push(("mesh.pub".into(), key.clone()));
             }
@@ -450,6 +479,8 @@ pub struct MeshEnv {
     pub epoch: Option<u32>,
     /// Number of objects in the M2 home-evidence fixture set (`mesh.obj`).
     pub objects: Option<u32>,
+    /// Number of objects in the M3 shard-evidence set (`mesh.shard`).
+    pub shard: Option<u32>,
     /// The authority root's Ed25519 public key as lower-case hex (`mesh.pub`).
     pub public_key: Option<String>,
     /// The authority root's 32-byte Ed25519 seed as lower-case hex
@@ -514,6 +545,7 @@ pub fn mesh_environments(
             authority: Some(nodes[0].mac_string()),
             epoch: Some(1),
             objects: Some(crate::homes::OBJECT_COUNT),
+            shard: None,
             public_key: None,
             seed: None,
             route: if fault.migrates() {
@@ -543,7 +575,57 @@ pub fn mesh_environments(
     (envs, authority, wrong)
 }
 
-/// Derive both nodes, write their configs, and return them.
+/// Build the M3 shard environment for every node.
+///
+/// Every node carries the same root identity and shard count.  The root is the
+/// only key holder; every member gets the public key.  `mesh.peer` is the
+/// enable key for the mesh listener; under the M3 host hub the guests do not
+/// dial it, the hub connects to each guest's mesh forward.
+pub fn shard_environments(
+    nodes: &[Node],
+    shard_objects: u32,
+    route_member: usize,
+) -> (Vec<MeshEnv>, AuthorityKeys) {
+    let authority = AuthorityKeys::lab();
+    let root = &nodes[0];
+    let envs = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let mut env = MeshEnv {
+                // Presence enables the guest listener.  Under the M3 host hub
+                // the guest does not dial this value; the hub connects to the
+                // guest's mesh forward.  Keep it short: the DS1386 environment
+                // has only 298 bytes before the MAC slot.
+                peer: Some(format!("{}:1", node.gateway)),
+                authority: Some(root.mac_string()),
+                epoch: Some(1),
+                objects: Some(crate::homes::OBJECT_COUNT),
+                shard: Some(shard_objects),
+                public_key: None,
+                seed: None,
+                // The M2 route policy only runs on the root and the chosen
+                // remote owner.  Other members keep the M3 shard surface and
+                // stay well inside the NVRAM budget.
+                route: if index == 0 || index == route_member {
+                    Some("1".into())
+                } else {
+                    None
+                },
+                fail: None,
+            };
+            if index == 0 {
+                env.seed = Some(authority.seed_hex.clone());
+            } else {
+                env.public_key = Some(authority.public_hex.clone());
+            }
+            env
+        })
+        .collect();
+    (envs, authority)
+}
+
+/// Derive the configured nodes, write their configs, and return them.
 ///
 /// This calls the emulator's own `--print-instance` surface rather than
 /// reimplementing its derivation.  The only additions are the explicit host
@@ -552,7 +634,7 @@ pub fn derive_nodes(options: &Options) -> Result<Vec<Node>, String> {
     fs::create_dir_all(&options.work)
         .map_err(|error| format!("create {}: {error}", options.work.display()))?;
     let mut nodes = Vec::new();
-    for instance in 0..2u32 {
+    for instance in 0..options.nodes {
         let config = options.node_config(instance);
         write_config(options, instance, &config)?;
         let report = run_print_instance(options, instance, &config)?;
@@ -1266,6 +1348,8 @@ mod tests {
             rom: PathBuf::from("rom"),
             module: PathBuf::from("module"),
             base_port: 9100,
+            nodes: 2,
+            hub: false,
             timeout: Duration::from_secs(1),
             fault: Fault::None,
             keep: false,
@@ -1273,12 +1357,15 @@ mod tests {
         };
         assert_eq!(options.port_base(0), 9100);
         assert_eq!(options.port_base(1), 9200);
-        assert_eq!(options.telnet_port(0), 9700);
-        assert_eq!(options.telnet_port(1), 9710);
-        assert_eq!(options.http_port(0), 9701);
-        assert_eq!(options.http_port(1), 9711);
-        assert_eq!(options.mesh_port(0), 9702);
-        assert_eq!(options.mesh_port(1), 9712);
+        assert_eq!(options.telnet_port(0), 10100);
+        assert_eq!(options.telnet_port(1), 10110);
+        assert_eq!(options.http_port(0), 10101);
+        assert_eq!(options.http_port(1), 10111);
+        assert_eq!(options.mesh_port(0), 10102);
+        assert_eq!(options.mesh_port(1), 10112);
+        // The monitor/serial block for the last of eight nodes ends at
+        // base + 702 and the forward range starts at base + 1000.
+        assert!(options.forward_base(7) > options.port_base(7).saturating_add(2));
     }
 
     #[test]
