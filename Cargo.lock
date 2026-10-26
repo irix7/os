@@ -763,6 +763,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "module-trust"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek",
+]
+
+[[package]]
 name = "native-abi"
 version = "0.1.0"
 
