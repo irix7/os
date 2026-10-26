@@ -747,6 +747,10 @@ version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.6.0#733675947f4ec001df37c42e9773fab669085f0a"
 
 [[package]]
+name = "module-resolver"
+version = "0.1.0"
+
+[[package]]
 name = "native-abi"
 version = "0.1.0"
 
