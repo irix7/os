@@ -33,6 +33,13 @@ version=1
 kind name version url sha256 description...
 ```
 
+Version 2 adds an optional exact dependency field before the description:
+
+```text
+version=2
+kind name version url sha256 depends=name@version:sha256,... description...
+```
+
 `kind` is `module` or `userland`.  Names are ASCII, contain no whitespace, and
 are stable across versions.  `version` is a release tag or SemVer.  `url` must
 be HTTPS and immutable for that version.  `sha256` is 64 lowercase hex digits
@@ -44,14 +51,16 @@ later format change.
 Comments and blank lines are ignored.  Unknown fields are rejected by the
 client; a future format version is not guessed.
 
-### 3.1 Dependency records (planned)
+### 3.1 Dependency records (v2, host parser implemented)
 
-Version 1 records have no dependency field.  The runtime module work in #217
-will add an exact `depends=name@version:sha256,...` list (and the module
-manifest that binds it to the image digest).  The first client resolves exact
-versions only; ranges, conflict solving and automatic upgrades are a later
-format change.  Until then a record is standalone, and a distribution that
-needs a dependency must bundle it into the image explicitly.
+Version 2 records add one `depends=` token before the description.  It is a
+comma-separated list of `name@version:sha256` entries.  Dependencies are exact
+versions and 64 lowercase hex SHA-256 digests, matching the module manifest.
+Duplicate names in one record are rejected; the parser is in
+`crates/module-resolver/src/index.rs`.
+
+Version 2 does not add ranges, conflict solving or automatic upgrades; a later
+format change can.  Version 1 records remain standalone.
 
 ## 4. Client rules
 
@@ -104,6 +113,6 @@ coexist with the MCP module until a multiplexer or merged policy module lands.
 
 For v1, version ranges/SAT solving, binary deltas, per-package signing keys,
 central accounts and automatic execution without digest verification are out
-of scope.  Runtime dependency support is a required post-M1 feature (#217), not
-a permanent non-goal; the v1 client stays standalone until the module manager
-lands.
+of scope.  Version 2 exact dependency records are parsed by the host resolver;
+runtime loading and signature verification still belong to the downloadable
+module manager (#217).  The v1 client remains standalone.
