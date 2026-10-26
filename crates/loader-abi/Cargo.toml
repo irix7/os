@@ -1,0 +1,6 @@
+[package]
+name = "loader-abi"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Kernel loader/arena service table for the IRIX 7 runtime module manager"

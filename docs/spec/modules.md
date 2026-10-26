@@ -361,6 +361,26 @@ recorded epoch.
 The downloadable module manager will perform this check before loading. Package
 index signatures and the release key policy remain to be integrated.
 
+### 8.5 Loader/arena table (kernel freeze exception)
+
+The runtime manager needs a kernel-free way to place and enter dependencies.
+The kernel publishes a small fixed `LoaderTable` at `0x883f_f000`, below the
+module area:
+
+- `arena_base = 0x884c0000`, `arena_len = 0x00140000` (1.25 MiB after the
+  256 KiB manager image in slot B);
+- `load(url, digest, dest, len)` fetches over HTTP/TLS, verifies SHA-256 and
+  copies into the arena;
+- `fetch(url, out)` returns bounded package-index/metadata bytes;
+- `enter(entry, len, context)` performs data/instruction cache maintenance and
+  calls a dependency entry with the loader table and manager context.
+
+The manager module chooses URLs, parses manifests, verifies signatures, resolves
+dependencies and provides policy. The kernel only performs the bounded,
+verified copy and cache-safe entry. This is an explicit ROM-freeze exception:
+the M1 image grows from 520,312 to 522,500 bytes in this slice; the manager and
+all policy stay outside the PROM.
+
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).

@@ -39,6 +39,7 @@ pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
+pub mod loader;
 pub mod logical;
 pub mod mesh;
 pub mod module;
@@ -603,6 +604,7 @@ pub extern "C" fn _start_rust() -> ! {
     graphics_console::init();
     kbd::init();
     net::init();
+    loader::init();
     telnet::init();
     mesh::init();
     logical::init();
