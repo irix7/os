@@ -37,7 +37,7 @@ Architecture CI additions:
 
 | Job | What | Required |
 |---|---|---|
-| `architecture-host` | `sys-primitives`, `mesh-core`, `mesh-service`, `fabric`, `cas-core`, `cas-store`, `cap-engine`, `agnostic-core`, `mesh-sim` tests | Yes |
+| `architecture-host` | `sys-primitives`, `mesh-core`, `mesh-join`, `mesh-service`, `fabric`, `cas-core`, `cas-store`, `cap-engine`, `agnostic-core`, `mesh-sim` tests | Yes |
 | `architecture-wasm32` | `sys-primitives`, `mesh-core`, `fabric`, `cas-core`, `cap-engine` check for wasm32 | Yes |
 | `wasm-host` | wasmi host imports, fuel exhaustion and typed calls | Yes |
 | `mesh-gates` | 1/2/8/128 policy gates and failure injection | Yes at Phase 3+ |
@@ -45,13 +45,20 @@ Architecture CI additions:
 
 The first `mesh-real` rung is the [M2 two-node rig](m2-rig.md) in `tools/m2-rig`. It
 starts **two independent iris processes**, asserts `BOOT-READY`, distinct MACs, NodeIds
-and guest addresses, runs a two-way HTTP probe through the host relay, and connects the
-two guest mesh listeners so both kernels exchange framed `MeshEnvelope` records. M2-1's
-framing, short read/write, deadline, heartbeat, backoff and tag-release tests live in
-`crates/mesh-transport`. The rig deliberately leaves both nodes at `mesh=single`: join,
-membership, homes, capability routes and migration are M2-2..M2-5. The rig is a manual
-command until the M2-8 CI job wraps it; the evidence bundle under
-`target/m2-rig/evidence/` is the review artefact.
+and guest addresses, runs a two-way HTTP probe through the host relay, connects the two
+guest mesh listeners so both kernels exchange framed `MeshEnvelope` records, and drives
+the M2-2 signed join. Both nodes must converge on the same epoch and full member snapshot;
+the rig recomputes the snapshot digest independently, requires the member's
+acknowledgement, restarts the member and requires it to rejoin at the same epoch. The
+`no-peer` and `wrong-authority` fault modes are negative evidence: the first preserves
+the M1 path with no listener, the second proves the member rejects an unauthenticated
+epoch. The kernel still prints `mesh=single`; that is the M1 bootstrap view, and the
+confirmed membership is the module's `mesh-join:` evidence. M2-1's framing, short
+read/write, deadline, heartbeat, backoff and tag-release tests live in
+`crates/mesh-transport`; the join codec, Ed25519 confirmation, replay/equivocation and
+restart rules live in `crates/mesh-join`. Homes, capability routes and migration are
+M2-3..M2-6. The rig is a manual command until the M2-8 CI job wraps it; the evidence
+bundle under `target/m2-rig/evidence/` is the review artefact.
 
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
 and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.

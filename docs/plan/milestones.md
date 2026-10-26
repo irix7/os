@@ -171,6 +171,15 @@ Context, shared-memory local transport and TCP/TLS transport. Add the
 `MeshHeader`, route cache, `MOVED` handling, membership v0 and remote
 capability routing. Keep 9P2000.L as an edge gateway.
 
+**M2-2 status (2026-10-26):** the signed join and membership-epoch handshake are
+implemented in `crates/mesh-join` and run between two independent iris kernels in
+`tools/m2-rig`. Both nodes converge on the same epoch and full member snapshot; the
+member restarts and rejoins at the same epoch; a wrong authority key fails closed. The
+confirmed epoch is not persisted because the module ABI has `config_get` only, so the
+member-restart, root-restart and both-restart rules are explicit in M2-ADR-0005. This is
+one M2 gate, not the full gate: homes, a remote capability route, L0 migration and
+failure/partition with lease fencing remain.
+
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 
