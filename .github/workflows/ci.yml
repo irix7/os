@@ -514,6 +514,7 @@ jobs:
           import sys
 
           text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+text = text.replace("\r", "")
           native = re.search(
               r"^m1: root=([0-9a-f]{64}) .*? actor=([0-9a-f]{32}) "
               r".*? cap=ok rights=([0-9]+) .*? home=([0-9a-f]{32})",
