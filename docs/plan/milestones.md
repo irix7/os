@@ -128,6 +128,13 @@ a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
 `modules/cache` proves the idle write and readback on target 1 to target 3.
 The automatic queue, lookup and module multiplexer are still to come.
 
+**M1 Wasm seam (scope decision, 2026-10-26):** the live Wasm policy runs in
+the downloadable `modules/wasm` module behind the `wasm-host` host ABI
+(`HostHooks`). That module host is the M1 platform seam. The native
+`platform-api::PlatformShim` trait remains the native-core contract and is
+integrated in Phase 4; M1 does not require a second in-kernel Wasm host. This
+scope decision was approved before M1 closure.
+
 **M1 software status (2026-10-26):** the iris gate boots the no-network,
 no-module path and the slot-B Wasm-policy path; the native and Wasm
 actor/rights/home evidence match; the guest root and actor are distinct, MCP remains loaded in slot A (the v0.1.3 release artifact HTTP bug is tracked), and
@@ -151,9 +158,11 @@ SCC, Seeq DMA, SCSI, REX3 or DS1386 timing and cache behaviour. The gate is
 iris-only and must not be reported as a real-Indy pass; the follow-up is the
 lab work in #16.
 
-**Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
-and POSIX image unchanged; no mesh RPCs. Boot time is **recorded, not gated**
-for the 1994 hardware path; the optional module load is likewise an observation.
+**Exit:** M1 is complete on iris with the recorded real-Indy limitation and the
+module-host seam. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
+and POSIX image pass; no network or mesh transport is required. Boot time is
+**recorded, not gated** for the 1994 hardware path; the optional module load is
+likewise an observation.
 
 ### Phase 3 — Asynchronous fabric and two-node routing
 

@@ -8,6 +8,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- M1 is complete on iris after the final scope decision: the downloadable
+  Wasm module host is the M1 platform seam, the live bridge drives userland
+  objects/devices and adopts the guest actor, and real-Indy validation remains
+  the recorded limitation. See #2 and #206.
 - Runtime module dependencies are recorded as required post-M1 work (#217):
   a module manifest with exact name/version/digest dependencies, a resolver,
   versioned export tables and a downloadable module manager. The current
