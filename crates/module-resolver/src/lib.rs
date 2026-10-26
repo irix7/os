@@ -26,6 +26,8 @@
 
 extern crate alloc;
 
+pub mod codec;
+
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
