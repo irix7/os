@@ -67,6 +67,17 @@ by a rejoin at a new epoch. L0 migration remains M2-5; failure/partition fencing
 M2-6. The rig is a manual command until the M2-8 CI job wraps it; the
 evidence bundle under `target/m2-rig/evidence/` is the review artefact.
 
+The fabric conformance tests are part of the canonical `cargo test -p fabric -p
+mesh-route` path. `crates/fabric/tests/` exercises cancellation-versus-completion
+interleaving, a 10,000-tag in-flight table, and send-queue/stream-window exhaustion
+against a slow in-process consumer. `crates/mesh-route/tests/trace_propagation.rs`
+sets a W3C trace id on a request, carries the `MeshEnvelope` through `mesh-transport`
+one byte at a time, and asserts the same trace id on the home's response and the
+sender's completion, with a negative case for a mismatched response. The live MCP
+module keeps an **8-entry** pending table (`PENDING_CAPACITY` in
+`modules/mcp/src/mesh.rs`); the 10,000-tag result is a fabric-model result and is not
+a claim that the live module holds 10,000 outstanding requests.
+
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
 and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.
 

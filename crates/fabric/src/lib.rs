@@ -15,7 +15,9 @@ extern crate alloc;
 
 use alloc::collections::{BTreeMap, BTreeSet, VecDeque};
 use core::fmt;
-use sys_primitives::{Completion, StreamId, Tag};
+use sys_primitives::{
+    completion_flags, Completion, CompletionId, CompletionKind, Status, StreamId, Tag,
+};
 
 /// Default number of in-flight request tags.
 pub const DEFAULT_TAG_CAPACITY: u32 = 4096;
@@ -40,10 +42,18 @@ impl fmt::Display for TagError {
 /// Tag zero is reserved for "no request" by the frame contract, so allocation
 /// starts at one. The allocator is policy only; the transport owns the
 /// per-stream tables and the completion matching.
+///
+/// Free tags below the allocation cursor are kept in a set, so allocation
+/// remains the lowest free tag without scanning the whole capacity. This is
+/// what makes a 10,000-tag conformance test cheap on the host; the live MCP
+/// module has its own, much smaller, pending table.
 #[derive(Debug)]
 pub struct TagAllocator {
     capacity: u32,
-    in_use: BTreeSet<u32>,
+    /// Next tag that has never been allocated; 1 initially.
+    next: u64,
+    /// Tags that were allocated and then freed, all below `next`.
+    freed: BTreeSet<u32>,
 }
 
 impl TagAllocator {
@@ -54,36 +64,46 @@ impl TagAllocator {
     pub fn new(capacity: u32) -> Self {
         Self {
             capacity: capacity.max(1),
-            in_use: BTreeSet::new(),
+            next: 1,
+            freed: BTreeSet::new(),
         }
     }
 
     /// Allocate one tag, or report exhaustion.
+    ///
+    /// The lowest free tag is returned, preserving the original allocation
+    /// order after a free.
     pub fn alloc(&mut self) -> Result<Tag, TagError> {
-        if self.in_use.len() as u32 >= self.capacity {
-            return Err(TagError::Exhausted);
+        if let Some(tag) = self.freed.first().copied() {
+            self.freed.remove(&tag);
+            return Ok(Tag(tag));
         }
-        for candidate in 1..=self.capacity {
-            if self.in_use.insert(candidate) {
-                return Ok(Tag(candidate));
-            }
+        if self.next <= u64::from(self.capacity) {
+            let tag = self.next as u32;
+            self.next += 1;
+            return Ok(Tag(tag));
         }
         Err(TagError::Exhausted)
     }
 
     /// Release a tag. Returns false if it was not allocated.
     pub fn free(&mut self, tag: Tag) -> bool {
-        self.in_use.remove(&tag.0)
+        let value = u64::from(tag.0);
+        if value == 0 || value >= self.next || value > u64::from(self.capacity) {
+            return false;
+        }
+        self.freed.insert(tag.0)
     }
 
     /// Whether the tag is currently allocated.
     pub fn is_allocated(&self, tag: Tag) -> bool {
-        self.in_use.contains(&tag.0)
+        let value = u64::from(tag.0);
+        value >= 1 && value < self.next && !self.freed.contains(&tag.0)
     }
 
     /// Number of allocated tags.
     pub fn in_flight(&self) -> usize {
-        self.in_use.len()
+        (self.next - 1 - self.freed.len() as u64) as usize
     }
 
     /// Configured capacity.
@@ -321,6 +341,156 @@ impl CancelSet {
     }
 }
 
+/// Failure to record a cancellation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CancelError {
+    /// The completion queue is full; retry after draining one completion.
+    Backpressure,
+    /// The tag is no longer in flight and has never been cancelled.
+    Unknown,
+    /// Cancellation was already recorded for this request.
+    AlreadyCancelled,
+}
+
+/// What happened to a completion record that arrived for a request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompleteOutcome {
+    /// The completion was queued for delivery.
+    Queued,
+    /// The completion lost the race to a cancellation and was discarded.
+    Discarded,
+    /// The tag/event pair is not an in-flight or cancelled request.
+    Unknown,
+    /// The completion queue is full; the request remains in flight.
+    Backpressure,
+}
+
+/// A bounded request table that resolves the cancellation/completion race.
+///
+/// The fabric transports cancellation as a terminal record, not as a mutation
+/// of the request table. This reference model makes that rule explicit:
+///
+/// * cancellation records a [`Status::Cancelled`] completion and frees the tag;
+/// * a completion that arrives after cancellation is discarded (the cancelled
+///   completion is the one terminal record);
+/// * a completion that is queued before cancellation wins, and the later
+///   cancellation is refused;
+/// * every request has exactly one terminal record, and a full completion
+///   queue applies backpressure instead of dropping either outcome.
+///
+/// The table also keeps a generation ([`CompletionId`]) per tag, so a late
+/// completion for an earlier use of a reused tag cannot terminate the new
+/// request.
+#[derive(Debug)]
+pub struct RequestLedger {
+    tags: TagAllocator,
+    completions: CompletionBuffer,
+    requests: BTreeMap<u32, CompletionId>,
+    cancelled: BTreeMap<u32, CompletionId>,
+}
+
+impl RequestLedger {
+    /// Create a ledger with a tag capacity and a completion queue capacity.
+    pub fn new(tag_capacity: u32, completion_capacity: usize) -> Self {
+        Self {
+            tags: TagAllocator::new(tag_capacity),
+            completions: CompletionBuffer::new(completion_capacity),
+            requests: BTreeMap::new(),
+            cancelled: BTreeMap::new(),
+        }
+    }
+
+    /// Allocate a tag and bind it to one request generation.
+    pub fn begin(&mut self, event: CompletionId) -> Result<Tag, TagError> {
+        let tag = self.tags.alloc()?;
+        // A new request for this tag supersedes any earlier cancellation
+        // tombstone. A late completion for the old generation fails the
+        // `event` check below rather than matching the new request.
+        self.cancelled.remove(&tag.0);
+        self.requests.insert(tag.0, event);
+        Ok(tag)
+    }
+
+    /// Cancel an in-flight request.
+    ///
+    /// The cancelled completion is queued before the tag is released, so a
+    /// full queue leaves the request in flight and the cancellation can be
+    /// retried.
+    pub fn cancel(&mut self, tag: Tag) -> Result<(), CancelError> {
+        let Some(event) = self.requests.get(&tag.0).copied() else {
+            return if self.cancelled.contains_key(&tag.0) {
+                Err(CancelError::AlreadyCancelled)
+            } else {
+                Err(CancelError::Unknown)
+            };
+        };
+        let completion = Completion {
+            event,
+            tag,
+            status: Status::Cancelled,
+            kind: CompletionKind::None,
+            flags: completion_flags::CANCELLED | completion_flags::FINAL,
+            reserved: 0,
+            value0: 0,
+            value1: 0,
+        };
+        if !self.completions.push(completion) {
+            return Err(CancelError::Backpressure);
+        }
+        self.requests.remove(&tag.0);
+        self.cancelled.insert(tag.0, event);
+        self.tags.free(tag);
+        Ok(())
+    }
+
+    /// Submit a terminal completion for an in-flight request.
+    pub fn complete(&mut self, completion: Completion) -> CompleteOutcome {
+        if let Some(event) = self.requests.get(&completion.tag.0).copied() {
+            if event != completion.event {
+                return CompleteOutcome::Unknown;
+            }
+            if !self.completions.push(completion) {
+                return CompleteOutcome::Backpressure;
+            }
+            self.requests.remove(&completion.tag.0);
+            self.tags.free(completion.tag);
+            return CompleteOutcome::Queued;
+        }
+        if let Some(event) = self.cancelled.get(&completion.tag.0).copied() {
+            if event == completion.event {
+                self.cancelled.remove(&completion.tag.0);
+                return CompleteOutcome::Discarded;
+            }
+        }
+        CompleteOutcome::Unknown
+    }
+
+    /// Pop the oldest terminal record.
+    pub fn pop(&mut self) -> Option<Completion> {
+        self.completions.pop()
+    }
+
+    /// Number of in-flight requests.
+    pub fn in_flight(&self) -> usize {
+        self.requests.len()
+    }
+
+    /// Number of cancellation tombstones still awaiting a late completion.
+    pub fn cancelled(&self) -> usize {
+        self.cancelled.len()
+    }
+
+    /// Number of terminal records waiting to be delivered.
+    pub fn pending_completions(&self) -> usize {
+        self.completions.len()
+    }
+
+    /// Tag capacity.
+    pub const fn capacity(&self) -> u32 {
+        self.tags.capacity()
+    }
+}
+
 /// Failure while linking a wait dependency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GraphError {
@@ -477,6 +647,24 @@ mod tests {
         assert!(tags.alloc().is_ok());
         assert_eq!(tags.alloc(), Err(TagError::Exhausted));
         assert_eq!(tags.in_flight(), 2);
+    }
+
+    #[test]
+    fn tags_reuse_the_lowest_free_value() {
+        let mut tags = TagAllocator::new(5);
+        let allocated: Vec<_> = (0..5).map(|_| tags.alloc().expect("tag")).collect();
+        assert!(!tags.free(Tag(0)));
+        assert!(!tags.free(Tag(6)));
+        assert!(tags.free(allocated[0]));
+        assert!(!tags.free(allocated[0]));
+        assert!(!tags.is_allocated(allocated[0]));
+        assert!(tags.free(allocated[1]));
+        assert!(tags.free(allocated[3]));
+        assert_eq!(tags.alloc(), Ok(allocated[0]));
+        assert_eq!(tags.alloc(), Ok(allocated[1]));
+        assert_eq!(tags.alloc(), Ok(allocated[3]));
+        assert_eq!(tags.in_flight(), 5);
+        assert_eq!(tags.alloc(), Err(TagError::Exhausted));
     }
 
     #[test]

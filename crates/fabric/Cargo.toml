@@ -10,3 +10,6 @@ path = "src/lib.rs"
 
 [dependencies]
 sys-primitives = { path = "../sys-primitives" }
+
+[dev-dependencies]
+mesh-transport = { path = "../mesh-transport" }

@@ -464,6 +464,7 @@ dependencies = [
 name = "fabric"
 version = "0.1.0"
 dependencies = [
+ "mesh-transport",
  "sys-primitives",
 ]
 
@@ -758,6 +759,7 @@ dependencies = [
  "blake3",
  "cap-engine",
  "mesh-core",
+ "mesh-transport",
  "sys-primitives",
 ]
 

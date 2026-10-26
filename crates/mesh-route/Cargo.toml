@@ -14,3 +14,6 @@ sys-primitives = { path = "../sys-primitives" }
 mesh-core = { path = "../mesh-core" }
 cap-engine = { path = "../cap-engine" }
 blake3 = { version = "1.8", default-features = false, features = ["pure"] }
+
+[dev-dependencies]
+mesh-transport = { path = "../mesh-transport" }
