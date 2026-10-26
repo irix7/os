@@ -298,7 +298,7 @@ pub fn fetch_table(
         if Instant::now() >= deadline {
             return Err(format!("{}: {error}", node.name));
         }
-        std::thread::sleep(Duration::from_millis(250));
+        std::thread::sleep(Duration::from_millis(1000));
     }
 }
 

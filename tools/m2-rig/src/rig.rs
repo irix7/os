@@ -1368,6 +1368,80 @@ mod tests {
         assert!(options.forward_base(7) > options.port_base(7).saturating_add(2));
     }
 
+    fn test_node(instance: u32) -> Node {
+        let base_port = 9100u16;
+        let mut mac = [0u8; 6];
+        mac[0] = 0x08;
+        mac[1] = 0x00;
+        mac[2] = 0x69;
+        mac[3] = instance as u8;
+        let mut node_id = [0u8; 16];
+        node_id[..6].copy_from_slice(&mac);
+        let port_base = base_port + (instance as u16) * 100;
+        Node {
+            name: format!("n{instance}"),
+            instance,
+            state_dir: PathBuf::from(format!("/tmp/n{instance}")),
+            config: PathBuf::from(format!("/tmp/n{instance}.toml")),
+            ci_socket: PathBuf::from(format!("/tmp/n{instance}.sock")),
+            serial_log: PathBuf::from(format!("/tmp/n{instance}.log")),
+            monitor: port_base,
+            mac,
+            node_id,
+            nat_subnet: format!("192.168.{instance}.0/24"),
+            gateway: Ipv4Addr::new(192, 168, instance as u8, 1),
+            guest: Ipv4Addr::new(192, 168, instance as u8, 2),
+            telnet_port: base_port + 1000 + (instance as u16) * 10,
+            http_port: base_port + 1001 + (instance as u16) * 10,
+            mesh_port: base_port + 1002 + (instance as u16) * 10,
+            port_base,
+        }
+    }
+
+    #[test]
+    fn eight_node_forward_ports_are_unique_and_do_not_touch_the_monitor_block() {
+        let mut ports = std::collections::BTreeSet::new();
+        for instance in 0..8 {
+            let node = test_node(instance);
+            for port in [
+                node.monitor,
+                node.telnet_port,
+                node.http_port,
+                node.mesh_port,
+            ] {
+                assert!(ports.insert(port), "port {port} is reused");
+            }
+            assert!(node.telnet_port > 9100 + 700);
+            assert_eq!(node.telnet_port + 2, node.mesh_port);
+        }
+        assert_eq!(ports.len(), 32);
+    }
+
+    #[test]
+    fn eight_node_shard_environment_fits_the_ds1386_image() {
+        let nodes: Vec<Node> = (0..8).map(test_node).collect();
+        let (environments, _) = shard_environments(&nodes, crate::shard::SHARD_OBJECT_COUNT, 1);
+        assert_eq!(environments.len(), 8);
+        for (index, (node, environment)) in nodes.iter().zip(environments.iter()).enumerate() {
+            let mut pairs = node.environment(17000 + index as u16, Some(environment));
+            for (name, value) in &mut pairs {
+                if name == "mcp.sha256" {
+                    *value = "a".repeat(64);
+                }
+            }
+            let pairs: Vec<(&str, &str)> = pairs
+                .iter()
+                .map(|(name, value)| (name.as_str(), value.as_str()))
+                .collect();
+            nvram::image(&pairs, node.mac).unwrap_or_else(|error| {
+                panic!(
+                    "{}: eight-node environment does not fit: {error}",
+                    node.name
+                )
+            });
+        }
+    }
+
     #[test]
     fn node_id_is_the_mac_then_zeroes() {
         let node = Node {
