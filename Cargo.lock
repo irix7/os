@@ -708,6 +708,7 @@ dependencies = [
  "loader-abi",
  "mesh-core",
  "mesh-join",
+ "mesh-migrate",
  "mesh-route",
  "mesh-transport",
  "module-abi",
@@ -737,6 +738,16 @@ dependencies = [
  "cap-engine",
  "mesh-core",
  "mesh-service",
+ "sys-primitives",
+]
+
+[[package]]
+name = "mesh-migrate"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cap-engine",
+ "mesh-core",
  "sys-primitives",
 ]
 

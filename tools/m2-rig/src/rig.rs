@@ -115,6 +115,15 @@ impl Fault {
         matches!(self, Self::None | Self::KillPeer | Self::Partition)
     }
 
+    /// Whether the L0 actor migration is expected to run.
+    ///
+    /// Migration is driven only in the clean default mode; the failure modes
+    /// preserve the M2-6 scenario and the no-route/no-peer negatives keep their
+    /// original markers.
+    pub const fn migrates(self) -> bool {
+        matches!(self, Self::None)
+    }
+
     /// Whether the mode drives a one-node failure or a partition.
     pub const fn failures(self) -> bool {
         matches!(self, Self::KillPeer | Self::Partition)
@@ -507,7 +516,9 @@ pub fn mesh_environments(
             objects: Some(crate::homes::OBJECT_COUNT),
             public_key: None,
             seed: None,
-            route: if fault.routes() {
+            route: if fault.migrates() {
+                Some("2".into())
+            } else if fault.routes() {
                 Some("1".into())
             } else {
                 None
@@ -872,6 +883,12 @@ pub struct BootFacts {
     pub mesh_route_enabled: Option<String>,
     /// The `mesh-route: disabled` line.
     pub mesh_route_disabled: Option<String>,
+    /// The `mesh-migrate: enabled` line.
+    pub mesh_migrate_enabled: Option<String>,
+    /// The `mesh-migrate: disabled` line.
+    pub mesh_migrate_disabled: Option<String>,
+    /// Every `mesh-migrate:` line, in serial order.
+    pub mesh_migrate_lines: Vec<String>,
     /// The `mesh-join: local` line from this boot.
     pub mesh_join_local: Option<String>,
     /// The first `mesh-join: request` line.
@@ -949,6 +966,19 @@ impl BootFacts {
                 .lines()
                 .find(|line| line.contains("mesh-route: disabled "))
                 .map(|line| line.trim().to_string()),
+            mesh_migrate_enabled: text
+                .lines()
+                .find(|line| line.contains("mesh-migrate: enabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_migrate_disabled: text
+                .lines()
+                .find(|line| line.contains("mesh-migrate: disabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_migrate_lines: text
+                .lines()
+                .filter(|line| line.contains("mesh-migrate: "))
+                .map(|line| line.trim().to_string())
+                .collect(),
             mesh_join_local: text
                 .lines()
                 .find(|line| line.contains("mesh-join: local "))

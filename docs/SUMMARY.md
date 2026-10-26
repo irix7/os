@@ -29,6 +29,7 @@
 - [M2-ADR-0006 — rendezvous homes](adr/m2-0006-homes.md)
 - [M2-ADR-0007 — remote capability route](adr/m2-0007-route.md)
 - [M2-ADR-0008 — failure, fencing and partition](adr/m2-0008-failure-fence.md)
+- [M2-ADR-0009 — L0 actor migration](adr/m2-0009-actor-migration.md)
 
 ## Plan
 

@@ -49,6 +49,10 @@ use mesh_core::{fixture_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_M
 use mesh_join::{
     JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role, Tick, MAX_BODY as JOIN_BODY_MAX,
 };
+use mesh_migrate::{
+    Event as MigrateEvent, MigrateNode, Signer as MigrateSigner, Step as MigrateStep,
+    Wire as MigrateWire, MAX_BODY as MIGRATE_BODY_MAX,
+};
 use mesh_route::{RouteNode, RouteSigner, Step as RouteStep, Wire as RouteWire};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
@@ -108,6 +112,7 @@ struct Mesh {
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
     route: Option<RouteNode>,
+    migrate: Option<MigrateNode>,
     /// Whether the M2-6 failure detector is enabled (`mesh.fail=1`).
     failures: bool,
     home_count: u32,
@@ -174,6 +179,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         log(services, line.as_bytes());
     }
     let route = route_config(services, self_id, join.as_ref(), home_count);
+    let migrate = migrate_config(services, self_id, join.as_ref());
     let failures = failure_config(services);
     // With failure detection enabled the transport timeout is a backstop, not
     // the failure path: a partition pauses the seam for longer than the M2-1
@@ -197,6 +203,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         heartbeat,
         join,
         route,
+        migrate,
         failures,
         home_count,
         join_timeout_logged: false,
@@ -297,6 +304,219 @@ pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
         body.push(b'\n');
     }
     (200, body.len())
+}
+
+/// Render or drive `GET /mesh/migrate`.
+///
+/// A bare request returns the bounded migration report: the confirmed view,
+/// one actor row (active, provisional or fenced) with the logical state hash,
+/// the queued and unacknowledged message at the boundary, the serialised
+/// capability handle, the last placement change and the counters.  `?step=N`
+/// drives one rig step; the root chooses the order and the migration policy
+/// chooses the actor, hosts and message ids.  It is not a directory and it is
+/// not persisted.
+#[inline(never)]
+pub fn migrate_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    let step = match migrate_step(path) {
+        Ok(step) => step,
+        Err(()) => return migrate_line(out, 400, "state=bad-request reason=query"),
+    };
+    if let Some(step) = step {
+        return migrate_command(services, step, out);
+    }
+    // SAFETY: the module is single-threaded and `MESH` is written once at
+    // entry; no other reference to it is live here.
+    let mesh = unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() };
+    let Some(mesh) = mesh else {
+        return migrate_line(out, 404, "state=disabled reason=peer");
+    };
+    let Some(migrate) = mesh.migrate.as_mut() else {
+        return migrate_line(out, 404, "state=disabled reason=config");
+    };
+    migrate.build_report();
+    let report = migrate.report();
+    let mut body = Body::new(out);
+    body.str("mesh-migrate: state=enabled role=");
+    body.str(report.role);
+    body.str(" view_epoch=");
+    body.u64(report.view_epoch as u64);
+    body.str(" members=");
+    body.u64(report.view_members as u64);
+    body.str(" digest=");
+    body.hex(&report.view_digest);
+    body.push(b'\n');
+    match &report.actor {
+        Some(row) => {
+            body.str("mesh-migrate: actor id=");
+            body.hex(&row.actor.0);
+            body.str(" home=");
+            body.node(&row.home);
+            body.str(" state=");
+            body.str(row.state);
+            body.str(" host=");
+            body.node(&row.host);
+            body.str(" epoch=");
+            body.u64(row.epoch as u64);
+            body.str(" applied=");
+            body.u64(row.applied);
+            body.str(" last=");
+            body.u64(row.last);
+            body.push(b'\n');
+            body.str("mesh-migrate: actor hash=");
+            body.hex(&row.hash);
+            body.str(" logical=");
+            body.hex(&row.logical);
+            body.str(" queued=");
+            match row.queued {
+                Some(message) => {
+                    body.u64(message.id);
+                    body.push(b':');
+                    body.hex(&message.payload);
+                }
+                None => body.push(b'-'),
+            }
+            body.str(" unacked=");
+            match row.unacked {
+                Some(ack) => {
+                    body.u64(ack.id);
+                    body.push(b':');
+                    body.hex(&ack.state);
+                }
+                None => body.push(b'-'),
+            }
+            body.str(" handle=");
+            match &row.handle {
+                Some(handle) => {
+                    body.hex(handle.object.as_bytes());
+                    body.push(b':');
+                    body.u64(handle.rights.0 as u64);
+                    body.push(b':');
+                    body.node(&handle.home);
+                    body.push(b':');
+                    body.u64(handle.home_epoch as u64);
+                    body.push(b':');
+                    body.u64(handle.object_epoch as u64);
+                }
+                None => body.push(b'-'),
+            }
+            body.push(b'\n');
+        }
+        None => body.str("mesh-migrate: actor state=none\n"),
+    }
+    if let Some(last) = report.last_move {
+        body.str("mesh-migrate: move actor=");
+        body.hex(&last.actor.0);
+        body.str(" old=");
+        body.node(&last.old_host);
+        body.str(" new=");
+        body.node(&last.new_host);
+        body.str(" old_epoch=");
+        body.u64(last.old_epoch as u64);
+        body.str(" new_epoch=");
+        body.u64(last.new_epoch as u64);
+        body.str(" hash=");
+        body.hex(&last.hash);
+        body.push(b'\n');
+    }
+    body.str("mesh-migrate: counters migrations=");
+    body.u64(report.counters.migrations as u64);
+    body.str(" incoming=");
+    body.u64(report.counters.incoming as u64);
+    body.str(" outgoing=");
+    body.u64(report.counters.outgoing as u64);
+    body.str(" resumes=");
+    body.u64(report.counters.resumes as u64);
+    body.str(" duplicates=");
+    body.u64(report.counters.duplicates as u64);
+    body.str(" stale=");
+    body.u64(report.counters.stale as u64);
+    body.str(" capability=");
+    body.u64(report.counters.capability_rejects as u64);
+    body.str(" rejects=");
+    body.u64(report.counters.rejects as u64);
+    body.str(" aborted=");
+    body.u64(report.counters.aborted as u64);
+    body.push(b'\n');
+    body.str("mesh-migrate: last stage=");
+    body.str(report.stage);
+    if let Some(reason) = report.reason {
+        body.str(" reason=");
+        body.str(reason.as_str());
+    }
+    body.push(b'\n');
+    (200, body.len())
+}
+
+fn migrate_step(path: &[u8]) -> Result<Option<u8>, ()> {
+    if path == b"/mesh/migrate" {
+        return Ok(None);
+    }
+    let Some(query) = path.strip_prefix(b"/mesh/migrate?") else {
+        return Err(());
+    };
+    let Some(value) = query.strip_prefix(b"step=") else {
+        return Err(());
+    };
+    if value.is_empty() || value.len() > 2 || !value.iter().all(|byte| byte.is_ascii_digit()) {
+        return Err(());
+    }
+    let mut step = 0u8;
+    for byte in value {
+        step = step.saturating_mul(10).saturating_add(*byte - b'0');
+    }
+    Ok(Some(step))
+}
+
+#[inline(never)]
+fn migrate_command(services: &Services, step: u8, out: &mut [u8]) -> (u16, usize) {
+    // SAFETY: the module tick is single-threaded and no other reference to
+    // `MESH` is live while the HTTP handler runs.
+    let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
+        return migrate_line(out, 404, "state=disabled reason=peer");
+    };
+    let Some(join) = mesh.join.as_ref() else {
+        return migrate_line(out, 404, "state=disabled reason=join");
+    };
+    let Some(migrate) = mesh.migrate.as_mut() else {
+        return migrate_line(out, 404, "state=disabled reason=config");
+    };
+    let now = (services.clock_ms)();
+    let signer = JoinSigner(join);
+    let command = migrate.command(step, now, &signer);
+    // A stale or capability refusal is the intended result of the negative
+    // steps; it is reported in the counters and the command is still a
+    // successful control action.  Only a rejected command is a 409.
+    let rejected = command.events.iter().find_map(|event| match event {
+        MigrateEvent::Reject { reason, .. } => Some(*reason),
+        MigrateEvent::Aborted { reason, .. } => Some(*reason),
+        _ => None,
+    });
+    mesh.dispatch_migrate(services, command, now);
+    let mut body = Body::new(out);
+    match rejected {
+        Some(reason) => {
+            body.str("mesh-migrate: rejected step=");
+            body.u64(step as u64);
+            body.str(" reason=");
+            body.str(reason.as_str());
+            body.push(b'\n');
+            (409, body.len())
+        }
+        None => {
+            body.str("mesh-migrate: started step=");
+            body.u64(step as u64);
+            body.push(b'\n');
+            (202, body.len())
+        }
+    }
+}
+
+fn migrate_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
+    let mut body = Body::new(out);
+    body.str("mesh-migrate: ");
+    body.str(state);
+    body.push(b'\n');
+    (status, body.len())
 }
 
 /// Render or drive `GET /mesh/route`.
@@ -819,6 +1039,11 @@ impl Mesh {
             self.dispatch_route(services, step, now);
         }
 
+        let migrate_step = self.migrate.as_mut().map(|migrate| migrate.tick(now));
+        if let Some(step) = migrate_step {
+            self.dispatch_migrate(services, step, now);
+        }
+
         if self.heartbeat.due(now) {
             let destination = self.peer.unwrap_or(NodeId::ZERO);
             if self.queue_ping(
@@ -942,6 +1167,14 @@ impl Mesh {
             | (MessageKind::Request, OpCode::RouteQuery)
             | (MessageKind::Response, OpCode::RouteQuery) => {
                 if self.route.is_none() {
+                    self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                    return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+                }
+            }
+            (MessageKind::Request, OpCode::Migrate)
+            | (MessageKind::Response, OpCode::Migrate)
+            | (MessageKind::Completion, OpCode::Migrate) => {
+                if self.migrate.is_none() {
                     self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
                     return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
                 }
@@ -1090,6 +1323,29 @@ impl Mesh {
                     self.dispatch_route(services, step, now);
                 }
             }
+            (MessageKind::Request, OpCode::Migrate)
+            | (MessageKind::Response, OpCode::Migrate)
+            | (MessageKind::Completion, OpCode::Migrate) => {
+                let step = if let Some(join) = self.join.as_ref() {
+                    let signer = JoinSigner(join);
+                    self.migrate.as_mut().map(|migrate| {
+                        migrate.on_wire(
+                            source,
+                            &incoming.header,
+                            incoming.kind,
+                            incoming.status,
+                            body,
+                            now,
+                            &signer,
+                        )
+                    })
+                } else {
+                    None
+                };
+                if let Some(step) = step {
+                    self.dispatch_migrate(services, step, now);
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1117,6 +1373,34 @@ impl Mesh {
             return false;
         };
         frame.header.object = wire.object;
+        frame.header.status = wire.status;
+        let header = wire.header(self.self_id);
+        let envelope = MeshEnvelope { header, frame };
+        self.queue.push_record(&envelope, now).is_ok()
+    }
+
+    fn dispatch_migrate(&mut self, services: &Services, step: MigrateStep, now: u64) {
+        for event in &step.events {
+            log_migrate_event(services, event);
+        }
+        if let Some(migrate) = self.migrate.as_mut() {
+            migrate.build_report();
+        }
+        if let Some(wire) = step.send {
+            if !self.queue_migrate(wire, now) {
+                log(services, b"mesh-migrate: send-failed\n");
+            }
+        }
+        self.flush(services, now);
+    }
+
+    fn queue_migrate(&mut self, wire: MigrateWire, now: u64) -> bool {
+        let Ok(mut frame) =
+            MessageFrame::inline(wire.kind, OpCode::Migrate, StreamId(4), Tag(0), &wire.body)
+        else {
+            return false;
+        };
+        frame.header.object = mesh_migrate::actor_object(&wire.actor);
         frame.header.status = wire.status;
         let header = wire.header(self.self_id);
         let envelope = MeshEnvelope { header, frame };
@@ -1215,17 +1499,25 @@ impl Mesh {
     }
 
     fn on_route_snapshot(&mut self, services: &Services, snapshot: &MembershipSnapshot, now: u64) {
-        let Some(route) = self.route.as_mut() else {
-            return;
-        };
-        let Some(step) =
-            route.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest(), now)
-        else {
-            return;
-        };
-        for event in &step.events {
-            route.note_event(event);
-            log_route_event(services, event);
+        if let Some(route) = self.route.as_mut() {
+            if let Some(step) =
+                route.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest(), now)
+            {
+                for event in &step.events {
+                    route.note_event(event);
+                    log_route_event(services, event);
+                }
+            }
+        }
+        if let Some(migrate) = self.migrate.as_mut() {
+            if let Some(step) =
+                migrate.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest())
+            {
+                for event in &step.events {
+                    log_migrate_event(services, event);
+                }
+                migrate.build_report();
+            }
         }
     }
 
@@ -1391,6 +1683,9 @@ impl Mesh {
                 if let Some(route) = self.route.as_mut() {
                     let _ = route.set_peer(source, now);
                 }
+                if let Some(migrate) = self.migrate.as_mut() {
+                    let _ = migrate.set_peer(source);
+                }
                 Ok(())
             }
             Some(peer) if peer == source => Ok(()),
@@ -1533,6 +1828,9 @@ impl Mesh {
         if let Some(route) = self.route.as_mut() {
             let _ = route.on_link_down();
         }
+        if let Some(migrate) = self.migrate.as_mut() {
+            let _ = migrate.on_link_down();
+        }
 
         let mut line = Line::new();
         line.str("mesh-transport: disconnected reason=");
@@ -1601,6 +1899,9 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         | (MessageKind::Response, OpCode::Invoke)
         | (MessageKind::Request, OpCode::RouteQuery)
         | (MessageKind::Response, OpCode::RouteQuery) => mesh_route::MAX_BODY,
+        (MessageKind::Request, OpCode::Migrate)
+        | (MessageKind::Response, OpCode::Migrate)
+        | (MessageKind::Completion, OpCode::Migrate) => MIGRATE_BODY_MAX,
         _ => 16,
     }
 }
@@ -1647,7 +1948,7 @@ fn route_config(
         log(services, b"mesh-route: disabled reason=config\n");
         return None;
     };
-    let enabled = &text[..len] == b"1" || &text[..len] == b"probe";
+    let enabled = &text[..len] == b"1" || &text[..len] == b"2" || &text[..len] == b"probe";
     if !enabled {
         log(services, b"mesh-route: disabled reason=config\n");
         return None;
@@ -1676,10 +1977,253 @@ fn route_config(
     Some(route)
 }
 
+/// Log one migration state change without allocation.
+fn log_migrate_event(services: &Services, event: &MigrateEvent) {
+    let mut line = Line::new();
+    match event {
+        MigrateEvent::Enabled { role } => {
+            line.str("mesh-migrate: enabled role=");
+            line.str(role);
+        }
+        MigrateEvent::Snapshot {
+            epoch,
+            members,
+            digest,
+        } => {
+            line.str("mesh-migrate: view epoch=");
+            line.u64(*epoch as u64);
+            line.str(" members=");
+            line.u64(*members as u64);
+            line.str(" digest=");
+            line.hex(digest);
+        }
+        MigrateEvent::Seed {
+            actor,
+            host,
+            epoch,
+            hash,
+        } => {
+            line.str("mesh-migrate: seed actor=");
+            line.hex(&actor.0);
+            line.str(" host=");
+            line.node(host);
+            line.str(" epoch=");
+            line.u64(*epoch as u64);
+            line.str(" hash=");
+            line.hex(hash);
+        }
+        MigrateEvent::Deliver {
+            actor,
+            message,
+            applied,
+            duplicate,
+            hash,
+        } => {
+            line.str("mesh-migrate: deliver actor=");
+            line.hex(&actor.0);
+            line.str(" message=");
+            line.u64(*message);
+            line.str(" applied=");
+            line.u64(*applied);
+            line.str(" duplicate=");
+            line.u64(if *duplicate { 1 } else { 0 });
+            line.str(" hash=");
+            line.hex(hash);
+        }
+        MigrateEvent::Queued { actor, message } => {
+            line.str("mesh-migrate: queue actor=");
+            line.hex(&actor.0);
+            line.str(" message=");
+            line.u64(*message);
+        }
+        MigrateEvent::Resume {
+            actor,
+            message,
+            applied,
+            hash,
+        } => {
+            line.str("mesh-migrate: resume actor=");
+            line.hex(&actor.0);
+            line.str(" message=");
+            line.u64(*message);
+            line.str(" applied=");
+            line.u64(*applied);
+            line.str(" hash=");
+            line.hex(hash);
+        }
+        MigrateEvent::Start {
+            actor,
+            from,
+            to,
+            old_epoch,
+            new_epoch,
+        } => {
+            line.str("mesh-migrate: migrate actor=");
+            line.hex(&actor.0);
+            line.str(" from=");
+            line.node(from);
+            line.str(" to=");
+            line.node(to);
+            line.str(" old_epoch=");
+            line.u64(*old_epoch as u64);
+            line.str(" new_epoch=");
+            line.u64(*new_epoch as u64);
+        }
+        MigrateEvent::Moved {
+            actor,
+            from,
+            to,
+            old_epoch,
+            new_epoch,
+            hash,
+            role,
+        } => {
+            line.str("mesh-migrate: moved actor=");
+            line.hex(&actor.0);
+            line.str(" from=");
+            line.node(from);
+            line.str(" to=");
+            line.node(to);
+            line.str(" old_epoch=");
+            line.u64(*old_epoch as u64);
+            line.str(" new_epoch=");
+            line.u64(*new_epoch as u64);
+            line.str(" hash=");
+            line.hex(hash);
+            line.str(" role=");
+            line.str(role);
+        }
+        MigrateEvent::Fenced {
+            actor,
+            old_host,
+            new_host,
+            old_epoch,
+            new_epoch,
+            hash,
+        } => {
+            line.str("mesh-migrate: fence actor=");
+            line.hex(&actor.0);
+            line.str(" old_host=");
+            line.node(old_host);
+            line.str(" new_host=");
+            line.node(new_host);
+            line.str(" old_epoch=");
+            line.u64(*old_epoch as u64);
+            line.str(" new_epoch=");
+            line.u64(*new_epoch as u64);
+            line.str(" hash=");
+            line.hex(hash);
+        }
+        MigrateEvent::Stale {
+            actor,
+            reason,
+            expected_epoch,
+            got_epoch,
+        } => {
+            line.str("mesh-migrate: stale actor=");
+            line.hex(&actor.0);
+            line.str(" reason=");
+            line.str(reason.as_str());
+            line.str(" expected_epoch=");
+            line.u64(*expected_epoch as u64);
+            line.str(" got_epoch=");
+            line.u64(*got_epoch as u64);
+        }
+        MigrateEvent::Duplicate {
+            actor,
+            message,
+            applied,
+        } => {
+            line.str("mesh-migrate: duplicate actor=");
+            line.hex(&actor.0);
+            line.str(" message=");
+            line.u64(*message);
+            line.str(" applied=");
+            line.u64(*applied);
+        }
+        MigrateEvent::Capability { actor, reason } => {
+            line.str("mesh-migrate: capability actor=");
+            line.hex(&actor.0);
+            line.str(" reason=");
+            line.str(reason.as_str());
+        }
+        MigrateEvent::Reject { actor, reason } => {
+            line.str("mesh-migrate: reject actor=");
+            match actor {
+                Some(actor) => line.hex(&actor.0),
+                None => line.push(b'-'),
+            }
+            line.str(" reason=");
+            line.str(reason.as_str());
+        }
+        MigrateEvent::Aborted { actor, reason } => {
+            line.str("mesh-migrate: abort actor=");
+            match actor {
+                Some(actor) => line.hex(&actor.0),
+                None => line.push(b'-'),
+            }
+            line.str(" reason=");
+            line.str(reason.as_str());
+        }
+    }
+    line.push(b'\n');
+    log(services, line.as_bytes());
+}
+
+/// Build the M2-5 L0 migration policy when `mesh.route=2` requests it.
+///
+/// The migration policy is opt-in on top of the route.  It reuses the same
+/// confirmed membership view and authority key; it does not create a second
+/// directory or a second authority.
+fn migrate_config(
+    services: &Services,
+    self_id: NodeId,
+    join: Option<&JoinNode>,
+) -> Option<MigrateNode> {
+    let mut text = [0u8; 32];
+    let Some(len) = config(services, b"mesh.route", &mut text) else {
+        log(services, b"mesh-migrate: disabled reason=config\n");
+        return None;
+    };
+    if &text[..len] != b"2" {
+        log(services, b"mesh-migrate: disabled reason=config\n");
+        return None;
+    }
+    let Some(join) = join else {
+        log(services, b"mesh-migrate: disabled reason=join\n");
+        return None;
+    };
+    let Some(migrate) = MigrateNode::new(
+        self_id,
+        join.root(),
+        join.authority_key(),
+        matches!(join.role(), Role::Root),
+    ) else {
+        log(services, b"mesh-migrate: disabled reason=config\n");
+        return None;
+    };
+    let mut line = Line::new();
+    line.str("mesh-migrate: enabled role=");
+    line.str(join.role().as_str());
+    line.push(b'\n');
+    log(services, line.as_bytes());
+    Some(migrate)
+}
+
 /// The root-only signing seam for capability issuance and home moves.
 struct JoinSigner<'a>(&'a JoinNode);
 
 impl RouteSigner for JoinSigner<'_> {
+    fn key(&self) -> NodeKey {
+        self.0.authority_key()
+    }
+
+    fn sign(&self, message: &[u8]) -> Option<[u8; 64]> {
+        self.0.sign_authority(message)
+    }
+}
+
+impl MigrateSigner for JoinSigner<'_> {
     fn key(&self) -> NodeKey {
         self.0.authority_key()
     }

@@ -58,3 +58,4 @@ A milestone is done when:
 - 2026-10-20 — initial plan after the advanced-architecture grilling.
 - 2026-10-25 — the plan now describes the 1–128-node Wasm/mesh logical computer; native POSIX/IRIX and ABI 10 compatibility remain workstreams; ABI 11 adds block_write.
 - 2026-10-26 — M2 starts on two independent iris kernels: the [M2 rig runbook](m2-rig.md) and the [M2 ADR series](../adr/README.md) record the transport, 1-of-1 authority and native stackless actor decisions.
+- 2026-10-27 — L0 actor migration runs at a message boundary between two real kernels in both directions; see [M2-ADR-0009](../adr/m2-0009-actor-migration.md) and the migration section of the [M2 rig runbook](m2-rig.md).

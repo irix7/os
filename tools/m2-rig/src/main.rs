@@ -17,6 +17,7 @@ mod failure;
 mod fixture;
 mod homes;
 mod join;
+mod migrate;
 mod nvram;
 mod probe;
 mod relay;
@@ -298,6 +299,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         route.as_ref(),
         None,
         None,
+        None,
         "probe",
         if passed { "pass" } else { "fail" },
         error.as_deref(),
@@ -400,6 +402,20 @@ fn collect_route(
     }
 }
 
+fn collect_migration(
+    options: &Options,
+    nodes: &[Node],
+) -> Result<migrate::MigrateEvidence, String> {
+    match options.fault {
+        Fault::NoPeer | Fault::NoRoute | Fault::WrongAuthority => {
+            migrate::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
+        }
+        Fault::None | Fault::KillPeer | Fault::Partition => {
+            Err("the migration scenario is driven by run".into())
+        }
+    }
+}
+
 fn print_failure_result(failure: &FailureEvidence) {
     println!(
         "failure [{}]: {} ({})",
@@ -450,6 +466,39 @@ fn print_route_result(route: &route::RouteEvidence) {
     }
 }
 
+fn print_migration_result(migration: &migrate::MigrateEvidence) {
+    println!(
+        "migration [{}]: {} ({})",
+        migration.fault,
+        if migration.ok { "pass" } else { "FAIL" },
+        migration.message
+    );
+    for check in &migration.checks {
+        println!("  ok: {check}");
+    }
+    for node in &migration.nodes {
+        match &node.report {
+            Some(report) => println!(
+                "  {} HTTP {} state={} role={:?} epoch={:?} actor={:?} host={:?}",
+                node.name,
+                node.status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                report.state,
+                report.role,
+                report.view_epoch,
+                report.actor.as_ref().map(|actor| actor.state.as_str()),
+                report.actor.as_ref().map(|actor| actor.host.as_str())
+            ),
+            None => println!(
+                "  {} error={}",
+                node.name,
+                node.error.as_deref().unwrap_or("no report")
+            ),
+        }
+    }
+}
+
 fn run_and_probe(options: &Options) -> Result<i32, String> {
     let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
     let module_sha_text = sha256::hex(&module_sha);
@@ -483,6 +532,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut homes_error = None;
     let mut route = None;
     let mut route_error = None;
+    let mut migration = None;
+    let mut migration_error = None;
     let mut restart = None;
     let mut failure_evidence: Option<FailureEvidence> = None;
     let mut failure_error = None;
@@ -533,6 +584,17 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 route = Some(value);
             }
             Err(error) => route_error = Some(error),
+        }
+        if !options.fault.migrates() && !options.fault.failures() {
+            match collect_migration(options, &nodes) {
+                Ok(value) => {
+                    if !value.ok {
+                        migration_error = Some(value.message.clone());
+                    }
+                    migration = Some(value);
+                }
+                Err(error) => migration_error = Some(error),
+            }
         }
 
         // The guest-level HTTP probe still runs before the member restart, as
@@ -597,6 +659,33 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Err(error) => join_error = Some(error),
             }
         }
+        if options.fault.migrates() && join_error.is_none() {
+            if let (Some(epoch), Some(digest)) = (join_before.epoch, join_before.digest.clone()) {
+                if join_before.members.len() == 2 {
+                    let evidence = migrate::run(
+                        &nodes[0],
+                        &nodes[1],
+                        &join_before.members,
+                        epoch,
+                        &digest,
+                        Duration::from_secs(240),
+                    );
+                    if !evidence.ok {
+                        migration_error = Some(evidence.message.clone());
+                    }
+                    migration = Some(evidence);
+                    facts = snapshot_facts(&nodes);
+                } else {
+                    migration_error = Some(format!(
+                        "the migration scenario needs two members, got {}",
+                        join_before.members.len()
+                    ));
+                }
+            } else {
+                migration_error =
+                    Some("the migration scenario needs a converged epoch/digest".into());
+            }
+        }
     } else {
         // Keep the evidence useful even when a node never booted: record what
         // the serial logs show and do not invent a probe result.
@@ -640,6 +729,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         _ => mesh.as_ref().is_some_and(|mesh| mesh.ok),
     };
     let route_ok = route.as_ref().is_some_and(|route| route.ok);
+    let migration_ok = migration.as_ref().is_some_and(|migration| migration.ok);
     let failure_ok = failure_error.is_none()
         && failure_evidence
             .as_ref()
@@ -650,6 +740,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         && join_error.is_none()
         && homes_error.is_none()
         && route_error.is_none()
+        && migration_error.is_none()
+        && (options.fault != Fault::None || migration_ok)
         && failure_ok
         && probes.len() == 2
         && probes.iter().all(|probe| probe.ok)
@@ -664,6 +756,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         .or(join_error.as_deref())
         .or(homes_error.as_deref())
         .or(route_error.as_deref())
+        .or(migration_error.as_deref())
         .or(failure_error.as_deref())
         .or_else(|| {
             mesh.as_ref()
@@ -677,6 +770,12 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 .as_ref()
                 .filter(|route| !route.ok)
                 .map(|route| route.message.as_str())
+        })
+        .or_else(|| {
+            migration
+                .as_ref()
+                .filter(|migration| !migration.ok)
+                .map(|migration| migration.message.as_str())
         })
         .map(str::to_string);
 
@@ -700,6 +799,9 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     if let Some(route) = &route {
         print_route_result(route);
     }
+    if let Some(migration) = &migration {
+        print_migration_result(migration);
+    }
     if let Some(failure) = &failure_evidence {
         print_failure_result(failure);
     }
@@ -722,6 +824,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         Some(&join),
         Some(&homes),
         route.as_ref(),
+        migration.as_ref(),
         failure_evidence.as_ref(),
         Some(&fixture),
         "run",
@@ -1481,6 +1584,7 @@ fn write_evidence(
     join: Option<&JoinEvidence>,
     homes: Option<&HomesEvidence>,
     route: Option<&route::RouteEvidence>,
+    migration: Option<&migrate::MigrateEvidence>,
     failure: Option<&FailureEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
@@ -1529,6 +1633,7 @@ fn write_evidence(
         join,
         homes,
         route,
+        migration,
         failure,
         fixture,
         relays: &relay_logs,
