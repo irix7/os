@@ -1,0 +1,16 @@
+[package]
+name = "runtime-m2-mesh-module"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Runtime M2 mesh transport dependency module for IRIX 7"
+[[bin]]
+name = "runtime-m2-mesh-module"
+path = "src/main.rs"
+[profile.release]
+panic = "abort"
+opt-level = "z"
+[dependencies]
+module-abi.workspace = true
+mesh-transport = { path = "../../crates/mesh-transport" }
+sys-primitives = { path = "../../crates/sys-primitives" }

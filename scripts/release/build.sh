@@ -65,8 +65,9 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" 
 module_sha="$(sha256sum "$DIST/mcp.module" | awk '{print $1}')"
 raw_base="${RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPOSITORY:-irix7/os}/main}"
 
-# Runtime manager and the two-module dependency graph. The manager image is
-# limited to the first 256 KiB of slot B; the arena regions follow it.
+# Runtime manager and the signed dependency graphs (demo and M2 mesh). The
+# manager image is limited to the first 256 KiB of slot B; the arena regions
+# follow it.
 runtime_dir="$DIST/runtime"
 mkdir -p "$runtime_dir" "$TARGET_DIR/modules"
 sign_key="${MODULE_SIGNING_KEY:-}"
@@ -111,6 +112,22 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-root/linke
     --target "$TARGET_JSON" -p runtime-demo-root-module
 "$LLVM_OBJCOPY" -O binary \
   "$TARGET_DIR/$TARGET/release/runtime-demo-root-module" "$TARGET_DIR/modules/demo-root.flat"
+
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-mesh/linker.ld" \
+  cargo build --release -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+    --target "$TARGET_JSON" -p runtime-m2-mesh-module
+"$LLVM_OBJCOPY" -O binary \
+  "$TARGET_DIR/$TARGET/release/runtime-m2-mesh-module" "$TARGET_DIR/modules/m2-mesh.flat"
+
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-root/linker.ld" \
+  cargo build --release -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+    --target "$TARGET_JSON" -p runtime-m2-root-module
+"$LLVM_OBJCOPY" -O binary \
+  "$TARGET_DIR/$TARGET/release/runtime-m2-root-module" "$TARGET_DIR/modules/m2-root.flat"
 
 cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
   build --spec packages/runtime-modules.toml --out "$runtime_dir" \

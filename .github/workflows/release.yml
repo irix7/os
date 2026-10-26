@@ -75,6 +75,8 @@ jobs:
           cp dist/runtime/manager.module "boot/modules/${tag}/manager.module"
           cp dist/runtime/demo-dep.module "boot/modules/${tag}/demo-dep.module"
           cp dist/runtime/demo-root.module "boot/modules/${tag}/demo-root.module"
+          cp dist/runtime/m2-mesh.module "boot/modules/${tag}/m2-mesh.module"
+          cp dist/runtime/m2-root.module "boot/modules/${tag}/m2-root.module"
           cp dist/runtime/package-index.conf "boot/modules/${tag}/package-index.conf"
           if [ -f dist/runtime/package-index.conf.sig ]; then
             cp dist/runtime/package-index.conf.sig "boot/modules/${tag}/package-index.conf.sig"
@@ -89,6 +91,8 @@ jobs:
             "boot/modules/${tag}/manager.module" \
             "boot/modules/${tag}/demo-dep.module" \
             "boot/modules/${tag}/demo-root.module" \
+            "boot/modules/${tag}/m2-mesh.module" \
+            "boot/modules/${tag}/m2-root.module" \
             "boot/modules/${tag}/package-index.conf" \
             "boot/modules/${tag}/release-trust.conf"
           if [ -f "boot/modules/${tag}/package-index.conf.sig" ]; then

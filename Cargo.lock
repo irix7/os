@@ -1029,6 +1029,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-m2-mesh-module"
+version = "0.1.0"
+dependencies = [
+ "mesh-transport",
+ "module-abi",
+ "sys-primitives",
+]
+
+[[package]]
+name = "runtime-m2-root-module"
+version = "0.1.0"
+dependencies = [
+ "module-abi",
+]
+
+[[package]]
 name = "runtime-manager-module"
 version = "0.1.0"
 dependencies = [

@@ -128,6 +128,7 @@ struct BuildArgs {
     epoch: Option<u32>,
     allow_unsigned: bool,
     target_dir: String,
+    root: Option<String>,
 }
 
 fn parse_build_args(mut args: impl Iterator<Item = String>) -> Result<BuildArgs, String> {
@@ -139,6 +140,7 @@ fn parse_build_args(mut args: impl Iterator<Item = String>) -> Result<BuildArgs,
     let mut epoch = None;
     let mut allow_unsigned = false;
     let mut target_dir = String::from("target");
+    let mut root = None;
     while let Some(arg) = args.next() {
         let value = |args: &mut dyn Iterator<Item = String>| {
             args.next().ok_or_else(|| format!("{arg} needs a value"))
@@ -158,6 +160,7 @@ fn parse_build_args(mut args: impl Iterator<Item = String>) -> Result<BuildArgs,
             }
             "--allow-unsigned" => allow_unsigned = true,
             "--target-dir" => target_dir = value(&mut args)?,
+            "--root" => root = Some(value(&mut args)?),
             other => return Err(format!("unknown build option {other}")),
         }
     }
@@ -170,6 +173,7 @@ fn parse_build_args(mut args: impl Iterator<Item = String>) -> Result<BuildArgs,
         epoch,
         allow_unsigned,
         target_dir,
+        root,
     })
 }
 
@@ -247,7 +251,7 @@ fn parse_trust_args(mut args: impl Iterator<Item = String>) -> Result<TrustArgs,
 
 fn usage() {
     eprintln!(
-        "usage:\n  module-release build --spec FILE --out DIR [--raw-base URL] [--release TAG] [--key 64HEX] [--epoch N] [--allow-unsigned] [--target-dir DIR]\n  module-release pubkey --seed 64HEX\n  module-release trust --out FILE [--seed 64HEX] [--epoch N] [--unsigned] [--revoke N]"
+        "usage:\n  module-release build --spec FILE --out DIR [--root NAME@VERSION] [--raw-base URL] [--release TAG] [--key 64HEX] [--epoch N] [--allow-unsigned] [--target-dir DIR]\n  module-release pubkey --seed 64HEX\n  module-release trust --out FILE [--seed 64HEX] [--epoch N] [--unsigned] [--revoke N]"
     );
 }
 
@@ -547,7 +551,7 @@ fn build(args: BuildArgs) -> Result<(), String> {
             }
         }
     }
-    if let Some(root) = &spec.release.root {
+    if let Some(root) = args.root.as_ref().or(spec.release.root.as_ref()) {
         let (name, version) = root
             .split_once('@')
             .ok_or_else(|| format!("bad release root {root}"))?;
@@ -676,5 +680,74 @@ fn hex_digit(byte: u8) -> Option<u8> {
         b'a'..=b'f' => Some(byte - b'a' + 10),
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn release_spec() -> Spec {
+        toml::from_str(include_str!("../../../packages/runtime-modules.toml"))
+            .expect("parse packages/runtime-modules.toml")
+    }
+
+    #[test]
+    fn release_spec_keeps_the_demo_graph() {
+        let spec = release_spec();
+        assert_eq!(spec.release.root.as_deref(), Some("demo-root@1.0.0"));
+        let dep = spec
+            .modules
+            .iter()
+            .find(|module| module.name == "demo-dep")
+            .expect("demo-dep");
+        assert_eq!(dep.region, Some(0));
+        assert_eq!(dep.load_address, 0x884c_0000);
+        let root = spec
+            .modules
+            .iter()
+            .find(|module| module.name == "demo-root")
+            .expect("demo-root");
+        assert_eq!(root.region, Some(1));
+        assert_eq!(root.depends, vec!["demo-dep@1.0.0"]);
+    }
+
+    #[test]
+    fn release_spec_carries_the_m2_runtime_graph() {
+        let spec = release_spec();
+        let mesh = spec
+            .modules
+            .iter()
+            .find(|module| module.name == "m2-mesh")
+            .expect("m2-mesh");
+        assert_eq!(mesh.region, Some(2));
+        assert_eq!(mesh.load_address, 0x8854_0000);
+        assert_eq!(mesh.exports.len(), 1);
+        assert_eq!(mesh.exports[0].interface, "irix7.mesh.transport");
+        assert_eq!(mesh.exports[0].version, 1);
+        assert_eq!(mesh.exports[0].symbol, "MESH_API");
+        assert!(mesh.depends.is_empty());
+
+        let root = spec
+            .modules
+            .iter()
+            .find(|module| module.name == "m2-root")
+            .expect("m2-root");
+        assert_eq!(root.region, Some(3));
+        assert_eq!(root.load_address, 0x8858_0000);
+        assert_eq!(root.depends, vec!["m2-mesh@1.0.0"]);
+        assert!(root.exports.is_empty());
+
+        let mesh_index = spec
+            .modules
+            .iter()
+            .position(|module| module.name == "m2-mesh")
+            .expect("mesh position");
+        let root_index = spec
+            .modules
+            .iter()
+            .position(|module| module.name == "m2-root")
+            .expect("root position");
+        assert!(mesh_index < root_index, "root is declared before mesh");
     }
 }
