@@ -84,16 +84,15 @@ environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), o
 | Property | Value |
 |---|---|
 | Load virtual address (kseg0) | `0x8840_0000` (physical `0x0840_0000`) |
-| Slot A | 512 KiB at `0x8840_0000`; default control/probe slot |
-| Slot B | 1.5 MiB at `0x8848_0000`; Wasm/large module slot |
+| Slot A | 512 KiB at `0x8840_0000`; MCP/control slot |
+| Slot B | 1.5 MiB at `0x8848_0000`; first 256 KiB for the manager |
+| Runtime arena | 1.25 MiB at `0x884c_0000`; five 256 KiB regions after the manager |
 | Total area | 2 MiB (`0x0020_0000`) |
 | Placement | inside the reserved low window, above the kernel stack top (`0x8830_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
 | Image format | flat binary, entry at offset 0 |
 | Cache | kseg0 is cacheable; the loader must write back the data cache and invalidate the instruction cache before the call |
 
-A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by its own linker script. There is no general relocation;
-relocation at load time. The Seeq device's uncached DMA structures start at physical
-`0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
+A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by its own linker script. The manager is limited to the first 256 KiB of slot B; the five runtime regions follow it. There is no load-time relocation: every image is linked for its final region. The Seeq device's uncached DMA structures start at physical `0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
 
 ## 4. ABI
 
@@ -103,7 +102,7 @@ The entry point is a normal C call:
 const struct ModuleVtable *_start(const struct Services *services);
 ```
 
-`Services` is `#[repr(C)]` and versioned. Version 11:
+`Services` is `#[repr(C)]` and versioned. The version 11 rows are unchanged in version 12; §8.5 lists the appended loader fields:
 
 | Offset | Field | Meaning |
 |---|---|---|
@@ -129,14 +128,14 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x4C | `block_read` | `int32_t (*)(uint8_t target, uint32_t lba, uint8_t *ptr)` — one 512-byte SCSI sector; 0 or -1 |
 | 0x50 | `block_write` | `int32_t (*)(uint8_t target, uint32_t lba, const uint8_t *ptr)` — one 512-byte SCSI sector; 0 or -1 |
 
-The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.6.0`.  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.7.0`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
-the table is 0x54 bytes.
+the v11 prefix is 0x54 bytes and the ABI v12 table is 0x70 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
-that needs a newer table can reject an older core by checking `version`.  ABI v11 appends
-`block_write`; the optional cache probe uses it.  A bounded download queue and a module
-multiplexer are still future work.
+that needs a newer table can reject an older core by checking `version`. ABI v12 appends
+the loader/arena services described in §8.5. The kernel multiplexes the two boot slots and
+the five arena regions; a bounded download queue remains future work.
 
 ### TCP slots
 
@@ -170,16 +169,25 @@ inside the verified module image. The console prints the status as `module: retu
 
 A one-shot module can simply return null (status 0) or a vtable with `tick = null`.
 
-## 5. Lifecycle
+## 5. Lifecycle and multiplexer
 
-- Two fixed slots. Loading into a slot overwrites that slot, clears its `.bss`, and
-  drops that slot's tick callback; the other slot keeps running. Slot A holds MCP and
-  small probes; slot B holds the Wasm policy module. There is no general relocatable
-  multiplexer, unload or destructor.
+- The kernel multiplexes seven executable regions: slot A (512 KiB), slot B (1.5 MiB,
+  with the manager confined to its first 256 KiB) and five 256 KiB arena regions. Each
+  region has at most one module, one verified entry and one tick callback.
+- A boot-slot load (`module`) and an arena load (`module_load`) clear that region's old
+  callback before writing. `module_execute` validates the returned vtable against the
+  verified image and installs its tick; `module_unload` clears the callback and the
+  region. A failed fetch or a non-zero entry leaves no callback behind.
+- `module::poll` runs every registered callback at most once per 10 ms, in region order.
+  A callback returning non-zero unregisters itself. MCP in A, the manager in B and an
+  independent arena tick can therefore run concurrently without overwriting each other.
+- Fixed regions are not relocation: the manager chooses a region and each image is linked
+  for its final base. There is no dynamic region allocator, destructor or shared-library
+  model; the five-region arena is the current scaling limit.
 - The loader is synchronous: the console is blocked for the duration of the fetch and the
   entry call. The tick callback runs on the idle loop, so it must be quick.
 - The flat image contains `.text`, `.rodata` and `.data`, not `.bss`. The loader zeroes the
-  whole module area before the download, which gives `.bss` a defined initial value.
+  whole region before the download, which gives `.bss` a defined initial value.
 - Exceptions inside a module use the kernel's trap path. The current trap handler prints
   the cause and halts, which is the expected failure mode for a bad module.
 
@@ -189,7 +197,7 @@ The separate [`irix7/os-sdk`](https://github.com/irix7/os-sdk) repository packag
 developer-facing pieces: a `Context` over the service table, `entry!`/`panic_handler!`
 macros, the n32 target and flat linker, a copyable template, a hello example and
 `tools/irix7-module.py` (build, flatten, hash). The SDK owns the `module-abi` crate in `abi/`; this repository consumes it at the pinned
-`v0.6.0` tag, so the contract has one source of truth.
+`v0.7.0` tag, so the contract has one source of truth.
 
 A module built with the SDK is still a flat image linked at its slot base (`0x88400000`
 for A, `0x88480000` for B), fetched over
@@ -407,7 +415,7 @@ The kernel reserves a bounded arena after the runtime-manager image:
 The kernel only loads/executes verified images. Resolution, manifests,
 signatures, package metadata, rollback and unload policy stay in the
 downloadable manager. This is the explicit ROM-freeze exception; the M1 image
-is 522,904 bytes of 524,288 in the release build.
+is 523,816 bytes of 524,288 in the release build.
 
 ### 8.6 MCP runtime graph status
 
@@ -477,26 +485,23 @@ the manager's 256 KiB limit. The iris boot job builds manager, `demo-dep`,
 `demo-root`, `m2-mesh`, `m2-root` and a current MCP, signs them with one
 throwaway key, loads each graph over HTTP and asserts the serial order,
 `GET /modules` text and the unchanged no-`mesh.peer` M1/M2 markers. The
-release-built manager image is about 121 KiB and the unchanged clean ROM is
-522,904 of 524,288 bytes.
+release-built manager image is about 121 KiB and the clean ROM is 523,816 of
+524,288 bytes. The kernel multiplexer costs the final ~0.9 KiB of that budget.
 
-### 8.8 Kernel `module_find` limitation
+### 8.8 Module identity lookup
 
-ABI v12 `module_find` is present, but the current kernel loader never stores
-`LoadedModule::version_len` in `service_module_load`; the field stays zero, so
-an exact name/version lookup cannot match after any load. The manager does not
-depend on it: dependency presence and export ownership are proved through
-`module_find_export`, which is unaffected. `modules/demo-root` records the same
-workaround. This is a kernel correctness fix for a later kernel change; the
-runtime manager stays ROM-free.
+`module_find` matches the exact `(name, version)` stored by `module_load`.
+`module_find_export` remains the ownership path for interface binding because
+an export also proves the owner handle. The general multiplexer adds no second
+identity table: `module_query` reports the same region/handle and `module_unload`
+invalidates it.
 
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
-- More than two fixed slots or a relocatable multiplexer in the M1 loader.
-- Concurrent modules beyond slot A (MCP/probes), slot B (the manager/Wasm) and
-  the five-region runtime arena. The arena manager resolves exact versions
-  only; there is no range solver, relocation or shared-library model. Modules
-  are linked for one region, and release metadata must carry that region.
+- More than seven fixed regions or load-time relocation. The arena manager
+  resolves exact versions only; there is no range solver, relocation or
+  shared-library model. Modules are linked for one region, and release metadata
+  must carry that region.
 - Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.

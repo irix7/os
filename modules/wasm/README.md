@@ -55,4 +55,4 @@ The flat module build uses `core,alloc`; the standalone guest builder uses
 `core` only. The image must stay within the 1,572,864-byte slot-B limit. It is
 linked at `0x8848_0000` and loaded with `module b ...` or the NVRAM
 `wasm.url`/`wasm.sha256` pair, so slot A's MCP module remains live. There is
-still no general relocatable module multiplexer.
+the fixed-region kernel multiplexer still has no load-time relocation.

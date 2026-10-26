@@ -28,7 +28,7 @@ verified 1-of-1 capability, then ticks. The kernel now starts a local
 namespace/CAS, actor and capability policy at boot as well; the module remains
 the signed 1-of-1 probe. The slot-B Wasm module now runs the local policy from
 a Rust guest through the staged `i7host` surface and prints evidence matching
-the native `m1:` line; the general module multiplexer is still missing. Mesh
+the native `m1:` line; the fixed-region module multiplexer is implemented and its arena tick is boot-tested. Mesh
 has no transport; the kernel counters are self-tested and the M1 lines assert zero. This is a construction invariant, not a packet-level measurement of a future transport. The fabric,
 capability, CAS and Wasm host crates have host tests;
 the 128-node execution gate requires the native shim and transport work.

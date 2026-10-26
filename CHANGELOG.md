@@ -76,10 +76,13 @@ All notable changes to IRIX 7 are recorded here. The format follows
   fixed-slot loader remains standalone-only.
 - MCP now exposes `GET /modules` from the fixed runtime `ModuleStatus` block;
   before a manager publishes it reports `runtime manager: unavailable`.
+- The kernel now multiplexes seven executable regions (A, B and five arena
+  regions) with independent verified tick callbacks, load/replace clearing and
+  unload. A fixed-region arena tick and MCP run together; PROM 523,816/524,288.
 - ABI v12 adds the seven module-loader services and a 1.25 MiB five-region
   arena. A downloadable manager loads and executes a separate dependency image
   (`modules/demo-dep`) on iris; MCP publishes the result at `GET /modules`.
-  PROM: 522,904/524,288.
+  PROM: 523,816/524,288.
 - Added the kernel loader/arena table (`loader-abi`, at `0x883f_f000`) and its
   HTTP/TLS load, fetch and cache-safe enter services. This is the explicit
   freeze exception for the runtime module manager; the manager itself and all
@@ -175,7 +178,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The optional SCSI write cache is designed as a loadable module: it drains a
   bounded, SHA-256-keyed RAM queue during its idle tick into a cache-owned SCSI
   range.  It is never a boot prerequisite and never writes a data disk.  The
-  current image uses the RAM window; `block_write` and a module multiplexer are
+  current image uses the RAM window; `block_write` was added; the fixed-region module multiplexer landed later.
   future ABI work.
 - A static Rust `std` hello runs on the native n32 target: it prints through the
   kernel console, reads its initial `argv`, and exits.  This is the first

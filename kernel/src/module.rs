@@ -56,6 +56,33 @@ pub const fn slot_size(slot: Slot) -> usize {
     }
 }
 
+/// First runtime arena region, after the two boot slots.
+pub const ARENA_BASE: usize = 0x884c_0000;
+/// Size of one runtime arena region.
+pub const ARENA_REGION_SIZE: usize = 0x0004_0000;
+/// Number of runtime arena regions.
+pub const ARENA_REGION_COUNT: usize = 5;
+/// One multiplexer entry per boot slot and runtime region.
+pub const MODULE_REGION_COUNT: usize = 2 + ARENA_REGION_COUNT;
+
+/// Base of multiplexer region `index`.
+pub const fn region_base(index: usize) -> usize {
+    match index {
+        0 => slot_base(Slot::A),
+        1 => slot_base(Slot::B),
+        _ => ARENA_BASE + (index - 2) * ARENA_REGION_SIZE,
+    }
+}
+
+/// Capacity of multiplexer region `index`.
+pub const fn region_len(index: usize) -> usize {
+    match index {
+        0 => slot_size(Slot::A),
+        1 => slot_size(Slot::B),
+        _ => ARENA_REGION_SIZE,
+    }
+}
+
 static SERVICES: Services = Services {
     version: ABI_VERSION,
     write: service_write,
@@ -87,9 +114,20 @@ static SERVICES: Services = Services {
     module_unload: service_module_unload,
 };
 
-/// Periodic callbacks for the two slots.
-static mut TICKS: [Option<unsafe extern "C" fn(*const Services) -> i32>; 2] = [None; 2];
-static mut LAST_TICKS: [u64; 2] = [0; 2];
+/// Periodic callbacks for every multiplexer region.
+static mut TICKS: [Option<unsafe extern "C" fn(*const Services) -> i32>; MODULE_REGION_COUNT] =
+    [None; MODULE_REGION_COUNT];
+static mut LAST_TICKS: [u64; MODULE_REGION_COUNT] = [0; MODULE_REGION_COUNT];
+
+/// Drop a region's callback; used by load, unload and failed entries.
+fn clear_tick(index: usize) {
+    if index < MODULE_REGION_COUNT {
+        // SAFETY: single-threaded kernel; every writer is on the boot/idle path.
+        unsafe {
+            TICKS[index] = None;
+        }
+    }
+}
 
 /// A module slot as a writable slice, for downloading straight into place.
 pub fn area(slot: Slot) -> &'static mut [u8] {
@@ -100,6 +138,8 @@ pub fn area(slot: Slot) -> &'static mut [u8] {
 
 /// Zero one module slot before a download.
 pub fn clear(slot: Slot) {
+    let index = slot as usize;
+    clear_tick(index);
     if slot == Slot::B {
         crate::logical::forget_wasm();
     }
@@ -111,14 +151,16 @@ pub fn clear(slot: Slot) {
     crate::cache::sync();
 }
 
-fn vtable_in_slot(p: *const ModuleVtable, slot: Slot) -> bool {
+fn vtable_in_slot(p: *const ModuleVtable, slot: Slot, len: usize) -> bool {
+    let index = slot as usize;
+    let base = region_base(index);
+    let image_len = len.min(region_len(index));
     let a = p as usize;
-    let base = slot_base(slot);
     if a < base || a % align_of::<ModuleVtable>() != 0 {
         return false;
     }
     match a.checked_add(size_of::<ModuleVtable>()) {
-        Some(end) => end <= base + slot_size(slot),
+        Some(end) => end <= base + image_len,
         None => false,
     }
 }
@@ -141,36 +183,37 @@ pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
     crate::cache::icache_invalidate(base, len);
     crate::cache::sync();
 
-    // A new image replaces any previous callback in this slot.
-    TICKS[index] = None;
+    // A new image replaces any previous callback in this region.
+    clear_tick(index);
 
     let entry: Entry = core::mem::transmute(base);
     let vtable = entry(&SERVICES);
     if vtable.is_null() {
         return 0;
     }
-    if !vtable_in_slot(vtable, slot) {
+    if !vtable_in_slot(vtable, slot, len) {
         return -1;
     }
-    // The vtable lives inside the verified image; read it directly.
-    let status = core::ptr::read(vtable).status;
+    // SAFETY: the vtable lives inside the verified image; read it directly.
+    let status = unsafe { core::ptr::read(vtable).status };
     if status != 0 {
         return status;
     }
-    let tick = core::ptr::read(vtable).tick;
-    if let Some(tick) = tick {
+    // SAFETY: same verified image; single-threaded kernel.
+    unsafe {
+        let tick = (*vtable).tick;
         LAST_TICKS[index] = service_clock_ms();
-        TICKS[index] = Some(tick);
+        TICKS[index] = tick;
     }
     0
 }
 
-/// Run the periodic callbacks of both slots, if registered.
+/// Run the periodic callbacks of every registered multiplexer region.
 pub fn poll() {
     let now = service_clock_ms();
-    for index in 0..2 {
-        // SAFETY: single-threaded kernel; slot arrays are only written here
-        // and in call_entry, which is not re-entered.
+    for index in 0..MODULE_REGION_COUNT {
+        // SAFETY: single-threaded kernel; the arrays are only written here
+        // and by load/execute/unload on the same thread.
         let tick = unsafe { TICKS[index] };
         let Some(tick) = tick else {
             continue;
@@ -184,16 +227,13 @@ pub fn poll() {
         }
         let status = unsafe { tick(&SERVICES) };
         if status != 0 {
-            unsafe {
-                TICKS[index] = None;
-            }
+            clear_tick(index);
         }
     }
 }
 
-const REGION_SIZE: usize = 0x0004_0000;
-const REGION_COUNT: usize = 5;
-const ARENA_BASE: usize = 0x884c_0000;
+const REGION_SIZE: usize = ARENA_REGION_SIZE;
+const REGION_COUNT: usize = ARENA_REGION_COUNT;
 
 #[derive(Clone, Copy)]
 struct LoadedExport {
@@ -301,12 +341,14 @@ unsafe extern "C" fn service_module_load(
         return MODULE_ERR_LIMIT;
     }
     let region = request.region as usize;
-    let base = ARENA_BASE + region * REGION_SIZE;
+    let base = region_base(2 + region);
     // SAFETY: single-threaded kernel.
     let modules = unsafe { &mut *core::ptr::addr_of_mut!(MODULES) };
     if modules[region].live && request.flags & MODULE_LOAD_REPLACE == 0 {
         return MODULE_ERR_BUSY;
     }
+    // Replacing a region invalidates any old callback even if the fetch fails.
+    clear_tick(2 + region);
     // SAFETY: the request points at module-memory bytes for this synchronous call.
     let url = unsafe { core::slice::from_raw_parts(request.url, request.url_len as usize) };
     let Ok(url) = core::str::from_utf8(url) else {
@@ -424,17 +466,51 @@ unsafe extern "C" fn service_module_execute(
     let entry: ModuleEntry = unsafe { core::mem::transmute(entry) };
     let vtable = unsafe { entry(&SERVICES, context) };
     module.state = MODULE_STATE_ENTERED;
+    let tick_index = 2 + region;
+    let status = if vtable.is_null() {
+        clear_tick(tick_index);
+        0
+    } else {
+        let base = region_base(2 + region);
+        let image_len = module.image_size as usize;
+        let address = vtable as usize;
+        if address < base
+            || address % align_of::<ModuleVtable>() != 0
+            || address
+                .checked_add(size_of::<ModuleVtable>())
+                .map_or(true, |end| end > base + image_len)
+        {
+            clear_tick(tick_index);
+            MODULE_ERR_STATE
+        } else {
+            // SAFETY: the table is inside the verified image.
+            let status = unsafe { (*vtable).status };
+            if status == 0 {
+                unsafe {
+                    LAST_TICKS[tick_index] = service_clock_ms();
+                    TICKS[tick_index] = (*vtable).tick;
+                }
+            } else {
+                clear_tick(tick_index);
+            }
+            status
+        }
+    };
     if !out_status.is_null() {
         // SAFETY: optional manager out pointer.
         unsafe {
-            *out_status = if vtable.is_null() {
+            *out_status = if status == MODULE_ERR_STATE {
                 0
             } else {
-                (*vtable).status
+                status
             };
         }
     }
-    MODULE_OK
+    if status == MODULE_ERR_STATE {
+        MODULE_ERR_STATE
+    } else {
+        MODULE_OK
+    }
 }
 
 unsafe extern "C" fn service_module_find(
@@ -554,7 +630,8 @@ unsafe extern "C" fn service_module_unload(handle: ModuleHandle) -> i32 {
     if !module.live || module.generation != generation {
         return MODULE_ERR_STATE;
     }
-    let base = ARENA_BASE + region * REGION_SIZE;
+    clear_tick(2 + region);
+    let base = region_base(2 + region);
     // SAFETY: the region is owned by this module slot and is being released.
     unsafe { core::ptr::write_bytes(base as *mut u8, 0, REGION_SIZE) };
     crate::cache::dcache_writeback_invalidate(base, REGION_SIZE);

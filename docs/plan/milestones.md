@@ -103,8 +103,7 @@ remains the module probe. The slot-B Wasm module now runs the local policy
 from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses
 and checks the capability rights, and commits atomically. Its
 `m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence has a distinct
-guest root and actor; rights and home match the native `m1:` line, while MCP remains loaded in slot A; the released v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers. The general module multiplexer is
-still missing; the fixed A/B layout is the current coexistence mechanism. The
+guest root and actor; rights and home match the native `m1:` line, while MCP remains loaded in slot A; the released v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers. The fixed-region module multiplexer is implemented: A, B and five arena regions can each carry a verified module and tick; dynamic relocation is still missing. The
 kernel has no mesh transport; the counters are self-tested and the M1 lines assert zero (a construction invariant, not packet-level instrumentation).
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
@@ -126,7 +125,7 @@ The optional SCSI write cache is deliberately a module, not PROM code: verified
 downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
 a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
 `modules/cache` proves the idle write and readback on target 1 to target 3.
-The automatic queue, lookup and module multiplexer are still to come.
+The automatic queue and lookup are still to come; the fixed-region module multiplexer is implemented.
 
 **M1 Wasm seam (scope decision, 2026-10-26):** the live Wasm policy runs in
 the downloadable `modules/wasm` module behind the `wasm-host` host ABI
