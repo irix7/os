@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# IRIX 7 runtime module release graph.
+#
+# tools/module-release wraps each flattened image with its manifest v2 footer,
+# signs the image digest, and emits package-index.conf, its detached signature
+# and release-trust.conf. `load_address` is the arena region or slot the image
+# was linked for; symbols in the ELF are converted to image-relative offsets.
+#
+# The manager image is not a package: it is the slot-B resolver. It is wrapped
+# and signed for distribution, but is excluded from the package index.
+version = 1
+
+[release]
+index = "package-index.conf"
+trust = "release-trust.conf"
+index_signature = "package-index.conf.sig"
+require_signatures = true
+trust_epoch = 1
+# Revoked epochs are listed here after a rotation. The checked-in built-in
+# policy in packages/release-trust.conf mirrors this release policy.
+revoked = []
+root = "demo-root@1.0.0"
+
+[[module]]
+name = "demo-dep"
+version = "1.0.0"
+abi = "12.0"
+region = 0
+load_address = 0x884c0000
+elf = "{target}/mips3-sgi-irix7-n32/release/runtime-demo-dep-module"
+flat = "{target}/modules/demo-dep.flat"
+image = "demo-dep.module"
+url = "{raw_base}/boot/modules/{version}/demo-dep.module"
+max_size = 262144
+
+[[module.exports]]
+interface = "irix7.demo.service"
+version = 1
+symbol = "DEMO_API"
+
+[[module]]
+name = "demo-root"
+version = "1.0.0"
+abi = "12.0"
+region = 1
+load_address = 0x88500000
+elf = "{target}/mips3-sgi-irix7-n32/release/runtime-demo-root-module"
+flat = "{target}/modules/demo-root.flat"
+image = "demo-root.module"
+url = "{raw_base}/boot/modules/{version}/demo-root.module"
+max_size = 262144
+depends = ["demo-dep@1.0.0"]
+
+[[module]]
+name = "manager"
+version = "1.0.0"
+abi = "12.0"
+load_address = 0x88480000
+elf = "{target}/mips3-sgi-irix7-n32/release/runtime-manager-module"
+flat = "{target}/modules/manager.flat"
+image = "manager.module"
+url = "{raw_base}/boot/modules/{version}/manager.module"
+max_size = 262144
+index = false

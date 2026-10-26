@@ -6,4 +6,8 @@ license = "GPL-3.0-only"
 description = "Exact-version module manifest and dependency resolver for IRIX 7"
 
 [dependencies]
+module-trust = { path = "../module-trust" }
 sha2 = { version = "0.10", default-features = false }
+
+[dev-dependencies]
+ed25519-dalek = { version = "2.1", default-features = false }

@@ -30,6 +30,7 @@ pub mod codec;
 pub mod footer;
 pub mod index;
 pub mod manager;
+pub mod runtime;
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;

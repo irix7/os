@@ -30,6 +30,7 @@ jobs:
           if [ -f Cargo.toml ]; then
             cargo fmt --all -- --check
             (cd modules/wasm/guest && cargo fmt -- --check)
+            (cd tools/module-release && cargo fmt -- --check)
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -70,6 +71,8 @@ jobs:
         run: |
           if [ -f Cargo.toml ]; then
             cargo clippy --workspace --all-targets -- -D warnings
+            cargo clippy --manifest-path tools/module-release/Cargo.toml \
+              --all-targets -- -D warnings
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -89,7 +92,8 @@ jobs:
               -p sys-primitives -p platform-api -p mesh-core -p mesh-service \
               -p mesh-sim -p fabric -p guest-abi -p cas-core -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
-              -p wasm-policy-host
+              -p wasm-policy-host -p module-resolver -p module-trust
+            cargo test --manifest-path tools/module-release/Cargo.toml
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -277,6 +281,67 @@ jobs:
           size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
           echo "wasm.module: $size bytes"
           test "$size" -le 1572864
+
+      - name: Build runtime manager and dependency graph
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          TARGET=targets/mips3-sgi-irix7-n32.json
+          WORK="$RUNNER_TEMP/runtime-build"
+          mkdir -p "$WORK" target/modules
+
+          seed="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
+            trust --out "$WORK/trust.conf" --seed "$seed" --epoch 1
+
+          echo "=== manager ==="
+          IRIX7_TRUST_POLICY="$WORK/trust.conf" \
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/manager/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target "$TARGET" -p runtime-manager-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/runtime-manager-module target/modules/manager.flat
+
+          echo "=== demo-dep ==="
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-dep/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target "$TARGET" -p runtime-demo-dep-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/runtime-demo-dep-module target/modules/demo-dep.flat
+
+          echo "=== demo-root ==="
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-root/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target "$TARGET" -p runtime-demo-root-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/runtime-demo-root-module target/modules/demo-root.flat
+
+          echo "=== current MCP ==="
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
+            cargo build --release -Z build-std=core,alloc \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target "$TARGET" -p mcp-module
+          "$LLVM_OBJCOPY" -O binary \
+            target/mips3-sgi-irix7-n32/release/mcp-module "$WORK/mcp.module"
+
+          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
+            build --spec packages/runtime-modules.toml --out "$WORK/release" \
+              --raw-base http://192.168.0.1:18101 --release ci \
+              --key "$seed" --epoch 1
+          manager_size="$(stat -c%s "$WORK/release/manager.module")"
+          echo "manager.module: $manager_size bytes"
+          test "$manager_size" -le 262144
+          cp -r "$WORK/release" "$RUNNER_TEMP/runtime-release"
+          cp "$WORK/mcp.module" "$RUNNER_TEMP/mcp.module"
 
       - name: Build static std hello
         timeout-minutes: 20
@@ -483,6 +548,147 @@ jobs:
               wasm.group(1),
           )
           PY
+          iris-ci --socket "$socket" quit
+          wait "$pid"
+
+      - name: Boot runtime manager and dependency graph
+        env:
+          IRIS_NO_IDLE: "1"
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/iris-runtime-deps"
+          http="$RUNNER_TEMP/runtime-http"
+          rm -rf "$work" "$http"
+          mkdir -p "$work" "$http/boot/modules/ci"
+          cp "$RUNNER_TEMP/runtime-release/package-index.conf" "$http/i"
+          cp "$RUNNER_TEMP/runtime-release/package-index.conf.sig" "$http/i.sig"
+          cp "$RUNNER_TEMP/runtime-release/manager.module" "$http/m"
+          cp "$RUNNER_TEMP/mcp.module" "$http/c"
+          cp "$RUNNER_TEMP/runtime-release/demo-dep.module" \
+             "$RUNNER_TEMP/runtime-release/demo-root.module" "$http/boot/modules/ci/"
+
+          python3 - "$work/nvram.bin" "$http" <<'PY'
+          import hashlib
+          import pathlib
+          import sys
+
+          work = pathlib.Path(sys.argv[1])
+          root = pathlib.Path(sys.argv[2])
+
+          def sha(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          signature = (root / "i.sig").read_text().strip()
+          env = (
+              f"manager.index=http://192.168.0.1:18101/i,{sha(root / 'i')}\0"
+              f"manager.index.sig={signature}\0"
+              "manager.root=demo-root@1.0.0\0"
+          ).encode()
+          # The DS1386 MAC lives at byte index 314; keep the environment below it.
+          assert len(env) <= 298, len(env)
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          work.write_bytes(image)
+          PY
+
+          cat > "$work/machine.toml" <<'EOF'
+          banks = [32, 0, 0, 0]
+          no_audio = true
+
+          [machine]
+          profile = "indy_ip24"
+
+          [scsi]
+
+          [[port_forward]]
+          proto = "tcp"
+          host_port = 2325
+          guest_port = 23
+          bind = "localhost"
+
+          [[port_forward]]
+          proto = "tcp"
+          host_port = 8090
+          guest_port = 80
+          bind = "localhost"
+          EOF
+
+          python3 -m http.server 18101 --bind 0.0.0.0 \
+            --directory "$http" >"$work/http.log" 2>&1 &
+          http_pid=$!
+          socket="$work/iris.sock"
+          iris --config "$work/machine.toml" --ci \
+            --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --nvram "$work/nvram.bin" \
+            --ci-socket "$socket" --monitor-port 18891 \
+            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            status=$?
+            kill "$pid" "$http_pid" 2>/dev/null || true
+            if [ "$status" -ne 0 ]; then
+              echo "--- iris output (tail)"
+              tail -50 "$work/iris.out" || true
+              echo "--- serial log (tail)"
+              tail -80 "$work/serial.log" 2>/dev/null || true
+            fi
+          }
+          trap cleanup EXIT
+
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
+          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
+
+          mcp_sha="$(sha256sum "$http/c" | awk '{print $1}')"
+          manager_sha="$(sha256sum "$http/m" | awk '{print $1}')"
+          python3 - "$mcp_sha" "$manager_sha" <<'PY'
+          import socket
+          import time
+
+          mcp_sha, manager_sha = __import__("sys").argv[1:3]
+          with socket.create_connection(("127.0.0.1", 2325), timeout=10) as sock:
+              sock.settimeout(5)
+              data = b""
+              try:
+                  while b"sash> " not in data:
+                      data += sock.recv(4096)
+              except socket.timeout:
+                  pass
+              sock.sendall(
+                  f"module http://192.168.0.1:18101/c {mcp_sha}\r\n".encode()
+              )
+              time.sleep(6)
+              sock.sendall(
+                  f"module b http://192.168.0.1:18101/m {manager_sha}\r\n".encode()
+              )
+              time.sleep(12)
+          PY
+
+          iris-ci --socket "$socket" serial-wait 'demo-dep: entered by runtime manager' --timeout 60
+          iris-ci --socket "$socket" serial-wait 'demo-root: dep=0x217' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'status=ok root=demo-root@1.0.0' --timeout 30
+
+          grep -Eq '^order=demo-dep@1.0.0,demo-root@1.0.0$' "$work/serial.log"
+          grep -Eq '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
+          grep -Eq '^demo-root@1.0.0 region=1 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
+          grep -q 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=136' "$work/serial.log"
+          dep_line="$(grep -n 'demo-dep: entered by runtime manager' "$work/serial.log" | head -1 | cut -d: -f1)"
+          root_line="$(grep -n 'demo-root: dep=0x217' "$work/serial.log" | head -1 | cut -d: -f1)"
+          test "$dep_line" -lt "$root_line"
+
+          for attempt in 1 2 3 4 5; do
+            if curl -fsS http://127.0.0.1:8090/modules >"$work/mcp-modules.txt"; then
+              break
+            fi
+            sleep 2
+          done
+          grep -q 'status=ok root=demo-root@1.0.0 nodes=2 signatures=ed25519' "$work/mcp-modules.txt"
+          grep -q 'demo-dep@1.0.0 region=0' "$work/mcp-modules.txt"
+          grep -q 'demo-root@1.0.0 region=1' "$work/mcp-modules.txt"
+
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -924,6 +1130,9 @@ jobs:
             ${{ runner.temp }}/iris-boot/iris.out
             ${{ runner.temp }}/iris-wasm-local/serial.log
             ${{ runner.temp }}/iris-wasm-local/iris.out
+            ${{ runner.temp }}/iris-runtime-deps/serial.log
+            ${{ runner.temp }}/iris-runtime-deps/iris.out
+            ${{ runner.temp }}/iris-runtime-deps/mcp-modules.txt
             ${{ runner.temp }}/iris-std/serial.log
             ${{ runner.temp }}/iris-std/iris.out
             ${{ runner.temp }}/iris-std-native/serial.log
@@ -978,6 +1187,7 @@ jobs:
                 -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
                 --target "$TARGET" -p "$package"
             "$LLVM_OBJCOPY" -O binary "target/mips3-sgi-irix7-n32/release/$package" "$OUT/$module.module"
+            cp "$OUT/$module.module" "$OUT/$module.flat"
             printf '%s\t%s\t%s\t%s\t%s\n' \
               "$module" "$package" "$build_std" "$opt" \
               "$(stat -c%s "$OUT/$module.module")" >> "$SIZES"
@@ -992,6 +1202,7 @@ jobs:
           cache  cache-module  core,alloc 2
           manager runtime-manager-module core,alloc z
           demo-dep runtime-demo-dep-module core,alloc z
+          demo-root runtime-demo-root-module core,alloc z
           wasm   wasm-module   core,alloc z
           EOF
 
@@ -1002,6 +1213,10 @@ jobs:
             limit="$LIMIT"
             if [ "$module" = wasm ]; then
               limit=1572864
+            elif [ "$module" = manager ] || [ "$module" = demo-dep ] || [ "$module" = demo-root ]; then
+              # The manager occupies the first 256 KiB of slot B; the arena
+              # regions after it are also 256 KiB.
+              limit=262144
             fi
             printf '%-8s %-14s %-11s %4s %12s %12s\n' \
               "$module" "$package" "$build_std" "$opt" "$size" "$limit"
@@ -1020,12 +1235,31 @@ jobs:
               limit="$LIMIT"
               if [ "$module" = wasm ]; then
                 limit=1572864
+              elif [ "$module" = manager ] || [ "$module" = demo-dep ] || [ "$module" = demo-root ]; then
+                limit=262144
               fi
               echo "| $module | $package | $build_std | $opt | $size | $limit |"
             done < "$SIZES"
           } >> "$SUMMARY"
 
           test "$failed" -eq 0
+
+      - name: Build signed runtime graph
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          seed="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
+            build --spec packages/runtime-modules.toml --out target/modules/release \
+              --raw-base https://example.invalid --release ci --key "$seed" --epoch 1
+          test -s target/modules/release/package-index.conf
+          test -s target/modules/release/package-index.conf.sig
+          test -s target/modules/release/release-trust.conf
+          grep -q "depends=demo-dep@1.0.0:" target/modules/release/package-index.conf
+          grep -q "sig=1:" target/modules/release/package-index.conf
+          manager_size="$(stat -c%s target/modules/release/manager.module)"
+          echo "manager.module (wrapped): $manager_size bytes"
+          test "$manager_size" -le 262144
 
   docs:
     name: Docs

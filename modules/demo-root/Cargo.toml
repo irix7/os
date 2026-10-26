@@ -1,0 +1,14 @@
+[package]
+name = "runtime-demo-root-module"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Runtime graph root for the IRIX 7 manager demo"
+[[bin]]
+name = "runtime-demo-root-module"
+path = "src/main.rs"
+[profile.release]
+panic = "abort"
+opt-level = "z"
+[dependencies]
+module-abi.workspace = true

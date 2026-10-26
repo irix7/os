@@ -1,7 +1,7 @@
 # IRIX 7 package index
 
 **Status:** draft
-**Version:** 0.1
+**Version:** 0.2
 **Owner:** release / SDK
 **Related:** [`modules.md`](modules.md), [`../plan/milestones.md`](../plan/milestones.md).
 
@@ -33,11 +33,14 @@ version=1
 kind name version url sha256 description...
 ```
 
-Version 2 adds an optional exact dependency field before the description:
+Version 2 adds metadata fields before the description:
 
 ```text
 version=2
-kind name version url sha256 depends=name@version:sha256,... description...
+kind name version url sha256 [depends=name@version:sha256,...] \
+  [abi=major.minor] [region=N] \
+  [exports=interface@version:offset,...] \
+  [sig=epoch:128-hex-digits] description...
 ```
 
 `kind` is `module` or `userland`.  Names are ASCII, contain no whitespace, and
@@ -46,21 +49,40 @@ be HTTPS and immutable for that version.  `sha256` is 64 lowercase hex digits
 over the exact bytes.  The description is the remainder of the line.  Records
 with the same name are newest first; the client loads the first match.  The
 current client holds a 16 KiB index; a larger store needs shards, which are a
-later format change.
+later format change.  `tools/module-release` emits v2 records and the
+`module-resolver` index parser bounds an index at 64 KiB and 256 records.
 
 Comments and blank lines are ignored.  Unknown fields are rejected by the
 client; a future format version is not guessed.
 
-### 3.1 Dependency records (v2, host parser implemented)
+### 3.1 Runtime records (v2)
 
-Version 2 records add one `depends=` token before the description.  It is a
-comma-separated list of `name@version:sha256` entries.  Dependencies are exact
-versions and 64 lowercase hex SHA-256 digests, matching the module manifest.
-Duplicate names in one record are rejected; the parser is in
-`crates/module-resolver/src/index.rs`.
+A runtime module record carries the metadata the downloadable manager needs:
+
+- `depends=` is a comma-separated list of `name@version:sha256` entries with
+  exact versions and 64 lowercase hex SHA-256 digests, matching the module
+  manifest.  Duplicate names in one record are rejected.
+- `abi=major.minor` is the module ABI the image was built for.  A record
+  without it is not runtime-loadable.
+- `region=N` is the fixed arena region the image was linked for.  Images are
+  not relocatable; the release tool records the link address as this region.
+- `exports=interface@version:offset,...` copies the manifest export table
+  offsets so `module_load` can register them in the same call.  Offset zero is
+  a declaration with no table.
+- `sig=epoch:128-hex-digits` is the detached Ed25519 release signature over
+  the record digest.  The epoch selects a key from the release trust policy.
+  The signature is over `IRIX7-MODULE-IMAGE-v1 || sha256`, matching
+  `crates/module-trust`.
+
+The index parser is in `crates/module-resolver/src/index.rs`; the release
+generator is `tools/module-release`.  The manager verifies the detached index
+signature (from `manager.index.sig`) and every record signature before it
+loads an image.  A record without `sig=` is rejected unless the embedded trust
+policy explicitly sets `require-signatures=0`.
 
 Version 2 does not add ranges, conflict solving or automatic upgrades; a later
-format change can.  Version 1 records remain standalone.
+format change can.  Version 1 records remain standalone and are not
+runtime-loadable.
 
 ## 4. Client rules
 
@@ -111,8 +133,21 @@ coexist with the MCP module until a multiplexer or merged policy module lands.
 
 ## 7. Non-goals
 
-For v1, version ranges/SAT solving, binary deltas, per-package signing keys,
-central accounts and automatic execution without digest verification are out
-of scope.  Version 2 exact dependency records are parsed by the host resolver;
-runtime loading and signature verification still belong to the downloadable
-module manager (#217).  The v1 client remains standalone.
+Version ranges/SAT solving, binary deltas, per-package signing keys, central
+accounts and automatic execution without digest verification are out of scope.
+The v1 `sash` client remains standalone and ignores the v2 metadata fields.  A
+record is still only loaded after its digest matches; the runtime manager adds
+the exact graph, manifest footer and release-signature checks on top.
+
+The DS1386 environment holds `manager.index`, `manager.index.sig` and
+`manager.root` for the runtime manager.  The MAC address occupies byte 314 of
+the chip, so the complete environment must stay below 298 bytes: a test rig
+uses a short index path (`/i`) and relies on the manager's embedded trust
+policy.  `manager.trust=<url>,<sha256>` is available when a longer-lived rig
+needs a separate trust source.
+
+The release workflow passes the Ed25519 signing seed in the
+`MODULE_SIGNING_KEY` secret (and an optional `MODULE_SIGNING_EPOCH` variable).
+A missing key fails the release unless `IRIX7_RELEASE_UNSIGNED=1` is set
+explicitly.  The matching public key belongs in `packages/release-trust.conf`;
+a key rotation updates that file and lists the revoked epoch.

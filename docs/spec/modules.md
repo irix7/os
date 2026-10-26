@@ -1,7 +1,7 @@
 # IRIX 7 — Loadable Kernel Modules
 
 **Status:** draft
-**Version:** 1.0
+**Version:** 1.1
 **Owner:** kernel
 **Related:** [`boot-protocol.md`](boot-protocol.md), [`../plan/milestones.md`](../plan/milestones.md) M1.
 
@@ -333,24 +333,31 @@ image bytes | manifest record | I7MF | u16 version=1 | u16 reserved=0
 ```
 
 The manifest range must end exactly at the footer, and the record must decode
-as version 1. A standalone image has no footer. A present but malformed footer
-fails closed; it is not treated as an older standalone image. The image digest
-covers the image, manifest and footer; the footer has no separate checksum.
+as version 1 or version 2. A standalone image has no footer. A present but
+malformed footer fails closed; it is not treated as an older standalone image.
+The image digest covers the image, manifest and footer; the footer has no
+separate checksum.
 
 The host implementation is `module_resolver::footer::{wrap, parse}`.
 
-### 8.3 Host manager model (implemented host slice)
+### 8.3 Host manager model and runtime transaction
 
-`module_resolver::manager::ModuleManager` models the next stage without loading
-or executing code. It consumes a `Registry` and an `ImageSource`, resolves the
-graph, fetches every not-yet-loaded image, verifies its SHA-256 against the
-record and publishes the whole set atomically. A missing image or digest
-mismatch leaves all existing loads and reference counts unchanged. Re-loading a
-root increments every module in its resolution; unloading decrements and
-removes only modules that reach zero. Slot allocation, relocation and execution
-remain in the downloadable module manager.
+`module_resolver::manager::ModuleManager` is the reference-counting host model:
+it consumes a `Registry` and an `ImageSource`, resolves the graph, verifies
+every SHA-256 and publishes the set atomically. It does not touch the arena.
 
-### 8.4 Signatures and key epochs (host policy)
+`module_resolver::runtime` is the host-testable transaction the downloadable
+manager runs. It consumes a parsed package index, resolves the exact graph
+(dependencies first, root last), verifies every release signature against a
+trust policy, loads every image into its declared arena region before entering
+any of them, parses each manifest v2 footer, checks the manifest against the
+index record, verifies the entry offset and registered export tables, and only
+then executes in dependency order. Any failure unloads every image from the
+transaction in reverse order. Stale handles, digest mismatches, oversized
+images, region exhaustion, ABI/cycle/missing-dependency failures and export
+mismatches are host tests in `crates/module-resolver/src/runtime.rs`.
+
+### 8.4 Signatures, trust policy and key epochs
 
 `crates/module-trust` verifies Ed25519 signatures over a domain-separated image
 digest. A `SignatureRecord` names the key epoch. A `TrustStore` keeps live and
@@ -360,8 +367,24 @@ install a live key at the new epoch and may revoke the old key. Key rotation
 does not rewrite old module signatures; the manager verifies them against the
 recorded epoch.
 
-The downloadable module manager will perform this check before loading. Package
-index signatures and the release key policy remain to be integrated.
+The release trust source is a small line-oriented text policy:
+
+```text
+version=1
+current-epoch=2
+require-signatures=1
+key 1 <64 hex Ed25519 public key>
+key 2 <64 hex Ed25519 public key>
+revoked 1
+```
+
+`modules/manager/build.rs` embeds `packages/release-trust.conf` unless
+`IRIX7_TRUST_POLICY` names another policy at build time. `manager.trust=<url>,<sha256>`
+can load a digest-pinned policy at runtime. Missing signatures are accepted
+only when the policy explicitly contains `require-signatures=0`; the
+checked-in release policy requires signatures. The signed record text is
+`epoch:128-hex-digits`, used for both `manager.index.sig` and index `sig=`
+fields.
 
 ### 8.5 Loader/arena ABI v12
 
@@ -395,26 +418,66 @@ before a manager has published, it returns `runtime manager: unavailable`. The
 text is bounded to 1 KiB. The status block is informational; it is not an
 authority path.
 
-### 8.7 Downloadable manager and dependency pair
+### 8.7 Downloadable manager and dependency graph
 
-`modules/manager` is a flat slot-B module that reads a combined
-`manager.dep=<url>,<sha256>` NVRAM value, calls `module_load` for region 0 and
-`module_execute` with a `ModuleContext`. `modules/demo-dep` is a separate
-image linked at the arena base; it returns status 42 and logs its entry. The
-manager publishes the result through the fixed `ModuleStatus` block consumed
-by MCP `GET /modules`.
+`modules/manager` is a flat slot-B image that fits within the first 256 KiB of
+slot B. It reads:
 
-This proves actual image loading and execution with the SDK ABI, but not yet
-manifest v2 parsing, multiple dependencies, signatures or package-index
-resolution.
+| Name | Meaning |
+|---|---|
+| `manager.index` | package-index URL and SHA-256, `url,sha256` |
+| `manager.index.sig` | detached index signature, `epoch:128-hex` |
+| `manager.root` | exact root identity, `name@version` |
+| `manager.trust` | optional trust-policy URL and digest |
+| `manager.dep` | legacy single-image fallback, `url,sha256` |
+
+The normal path loads the trust policy and index image into the reserved
+metadata region through `module_load`, verifies the index digest and detached
+signature, parses the v2 index, resolves the exact graph and verifies every
+record signature before a module image is fetched. It then loads each module
+into the region named by the index, parses the manifest v2 footer, checks the
+manifest identity/ABI/dependencies/exports against the index, verifies the
+entry offset and export registration, and executes dependencies before the
+root. A failure unloads every image from this transaction and publishes a failed
+status; no dependent is entered.
+
+`modules/demo-dep` is linked at arena region 0 (`0x884c_0000`) and exports
+`irix7.demo.service@1`. `modules/demo-root` is linked at region 1
+(`0x8850_0000`), depends on `demo-dep` by exact digest, resolves the export
+through `module_find_export`, checks the owner handle and calls the table. It
+prints `demo-root: dep=0x217 owner=0x...`.
+
+`tools/module-release` wraps flat images with their manifest v2 footer, resolves
+entry/export symbol offsets from the ELF, signs image digests and emits the v2
+package index, the detached index signature and the release trust policy.
+`packages/runtime-modules.toml` is the exact graph spec. The manager publishes
+the resolved graph in the fixed `ModuleStatus` block; MCP `GET /modules` returns
+it.
+
+The CI modules job builds and signs the graph with a throwaway key and checks
+the manager's 256 KiB limit. The iris boot job builds manager, `demo-dep`,
+`demo-root` and a current MCP, signs them with one throwaway key, loads the
+graph over HTTP and asserts the serial order and `GET /modules` text. The
+release-built manager image is about 121 KiB and the unchanged clean ROM is
+522,824 of 524,288 bytes.
+
+### 8.8 Kernel `module_find` limitation
+
+ABI v12 `module_find` is present, but the current kernel loader never stores
+`LoadedModule::version_len` in `service_module_load`; the field stays zero, so
+an exact name/version lookup cannot match after any load. The manager does not
+depend on it: dependency presence and export ownership are proved through
+`module_find_export`, which is unaffected. `modules/demo-root` records the same
+workaround. This is a kernel correctness fix for a later kernel change; the
+runtime manager stays ROM-free.
 
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
 - More than two fixed slots or a relocatable multiplexer in the M1 loader.
-- Concurrent modules beyond slot A (MCP/probes) and slot B (Wasm), or runtime
-  dependency resolution, until the module manager in #217 lands. Official
-  modules may bundle dependencies at build time in the interim, but that is not
-  a runtime dependency claim.
+- Concurrent modules beyond slot A (MCP/probes), slot B (the manager/Wasm) and
+  the five-region runtime arena. The arena manager resolves exact versions
+  only; there is no range solver, relocation or shared-library model. Modules
+  are linked for one region, and release metadata must carry that region.
 - Threads inside a module; a module gets the tick callback and the idle loop's context.
 - Arbitrary relocatable ELF objects; modules are linked at their final address.

@@ -29,6 +29,12 @@ SECTIONS
     *(.got.*)
   }
 
+  . = ALIGN(8);
+  __demo_exports = .;
+  .demo_exports : {
+    KEEP(*(.demo_exports))
+  }
+
   .bss (NOLOAD) : {
     *(.bss)
     *(.bss.*)

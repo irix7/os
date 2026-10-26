@@ -8,6 +8,33 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The downloadable runtime manager now loads a signed package-index image into
+  the reserved arena region, verifies its detached Ed25519 signature, resolves
+  the exact v2 `depends=` graph, verifies every module signature, loads every
+  image before entering any of them, parses each manifest v2 footer and entry
+  offset, registers and checks exports, and executes dependencies before the
+  root. Any failure unloads the whole transaction and publishes `status=failed`.
+  `manager.index`, `manager.index.sig` and `manager.root` drive the path; the
+  legacy `manager.dep` single-image fallback remains.
+- `crates/module-trust` gains a line-oriented release trust policy (key epochs,
+  revocation, explicit unsigned mode) and signature-record text. A rotated and
+  revoked policy is tested. `modules/manager/build.rs` embeds
+  `packages/release-trust.conf` or `IRIX7_TRUST_POLICY`.
+- `modules/demo-root` joins `modules/demo-dep` as a real two-module graph:
+  `demo-dep` exports `irix7.demo.service@1` from arena region 0 and the root,
+  linked at region 1, resolves it with `module_find_export` and prints
+  `demo-root: dep=0x217`. The manager publishes the graph at MCP `GET /modules`.
+  The manager image is about 121 KiB, inside the 262,144-byte slot-B region.
+- `tools/module-release` (Rust) wraps flat images with manifest v2 footers,
+  resolves ELF entry/export symbols, signs image digests, and emits the v2
+  package index, detached index signature and trust policy. The CI modules job
+  builds a signed graph with a throwaway key and enforces the 256 KiB manager
+  limit; the iris boot job loads the graph and asserts serial plus
+  `GET /modules` evidence.
+- Known kernel limitation: ABI v12 `module_find` cannot match because
+  `service_module_load` does not store `LoadedModule::version_len`. The runtime
+  manager and demo root use `module_find_export` instead; the kernel fix is
+  left for a later kernel change.
 - M2-1 adds the first real mesh transport: a `no_std` `mesh-transport` crate for
   4-byte little-endian length-prefixed `MeshEnvelope` records (64 KiB bound), bounded
   incremental decode, short-write send queue, receive/send/heartbeat deadlines,
@@ -107,6 +134,11 @@ All notable changes to IRIX 7 are recorded here. The format follows
   checks and exit 0. The earlier local-only std evidence is now a CI artifact.
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
+
+### Fixed
+
+- The release build compiles the kernel at opt-level `z`, matching the CI boot
+  gate, so the PROM remains inside the 524,288-byte window.
 
 ## [0.1.3] — 2026-10-25
 
