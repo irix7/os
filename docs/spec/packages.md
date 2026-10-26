@@ -129,7 +129,7 @@ The current implementation has the RAM window and a one-sector probe:
 `I7CACHE1` header plus the data to target 3 during two idle ticks, then
 verifies the readback.  The bounded download queue and automatic cache lookup
 are still to come.  The one-slot module area also means the cache cannot
-coexist with the MCP module until a multiplexer or merged policy module lands.
+coexist with the MCP module under the fixed-region kernel module multiplexer.
 
 ## 7. Non-goals
 

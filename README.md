@@ -140,7 +140,7 @@ The static Rust `std` image also boots in that configuration and exits 0. The
 kernel starts the local namespace/CAS, actor and capability policy at boot. A
 wasmi Wasm runtime probe also runs as a loadable module, but the Wasm policy
 core and mesh are not integrated; a fixed two-slot module area lets MCP and the
-Wasm probe coexist, but a general multiplexer is still missing. The M1 software gate is complete on iris; the real-Indy validation is the
+Wasm probe and seven-region kernel module multiplexer coexist. The multiplexer gives every boot slot and arena region its own verified tick; dynamic relocation is still missing. The M1 software gate is complete on iris; the real-Indy validation is the
 recorded limitation in #16, and the full resident Wasm/actor policy is later
 work. M2 is next.
 
