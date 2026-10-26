@@ -376,6 +376,9 @@ impl Node {
             if let Some(epoch) = mesh.epoch {
                 env.push(("mesh.epoch".into(), epoch.to_string()));
             }
+            if let Some(objects) = mesh.objects {
+                env.push(("mesh.obj".into(), objects.to_string()));
+            }
             if let Some(key) = &mesh.public_key {
                 env.push(("mesh.pub".into(), key.clone()));
             }
@@ -396,6 +399,8 @@ pub struct MeshEnv {
     pub authority: Option<String>,
     /// The bootstrap epoch.
     pub epoch: Option<u32>,
+    /// Number of objects in the M2 home-evidence fixture set (`mesh.obj`).
+    pub objects: Option<u32>,
     /// The authority root's Ed25519 public key as lower-case hex (`mesh.pub`).
     pub public_key: Option<String>,
     /// The authority root's 32-byte Ed25519 seed as lower-case hex
@@ -454,6 +459,7 @@ pub fn mesh_environments(
             peer: Some(format!("{}:{}", node.gateway, peer.mesh_port)),
             authority: Some(nodes[0].mac_string()),
             epoch: Some(1),
+            objects: Some(crate::homes::OBJECT_COUNT),
             public_key: None,
             seed: None,
         };
@@ -827,6 +833,8 @@ pub struct BootFacts {
     pub mesh_join_timeout: Option<String>,
     /// The first `mesh-join: reject` line.
     pub mesh_join_reject: Option<String>,
+    /// Every `mesh-homes:` / `mesh-home:` line, in serial order.
+    pub mesh_homes_lines: Vec<String>,
     /// The `network: mac` line.
     pub network_mac: Option<String>,
     /// The DHCP address line.
@@ -917,6 +925,13 @@ impl BootFacts {
                 .lines()
                 .find(|line| line.contains("mesh-join: reject "))
                 .map(|line| line.trim().to_string()),
+            mesh_homes_lines: text
+                .lines()
+                .filter(|line| {
+                    line.contains("mesh-homes: ") || line.contains("mesh-home: ")
+                })
+                .map(|line| line.trim().to_string())
+                .collect(),
             network_mac: find("network: mac "),
             network_ip: text
                 .lines()
@@ -1234,6 +1249,18 @@ mod tests {
             .as_deref()
             .is_some_and(|line| line.contains("epoch=2")));
         assert_eq!(facts.mesh_join_acks.len(), 1);
+    }
+
+    #[test]
+    fn boot_facts_find_home_lines_after_the_prompt() {
+        let text = "sash> mesh-homes: state=current object_set=m2-v1 epoch=2 \
+                    members=2 digest=2EDA13C5AC6F726132E0479DFE6045B7 count=1\n\
+                    sash> mesh-home: object=00 home=0800694D320000000000000000000000 \
+                    epoch=2 digest=2EDA13C5AC6F726132E0479DFE6045B7\n";
+        let facts = BootFacts::from_serial(text);
+        assert_eq!(facts.mesh_homes_lines.len(), 2);
+        assert!(facts.mesh_homes_lines[0].contains("state=current"));
+        assert!(facts.mesh_homes_lines[1].contains("object=00"));
     }
 
     #[test]

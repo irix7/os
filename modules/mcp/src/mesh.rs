@@ -24,6 +24,8 @@
 //! M2-2 member:  Request/Hello    JOIN_REQUEST
 //! M2-2 root:    Response/Hello   EPOCH_CONFIRM or EPOCH_REFUSED
 //! M2-2 member:  Completion/Hello JOIN_ACK
+//!
+//! M2-3:         GET /mesh/homes   confirmed rendezvous table, bounded
 //! ```
 //!
 //! A Ping frame body must be the 16-byte source `NodeId`; a mismatch is a
@@ -37,7 +39,10 @@
 //! transport still runs and only the join is disabled; that is the M2-1
 //! fallback, not a fake membership.
 
-use mesh_join::{JoinEvent, JoinMessage, JoinNode, Role, Tick, MAX_BODY as JOIN_BODY_MAX};
+use mesh_core::{fixture_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_MAX};
+use mesh_join::{
+    JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role, Tick, MAX_BODY as JOIN_BODY_MAX,
+};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
     StreamDecoder, WriteOutcome, RECEIVE_DEADLINE_MS,
@@ -84,6 +89,7 @@ struct Mesh {
     stats: Stats,
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
+    home_count: u32,
     join_timeout_logged: bool,
     last_arm_log_ms: u64,
     pass_logged: bool,
@@ -127,6 +133,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         return false;
     };
     let now = (services.clock_ms)();
+    let home_count = home_object_count(services);
     let join = match join_config(services, self_id, now) {
         Ok(join) => join,
         Err(label) => {
@@ -138,6 +145,13 @@ pub unsafe fn init(services: *const Services) -> bool {
             None
         }
     };
+    if join.is_some() {
+        let mut line = Line::new();
+        line.str("mesh-homes: configured set=m2-v1 count=");
+        line.u64(home_count as u64);
+        line.push(b'\n');
+        log(services, line.as_bytes());
+    }
     let mesh = Mesh {
         phase: Phase::Arm,
         self_id,
@@ -149,6 +163,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         stats: Stats::default(),
         heartbeat: Heartbeat::m2(),
         join,
+        home_count,
         join_timeout_logged: false,
         last_arm_log_ms: 0,
         pass_logged: false,
@@ -171,6 +186,173 @@ pub fn tick(services: &Services) {
         return;
     };
     mesh.tick(services);
+}
+
+/// Render `GET /mesh/homes` for the MCP HTTP server.
+///
+/// The body is the same bounded, line-oriented evidence the module logs on
+/// convergence.  A table is served only from a confirmed snapshot and only
+/// when the optional `epoch=` query equals that snapshot's epoch; an older
+/// epoch is a `409` with no object lines.
+pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    // SAFETY: the module is single-threaded and `MESH` is written once at
+    // entry; no mutable reference to it is live here.
+    let mesh = unsafe { (&*core::ptr::addr_of!(MESH)).as_ref() };
+    let Some(mesh) = mesh else {
+        return homes_line(out, 404, "disabled reason=peer");
+    };
+    let requested = match query_epoch(path) {
+        Ok(epoch) => epoch,
+        Err(()) => return homes_line(out, 400, "bad-request reason=query"),
+    };
+    let Some(join) = mesh.join.as_ref() else {
+        return homes_line(out, 404, "disabled reason=join");
+    };
+    let Some(snapshot) = join.converged() else {
+        let local = join.snapshot();
+        let mut body = Body::new(out);
+        body.str("mesh-homes: state=pending epoch=");
+        body.u64(local.epoch as u64);
+        body.str(" members=");
+        body.u64(local.len() as u64);
+        body.str(" digest=");
+        body.digest(&local.digest());
+        body.str(" count=0\n");
+        return (409, body.len());
+    };
+    let objects = fixture_objects(mesh.home_count);
+    let Some(table) = HomeTable::new(&snapshot.view(), snapshot.digest(), &objects) else {
+        return homes_line(out, 500, "error reason=membership");
+    };
+    if let Some(requested) = requested {
+        if requested != table.epoch {
+            let mut body = Body::new(out);
+            body.str("mesh-homes: state=stale requested_epoch=");
+            body.u64(requested as u64);
+            body.str(" epoch=");
+            body.u64(table.epoch as u64);
+            body.str(" members=");
+            body.u64(snapshot.len() as u64);
+            body.str(" digest=");
+            body.digest(&table.membership);
+            body.str(" count=0\n");
+            return (409, body.len());
+        }
+    }
+    let mut body = Body::new(out);
+    body.str("mesh-homes: state=current object_set=m2-v1 epoch=");
+    body.u64(table.epoch as u64);
+    body.str(" members=");
+    body.u64(snapshot.len() as u64);
+    body.str(" digest=");
+    body.digest(&table.membership);
+    body.str(" count=");
+    body.u64(table.len() as u64);
+    body.push(b'\n');
+    for entry in &table.entries {
+        body.str("mesh-home: object=");
+        body.hex(entry.object.as_bytes());
+        body.str(" home=");
+        body.node(&entry.home);
+        body.str(" epoch=");
+        body.u64(table.epoch as u64);
+        body.str(" digest=");
+        body.digest(&table.membership);
+        body.push(b'\n');
+    }
+    (200, body.len())
+}
+
+fn homes_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
+    let mut body = Body::new(out);
+    body.str("mesh-homes: state=");
+    body.str(state);
+    body.push(b'\n');
+    (status, body.len())
+}
+
+fn query_epoch(path: &[u8]) -> Result<Option<u32>, ()> {
+    if path == b"/mesh/homes" {
+        return Ok(None);
+    }
+    let Some(query) = path.strip_prefix(b"/mesh/homes?") else {
+        return Err(());
+    };
+    let mut epoch = None;
+    for part in query.split(|byte| *byte == b'&') {
+        if part.is_empty() {
+            continue;
+        }
+        let mut pieces = part.splitn(2, |byte| *byte == b'=');
+        let key = pieces.next().unwrap_or(b"");
+        let value = pieces.next().ok_or(())?;
+        if key != b"epoch" || epoch.is_some() {
+            return Err(());
+        }
+        epoch = Some(parse_u32(value).ok_or(())?);
+    }
+    Ok(epoch)
+}
+
+struct Body<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+
+impl<'a> Body<'a> {
+    fn new(bytes: &'a mut [u8]) -> Self {
+        Self { bytes, len: 0 }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn push(&mut self, byte: u8) {
+        if self.len < self.bytes.len() {
+            self.bytes[self.len] = byte;
+            self.len += 1;
+        }
+    }
+
+    fn str(&mut self, text: &str) {
+        for byte in text.as_bytes() {
+            self.push(*byte);
+        }
+    }
+
+    fn u64(&mut self, mut value: u64) {
+        let mut digits = [0u8; 20];
+        let mut count = 0;
+        loop {
+            digits[count] = b'0' + (value % 10) as u8;
+            value /= 10;
+            count += 1;
+            if value == 0 {
+                break;
+            }
+        }
+        while count > 0 {
+            count -= 1;
+            self.push(digits[count]);
+        }
+    }
+
+    fn hex(&mut self, bytes: &[u8]) {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for byte in bytes {
+            self.push(HEX[(byte >> 4) as usize]);
+            self.push(HEX[(byte & 0x0f) as usize]);
+        }
+    }
+
+    fn node(&mut self, node: &NodeId) {
+        self.hex(node.as_bytes());
+    }
+
+    fn digest(&mut self, digest: &[u8; 16]) {
+        self.hex(digest);
+    }
 }
 
 impl Mesh {
@@ -485,13 +667,16 @@ impl Mesh {
             JoinEvent::Confirmed(snapshot) => {
                 self.log_snapshot(services, "mesh-join: confirm", snapshot);
                 self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
+                self.log_homes(services, snapshot);
             }
             JoinEvent::Converged(snapshot) => {
                 self.join_timeout_logged = false;
                 self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
+                self.log_homes(services, snapshot);
             }
             JoinEvent::Duplicate(snapshot) => {
                 self.log_snapshot(services, "mesh-join: duplicate", snapshot);
+                self.log_homes(services, snapshot);
             }
             JoinEvent::Refused { reason, epoch } => {
                 let mut line = Line::new();
@@ -552,6 +737,37 @@ impl Mesh {
         line.nodes(&snapshot.members);
         line.push(b'\n');
         log(services, line.as_bytes());
+    }
+
+    fn log_homes(&self, services: &Services, snapshot: &MembershipSnapshot) {
+        let objects = fixture_objects(self.home_count);
+        let Some(table) = HomeTable::new(&snapshot.view(), snapshot.digest(), &objects) else {
+            return;
+        };
+        let mut header = Line::new();
+        header.str("mesh-homes: state=current object_set=m2-v1 epoch=");
+        header.u64(table.epoch as u64);
+        header.str(" members=");
+        header.u64(snapshot.len() as u64);
+        header.str(" digest=");
+        header.digest(&table.membership);
+        header.str(" count=");
+        header.u64(table.len() as u64);
+        header.push(b'\n');
+        log(services, header.as_bytes());
+        for entry in &table.entries {
+            let mut line = Line::new();
+            line.str("mesh-home: object=");
+            line.hex(entry.object.as_bytes());
+            line.str(" home=");
+            line.node(&entry.home);
+            line.str(" epoch=");
+            line.u64(table.epoch as u64);
+            line.str(" digest=");
+            line.digest(&table.membership);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
     }
 
     fn send_join(
@@ -951,6 +1167,23 @@ fn join_config(
     });
     log(services, line.as_bytes());
     Ok(Some(join))
+}
+
+/// Read the configured M2 fixture object count.
+///
+/// `mesh.obj` is optional, bounded to [`HOME_FIXTURE_MAX`] and defaults to
+/// [`HOME_FIXTURE_DEFAULT`].  An invalid value falls back to the default
+/// rather than disabling the join: the count is evidence configuration, not
+/// membership authority.
+fn home_object_count(services: &Services) -> u32 {
+    let mut text = [0u8; 32];
+    let Some(len) = config(services, b"mesh.obj", &mut text) else {
+        return HOME_FIXTURE_DEFAULT;
+    };
+    match parse_u32(&text[..len]) {
+        Some(value) if (1..=HOME_FIXTURE_MAX).contains(&value) => value,
+        _ => HOME_FIXTURE_DEFAULT,
+    }
 }
 
 fn config(services: &Services, key: &[u8], out: &mut [u8]) -> Option<usize> {

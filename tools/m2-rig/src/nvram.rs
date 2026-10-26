@@ -146,6 +146,31 @@ mod tests {
     }
 
     #[test]
+    fn full_two_node_mesh_environment_fits() {
+        let sha = "a".repeat(64);
+        let key = "b".repeat(64);
+        let image = image(
+            &[
+                ("mcp.url", "http://192.168.0.1:65535/mcp.module"),
+                ("mcp.sha256", &sha),
+                ("console", "serial0"),
+                ("mesh.peer", "192.168.0.1:9712"),
+                ("mesh.authority", "08:00:69:4d:32:00"),
+                ("mesh.epoch", "1"),
+                ("mesh.obj", "8"),
+                ("mesh.key", &key),
+            ],
+            MAC,
+        )
+        .expect("the full M2 environment fits before the MAC slot");
+        let parsed = parse(&image);
+        assert_eq!(parsed.len(), 8);
+        assert!(parsed
+            .iter()
+            .any(|(name, value)| name == "mesh.obj" && value == "8"));
+    }
+
+    #[test]
     fn mac_round_trip() {
         let text = mac_string(&MAC);
         assert_eq!(text, "08:00:69:4d:32:00");

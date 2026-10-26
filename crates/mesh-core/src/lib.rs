@@ -32,6 +32,19 @@ pub const MAX_NODES: usize = 128;
 /// Virtual nodes per physical node for rendezvous balance.
 pub const VIRTUAL_NODES: u32 = 1;
 
+/// Domain separator for the fixed M2 home-evidence object set.
+///
+/// The objects are a test fixture, not a production directory: their IDs are
+/// derived from this domain and a little-endian index.  Every node and the
+/// host rig can reproduce the same set without a shared object list.
+pub const HOME_FIXTURE_DOMAIN: &[u8] = b"IRIX7-M2-HOME-OBJECT-v1";
+
+/// Default number of objects in the M2 home-evidence set.
+pub const HOME_FIXTURE_DEFAULT: u32 = 8;
+
+/// Hard bound on the configured M2 home-evidence object count.
+pub const HOME_FIXTURE_MAX: u32 = 32;
+
 /// A membership snapshot.  It is immutable; a new epoch is a new value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MembershipView {
@@ -127,6 +140,230 @@ pub fn actor_home(actor: &ActorId, view: &MembershipView) -> Option<NodeId> {
         }
     }
     best_node
+}
+
+/// Derive one object in the fixed M2 home-evidence fixture set.
+///
+/// `object = BLAKE3-256("IRIX7-M2-HOME-OBJECT-v1" || index u32 LE)`.
+/// The derivation is deliberately independent of any node, epoch or object
+/// directory so the same test object exists before a mesh has formed.
+pub fn fixture_object(index: u32) -> ObjectId {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(HOME_FIXTURE_DOMAIN);
+    hasher.update(&index.to_le_bytes());
+    let hash = hasher.finalize();
+    ObjectId(*hash.as_bytes())
+}
+
+/// Build the configured M2 home-evidence fixture set.
+///
+/// The count is clamped to [`HOME_FIXTURE_MAX`]; a configured count is a test
+/// parameter, not an unbounded directory.
+pub fn fixture_objects(count: u32) -> Vec<ObjectId> {
+    (0..count.min(HOME_FIXTURE_MAX))
+        .map(fixture_object)
+        .collect()
+}
+
+/// One object-to-home mapping under a confirmed membership view.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HomeEntry {
+    /// Object identity.
+    pub object: ObjectId,
+    /// Home node selected by rendezvous hashing.
+    pub home: NodeId,
+}
+
+/// A deterministic home mapping for a set of objects at one membership epoch.
+///
+/// This is the evidence surface shared by the module and the host rig.  It is
+/// a snapshot, not a route cache: it carries the membership digest so a table
+/// from an older epoch cannot be mistaken for the current one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HomeTable {
+    /// Membership epoch used for every entry.
+    pub epoch: u32,
+    /// Canonical membership snapshot digest (first 128 bits of BLAKE3).
+    pub membership: [u8; 16],
+    /// Entries in the configured object order.
+    pub entries: Vec<HomeEntry>,
+}
+
+impl HomeTable {
+    /// Compute homes for `objects` under `view`.
+    ///
+    /// Returns `None` for an empty membership view: there is no legitimate
+    /// home without a member.  An empty object set produces an empty table.
+    pub fn new(view: &MembershipView, membership: [u8; 16], objects: &[ObjectId]) -> Option<Self> {
+        if view.is_empty() {
+            return None;
+        }
+        let mut entries = Vec::with_capacity(objects.len());
+        for object in objects {
+            entries.push(HomeEntry {
+                object: *object,
+                home: home_for(object, view)?,
+            });
+        }
+        Some(Self {
+            epoch: view.epoch,
+            membership,
+            entries,
+        })
+    }
+
+    /// Number of object mappings.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the table has no objects.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// Look up one object's home in this table.
+    pub fn home_for(&self, object: &ObjectId) -> Option<NodeId> {
+        self.entries
+            .iter()
+            .find(|entry| entry.object == *object)
+            .map(|entry| entry.home)
+    }
+
+    /// Treat this table as current only when `epoch` is its epoch.
+    ///
+    /// A table from an older epoch must never be presented as the current
+    /// mapping.  The caller keeps the old table but answers a stale query.
+    pub fn at_epoch(&self, epoch: u32) -> Result<&Self, HomeEpochError> {
+        if epoch == self.epoch {
+            Ok(self)
+        } else {
+            Err(HomeEpochError::Stale {
+                requested: epoch,
+                current: self.epoch,
+            })
+        }
+    }
+
+    /// Compare two tables and report the first disagreement.
+    pub fn compare(&self, other: &Self) -> Result<(), HomeMismatch> {
+        if self.epoch != other.epoch {
+            return Err(HomeMismatch::Epoch {
+                left: self.epoch,
+                right: other.epoch,
+            });
+        }
+        if self.membership != other.membership {
+            return Err(HomeMismatch::Membership {
+                left: self.membership,
+                right: other.membership,
+            });
+        }
+        if self.entries.len() != other.entries.len() {
+            return Err(HomeMismatch::EntryCount {
+                left: self.entries.len(),
+                right: other.entries.len(),
+            });
+        }
+        for (index, (left, right)) in self.entries.iter().zip(&other.entries).enumerate() {
+            if left.object != right.object {
+                return Err(HomeMismatch::Object {
+                    index,
+                    left: left.object,
+                    right: right.object,
+                });
+            }
+            if left.home != right.home {
+                return Err(HomeMismatch::Home {
+                    index,
+                    object: left.object,
+                    left: left.home,
+                    right: right.home,
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Why a table cannot answer a query at the requested epoch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeEpochError {
+    /// The requested epoch is not the table's confirmed epoch.
+    Stale {
+        /// The epoch the caller asked for.
+        requested: u32,
+        /// The table's confirmed epoch.
+        current: u32,
+    },
+}
+
+impl HomeEpochError {
+    /// A short stable label for logs and evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stale { .. } => "stale-epoch",
+        }
+    }
+}
+
+/// The first disagreement between two home tables.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HomeMismatch {
+    /// The tables were computed at different membership epochs.
+    Epoch {
+        /// Left-hand epoch.
+        left: u32,
+        /// Right-hand epoch.
+        right: u32,
+    },
+    /// The tables carry different membership digests.
+    Membership {
+        /// Left-hand digest.
+        left: [u8; 16],
+        /// Right-hand digest.
+        right: [u8; 16],
+    },
+    /// The tables contain different numbers of objects.
+    EntryCount {
+        /// Left-hand count.
+        left: usize,
+        /// Right-hand count.
+        right: usize,
+    },
+    /// The tables list different objects at the same position.
+    Object {
+        /// Entry position.
+        index: usize,
+        /// Left-hand object.
+        left: ObjectId,
+        /// Right-hand object.
+        right: ObjectId,
+    },
+    /// The tables disagree on one object's home.
+    Home {
+        /// Entry position.
+        index: usize,
+        /// The disputed object.
+        object: ObjectId,
+        /// Left-hand home.
+        left: NodeId,
+        /// Right-hand home.
+        right: NodeId,
+    },
+}
+
+impl HomeMismatch {
+    /// A short stable label for logs and evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Epoch { .. } => "epoch",
+            Self::Membership { .. } => "membership",
+            Self::EntryCount { .. } => "entry-count",
+            Self::Object { .. } => "object",
+            Self::Home { .. } => "home",
+        }
+    }
 }
 
 /// A route to an object's current home.
@@ -359,6 +596,188 @@ mod tests {
         }
         assert!(min > 0, "every node should own something");
         assert!(max < average * 3, "distribution should be bounded");
+    }
+
+    fn digest(byte: u8) -> [u8; 16] {
+        [byte; 16]
+    }
+
+    fn fixture_table(view: &MembershipView, count: u32) -> HomeTable {
+        let objects = fixture_objects(count);
+        HomeTable::new(view, digest(0xa5), &objects).expect("table")
+    }
+
+    #[test]
+    fn fixture_objects_are_deterministic_and_distinct() {
+        let first = fixture_objects(HOME_FIXTURE_DEFAULT);
+        let second = fixture_objects(HOME_FIXTURE_DEFAULT);
+        assert_eq!(first, second);
+        assert_eq!(first.len(), HOME_FIXTURE_DEFAULT as usize);
+        let mut sorted = first.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), first.len());
+        // The count is bounded even if a caller asks for more.
+        assert_eq!(
+            fixture_objects(HOME_FIXTURE_MAX + 100).len(),
+            HOME_FIXTURE_MAX as usize
+        );
+        // Pin the domain derivation so a refactor cannot silently move every
+        // object into a different rendezvous space.
+        assert_eq!(&fixture_object(0).0[..4], &[0xBE, 0xB6, 0xD1, 0xC7]);
+    }
+
+    #[test]
+    fn home_table_rejects_an_empty_membership_view() {
+        let view = MembershipView::new(2, vec![]).expect("view");
+        let objects = fixture_objects(4);
+        assert_eq!(HomeTable::new(&view, digest(1), &objects), None);
+    }
+
+    #[test]
+    fn home_table_accepts_an_empty_object_set() {
+        let view = MembershipView::new(2, vec![node(1), node(2)]).expect("view");
+        let table = HomeTable::new(&view, digest(1), &[]).expect("table");
+        assert!(table.is_empty());
+        assert_eq!(table.len(), 0);
+        assert_eq!(table.epoch, 2);
+    }
+
+    #[test]
+    fn single_node_is_home_for_every_fixture_object() {
+        let view = MembershipView::new(2, vec![node(7)]).expect("view");
+        let objects = fixture_objects(16);
+        let table = HomeTable::new(&view, digest(3), &objects).expect("table");
+        assert_eq!(table.len(), objects.len());
+        for (entry, object) in table.entries.iter().zip(&objects) {
+            assert_eq!(entry.object, *object);
+            assert_eq!(entry.home, node(7));
+        }
+    }
+
+    #[test]
+    fn two_node_homes_are_deterministic_and_bounded() {
+        let view = MembershipView::new(2, vec![node(2), node(1)]).expect("view");
+        let objects = fixture_objects(HOME_FIXTURE_DEFAULT);
+        let first = HomeTable::new(&view, digest(4), &objects).expect("table");
+        let second = HomeTable::new(&view, digest(4), &objects).expect("table");
+        assert_eq!(first, second);
+        assert_eq!(first.len(), objects.len());
+        assert!(first
+            .entries
+            .iter()
+            .all(|entry| entry.home == node(1) || entry.home == node(2)));
+        // A larger set must exercise both winners and stay close to an even
+        // split; a single node owning everything is a placement regression.
+        let many = fixture_table(&view, 256);
+        let mut counts = [0usize; 3];
+        for entry in &many.entries {
+            counts[entry.home.0[0] as usize] += 1;
+        }
+        assert!(counts[1] > 0);
+        assert!(counts[2] > 0);
+        let average = many.len() / 2;
+        assert!(counts[1] <= average * 3 / 2);
+        assert!(counts[2] <= average * 3 / 2);
+    }
+
+    #[test]
+    fn epoch_change_is_visible_and_a_stale_query_is_rejected() {
+        let view2 = MembershipView::new(2, vec![node(1), node(2)]).expect("view");
+        let view3 = MembershipView::new(3, vec![node(1), node(2)]).expect("view");
+        let old = fixture_table(&view2, HOME_FIXTURE_DEFAULT);
+        let new = fixture_table(&view3, HOME_FIXTURE_DEFAULT);
+        // Membership did not change, so only the epoch and digest differ.
+        assert_eq!(old.entries, new.entries);
+        assert_eq!(old.at_epoch(2), Ok(&old));
+        assert_eq!(
+            old.at_epoch(3),
+            Err(HomeEpochError::Stale {
+                requested: 3,
+                current: 2
+            })
+        );
+        assert_eq!(
+            old.compare(&new),
+            Err(HomeMismatch::Epoch { left: 2, right: 3 })
+        );
+
+        let mut other_digest = new.clone();
+        other_digest.membership = digest(0xee);
+        assert_eq!(
+            new.compare(&other_digest),
+            Err(HomeMismatch::Membership {
+                left: digest(0xa5),
+                right: digest(0xee)
+            })
+        );
+    }
+
+    #[test]
+    fn home_mismatch_reports_object_and_home_disagreement() {
+        let view = MembershipView::new(2, vec![node(1), node(2)]).expect("view");
+        let table = fixture_table(&view, HOME_FIXTURE_DEFAULT);
+        assert_eq!(table.compare(&table), Ok(()));
+
+        let mut other = table.clone();
+        other.entries[0].home = if other.entries[0].home == node(1) {
+            node(2)
+        } else {
+            node(1)
+        };
+        assert_eq!(
+            table.compare(&other),
+            Err(HomeMismatch::Home {
+                index: 0,
+                object: table.entries[0].object,
+                left: table.entries[0].home,
+                right: other.entries[0].home,
+            })
+        );
+
+        let mut other = table.clone();
+        other.entries[0].object = ObjectId([0xee; 32]);
+        assert_eq!(
+            table.compare(&other),
+            Err(HomeMismatch::Object {
+                index: 0,
+                left: table.entries[0].object,
+                right: ObjectId([0xee; 32]),
+            })
+        );
+
+        let mut other = table.clone();
+        other.entries.pop();
+        assert_eq!(
+            table.compare(&other),
+            Err(HomeMismatch::EntryCount {
+                left: HOME_FIXTURE_DEFAULT as usize,
+                right: HOME_FIXTURE_DEFAULT as usize - 1,
+            })
+        );
+    }
+
+    #[test]
+    fn removing_a_node_moves_only_its_objects() {
+        let three = MembershipView::new(4, vec![node(1), node(2), node(3)]).expect("view");
+        let two = MembershipView::new(5, vec![node(1), node(2)]).expect("view");
+        let objects = fixture_objects(256);
+        let before = HomeTable::new(&three, digest(1), &objects).expect("before");
+        let after = HomeTable::new(&two, digest(2), &objects).expect("after");
+        let mut moved = 0;
+        let mut stayed = 0;
+        for (old, new) in before.entries.iter().zip(&after.entries) {
+            assert_eq!(old.object, new.object);
+            if old.home == node(3) {
+                moved += 1;
+                assert_ne!(new.home, node(3));
+            } else {
+                stayed += 1;
+                assert_eq!(old.home, new.home);
+            }
+        }
+        assert!(moved > 0, "the removed node must have owned some objects");
+        assert!(stayed > 0, "other homes must not churn");
     }
 
     #[test]

@@ -26,6 +26,7 @@
 - [M2-ADR-0003 — authority](adr/m2-0003-authority.md)
 - [M2-ADR-0004 — actor runtime](adr/m2-0004-actor-runtime.md)
 - [M2-ADR-0005 — join and epoch](adr/m2-0005-join-epoch.md)
+- [M2-ADR-0006 — rendezvous homes](adr/m2-0006-homes.md)
 
 ## Plan
 
