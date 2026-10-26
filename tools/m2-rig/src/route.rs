@@ -30,7 +30,6 @@ const PREFIX: &str = "mesh-route: ";
 /// than replaying a request whose response was lost.
 const COMMAND_SETTLE: Duration = Duration::from_secs(6);
 const OBJECT_DOMAIN: &[u8] = b"IRIX7-M2-HOME-OBJECT-v1";
-const VALUE_DOMAIN: &[u8] = b"IRIX7-M2-ROUTE-VALUE-v1";
 const OBJECT_MAX: u32 = 32;
 const HOME_DOMAIN: &[u8] = b"IRIX7-HOME-v1";
 
@@ -43,12 +42,31 @@ pub struct RouteResult {
     pub home: String,
     /// Home assignment epoch.
     pub home_epoch: u32,
+    /// Operation: `stat` or `commit`.
+    pub operation: String,
     /// Deterministic value, upper-case hex.
     pub value: String,
     /// Attempts used.
     pub attempts: u8,
     /// Whether a `MOVED` was consumed.
     pub moved: bool,
+}
+
+/// One fenced stale route or lease row from `/mesh/route`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FenceRow {
+    /// Object ID, upper-case hex.
+    pub object: String,
+    /// The removed home, upper-case hex.
+    pub stale_home: String,
+    /// The stale home assignment epoch.
+    pub stale_home_epoch: u32,
+    /// The recomputed home, upper-case hex.
+    pub home: String,
+    /// The current membership epoch.
+    pub home_epoch: u32,
+    /// `left-view` or `lease-left-view`.
+    pub reason: String,
 }
 
 /// One parsed `/mesh/route` body.
@@ -82,6 +100,24 @@ pub struct RouteReport {
     pub last_reject: Option<String>,
     /// Deadlines that expired.
     pub timeouts: usize,
+    /// Authoritative-view state: `current` or `lost`.
+    pub authority: String,
+    /// The epoch named by the authority line.
+    pub authority_epoch: Option<u32>,
+    /// Whether a mutable commit is available.
+    pub mutable: bool,
+    /// Remaining authority write lease in milliseconds.
+    pub write_lease_ms: Option<u32>,
+    /// Fenced routes and leases.
+    pub fences: usize,
+    /// Fence rows.
+    pub fence_rows: Vec<FenceRow>,
+    /// Commits completed or served.
+    pub commits: usize,
+    /// Replayed stale frames.
+    pub replays: usize,
+    /// Last replay refusal.
+    pub last_replay: Option<String>,
     /// Declared result count.
     pub result_count: usize,
     /// Result rows.
@@ -141,6 +177,7 @@ impl RouteReport {
                         object: String::new(),
                         home: String::new(),
                         home_epoch: 0,
+                        operation: String::new(),
                         value: String::new(),
                         attempts: 0,
                         moved: false,
@@ -152,6 +189,7 @@ impl RouteReport {
                             "object" => row.object = value.to_ascii_uppercase(),
                             "home" => row.home = value.to_ascii_uppercase(),
                             "home_epoch" => row.home_epoch = parse_u32(value)?,
+                            "op" => row.operation = value.to_string(),
                             "value" => row.value = value.to_ascii_uppercase(),
                             "attempts" => row.attempts = parse_u8(value)?,
                             "moved" => {
@@ -163,12 +201,58 @@ impl RouteReport {
                     }
                     if row.object.is_empty()
                         || row.home.is_empty()
+                        || row.operation.is_empty()
                         || row.value.is_empty()
                         || !has_moved
                     {
                         return Err("route result row is incomplete".into());
                     }
                     report.results.push(row);
+                }
+                "authority" => {
+                    for token in tokens {
+                        let (key, value) = split(token)?;
+                        match key {
+                            "state" => report.authority = value.to_string(),
+                            "epoch" => report.authority_epoch = Some(parse_u32(value)?),
+                            "mutable" => report.mutable = value == "1",
+                            "write_lease_ms" => report.write_lease_ms = Some(parse_u32(value)?),
+                            other => return Err(format!("unknown authority field {other:?}")),
+                        }
+                    }
+                    if report.authority.is_empty() {
+                        return Err("authority row has no state".into());
+                    }
+                }
+                "fence" => {
+                    let mut row = FenceRow {
+                        object: String::new(),
+                        stale_home: String::new(),
+                        stale_home_epoch: 0,
+                        home: String::new(),
+                        home_epoch: 0,
+                        reason: String::new(),
+                    };
+                    for token in tokens {
+                        let (key, value) = split(token)?;
+                        match key {
+                            "object" => row.object = value.to_ascii_uppercase(),
+                            "stale_home" => row.stale_home = value.to_ascii_uppercase(),
+                            "stale_home_epoch" => row.stale_home_epoch = parse_u32(value)?,
+                            "home" => row.home = value.to_ascii_uppercase(),
+                            "home_epoch" => row.home_epoch = parse_u32(value)?,
+                            "reason" => row.reason = value.to_string(),
+                            other => return Err(format!("unknown fence field {other:?}")),
+                        }
+                    }
+                    if row.object.is_empty()
+                        || row.stale_home.is_empty()
+                        || row.home.is_empty()
+                        || row.reason.is_empty()
+                    {
+                        return Err("fence row is incomplete".into());
+                    }
+                    report.fence_rows.push(row);
                 }
                 "counters" => {
                     for token in tokens {
@@ -181,6 +265,10 @@ impl RouteReport {
                             "results" => report.result_count = parse_usize(value)?,
                             "moved_local" => report.moved_local = parse_usize(value)?,
                             "moved_remote" => report.moved_remote = parse_usize(value)?,
+                            "fences" => report.fences = parse_usize(value)?,
+                            "commits" => report.commits = parse_usize(value)?,
+                            "replays" => report.replays = parse_usize(value)?,
+                            "last_replay" => report.last_replay = Some(value.to_string()),
                             "last_reject" => report.last_reject = Some(value.to_string()),
                             other => return Err(format!("unknown route counter {other:?}")),
                         }
@@ -359,10 +447,28 @@ pub fn first_object_for(members: &[String], home: &str) -> Option<String> {
 }
 
 /// The deterministic fixture value a home returns.
+pub fn commit_value(object: &str, home_epoch: u32, object_epoch: u32) -> Option<String> {
+    fixture_value(
+        b"IRIX7-M2-ROUTE-COMMIT-v1",
+        object,
+        home_epoch,
+        object_epoch,
+    )
+}
+
 pub fn route_value(object: &str, home_epoch: u32, object_epoch: u32) -> Option<String> {
+    fixture_value(b"IRIX7-M2-ROUTE-VALUE-v1", object, home_epoch, object_epoch)
+}
+
+fn fixture_value(
+    domain: &[u8],
+    object: &str,
+    home_epoch: u32,
+    object_epoch: u32,
+) -> Option<String> {
     let object = decode_hex_32(object)?;
     let mut hasher = blake3::Hasher::new();
-    hasher.update(VALUE_DOMAIN);
+    hasher.update(domain);
     hasher.update(&object);
     hasher.update(&home_epoch.to_le_bytes());
     hasher.update(&object_epoch.to_le_bytes());
@@ -884,7 +990,9 @@ pub fn evaluate_disabled(
     let expected_reason = match fault {
         Fault::NoPeer => "peer",
         Fault::NoRoute | Fault::WrongAuthority => "config",
-        Fault::None => unreachable!("the route mode is evaluated by run"),
+        Fault::None | Fault::KillPeer | Fault::Partition => {
+            unreachable!("the route mode is evaluated by run")
+        }
     };
     for (node, (status, report)) in nodes.iter().zip(reports) {
         evidence.nodes.push(NodeRoute {
@@ -943,9 +1051,11 @@ mod tests {
     #[test]
     fn parses_an_enabled_report_with_a_result() {
         let body = "mesh-route: state=enabled view_epoch=2 members=2 digest=2EDA13C5AC6F726132E0479DFE6045B7\n\
+                    mesh-route: authority state=current epoch=2 mutable=1 write_lease_ms=4294967295\n\
+                    mesh-route: fence object=BEB6D1C7D3D6204050933044057A4B31417ACE296D6666B5EAB98F42A538D2A6 stale_home=08006995F50000000000000000000000 stale_home_epoch=2 home=08006969B60100000000000000000000 home_epoch=3 reason=left-view\n\
                     mesh-route: move old=- new=BEB6D1C7D3D6204050933044057A4B31417ACE296D6666B5EAB98F42A538D2A6\n\
-                    mesh-route: result object=BEB6D1C7D3D6204050933044057A4B31417ACE296D6666B5EAB98F42A538D2A6 home=08006995F50000000000000000000000 home_epoch=3 value=692A42AA61F7193B1397E73A00A73336EC90792C6CED0B2BECF83C4231A3D258 attempts=2 moved=1\n\
-                    mesh-route: counters completes=1 retries=2 rejects=0 timeouts=0 results=1 moved_local=1 moved_remote=1\n";
+                    mesh-route: result object=BEB6D1C7D3D6204050933044057A4B31417ACE296D6666B5EAB98F42A538D2A6 home=08006995F50000000000000000000000 home_epoch=3 op=stat value=692A42AA61F7193B1397E73A00A73336EC90792C6CED0B2BECF83C4231A3D258 attempts=2 moved=1\n\
+                    mesh-route: counters completes=1 retries=2 rejects=0 timeouts=0 results=1 moved_local=1 moved_remote=1 fences=1 commits=0 replays=0\n";
         let report = RouteReport::parse(body).expect("report");
         assert_eq!(report.state, "enabled");
         assert_eq!(report.view_epoch, Some(2));
@@ -956,8 +1066,17 @@ mod tests {
         );
         assert_eq!(report.results.len(), 1);
         assert_eq!(report.results[0].attempts, 2);
+        assert_eq!(report.results[0].operation, "stat");
         assert!(report.results[0].moved);
         assert_eq!(report.retries, 2);
+        assert_eq!(report.authority, "current");
+        assert!(report.mutable);
+        assert_eq!(report.write_lease_ms, Some(u32::MAX));
+        assert_eq!(report.fences, 1);
+        assert_eq!(report.fence_rows.len(), 1);
+        assert_eq!(report.fence_rows[0].reason, "left-view");
+        assert_eq!(report.fence_rows[0].stale_home_epoch, 2);
+        assert_eq!(report.fence_rows[0].home_epoch, 3);
     }
 
     #[test]

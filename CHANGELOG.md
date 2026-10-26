@@ -8,6 +8,28 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- M2-6 failure detection, lease fencing and the partition rule. `mesh-service`
+  adds a bounded, deterministic failure detector over the existing membership
+  table: a confirmed peer is suspect after 6 s without a frame and failed after
+  12 s; a stale-incarnation heartbeat is ignored and a failed node needs a fresh
+  join. The root removes a failed member with exactly one epoch advance, while a
+  member that loses the root keeps its last confirmed view and never advances the
+  epoch. `mesh-route` fences every cached route and home lease that named the
+  removed node, recomputes the affected homes locally with `mesh_core::home_for`
+  (no directory, no quorum, no message to the failed node), refuses a replayed
+  stale frame with `stale-epoch`, and makes a mutable commit require a current
+  authoritative view plus a 6 s authority write lease. The write lease plus one
+  heartbeat is shorter than the 12 s failure window, so an isolated old home
+  stops committing before the root can re-home the object; reads remain
+  available only under the existing unexpired home lease. The MCP module logs
+  `mesh-fail:` transitions and serves `authority`, `fence`, `op` and replay
+  evidence on `/mesh/route`. `tools/m2-rig --fault kill-peer` and `--fault
+  partition` assert the transition, home movement, fence, stale-frame refusal
+  and mutable-object rule on two real iris kernels, and the partition mode heals
+  and requires a rejoin at epoch 4. No kernel, ROM or ABI change; the module is
+  286,456 bytes at z, inside slot A. L0 migration, gossip/epoch push, a
+  persisted epoch and linearisable write handover remain out of scope; see
+  M2-ADR-0008.
 - M2-4 remote capability routing and the one-`MOVED` retry. `crates/mesh-route`
   resolves an object through the existing `mesh-core` rendezvous home and route
   cache (no central directory), carries a `cap-engine`-signed `Capability` over

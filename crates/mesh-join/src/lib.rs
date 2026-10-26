@@ -45,11 +45,25 @@
 //! timeout, and keeps its last confirmed view.  A new link resets the attempt
 //! budget.  There is no unbounded retry loop and no background epoch change.
 //!
-//! ## What this slice does not do
+//! ## Failure detection and removal (M2-6)
 //!
-//! Only join is implemented.  There is no leave/removal, no epoch push to
-//! members that did not ask, no gossip, no lease fencing and no persisted
-//! epoch store.  The restart rules are in [`node`] and in M2-ADR-0005.
+//! The join node also owns the membership half of failure handling.  It uses
+//! the one failure model in [`mesh_service::FailureDetector`]:
+//!
+//! * a confirmed peer that has been silent for
+//!   [`mesh_service::SUSPECT_AFTER_MS`] is suspect but stays routable;
+//! * one silent for [`mesh_service::FAIL_AFTER_MS`] is failed;
+//! * the root removes a failed member with one epoch advance and keeps the
+//!   remaining confirmed list; it never removes itself;
+//! * a member that loses the root records `AuthorityLost` and keeps its last
+//!   confirmed view.  It does not remove the root, advance the epoch or create
+//!   a second authoritative home;
+//! * a failed node is re-admitted only by a fresh signed join, which advances
+//!   the epoch again.
+//!
+//! The clock is injected and the boundaries are exact, so a host test can
+//! drive every boundary without sleeping.  There is no gossip and no persisted
+//! epoch store; the restart rules are in [`node`] and in M2-ADR-0005/M2-ADR-0008.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -63,6 +77,9 @@ mod wire;
 
 pub use authority::{
     AuthorityError, AuthorityRoot, AuthorityVerifier, Expectation, SigningAuthority,
+};
+pub use mesh_service::{
+    FailureDetector, NodeState, Observe, Transition, FAIL_AFTER_MS, SUSPECT_AFTER_MS,
 };
 pub use node::{JoinEvent, JoinNode, Outcome, Role, Tick, MAX_ATTEMPTS, RETRY_INTERVAL_MS};
 pub use wire::{

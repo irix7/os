@@ -13,8 +13,8 @@ use crate::homes::HomesEvidence;
 use crate::join::JoinEvidence;
 use crate::nvram;
 use crate::relay::{lines as log_lines, SharedLog};
-use crate::route::RouteEvidence;
 use crate::rig::{copy_if_present, write_text, BootFacts, Node};
+use crate::route::RouteEvidence;
 
 /// One node as recorded in the bundle.
 #[derive(Clone, Debug)]
@@ -170,6 +170,8 @@ pub struct Evidence<'a> {
     pub homes: Option<&'a HomesEvidence>,
     /// Remote capability-route evidence, when one ran.
     pub route: Option<&'a RouteEvidence>,
+    /// Failure/partition evidence, when that fault mode ran.
+    pub failure: Option<&'a crate::failure::FailureEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
@@ -396,7 +398,81 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         Some(route) => out.push_str(&render_route_json(route)),
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"failure\": ");
+    match evidence.failure {
+        Some(failure) => out.push_str(&render_failure_json(failure)),
+        None => out.push_str("null"),
+    }
     out.push_str("\n}\n");
+    out
+}
+
+fn render_expected_view(view: &Option<crate::failure::ExpectedView>) -> String {
+    let Some(view) = view else {
+        return "null".into();
+    };
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"epoch\": {}, \"digest\": \"{}\", \"members\": {}, \"homes\": [",
+        view.epoch,
+        json_escape(&view.digest),
+        json_strings(&view.members)
+    ));
+    for (index, row) in view.table.rows.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"object\": \"{}\", \"home\": \"{}\"}}",
+            json_escape(&row.object),
+            json_escape(&row.home)
+        ));
+        if index + 1 < view.table.rows.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
+    out
+}
+
+fn render_failure_json(failure: &crate::failure::FailureEvidence) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"fault\": \"{}\", \"stage\": \"{}\", \"ok\": {}, \"message\": \"{}\", ",
+        json_escape(&failure.fault),
+        json_escape(&failure.stage),
+        failure.ok,
+        json_escape(&failure.message)
+    ));
+    out.push_str(&format!(
+        "\"before\": {}, ",
+        render_expected_view(&failure.before)
+    ));
+    out.push_str(&format!(
+        "\"after\": {}, ",
+        render_expected_view(&failure.after)
+    ));
+    out.push_str(&format!(
+        "\"recovered\": {}, ",
+        render_expected_view(&failure.recovered)
+    ));
+    out.push_str(&format!("\"serial\": {}, ", json_strings(&failure.serial)));
+    out.push_str(&format!("\"steps\": {}, ", json_strings(&failure.steps)));
+    out.push_str(&format!("\"checks\": {}, ", json_strings(&failure.checks)));
+    out.push_str("\"nodes\": [");
+    for (index, node) in failure.nodes.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"report\": {}, \"error\": {}}}",
+            json_escape(&node.name),
+            node.report
+                .as_ref()
+                .map(|report| format!("\"{}\"", json_escape(&report.raw)))
+                .unwrap_or_else(|| "null".into()),
+            json_option(&node.error)
+        ));
+        if index + 1 < failure.nodes.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
     out
 }
 
@@ -1090,6 +1166,77 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
                 out.push_str(&format!("== {} ==\n{}\n", node.name, report.raw));
             } else if let Some(error) = &node.error {
                 out.push_str(&format!("== {} ==\n{error}\n", node.name));
+            }
+        }
+        out.push_str("```\n\n");
+    }
+
+    if let Some(failure) = evidence.failure {
+        out.push_str("## Failure, fencing and partition\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Fault mode:** `{}`  \n**Stage:** `{}`\n\n",
+            if failure.ok { "pass" } else { "FAIL" },
+            failure.fault,
+            failure.stage
+        ));
+        out.push_str(&format!("{}\n\n", failure.message));
+        if let Some(before) = &failure.before {
+            out.push_str(&format!(
+                "**Before:** epoch {} members {} digest `{}`\n\n",
+                before.epoch,
+                before.members.len(),
+                before.digest
+            ));
+        }
+        if let Some(after) = &failure.after {
+            out.push_str(&format!(
+                "**Survivor view:** epoch {} members {} digest `{}`\n\n",
+                after.epoch,
+                after.members.len(),
+                after.digest
+            ));
+        }
+        if let Some(recovered) = &failure.recovered {
+            out.push_str(&format!(
+                "**Recovered view:** epoch {} members {} digest `{}`\n\n",
+                recovered.epoch,
+                recovered.members.len(),
+                recovered.digest
+            ));
+        }
+        if !failure.serial.is_empty() {
+            out.push_str("### Failure lines\n\n```text\n");
+            for line in &failure.serial {
+                out.push_str(line);
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
+        if !failure.steps.is_empty() {
+            out.push_str("### Steps\n\n```text\n");
+            for step in &failure.steps {
+                out.push_str(step);
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
+        out.push_str("### Checks\n\n");
+        for check in &failure.checks {
+            out.push_str(&format!("- {check}\n"));
+        }
+        out.push('\n');
+        out.push_str("### Node reports\n\n```text\n");
+        for node in &failure.nodes {
+            out.push_str(&format!("== {} ==\n", node.name));
+            match &node.report {
+                Some(report) => {
+                    out.push_str(&report.raw);
+                    out.push('\n');
+                }
+                None => {
+                    out.push_str(node.error.as_deref().unwrap_or("no report"));
+                    out.push('\n');
+                }
             }
         }
         out.push_str("```\n\n");

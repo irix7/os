@@ -27,6 +27,8 @@
 - [M2-ADR-0004 — actor runtime](adr/m2-0004-actor-runtime.md)
 - [M2-ADR-0005 — join and epoch](adr/m2-0005-join-epoch.md)
 - [M2-ADR-0006 — rendezvous homes](adr/m2-0006-homes.md)
+- [M2-ADR-0007 — remote capability route](adr/m2-0007-route.md)
+- [M2-ADR-0008 — failure, fencing and partition](adr/m2-0008-failure-fence.md)
 
 ## Plan
 

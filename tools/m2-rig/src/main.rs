@@ -13,14 +13,15 @@
 //! `mesh.epoch`) are the handoff to M2-1.
 
 mod evidence;
+mod failure;
 mod fixture;
 mod homes;
 mod join;
 mod nvram;
 mod probe;
-mod route;
 mod relay;
 mod rig;
+mod route;
 mod sha256;
 
 use std::fs;
@@ -28,6 +29,7 @@ use std::net::Ipv4Addr;
 use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
+use failure::FailureEvidence;
 use fixture::Fixture;
 use homes::HomesEvidence;
 use join::{JoinEvidence, RestartInput};
@@ -99,7 +101,8 @@ Options:
   --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
   --timeout SECS   boot deadline (default: 180)
-  --fault MODE     none (default), no-peer, wrong-authority or no-route
+  --fault MODE     none (default), no-peer, wrong-authority, no-route,
+                   kill-peer or partition
   --keep           with run, leave the nodes running
   --verbose        print extra detail
 
@@ -294,6 +297,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         Some(&homes),
         route.as_ref(),
         None,
+        None,
         "probe",
         if passed { "pass" } else { "fail" },
         error.as_deref(),
@@ -302,28 +306,112 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     Ok(if passed { 0 } else { 1 })
 }
 
+/// Run the real-kernel failure or partition scenario.
+///
+/// The base M2-4 sequence has already left a cached route and a lease at the
+/// member, so the failure has something real to fence.  The rig does not
+/// inject a home, an epoch or a lease: it stops the process or the seam and
+/// then asserts the policy's own transition.
+fn run_failure_scenario(
+    options: &Options,
+    nodes: &[Node],
+    running: &mut [RunningNode],
+    mesh_relay: &mut Option<MeshRelay>,
+    join: &JoinEvidence,
+    stale_object: Option<&str>,
+) -> Result<FailureEvidence, String> {
+    let (Some(epoch), Some(digest)) = (join.epoch, join.digest.clone()) else {
+        return Err("the failure scenario needs a converged join".into());
+    };
+    if join.members.len() != 2 {
+        return Err(format!(
+            "the failure scenario needs two members, got {}",
+            join.members.len()
+        ));
+    }
+    let before = failure::expected_view(epoch, &join.members)?;
+    if before.digest != digest {
+        return Err(format!(
+            "the join digest {digest} does not match the recomputed {}",
+            before.digest
+        ));
+    }
+    let stale_object =
+        stale_object.ok_or_else(|| "the M2-4 route left no stale object to fence".to_string())?;
+    match options.fault {
+        Fault::KillPeer => {
+            let mut kill = || rig::kill_node(&mut running[1]);
+            Ok(failure::kill_peer(
+                &nodes[0],
+                &nodes[1],
+                &before,
+                stale_object,
+                &mut kill,
+            ))
+        }
+        Fault::Partition => {
+            let relay = mesh_relay
+                .take()
+                .ok_or_else(|| "the partition fault needs a live mesh relay".to_string())?;
+            // Drop frames, keep the sessions.  The iris port forward cannot
+            // reliably reopen a half-open guest connection, so tearing the
+            // relay down would test the forward, not the partition rule.
+            relay.pause();
+            let evidence = {
+                let mut restore = || {
+                    relay.resume();
+                    Ok(())
+                };
+                failure::partition(&nodes[0], &nodes[1], &before, stale_object, &mut restore)
+            };
+            *mesh_relay = Some(relay);
+            Ok(evidence)
+        }
+        _ => Err("not a failure mode".into()),
+    }
+}
+
 fn collect_route(
     options: &Options,
     nodes: &[Node],
     join: &JoinEvidence,
 ) -> Result<route::RouteEvidence, String> {
     match options.fault {
-        Fault::None => {
+        Fault::None | Fault::KillPeer | Fault::Partition => {
             if join.epoch.is_none() || join.digest.is_none() || join.members.len() != 2 {
                 return Err("join evidence is not a converged two-node view".into());
             }
-            Ok(route::run(
+            let mut evidence = route::run(
                 &nodes[0],
                 &nodes[1],
                 &join.members,
                 join.epoch.unwrap_or(0),
                 join.digest.as_deref().unwrap_or_default(),
                 Duration::from_secs(180),
-            ))
+            );
+            if options.fault.failures() {
+                evidence.fault = options.fault.as_str().into();
+            }
+            Ok(evidence)
         }
         Fault::NoRoute | Fault::NoPeer | Fault::WrongAuthority => {
             route::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
         }
+    }
+}
+
+fn print_failure_result(failure: &FailureEvidence) {
+    println!(
+        "failure [{}]: {} ({})",
+        failure.fault,
+        if failure.ok { "pass" } else { "FAIL" },
+        failure.message
+    );
+    for check in &failure.checks {
+        println!("  ok: {check}");
+    }
+    for line in &failure.serial {
+        println!("  {line}");
     }
 }
 
@@ -396,6 +484,9 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut route = None;
     let mut route_error = None;
     let mut restart = None;
+    let mut failure_evidence: Option<FailureEvidence> = None;
+    let mut failure_error = None;
+    let mut join_before_evidence: Option<JoinEvidence> = None;
     let mut home_inputs = HomeInputs::default();
     let keys = AuthorityKeys::lab();
     if bring_up_error.is_none() {
@@ -448,7 +539,21 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // in M2-0/M2-1/M2-2.  It runs after the MCP homes fetch because the
         // iris host forward can hold a half-open guest connection after the
         // probe; the control-plane evidence is collected on the clean path.
-        match probe_two_way(&nodes) {
+        // The MCP server has one HTTP slot while the mesh is enabled, so let
+        // the last control-plane connection finish its close handshake before
+        // the peer's guest HTTP client arrives.  A single retry absorbs the
+        // iris forward's half-open connection without weakening the check.
+        std::thread::sleep(Duration::from_secs(12));
+        let mut probe_attempt = probe_two_way(&nodes);
+        if !probe_attempt
+            .as_ref()
+            .map(|(value, _)| value.iter().all(|probe| probe.ok))
+            .unwrap_or(false)
+        {
+            std::thread::sleep(Duration::from_secs(12));
+            probe_attempt = probe_two_way(&nodes);
+        }
+        match probe_attempt {
             Ok((value, value_relays)) => {
                 probes = value;
                 relays = value_relays;
@@ -456,7 +561,31 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             Err(error) => probe_error = Some(error),
         }
 
-        if options.fault.joins() {
+        if options.fault.failures() {
+            // The base M2-4 steps have already left a cached route and a
+            // lease at the member.  Kill it (or cut the seam) and let the
+            // bounded failure detector, not the socket close, drive the
+            // transition.
+            let stale = route.as_ref().and_then(|route| route.local.clone());
+            match run_failure_scenario(
+                options,
+                &nodes,
+                &mut running,
+                &mut mesh_relay,
+                &join_before,
+                stale.as_deref(),
+            ) {
+                Ok(evidence) => {
+                    if !evidence.ok {
+                        failure_error = Some(evidence.message.clone());
+                    }
+                    failure_evidence = Some(evidence);
+                }
+                Err(error) => failure_error = Some(error),
+            }
+            join_before_evidence = Some(join_before.clone());
+            facts = snapshot_facts(&nodes);
+        } else if options.fault.joins() {
             match restart_member(options, &nodes, &mut running, &facts, &mut mesh_relay) {
                 Ok(input) => {
                     restart = Some(input);
@@ -474,11 +603,25 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         facts = snapshot_facts(&nodes);
     }
 
-    let join = join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref());
+    let join = if options.fault.failures() {
+        // The pre-failure join is the last two-node convergence in kill-peer;
+        // in partition mode the recovery rejoin is asserted by the failure
+        // evidence, not by the M2-2 restart oracle.
+        join_before_evidence
+            .clone()
+            .unwrap_or_else(|| join::evaluate(&nodes, &facts, &keys, options.fault, None))
+    } else {
+        join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref())
+    };
     if matches!(options.fault, Fault::None | Fault::NoRoute) && join_error.is_none() {
         if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
-            home_inputs.after =
-                Some(homes::collect_current_serial(&nodes, &facts, epoch, digest, &join.members));
+            home_inputs.after = Some(homes::collect_current_serial(
+                &nodes,
+                &facts,
+                epoch,
+                digest,
+                &join.members,
+            ));
         } else {
             homes_error = Some("join evidence has no epoch/digest for the rejoin homes".into());
         }
@@ -490,18 +633,24 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         home_inputs.stale,
         home_inputs.disabled,
         home_inputs.wrong_authority,
-        true,
+        !options.fault.failures(),
     );
     let mesh_ok = match options.fault {
         Fault::NoPeer => true,
         _ => mesh.as_ref().is_some_and(|mesh| mesh.ok),
     };
     let route_ok = route.as_ref().is_some_and(|route| route.ok);
+    let failure_ok = failure_error.is_none()
+        && failure_evidence
+            .as_ref()
+            .map(|evidence| evidence.ok)
+            .unwrap_or(!options.fault.failures());
     let passed = bring_up_error.is_none()
         && probe_error.is_none()
         && join_error.is_none()
         && homes_error.is_none()
         && route_error.is_none()
+        && failure_ok
         && probes.len() == 2
         && probes.iter().all(|probe| probe.ok)
         && mesh_ok
@@ -515,6 +664,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         .or(join_error.as_deref())
         .or(homes_error.as_deref())
         .or(route_error.as_deref())
+        .or(failure_error.as_deref())
         .or_else(|| {
             mesh.as_ref()
                 .filter(|mesh| !mesh.ok)
@@ -550,6 +700,9 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     if let Some(route) = &route {
         print_route_result(route);
     }
+    if let Some(failure) = &failure_evidence {
+        print_failure_result(failure);
+    }
     for (node, fact) in running.iter().zip(facts.iter()) {
         println!(
             "{}: {}",
@@ -569,6 +722,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         Some(&join),
         Some(&homes),
         route.as_ref(),
+        failure_evidence.as_ref(),
         Some(&fixture),
         "run",
         verdict,
@@ -694,7 +848,7 @@ fn collect_homes(
 ) -> HomeInputs {
     let mut inputs = HomeInputs::default();
     match options.fault {
-        Fault::None | Fault::NoRoute => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
             let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) else {
                 inputs.error = Some("join evidence has no epoch/digest for homes".into());
                 return inputs;
@@ -747,7 +901,11 @@ fn print_homes_result(homes: &HomesEvidence) {
     .into_iter()
     .flatten()
     {
-        println!("  {}: {}", round.label, if round.ok { "pass" } else { "FAIL" });
+        println!(
+            "  {}: {}",
+            round.label,
+            if round.ok { "pass" } else { "FAIL" }
+        );
         for node in &round.nodes {
             match &node.table {
                 Some(table) => println!(
@@ -1323,6 +1481,7 @@ fn write_evidence(
     join: Option<&JoinEvidence>,
     homes: Option<&HomesEvidence>,
     route: Option<&route::RouteEvidence>,
+    failure: Option<&FailureEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
     verdict: &str,
@@ -1370,6 +1529,7 @@ fn write_evidence(
         join,
         homes,
         route,
+        failure,
         fixture,
         relays: &relay_logs,
         verdict,

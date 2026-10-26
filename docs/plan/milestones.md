@@ -212,6 +212,18 @@ markers, and `--fault no-peer` preserves the M1 path. The MCP module remains ins
 remain, and the controlled lease move is a lab fixture, not a general home-migration
 policy. See M2-ADR-0007.
 
+**Status (2026-10-27):** the two-kernel rig now covers M2-1 transport, M2-2 join/epoch,
+M2-3 rendezvous homes, M2-4 remote capability routing with one `MOVED` retry, and M2-6
+failure/partition with lease fencing.  The failure detector is the existing
+`mesh-service` state machine (suspect at 6 s, failed at 12 s); the root removes a failed
+member with one epoch advance, cached routes and leases naming the removed node are fenced
+locally, and the survivor's data path continues without a quorum.  A 6 s authority write
+lease, shorter than the 12 s failure window, stops an isolated home committing before the
+root can re-home the object; reads remain available only under the existing unexpired home
+lease.  `--fault kill-peer` and `--fault partition` are the real-kernel evidence.  L0
+migration (M2-5), gossip/epoch push, a persisted epoch and linearisable write handover
+remain open.
+
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 

@@ -8,13 +8,17 @@ the M2-2 signed join until both nodes report the same membership epoch and snaps
 then fetches the M2-3 rendezvous home table from both kernels, checks the stale-epoch
 negative, drives the M2-4 remote capability route and its one-`MOVED` retry in both
 directions, and in the default `run` restarts the member and requires it to rejoin at the
-same epoch with the same table.
+same epoch with the same table. `--fault kill-peer` and `--fault partition` replace the
+restart with the M2-6 failure scenario: a bounded suspect/failed/removal transition,
+locally recomputed homes, lease fencing and the mutable-object partition rule.
 
 - Runbook: [`../../docs/plan/m2-rig.md`](../../docs/plan/m2-rig.md)
 - Decisions: [`../../docs/adr/README.md`](../../docs/adr/README.md)
   ([M2-ADR-0005](../../docs/adr/m2-0005-join-epoch.md) is the join/epoch design,
   [M2-ADR-0006](../../docs/adr/m2-0006-homes.md) is the homes/evidence design and
-  [M2-ADR-0007](../../docs/adr/m2-0007-route.md) is the route/`MOVED` design)
+  [M2-ADR-0007](../../docs/adr/m2-0007-route.md) is the route/`MOVED` design and
+  [M2-ADR-0008](../../docs/adr/m2-0008-failure-fence.md) is the failure/fence/partition
+  design)
 - Harness crate: `Cargo.toml`, `src/`
 - Build helper: `build.sh`
 
@@ -34,7 +38,7 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 
 | Command | Purpose |
 |---|---|
-| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member and require the same epoch/table, stop, write evidence. |
+| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, then restart the member (default) or run `kill-peer`/`partition`, stop, write evidence. |
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
 | `probe` | Probe HTTP, mesh framing, join, homes and the route against running nodes; no restart. |
@@ -54,6 +58,8 @@ Options: `--work DIR`, `--repo DIR`, `--iris PATH`, `--iris-ci PATH`, `--rom PAT
 | `no-peer` | No `mesh.*` key at all. | No mesh listener and no join; `/mesh/homes` is `404 disabled`; the HTTP probe passes and the M1 `mesh=single` / `mesh=0/0/0` markers are preserved. |
 | `wrong-authority` | n1 has a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, keeps its seed view and serves `409 pending` with no homes. |
 | `no-route` | The join/homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both nodes log `mesh-route: disabled reason=config`, `/mesh/route` is `404 disabled`, and no route step or `MOVED` runs. |
+| `kill-peer` | The full route configuration; n1 is killed with `SIGKILL` after steps 1–5. | n0 removes n1 after `suspect` (6 s) and `failed` (12 s), moves to epoch 3 with one member, recomputes every home, fences the stale routes and leases, refuses a replayed stale frame with `stale-epoch`, and commits and reads locally with no quorum and no timeout. |
+| `partition` | The full route configuration; only the mesh relay is cut, so both kernels stay alive. | The root follows the same removal. The member keeps epoch 2 and two members, reports `authority state=lost mutable=0`, refuses a commit with `no-authority`, reports a remote home as `no-peer` and serves a read from its unexpired lease. Restoring the seam rejoins it at epoch 4 with the two-member table and a successful commit. |
 
 ## What it proves
 
@@ -91,6 +97,17 @@ Options: `--work DIR`, `--repo DIR`, `--iris PATH`, `--iris-ci PATH`, `--rom PAT
 - The route report: both kernels must carry the join-confirmed epoch, member count and
   digest; the three result rows must name the expected object, home, epoch, attempt count,
   `moved` flag and independently recomputed value; `rejects=0` and `timeouts=0`.
+- A real bounded failure transition: any accepted frame from the peer refreshes liveness;
+  6 s of silence is suspect (still routable), 12 s is failed. The root removes the member
+  with one epoch advance and the whole remaining member list.
+- A real lease fence: cached routes and leases that named the removed member are dropped
+  and recomputed locally, with a `fence` row naming the stale and new home and epochs. The
+  survivor's next read is local, one attempt, no send and no timeout. The old epoch's
+  replayed frame is refused with `stale-epoch`.
+- A real partition rule: the isolated member never removes the root, never advances the
+  epoch and never re-homes an object. A commit fails closed with `no-authority`; a read is
+  served only from the unexpired home lease. The 6 s write lease is shorter than the 12 s
+  failure window, so the old home stops committing before the root can re-home the object.
 - Fail-closed alternatives: `no-peer` keeps the M1/M2-0 path and has no homes or route
   endpoint, `wrong-authority` proves the member rejects an unauthenticated epoch and
   presents no unconfirmed homes, and `no-route` proves the route opt-in without weakening
@@ -131,7 +148,8 @@ HTTP relay, the mesh relay's first-byte guard, the fixture, the probe transcript
 the join-line parser, the independent snapshot digest, the join/restart oracle, the homes
 codec, independent fixture/rendezvous derivation, stale and pending bodies, before/after
 comparison and JSON escaping. The route report parser, independent value oracle and
-five-step driver are in `src/route.rs`. The codec/authority/state-machine tests are in
+five-step driver are in `src/route.rs`; the failure and partition scenario, expected views
+and checks are in `src/failure.rs`. The codec/authority/state-machine tests are in
 `crates/mesh-join`, the placement/mismatch tests are in `crates/mesh-core`, and the
 capability/lease/`MOVED` tests are in `crates/mesh-route`. The end-to-end test is the
 `run` command above; it needs iris and the built artefacts.
@@ -145,6 +163,7 @@ capability/lease/`MOVED` tests are in `crates/mesh-route`. The end-to-end test i
 | `src/join.rs` | Join/epoch oracle, independent snapshot digest, restart checks. |
 | `src/homes.rs` | Home-table codec, independent fixture/rendezvous oracle and checks. |
 | `src/route.rs` | Route report codec, independent value oracle and five-step driver. |
+| `src/failure.rs` | M2-6 kill-peer/partition scenario, expected views and checks. |
 | `src/relay.rs` | HTTP relay and the persistent mesh relay. |
 | `src/evidence.rs` | `summary.md` and `run.json`. |
 | `src/fixture.rs` | Loopback HTTP module fixture. |

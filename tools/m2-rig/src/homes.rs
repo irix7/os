@@ -184,13 +184,11 @@ impl HomeTable {
 }
 
 fn parse_u32(text: &str) -> Result<u32, String> {
-    text.parse()
-        .map_err(|_| format!("{text:?} is not a u32"))
+    text.parse().map_err(|_| format!("{text:?} is not a u32"))
 }
 
 fn parse_usize(text: &str) -> Result<usize, String> {
-    text.parse()
-        .map_err(|_| format!("{text:?} is not a count"))
+    text.parse().map_err(|_| format!("{text:?} is not a count"))
 }
 
 /// An HTTP response from the MCP server.
@@ -320,9 +318,7 @@ pub fn fixture_object(index: u32) -> [u8; 32] {
 
 /// The fixture object IDs in configured order.
 pub fn fixture_objects(count: u32) -> Vec<[u8; 32]> {
-    (0..count.min(OBJECT_MAX))
-        .map(fixture_object)
-        .collect()
+    (0..count.min(OBJECT_MAX)).map(fixture_object).collect()
 }
 
 fn rendezvous(object: &[u8; 32], node: &[u8; 16]) -> u64 {
@@ -838,9 +834,9 @@ pub fn collect_wrong_authority(
         .as_deref()
         .or(facts[0].mesh_join_local.as_deref())
         .and_then(JoinLine::parse);
-    let expected = root_snapshot
-        .as_ref()
-        .and_then(|line| expected_table(line.epoch, &line.digest, &line.snapshot, OBJECT_COUNT).ok());
+    let expected = root_snapshot.as_ref().and_then(|line| {
+        expected_table(line.epoch, &line.digest, &line.snapshot, OBJECT_COUNT).ok()
+    });
     if let Some(expected) = &expected {
         let mut evidence = NodeHomes {
             name: nodes[0].name.clone(),
@@ -961,7 +957,7 @@ pub fn evaluate(
         wrong_authority,
     };
     match fault {
-        Fault::None | Fault::NoRoute => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
             match &evidence.before {
                 Some(before) if before.ok => {}
                 Some(before) => errors.push(before.message.clone()),
@@ -1015,7 +1011,7 @@ pub fn evaluate(
     evidence.ok = errors.is_empty();
     evidence.message = if evidence.ok {
         match fault {
-            Fault::None | Fault::NoRoute => {
+            Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
                 let suffix = if require_rejoin {
                     "before and after the member rejoin"
                 } else {
@@ -1049,9 +1045,10 @@ pub fn evaluate(
 #[cfg(test)]
 fn path_epoch(path: &str) -> Option<u32> {
     let query = path.split_once('?')?.1;
-    query
-        .split('&')
-        .find_map(|part| part.strip_prefix("epoch=").and_then(|value| value.parse().ok()))
+    query.split('&').find_map(|part| {
+        part.strip_prefix("epoch=")
+            .and_then(|value| value.parse().ok())
+    })
 }
 
 #[cfg(test)]
@@ -1093,7 +1090,10 @@ mod tests {
         for row in &table.rows {
             assert!(row.home == id(1) || row.home == id(2));
             let object = decode_hex_32(&row.object).expect("object");
-            assert_eq!(expected_home(&object, &members).as_deref(), Some(row.home.as_str()));
+            assert_eq!(
+                expected_home(&object, &members).as_deref(),
+                Some(row.home.as_str())
+            );
         }
     }
 
@@ -1170,8 +1170,8 @@ mod tests {
         assert_eq!(pending.state, "pending");
         assert!(pending.rows.is_empty());
 
-        let disabled = HomeTable::parse("mesh-homes: state=disabled reason=peer\n")
-            .expect("disabled");
+        let disabled =
+            HomeTable::parse("mesh-homes: state=disabled reason=peer\n").expect("disabled");
         assert_eq!(disabled.state, "disabled");
         assert_eq!(disabled.reason.as_deref(), Some("peer"));
         assert!(disabled.rows.is_empty());

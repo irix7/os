@@ -18,7 +18,7 @@ use core::fmt;
 
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
-use mesh_service::{MembershipError, MembershipTable};
+use mesh_service::{FailureDetector, MembershipError, MembershipTable, Observe, Transition};
 use sys_primitives::{NodeId, NodeKey};
 
 use crate::wire::{EpochConfirmation, JoinRequest, MembershipSnapshot, WireError, MAX_MEMBERS};
@@ -120,6 +120,21 @@ pub struct AuthorityRoot {
     root: NodeId,
     signing: SigningAuthority,
     table: MembershipTable,
+    failures: FailureDetector,
+}
+
+/// A member removed from the confirmed view after a confirmed failure.
+///
+/// The removal is the root's membership change; it advances the epoch exactly
+/// once and carries the full remaining member list.  The root installs it
+/// locally.  A live member installs it only through a signed confirmation when
+/// it next joins, so a partition cannot create a second authoritative view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    /// The removed node.
+    pub node: NodeId,
+    /// The confirmed view after the removal.
+    pub snapshot: MembershipSnapshot,
 }
 
 impl AuthorityRoot {
@@ -145,7 +160,13 @@ impl AuthorityRoot {
             root,
             signing,
             table,
+            failures: FailureDetector::m2(),
         })
+    }
+
+    /// The failure detector boundaries this root uses.
+    pub const fn detector(&self) -> FailureDetector {
+        self.failures
     }
 
     /// The configured root identity.
@@ -156,6 +177,58 @@ impl AuthorityRoot {
     /// The root's current confirmed epoch.
     pub const fn epoch(&self) -> u32 {
         self.table.epoch()
+    }
+
+    /// Whether `node` is in the root's current confirmed table.
+    pub fn is_member(&self, node: NodeId) -> bool {
+        self.table.get(node).is_some()
+    }
+
+    /// Refresh a member's liveness record after one accepted frame.
+    ///
+    /// Any well-formed frame from the peer proves liveness; the incarnation is
+    /// the join incarnation recorded for that member.  A stale or failed
+    /// record is not revived by a bare frame.
+    pub fn observe(&mut self, node: NodeId, now_ns: u64) -> Observe {
+        let incarnation = self
+            .table
+            .get(node)
+            .map(|record| record.incarnation)
+            .unwrap_or(0);
+        self.failures
+            .observe(&mut self.table, node, incarnation, now_ns)
+    }
+
+    /// Advance every member's liveness state at `now_ns`.
+    pub fn expire(&mut self, now_ns: u64) -> alloc::vec::Vec<Transition> {
+        self.failures.tick(&mut self.table, self.root, now_ns)
+    }
+
+    /// Remove every member the detector has confirmed failed.
+    ///
+    /// Each removal is a separate authority-confirmed epoch advance, exactly
+    /// as a clean leave would be.  The root is never removed.  A node that is
+    /// merely suspect stays in the routing snapshot.
+    pub fn remove_failed(&mut self) -> alloc::vec::Vec<Removal> {
+        let failed: alloc::vec::Vec<NodeId> = self
+            .table
+            .records()
+            .filter(|(node, record)| {
+                *node != self.root && record.state == mesh_service::NodeState::Failed
+            })
+            .map(|(node, _)| node)
+            .collect();
+        let mut removals = alloc::vec::Vec::new();
+        for node in failed {
+            if !self.table.leave(node).unwrap_or(false) {
+                continue;
+            }
+            let Ok(snapshot) = self.snapshot() else {
+                continue;
+            };
+            removals.push(Removal { node, snapshot });
+        }
+        removals
     }
 
     /// The root's public key.  A member hears the same key through

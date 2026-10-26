@@ -76,13 +76,26 @@ use sys_primitives::{
 pub use wire::{
     HomeMove, Invoke, InvokeResult, MoveAck, Moved, Reason, RouteBody, RouteErrorBody, WireError,
     HOME_MOVE_DOMAIN, KIND_ERROR, KIND_HOME_MOVE, KIND_INVOKE, KIND_MOVED, KIND_MOVE_ACK,
-    KIND_RESULT, MAGIC, MAX_BODY, OP_STAT, PREFIX, VERSION,
+    KIND_RESULT, MAGIC, MAX_BODY, OP_COMMIT, OP_STAT, PREFIX, VERSION,
 };
 
 /// Route-cache entry lifetime.
 pub const ROUTE_LEASE_MS: u64 = 60_000;
 /// Active home-lease lifetime installed from the confirmed view.
+///
+/// This bounds read availability at a home that cannot renew.  It is long
+/// because a read does not change the object.
 pub const HOME_LEASE_MS: u64 = 120_000;
+/// Lifetime of the authority's write lease on a member's home.
+///
+/// A mutable commit needs a *fresh* write lease, renewed by an accepted frame
+/// from the authority (or, at the root, by the root itself).  The value is
+/// deliberately shorter than the failure-detector window
+/// ([`mesh_service::FAIL_AFTER_MS`] = 12 s) and longer than one heartbeat
+/// (5 s): after the link is cut a member can accept a commit for at most 6 s,
+/// while the root only re-homes the object after 12 s of silence.  The old
+/// home therefore stops committing before the new home can exist.
+pub const WRITE_LEASE_MS: u64 = 6_000;
 /// Forwarding grace granted to a draining old home.
 pub const GRACE_MS: u64 = 30_000;
 /// Maximum lease a signed move may request.
@@ -144,6 +157,41 @@ pub fn route_value(object: &ObjectId, home_epoch: u32, object_epoch: u32) -> [u8
     hasher.update(&home_epoch.to_le_bytes());
     hasher.update(&object_epoch.to_le_bytes());
     *hasher.finalize().as_bytes()
+}
+
+/// The deterministic value a home returns for the M2 mutable commit fixture.
+///
+/// The commit is a fixture effect, not stored state: the gate is authority and
+/// lease fencing, not write semantics.  The value is domain-separated so a
+/// commit result can never be mistaken for a read result.
+pub fn commit_value(object: &ObjectId, home_epoch: u32, object_epoch: u32) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"IRIX7-M2-ROUTE-COMMIT-v1");
+    hasher.update(object.as_bytes());
+    hasher.update(&home_epoch.to_le_bytes());
+    hasher.update(&object_epoch.to_le_bytes());
+    *hasher.finalize().as_bytes()
+}
+
+/// The value a home returns for one operation.
+pub fn operation_value(
+    operation: u16,
+    object: &ObjectId,
+    home_epoch: u32,
+    object_epoch: u32,
+) -> [u8; 32] {
+    match operation {
+        OP_COMMIT => commit_value(object, home_epoch, object_epoch),
+        _ => route_value(object, home_epoch, object_epoch),
+    }
+}
+
+/// A stable label for an operation code.
+pub const fn operation_label(operation: u16) -> &'static str {
+    match operation {
+        OP_COMMIT => "commit",
+        _ => "stat",
+    }
 }
 
 /// One outbound mesh record, before the module wraps it in a `MeshEnvelope`.
@@ -251,6 +299,39 @@ pub enum Event {
         /// `remote` for a wire answer, `local` for the local old home.
         source: &'static str,
     },
+    /// A cached route or home lease named a home that left the confirmed
+    /// view.  The stale entry is dropped and the object is re-routed locally;
+    /// no message is sent to the removed node.
+    Fence {
+        /// Object identity.
+        object: ObjectId,
+        /// The stale home that is no longer a confirmed member.
+        stale_home: NodeId,
+        /// The stale home assignment epoch.
+        stale_home_epoch: u32,
+        /// The recomputed home.
+        home: NodeId,
+        /// The current membership epoch used to recompute it.
+        home_epoch: u32,
+        /// `left-view` for a route cache entry, `lease-left-view` for a lease.
+        reason: &'static str,
+    },
+    /// The node's authoritative-view state changed.
+    Authority {
+        /// `current` or `lost`.
+        state: &'static str,
+        /// The confirmed epoch held while in this state.
+        epoch: u32,
+    },
+    /// A stale wire frame was replayed through the receive path and refused.
+    Replay {
+        /// The refusal reason.
+        reason: Reason,
+        /// The source membership epoch named by the frame.
+        src_epoch: u32,
+        /// The local membership epoch.
+        epoch: u32,
+    },
     /// The sender retried exactly once after `MOVED`.
     Retry {
         /// Object identity.
@@ -262,7 +343,7 @@ pub enum Event {
         /// Attempt number (always 2 in this slice).
         attempt: u8,
     },
-    /// The home served a fixture stat.
+    /// The home served a fixture operation.
     Complete {
         /// Object identity.
         object: ObjectId,
@@ -274,6 +355,8 @@ pub enum Event {
         object_epoch: u32,
         /// `home` when served locally, `sender` when a result was verified.
         role: &'static str,
+        /// The operation code.
+        operation: u16,
         /// Deterministic value.
         value: [u8; 32],
     },
@@ -285,6 +368,8 @@ pub enum Event {
         home: NodeId,
         /// Home assignment epoch.
         home_epoch: u32,
+        /// The operation code.
+        operation: u16,
         /// Deterministic value.
         value: [u8; 32],
         /// Attempts used.
@@ -360,6 +445,33 @@ impl fmt::Display for Event {
                 lease_ms,
                 grace_ms
             ),
+            Self::Fence {
+                object,
+                stale_home,
+                stale_home_epoch,
+                home,
+                home_epoch,
+                reason,
+            } => write!(
+                f,
+                "mesh-route: fence object={} stale_home={} stale_home_epoch={} home={} home_epoch={} reason={reason}",
+                Hex(object.as_bytes()),
+                Hex(stale_home.as_bytes()),
+                stale_home_epoch,
+                Hex(home.as_bytes()),
+                home_epoch
+            ),
+            Self::Authority { state, epoch } => {
+                write!(f, "mesh-route: authority state={state} epoch={epoch}")
+            }
+            Self::Replay {
+                reason,
+                src_epoch,
+                epoch,
+            } => write!(
+                f,
+                "mesh-route: replay refused reason={reason} src_epoch={src_epoch} epoch={epoch}"
+            ),
             Self::Retry {
                 object,
                 home,
@@ -378,29 +490,33 @@ impl fmt::Display for Event {
                 home_epoch,
                 object_epoch,
                 role,
+                operation,
                 value,
             } => write!(
                 f,
-                "mesh-route: complete object={} home={} home_epoch={} object_epoch={} role={role} value={}",
+                "mesh-route: complete object={} home={} home_epoch={} object_epoch={} op={} role={role} value={}",
                 Hex(object.as_bytes()),
                 Hex(home.as_bytes()),
                 home_epoch,
                 object_epoch,
+                operation_label(*operation),
                 Hex(&value[..])
             ),
             Self::Result {
                 object,
                 home,
                 home_epoch,
+                operation,
                 value,
                 attempts,
                 moved,
             } => write!(
                 f,
-                "mesh-route: result object={} home={} home_epoch={} value={} attempts={attempts} moved={}",
+                "mesh-route: result object={} home={} home_epoch={} op={} value={} attempts={attempts} moved={}",
                 Hex(object.as_bytes()),
                 Hex(home.as_bytes()),
                 home_epoch,
+                operation_label(*operation),
                 Hex(&value[..]),
                 if *moved { 1 } else { 0 }
             ),
@@ -544,7 +660,7 @@ impl Step {
 }
 
 /// Maximum result rows kept for `GET /mesh/route`.
-pub const MAX_REPORT_RESULTS: usize = 4;
+pub const MAX_REPORT_RESULTS: usize = 8;
 
 /// One completed operation in the bounded route report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -555,12 +671,31 @@ pub struct ResultReport {
     pub home: NodeId,
     /// Home assignment epoch.
     pub home_epoch: u32,
+    /// Operation code (`OP_STAT` or `OP_COMMIT`).
+    pub operation: u16,
     /// Deterministic value.
     pub value: [u8; 32],
     /// Attempts used.
     pub attempts: u8,
     /// Whether one `MOVED` was consumed.
     pub moved: bool,
+}
+
+/// One stale route or lease fenced by a membership change.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FenceReport {
+    /// Object identity.
+    pub object: ObjectId,
+    /// The home that left the confirmed view.
+    pub stale_home: NodeId,
+    /// The stale home assignment epoch.
+    pub stale_home_epoch: u32,
+    /// The recomputed home.
+    pub home: NodeId,
+    /// The current membership epoch.
+    pub home_epoch: u32,
+    /// `left-view` or `lease-left-view`.
+    pub reason: &'static str,
 }
 
 /// A bounded, in-memory evidence report for `GET /mesh/route`.
@@ -593,6 +728,22 @@ pub struct RouteReport {
     pub last_reject: Option<Reason>,
     /// Deadlines that expired.
     pub timeouts: u32,
+    /// Stale routes or leases fenced by a membership change.
+    pub fences: u32,
+    /// The bounded fence rows.
+    pub fence_rows: Vec<FenceReport>,
+    /// Whether the node holds a current authoritative view.
+    pub authority_current: bool,
+    /// The epoch the authority line names.
+    pub authority_epoch: u32,
+    /// Whether a mutable commit is available right now.
+    pub mutable: bool,
+    /// Stale wire frames replayed through the receive path.
+    pub replays: u32,
+    /// The last replay refusal.
+    pub last_replay: Option<Reason>,
+    /// Commits served or completed locally.
+    pub commits: u32,
     /// Completed operation rows.
     pub results: Vec<ResultReport>,
 }
@@ -601,6 +752,7 @@ struct PendingOp {
     object: ObjectId,
     route: ObjectRoute,
     capability: Capability,
+    operation: u16,
     request_id: u64,
     deadline_ms: u64,
     attempt: u8,
@@ -668,6 +820,19 @@ pub struct RouteNode {
     snapshot_seen: Option<(u32, [u8; 16])>,
     tracked_remote: Option<ObjectId>,
     tracked_local: Option<ObjectId>,
+    /// Expiry of the authority's write lease at this home, in milliseconds.
+    write_until_ms: u64,
+    /// Next time the root refreshes its read leases.  Refreshing every tick
+    /// would recompute eight rendezvous scores continuously on the emulated
+    /// kernel and starve the control plane.
+    lease_renew_at_ms: u64,
+    /// The last invoke this node put on the wire, kept for the failure fence
+    /// evidence.  A delayed duplicate of it is replayed through the receive
+    /// path after a view change; it must be refused by the epoch fence.
+    stale: Option<(ObjectRoute, Wire)>,
+    /// Whether the confirmed view is still current.  A member clears this
+    /// when it loses the authority; only a fresh confirmation restores it.
+    authority_current: bool,
     report: RouteReport,
 }
 
@@ -710,6 +875,10 @@ impl RouteNode {
             snapshot_seen: None,
             tracked_remote: None,
             tracked_local: None,
+            write_until_ms: 0,
+            lease_renew_at_ms: 0,
+            stale: None,
+            authority_current: true,
             report: RouteReport::default(),
         })
     }
@@ -754,6 +923,96 @@ impl RouteNode {
         &self.report
     }
 
+    /// Whether the confirmed view is still current at this node.
+    pub const fn authority_current(&self) -> bool {
+        self.authority_current
+    }
+
+    /// Whether a mutable commit is available here at `now_ms`.
+    ///
+    /// This is the route half of the M2 availability rule: a current
+    /// authoritative view *and* a fresh authority write lease.  The home lease
+    /// is checked separately when the operation is served.  The write lease is
+    /// what closes the partition handover window: it expires before the root's
+    /// failure window can re-home the object.
+    pub fn mutable_available_at(&self, now_ms: u64) -> bool {
+        self.authority_current
+            && self.epoch != 0
+            && !self.view.is_empty()
+            && (self.root || now_ms <= self.write_until_ms)
+    }
+
+    /// Remaining authority write lease in milliseconds.
+    pub fn write_lease_remaining(&self, now_ms: u64) -> u32 {
+        if self.root {
+            return u32::MAX;
+        }
+        self.write_until_ms
+            .saturating_sub(now_ms)
+            .min(u64::from(u32::MAX)) as u32
+    }
+
+    /// Note one accepted frame from the authority, renewing the write lease.
+    ///
+    /// Any frame from the confirmed peer proves the authority is reachable, in
+    /// the same way the membership heartbeat does.  A member that hears nothing
+    /// stops accepting commits after [`WRITE_LEASE_MS`] even before the failure
+    /// detector declares the authority lost.
+    #[inline(never)]
+    pub fn on_peer_frame(&mut self, now_ms: u64) {
+        if self.root || !self.authority_current {
+            // A late frame after authority was declared lost proves contact,
+            // but it does not restore authority.  It must not keep a write
+            // lease alive either.
+            return;
+        }
+        self.write_until_ms = now_ms.saturating_add(WRITE_LEASE_MS);
+        // Read leases are renewed by contact with the authority as well.  The
+        // member still cannot create a lease or move a home; it can only keep
+        // the leases the confirmed view gave it alive while that view is
+        // current.  After the authority is lost no frame arrives, so the
+        // leases expire and the objects become unavailable.
+        let epoch = self.epoch;
+        let until = now_ms.saturating_add(HOME_LEASE_MS);
+        for lease in &mut self.homes {
+            if lease.state == LeaseState::Active && lease.home_epoch <= epoch {
+                lease.lease_until_ms = lease.lease_until_ms.max(until);
+            }
+        }
+    }
+
+    /// The node lost contact with the authority.
+    ///
+    /// The confirmed view and every unexpired lease are kept, so a read may
+    /// still be served from a current lease, but no new home is created and a
+    /// mutable commit fails closed.  Only [`RouteNode::on_snapshot`] restores
+    /// the current state.
+    #[inline(never)]
+    pub fn on_authority_lost(&mut self) -> Option<Event> {
+        self.write_until_ms = 0;
+        if !self.authority_current {
+            return None;
+        }
+        self.authority_current = false;
+        Some(Event::Authority {
+            state: "lost",
+            epoch: self.epoch,
+        })
+    }
+
+    /// A fresh confirmation restored an authoritative view.
+    #[inline(never)]
+    pub fn on_authority_restored(&mut self) -> Option<Event> {
+        if self.authority_current {
+            return None;
+        }
+        self.authority_current = true;
+        Some(Event::Authority {
+            state: "current",
+            epoch: self.epoch,
+        })
+    }
+
     /// Fold one event into the bounded report.  Fast path; no formatting.
     #[inline(never)]
     pub fn note_event(&mut self, event: &Event) {
@@ -766,6 +1025,11 @@ impl RouteNode {
                 self.report.view_epoch = *epoch;
                 self.report.view_members = *members;
                 self.report.view_digest = *digest;
+                // A confirmed view is current by construction; only a
+                // subsequent `Authority { state: "lost" }` clears it.
+                self.report.authority_current = true;
+                self.report.authority_epoch = *epoch;
+                self.report.mutable = *epoch != 0;
             }
             Event::Move { object, role, .. } => {
                 if *role == "old" {
@@ -784,6 +1048,35 @@ impl RouteNode {
             Event::Retry { .. } => {
                 self.report.retries = self.report.retries.saturating_add(1);
             }
+            Event::Fence {
+                object,
+                stale_home,
+                stale_home_epoch,
+                home,
+                home_epoch,
+                reason,
+            } => {
+                self.report.fences = self.report.fences.saturating_add(1);
+                if self.report.fence_rows.len() < MAX_REPORT_RESULTS {
+                    self.report.fence_rows.push(FenceReport {
+                        object: *object,
+                        stale_home: *stale_home,
+                        stale_home_epoch: *stale_home_epoch,
+                        home: *home,
+                        home_epoch: *home_epoch,
+                        reason,
+                    });
+                }
+            }
+            Event::Authority { state, epoch } => {
+                self.report.authority_current = *state == "current";
+                self.report.authority_epoch = *epoch;
+                self.report.mutable = *state == "current" && self.epoch != 0;
+            }
+            Event::Replay { reason, .. } => {
+                self.report.replays = self.report.replays.saturating_add(1);
+                self.report.last_replay = Some(*reason);
+            }
             Event::Complete { role, .. } if *role == "home" => {
                 self.report.completes = self.report.completes.saturating_add(1);
             }
@@ -791,15 +1084,20 @@ impl RouteNode {
                 object,
                 home,
                 home_epoch,
+                operation,
                 value,
                 attempts,
                 moved,
             } => {
+                if *operation == OP_COMMIT {
+                    self.report.commits = self.report.commits.saturating_add(1);
+                }
                 if self.report.results.len() < MAX_REPORT_RESULTS {
                     self.report.results.push(ResultReport {
                         object: *object,
                         home: *home,
                         home_epoch: *home_epoch,
+                        operation: *operation,
                         value: *value,
                         attempts: *attempts,
                         moved: *moved,
@@ -858,11 +1156,18 @@ impl RouteNode {
             .filter(|route| route.lease_valid(now_ms.saturating_mul(1_000_000)))
     }
 
-    /// Install a confirmed membership snapshot.
+    /// Install a confirmed membership snapshot and fence stale routes.
     ///
     /// A lower epoch is ignored; the same epoch and digest is idempotent; a
-    /// same-epoch different digest is a caller error and is ignored.  The
-    /// first snapshot installs home leases and the initial route cache.
+    /// same-epoch different digest is caller error and is ignored.  A new
+    /// epoch rebuilds the route cache and home leases from the snapshot and
+    /// emits one [`Event::Fence`] per cached route or lease that named a home
+    /// which is no longer a confirmed member.  The stale entry is dropped and
+    /// the object is re-routed locally; nothing is sent to the removed node.
+    ///
+    /// A new confirmed view also supersedes a lab lease move: an object that
+    /// is homed here under the new view is re-installed as an `Active` lease
+    /// at the current epoch even if the old lease was `DRAINING`.
     #[inline(never)]
     pub fn on_snapshot(
         &mut self,
@@ -870,7 +1175,7 @@ impl RouteNode {
         members: &[NodeId],
         digest: [u8; 16],
         now_ms: u64,
-    ) -> Option<Event> {
+    ) -> Option<Step> {
         if epoch == 0 || members.is_empty() {
             return None;
         }
@@ -880,25 +1185,42 @@ impl RouteNode {
                 return None;
             }
             if epoch == seen_epoch {
-                return if digest == seen_digest {
-                    None
-                } else {
-                    // Never relabel a different member list as the same
-                    // epoch; the authority has already rejected equivocation.
-                    None
-                };
+                // Never relabel a different member list as the same epoch; the
+                // authority has already rejected equivocation.
+                let _ = seen_digest;
+                return None;
             }
         }
         self.snapshot_seen = Some((epoch, digest));
         self.view = view;
         self.digest = digest;
         self.epoch = epoch;
-        self.sync_view(now_ms);
-        Some(Event::View {
-            epoch,
-            members: self.view.len(),
-            digest,
-        })
+        if self.root {
+            self.write_until_ms = now_ms.saturating_add(WRITE_LEASE_MS);
+        } else {
+            // The confirmation itself proves the authority is reachable.
+            self.write_until_ms = now_ms.saturating_add(WRITE_LEASE_MS);
+        }
+        let mut step = self.sync_view(now_ms);
+        step.events.insert(
+            0,
+            Event::View {
+                epoch,
+                members: self.view.len(),
+                digest,
+            },
+        );
+        if !self.authority_current {
+            self.authority_current = true;
+            step.events.insert(
+                1,
+                Event::Authority {
+                    state: "current",
+                    epoch,
+                },
+            );
+        }
+        Some(step)
     }
 
     /// Set or replace the configured peer.
@@ -952,11 +1274,34 @@ impl RouteNode {
         now_ms: u64,
         signer: &dyn RouteSigner,
     ) -> Step {
+        self.begin_operation_with(object, OP_STAT, now_ms, signer)
+    }
+
+    /// Begin one read (`OP_STAT`) or mutable (`OP_COMMIT`) operation.
+    ///
+    /// A commit is the M2 mutable path.  It needs a current authoritative view
+    /// at this node and a current home lease at the destination, so the side of
+    /// a partition without the authority fails closed instead of creating a
+    /// second home.
+    #[inline(never)]
+    pub fn begin_operation_with(
+        &mut self,
+        object: ObjectId,
+        operation: u16,
+        now_ms: u64,
+        signer: &dyn RouteSigner,
+    ) -> Step {
         if self.pending.is_some() {
             return reject(Some(object), Reason::Busy);
         }
+        if operation != OP_STAT && operation != OP_COMMIT {
+            return reject(Some(object), Reason::WrongOperation);
+        }
         if self.epoch == 0 || self.view.is_empty() {
             return reject(Some(object), Reason::NoPeer);
+        }
+        if operation == OP_COMMIT && !self.mutable_available_at(now_ms) {
+            return reject(Some(object), Reason::NoAuthority);
         }
         if !self.is_fixture_object(&object) {
             return reject(Some(object), Reason::Fixture);
@@ -964,7 +1309,7 @@ impl RouteNode {
         let Some(route) = self.route_for(&object, now_ms) else {
             return reject(Some(object), Reason::Fixture);
         };
-        self.start_attempt(object, route, 1, false, now_ms, signer)
+        self.start_attempt(object, route, operation, 1, false, now_ms, signer)
     }
 
     /// The first fixture object whose confirmed rendezvous home is `home`.
@@ -989,52 +1334,156 @@ impl RouteNode {
         if self.pending.is_some() {
             return reject(None, Reason::Busy);
         }
-        let Some(peer) = self.peer else {
-            return reject(None, Reason::NoPeer);
-        };
         match step {
-            1 => {
-                let Some(object) = self.first_home(peer) else {
-                    return reject(None, Reason::Fixture);
+            1..=5 => {
+                let Some(peer) = self.peer else {
+                    return reject(None, Reason::NoPeer);
                 };
-                if self.tracked_local.is_none() {
-                    self.tracked_local = self.first_home(self.self_id);
+                match step {
+                    1 => {
+                        let Some(object) = self.first_home(peer) else {
+                            return reject(None, Reason::Fixture);
+                        };
+                        if self.tracked_local.is_none() {
+                            self.tracked_local = self.first_home(self.self_id);
+                        }
+                        self.tracked_remote = Some(object);
+                        self.begin_operation(object, now_ms, signer)
+                    }
+                    2 => {
+                        let Some(object) = self.tracked_remote else {
+                            return reject(None, Reason::Fixture);
+                        };
+                        self.start_move(object, peer, self.self_id, self.epoch, now_ms, signer)
+                    }
+                    3 => {
+                        let Some(object) = self.tracked_remote else {
+                            return reject(None, Reason::Fixture);
+                        };
+                        self.begin_operation(object, now_ms, signer)
+                    }
+                    4 => {
+                        let Some(object) = self.tracked_local else {
+                            return reject(None, Reason::Fixture);
+                        };
+                        self.start_move(object, self.self_id, peer, self.epoch, now_ms, signer)
+                    }
+                    _ => {
+                        let Some(object) = self.tracked_local else {
+                            return reject(None, Reason::Fixture);
+                        };
+                        self.begin_operation(object, now_ms, signer)
+                    }
                 }
-                self.tracked_remote = Some(object);
-                self.begin_operation(object, now_ms, signer)
             }
-            2 => {
-                let Some(object) = self.tracked_remote else {
-                    return reject(None, Reason::Fixture);
+            6 => self.command_fence(now_ms, signer),
+            7 => self.command_replay(now_ms),
+            8 => {
+                let Some(object) = self.first_home(self.self_id) else {
+                    return reject(None, Reason::NotCurrent);
                 };
-                self.start_move(object, peer, self.self_id, self.epoch, now_ms, signer)
+                self.begin_operation_with(object, OP_COMMIT, now_ms, signer)
             }
-            3 => {
-                let Some(object) = self.tracked_remote else {
-                    return reject(None, Reason::Fixture);
-                };
-                self.begin_operation(object, now_ms, signer)
-            }
-            4 => {
-                let Some(object) = self.tracked_local else {
-                    return reject(None, Reason::Fixture);
-                };
-                self.start_move(object, self.self_id, peer, self.epoch, now_ms, signer)
-            }
-            5 => {
-                let Some(object) = self.tracked_local else {
-                    return reject(None, Reason::Fixture);
+            9 => {
+                let Some(object) = self.first_home(self.self_id) else {
+                    return reject(None, Reason::NotCurrent);
                 };
                 self.begin_operation(object, now_ms, signer)
+            }
+            10 => {
+                // Commit an object homed on the peer.  Used after a rejoin to
+                // prove the recovered member serves a mutable operation from
+                // the authority without a quorum.
+                let Some(peer) = self.peer else {
+                    return reject(None, Reason::NoPeer);
+                };
+                let Some(object) = self.first_home(peer) else {
+                    return reject(None, Reason::NotCurrent);
+                };
+                self.begin_operation_with(object, OP_COMMIT, now_ms, signer)
             }
             _ => reject(None, Reason::Malformed),
         }
+    }
+
+    /// Step 6: fence a stale route after a membership change.
+    ///
+    /// If this node still remembers an invoke it sent to a home that has left
+    /// the confirmed view, the cached entry is dropped and the object is
+    /// re-routed from the new view.  The operation completes at the recomputed
+    /// home without contacting the removed node and without waiting for any
+    /// quorum.  A node with no stale entry (the isolated member) instead probes
+    /// an object homed on the other side; that must fail with `no-peer`, never
+    /// by inventing a local home.
+    #[inline(never)]
+    fn command_fence(&mut self, now_ms: u64, signer: &dyn RouteSigner) -> Step {
+        if let Some((route, _)) = self.stale {
+            if !self.view.contains(route.home) {
+                self.cache.invalidate(&route.object);
+                return self.begin_operation(route.object, now_ms, signer);
+            }
+        }
+        let Some(object) = fixture_objects(self.fixture_count)
+            .into_iter()
+            .find(|object| home_for(object, &self.view) != Some(self.self_id))
+        else {
+            return reject(None, Reason::NotCurrent);
+        };
+        self.begin_operation(object, now_ms, signer)
+    }
+
+    /// Step 7: replay the last stale wire frame through the receive path.
+    ///
+    /// A delayed duplicate can arrive after a membership change.  It is fed
+    /// through the same header, epoch and lease checks as a live frame.  The
+    /// peer check is deliberately bypassed because the sender may already have
+    /// been removed; nothing else is relaxed.
+    #[inline(never)]
+    fn command_replay(&mut self, now_ms: u64) -> Step {
+        let Some((_, wire)) = self.stale.clone() else {
+            return reject(None, Reason::NotCurrent);
+        };
+        let src = wire.dst;
+        let header = wire.header(self.self_id);
+        if let Err(reason) = self.accept_request_header(&header) {
+            return Step::new()
+                .event(Event::Replay {
+                    reason,
+                    src_epoch: header.src_epoch,
+                    epoch: self.epoch,
+                })
+                .event(Event::Reject {
+                    object: Some(wire.object),
+                    reason,
+                });
+        }
+        let Ok(invoke) = Invoke::decode(&wire.body) else {
+            return reject(Some(wire.object), Reason::Malformed);
+        };
+        let mut step = Step::new().event(Event::Replay {
+            reason: Reason::None,
+            src_epoch: header.src_epoch,
+            epoch: self.epoch,
+        });
+        let mut served = self.serve_invoke(src, &header, wire.object, invoke, now_ms);
+        step.events.append(&mut served.events);
+        if served.send.is_some() {
+            step.send = served.send;
+        }
+        step
     }
 
     /// Drive deadlines and home-lease expiry.
     #[inline(never)]
     pub fn tick(&mut self, now_ms: u64, signer: &dyn RouteSigner) -> Step {
         let mut step = Step::new();
+        if self.root && self.authority_current {
+            self.write_until_ms = now_ms.saturating_add(WRITE_LEASE_MS);
+            if now_ms >= self.lease_renew_at_ms {
+                self.renew_root_leases(now_ms);
+                self.lease_renew_at_ms = now_ms.saturating_add(HOME_LEASE_MS / 2);
+            }
+        }
         self.expire_homes(now_ms);
         if let Some(pending) = &self.pending {
             if now_ms >= pending.deadline_ms() {
@@ -1130,14 +1579,18 @@ impl RouteNode {
 
     #[inline(never)]
     fn accept_request_header(&self, header: &MeshHeader) -> Result<(), Reason> {
-        if header.request_id == 0 || header.request_id <= self.last_request {
-            return Err(Reason::Replay);
-        }
+        // Epoch fences are checked before the request id: a frame from a
+        // superseded membership epoch is refused because it is stale, not
+        // because it is a duplicate.  A duplicate from the *current* epoch is
+        // still refused as a replay.
         if header.src_epoch != self.epoch {
             return Err(Reason::StaleEpoch);
         }
         if header.dst_epoch != 0 && header.dst_epoch != self.epoch {
             return Err(Reason::StaleEpoch);
+        }
+        if header.request_id == 0 || header.request_id <= self.last_request {
+            return Err(Reason::Replay);
         }
         Ok(())
     }
@@ -1148,10 +1601,12 @@ impl RouteNode {
     }
 
     #[inline(never)]
+    #[allow(clippy::too_many_arguments)]
     fn start_attempt(
         &mut self,
         object: ObjectId,
         route: ObjectRoute,
+        operation: u16,
         attempt: u8,
         moved: bool,
         now_ms: u64,
@@ -1160,10 +1615,34 @@ impl RouteNode {
         if attempt > MAX_ATTEMPTS {
             return reject(Some(object), Reason::RepeatedMoved);
         }
+        if operation != OP_STAT && operation != OP_COMMIT {
+            return reject(Some(object), Reason::WrongOperation);
+        }
+        if operation == OP_COMMIT && !self.mutable_available_at(now_ms) {
+            return reject(Some(object), Reason::NoAuthority);
+        }
+        if !self.authority_current && route.home != self.self_id {
+            // A member without a current authoritative view cannot reach a
+            // remote home.  It cannot issue the capability the home would
+            // check either, so fail closed before the capability path.
+            return reject(Some(object), Reason::NoAuthority);
+        }
+        if !self.view.contains(route.home) {
+            // A route to a node that is not in the confirmed view is fenced;
+            // the cache entry is stale and the object is re-resolved locally.
+            self.cache.invalidate(&object);
+            return match self.route_for(&object, now_ms) {
+                Some(fresh) => {
+                    self.start_attempt(object, fresh, operation, attempt, moved, now_ms, signer)
+                }
+                None => reject(Some(object), Reason::NotCurrent),
+            };
+        }
         if route.home == self.self_id {
             return self.local_serve(
                 object,
                 route.home_epoch,
+                operation,
                 attempt,
                 moved,
                 now_ms,
@@ -1179,7 +1658,9 @@ impl RouteNode {
             // a hop the transport does not provide in this slice.
             return reject(Some(object), Reason::PeerMismatch);
         }
-        match self.send_invoke(object, route, attempt, moved, now_ms, signer, None) {
+        match self.send_invoke(
+            object, route, operation, attempt, moved, now_ms, signer, None,
+        ) {
             Ok(wire) => Step::new().with_send(wire),
             Err(reason) => reject(Some(object), reason),
         }
@@ -1191,6 +1672,7 @@ impl RouteNode {
         &mut self,
         object: ObjectId,
         route: ObjectRoute,
+        operation: u16,
         attempt: u8,
         moved: bool,
         now_ms: u64,
@@ -1200,12 +1682,12 @@ impl RouteNode {
         let request_id = self.take_request_id();
         let capability = match capability {
             Some(capability) => capability,
-            None => self.issue_capability(object, &route, request_id, signer)?,
+            None => self.issue_capability(object, &route, operation, request_id, signer)?,
         };
         let mut buffer = [0u8; Invoke::LEN];
         let len = Invoke {
             capability,
-            operation: OP_STAT,
+            operation,
         }
         .encode(&mut buffer)
         .map_err(|_| Reason::Malformed)?;
@@ -1225,10 +1707,16 @@ impl RouteNode {
             reply_to: 0,
             body: buffer[..len].to_vec(),
         };
+        // Keep the last frame this node put on the wire.  A delayed duplicate
+        // of it is the stale-lease evidence after a membership change.  This
+        // is a bounded, single-entry copy (one `Wire`, at most a 10 KiB body)
+        // and it is not a directory.
+        self.stale = Some((route, wire.clone()));
         self.pending = Some(Pending::Op(Box::new(PendingOp {
             object,
             route,
             capability,
+            operation,
             request_id,
             deadline_ms: now_ms.saturating_add(OPERATION_DEADLINE_MS),
             attempt,
@@ -1243,18 +1731,35 @@ impl RouteNode {
         &mut self,
         object: ObjectId,
         home_epoch: u32,
+        operation: u16,
         attempt: u8,
         moved: bool,
         now_ms: u64,
         signer: &dyn RouteSigner,
         capability: Option<Capability>,
     ) -> Step {
+        if operation == OP_COMMIT && !self.mutable_available_at(now_ms) {
+            return reject(Some(object), Reason::NoAuthority);
+        }
         let Some(lease) = self.home_lease(&object).copied() else {
-            return reject(Some(object), Reason::NotHome);
+            // The object is homed here but there is no current lease.  That is
+            // `not-current`, not `not-home`: a redirect would be a fabricated
+            // second home.
+            let reason = if home_for(&object, &self.view) == Some(self.self_id) {
+                Reason::NotCurrent
+            } else {
+                Reason::NotHome
+            };
+            return reject(Some(object), reason);
         };
         if !lease.valid_at(now_ms) {
             self.drop_home_lease(&object);
-            return reject(Some(object), Reason::NotHome);
+            let reason = if home_for(&object, &self.view) == Some(self.self_id) {
+                Reason::NotCurrent
+            } else {
+                Reason::NotHome
+            };
+            return reject(Some(object), reason);
         }
         if home_epoch < lease.home_epoch {
             return reject(Some(object), Reason::StaleEpoch);
@@ -1271,17 +1776,20 @@ impl RouteNode {
         };
         let capability = match capability {
             Some(capability) => capability,
-            None => match self.issue_capability(object, &route, 0, signer) {
+            None => match self.issue_capability(object, &route, operation, 0, signer) {
                 Ok(capability) => capability,
                 Err(reason) => return reject(Some(object), reason),
             },
         };
-        if let Err(reason) = self.verify_capability(&capability, self.self_id, &lease, now_ms) {
+        if let Err(reason) =
+            self.verify_capability(&capability, self.self_id, operation, &lease, now_ms)
+        {
             return reject(Some(object), reason);
         }
         match lease.state {
             LeaseState::Active => {
-                let value = route_value(&object, lease.home_epoch, lease.object_epoch);
+                let value =
+                    operation_value(operation, &object, lease.home_epoch, lease.object_epoch);
                 Step::new()
                     .event(Event::Complete {
                         object,
@@ -1289,12 +1797,14 @@ impl RouteNode {
                         home_epoch: lease.home_epoch,
                         object_epoch: lease.object_epoch,
                         role: "home",
+                        operation,
                         value,
                     })
                     .event(Event::Result {
                         object,
                         home: self.self_id,
                         home_epoch: lease.home_epoch,
+                        operation,
                         value,
                         attempts: attempt,
                         moved,
@@ -1330,6 +1840,7 @@ impl RouteNode {
                     self.local_serve(
                         object,
                         lease.new_home_epoch,
+                        operation,
                         attempt + 1,
                         true,
                         now_ms,
@@ -1340,6 +1851,7 @@ impl RouteNode {
                     match self.send_invoke(
                         object,
                         next,
+                        operation,
                         attempt + 1,
                         true,
                         now_ms,
@@ -1376,6 +1888,7 @@ impl RouteNode {
         &self,
         object: ObjectId,
         route: &ObjectRoute,
+        operation: u16,
         request_id: u64,
         signer: &dyn RouteSigner,
     ) -> Result<Capability, Reason> {
@@ -1390,7 +1903,10 @@ impl RouteNode {
         let mut capability = Capability {
             magic: Capability::MAGIC,
             version: Capability::VERSION,
-            rights: Rights::READ,
+            rights: match operation {
+                OP_COMMIT => Rights::READ.union(Rights::WRITE),
+                _ => Rights::READ,
+            },
             flags: 0,
             object,
             issuer: self.authority_key,
@@ -1420,6 +1936,7 @@ impl RouteNode {
         &self,
         capability: &Capability,
         src: NodeId,
+        operation: u16,
         lease: &HomeLease,
         now_ms: u64,
     ) -> Result<(), Reason> {
@@ -1443,7 +1960,11 @@ impl RouteNode {
         if capability.root_epoch != ROOT_EPOCH {
             return Err(Reason::StaleCapability);
         }
-        if !capability.rights.contains(Rights::READ) {
+        let required = match operation {
+            OP_COMMIT => Rights::READ.union(Rights::WRITE),
+            _ => Rights::READ,
+        };
+        if !capability.rights.contains(required) {
             return Err(Reason::InsufficientRights);
         }
         let now_ns = now_ms.saturating_mul(1_000_000);
@@ -1461,13 +1982,16 @@ impl RouteNode {
                 capability.home == self.self_id && capability.home_epoch == lease.home_epoch
             }
             LeaseState::Active => {
-                if lease.previous_home.is_zero() {
-                    capability.home == self.self_id && capability.home_epoch == lease.home_epoch
-                } else {
-                    capability.home == lease.previous_home
-                        && capability.home_epoch == lease.previous_home_epoch
-                        && lease.home_epoch == lease.previous_home_epoch.saturating_add(1)
-                }
+                // A fresh operation at the current home is always valid.  A
+                // token issued at the old home is accepted only for the one
+                // epoch recorded by the move, which is the retry path.
+                let current =
+                    capability.home == self.self_id && capability.home_epoch == lease.home_epoch;
+                let predecessor = !lease.previous_home.is_zero()
+                    && capability.home == lease.previous_home
+                    && capability.home_epoch == lease.previous_home_epoch
+                    && lease.home_epoch == lease.previous_home_epoch.saturating_add(1);
+                current || predecessor
             }
         };
         if !fenced {
@@ -1485,8 +2009,14 @@ impl RouteNode {
         invoke: Invoke,
         now_ms: u64,
     ) -> Step {
-        if invoke.operation != OP_STAT {
+        if invoke.operation != OP_STAT && invoke.operation != OP_COMMIT {
             return self.error_reply(src, object, header, Reason::WrongOperation);
+        }
+        // A mutable commit needs a current authoritative view *here*.  A home
+        // that cannot confirm the current view is unavailable, not a second
+        // authority.
+        if invoke.operation == OP_COMMIT && !self.mutable_available_at(now_ms) {
+            return self.error_reply(src, object, header, Reason::NoAuthority);
         }
         let capability = invoke.capability;
         if capability.object != object || capability.object_epoch != header.object_epoch {
@@ -1496,11 +2026,21 @@ impl RouteNode {
             return self.error_reply(src, object, header, Reason::WrongHome);
         }
         let Some(lease) = self.home_lease(&object).copied() else {
-            return self.error_reply(src, object, header, Reason::NotHome);
+            let reason = if home_for(&object, &self.view) == Some(self.self_id) {
+                Reason::NotCurrent
+            } else {
+                Reason::NotHome
+            };
+            return self.error_reply(src, object, header, reason);
         };
         if !lease.valid_at(now_ms) {
             self.drop_home_lease(&object);
-            return self.error_reply(src, object, header, Reason::NotHome);
+            let reason = if home_for(&object, &self.view) == Some(self.self_id) {
+                Reason::NotCurrent
+            } else {
+                Reason::NotHome
+            };
+            return self.error_reply(src, object, header, reason);
         }
         if header.object_epoch < lease.object_epoch {
             return self.error_reply(src, object, header, Reason::StaleObjectEpoch);
@@ -1514,12 +2054,19 @@ impl RouteNode {
         if header.home_epoch > lease.home_epoch {
             return self.error_reply(src, object, header, Reason::UnknownEpoch);
         }
-        if let Err(reason) = self.verify_capability(&capability, src, &lease, now_ms) {
+        if let Err(reason) =
+            self.verify_capability(&capability, src, invoke.operation, &lease, now_ms)
+        {
             return self.error_reply(src, object, header, reason);
         }
         match lease.state {
             LeaseState::Active => {
-                let value = route_value(&object, lease.home_epoch, lease.object_epoch);
+                let value = operation_value(
+                    invoke.operation,
+                    &object,
+                    lease.home_epoch,
+                    lease.object_epoch,
+                );
                 let result = InvokeResult {
                     object,
                     home: self.self_id,
@@ -1550,6 +2097,7 @@ impl RouteNode {
                     home_epoch: lease.home_epoch,
                     object_epoch: lease.object_epoch,
                     role: "home",
+                    operation: invoke.operation,
                     value,
                 })
             }
@@ -1731,6 +2279,7 @@ impl RouteNode {
                 let local = self.local_serve(
                     pending.object,
                     next.home_epoch,
+                    pending.operation,
                     pending.attempt + 1,
                     true,
                     now_ms,
@@ -1764,7 +2313,8 @@ impl RouteNode {
                 || result.home_epoch != pending.route.home_epoch
                 || result.object_epoch != pending.route.object_epoch
                 || result.value
-                    != route_value(
+                    != operation_value(
+                        pending.operation,
                         &pending.object,
                         pending.route.home_epoch,
                         pending.route.object_epoch,
@@ -1779,12 +2329,14 @@ impl RouteNode {
                     home_epoch: result.home_epoch,
                     object_epoch: result.object_epoch,
                     role: "sender",
+                    operation: pending.operation,
                     value: result.value,
                 })
                 .event(Event::Result {
                     object: result.object,
                     home: result.home,
                     home_epoch: result.home_epoch,
+                    operation: pending.operation,
                     value: result.value,
                     attempts: pending.attempt,
                     moved: pending.moved,
@@ -2027,10 +2579,14 @@ impl RouteNode {
     #[inline(never)]
     fn route_for(&mut self, object: &ObjectId, now_ms: u64) -> Option<ObjectRoute> {
         let now_ns = now_ms.saturating_mul(1_000_000);
-        if let Some(route) = self.cache.get(object) {
-            if route.lease_valid(now_ns) {
-                return Some(*route);
+        if let Some(route) = self.cache.get(object).copied() {
+            if self.view.contains(route.home) && route.lease_valid(now_ns) {
+                return Some(route);
             }
+            // Never use a cached route to a node that is no longer a
+            // confirmed member.  The entry is fenced and re-resolved from the
+            // current view below.
+            self.cache.invalidate(object);
         }
         let home = home_for(object, &self.view)?;
         let route = ObjectRoute {
@@ -2047,8 +2603,29 @@ impl RouteNode {
     }
 
     #[inline(never)]
-    fn sync_view(&mut self, now_ms: u64) {
+    fn sync_view(&mut self, now_ms: u64) -> Step {
+        let mut step = Step::new();
         let objects = fixture_objects(self.fixture_count);
+        // A confirmed membership change fences every cached route that named a
+        // node which is no longer a member.  The route cache is then rebuilt
+        // from the new view.  The fence is local: nothing is sent to the
+        // removed node and no quorum is consulted.
+        let cached: Vec<ObjectRoute> = self.cache.iter().copied().collect();
+        for route in &cached {
+            if self.view.contains(route.home) {
+                continue;
+            }
+            if let Some(new_home) = home_for(&route.object, &self.view) {
+                step.events.push(Event::Fence {
+                    object: route.object,
+                    stale_home: route.home,
+                    stale_home_epoch: route.home_epoch,
+                    home: new_home,
+                    home_epoch: self.epoch,
+                    reason: "left-view",
+                });
+            }
+        }
         self.cache = RouteCache::new(ROUTE_CACHE_CAPACITY);
         for object in &objects {
             if let Some(home) = home_for(object, &self.view) {
@@ -2063,21 +2640,32 @@ impl RouteNode {
                 });
             }
         }
-        let mut stale = Vec::new();
+        // A lease held by a node that is no longer the home is fenced.  A
+        // lease whose object is homed here again is re-installed below, which
+        // is how a new confirmed view supersedes a lab lease move.
+        let mut stale: Vec<(ObjectId, NodeId, u32, NodeId)> = Vec::new();
         for lease in &self.homes {
-            match home_for(&lease.object, &self.view) {
-                Some(home) if home == self.self_id => {}
-                _ => {
-                    if lease.state == LeaseState::Active {
-                        stale.push(lease.object);
-                    }
-                }
+            let home = home_for(&lease.object, &self.view).unwrap_or(self.self_id);
+            if home == self.self_id && lease.state == LeaseState::Active {
+                continue;
             }
+            stale.push((lease.object, lease.home, lease.home_epoch, home));
         }
-        for key in stale {
-            self.drop_home_lease(&key);
+        for (object, stale_home, stale_home_epoch, home) in stale {
+            if stale_home != home {
+                step.events.push(Event::Fence {
+                    object,
+                    stale_home,
+                    stale_home_epoch,
+                    home,
+                    home_epoch: self.epoch,
+                    reason: "lease-left-view",
+                });
+            }
+            self.drop_home_lease(&object);
         }
         let epoch = self.epoch;
+        self.lease_renew_at_ms = now_ms.saturating_add(HOME_LEASE_MS / 2);
         for object in &objects {
             if home_for(object, &self.view) != Some(self.self_id) {
                 continue;
@@ -2086,6 +2674,51 @@ impl RouteNode {
                 Some(lease) if lease.state == LeaseState::Active => {
                     if lease.home_epoch < epoch {
                         lease.home_epoch = epoch;
+                        lease.object_epoch = OBJECT_EPOCH;
+                        lease.lease_until_ms = now_ms.saturating_add(HOME_LEASE_MS);
+                    }
+                }
+                Some(_) | None => {
+                    self.put_home_lease(HomeLease {
+                        object: *object,
+                        home: self.self_id,
+                        home_epoch: epoch,
+                        object_epoch: OBJECT_EPOCH,
+                        lease_until_ms: now_ms.saturating_add(HOME_LEASE_MS),
+                        grace_until_ms: 0,
+                        state: LeaseState::Active,
+                        new_home: NodeId::ZERO,
+                        new_home_epoch: 0,
+                        previous_home: NodeId::ZERO,
+                        previous_home_epoch: 0,
+                    });
+                }
+            }
+        }
+        step
+    }
+
+    /// Renew the authority root's own home leases from its current view.
+    ///
+    /// Only the 1-of-1 authority may do this: its confirmed view *is* the
+    /// current authority.  A member cannot renew a lease without a fresh
+    /// confirmation, so on the side of a partition without the root its leases
+    /// expire and the objects become unavailable.  This does not create a new
+    /// home or advance an epoch.
+    #[inline(never)]
+    fn renew_root_leases(&mut self, now_ms: u64) {
+        if !self.root || !self.authority_current || self.epoch == 0 {
+            return;
+        }
+        let objects = fixture_objects(self.fixture_count);
+        let epoch = self.epoch;
+        for object in &objects {
+            if home_for(object, &self.view) != Some(self.self_id) {
+                continue;
+            }
+            match self.home_lease_mut(object) {
+                Some(lease) if lease.state == LeaseState::Active => {
+                    if lease.home_epoch <= epoch {
                         lease.object_epoch = OBJECT_EPOCH;
                         lease.lease_until_ms = now_ms.saturating_add(HOME_LEASE_MS);
                     }
@@ -2230,7 +2863,10 @@ fn status_for(reason: Reason) -> Status {
         | Reason::InsufficientRights
         | Reason::Expired
         | Reason::NotYetValid => Status::Permission,
-        Reason::NotHome | Reason::Fixture | Reason::WrongObject => Status::NotFound,
+        Reason::NotHome | Reason::NotCurrent | Reason::Fixture | Reason::WrongObject => {
+            Status::NotFound
+        }
+        Reason::NoAuthority => Status::Permission,
         Reason::WrongHome
         | Reason::Malformed
         | Reason::Replay
