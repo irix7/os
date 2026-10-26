@@ -1,0 +1,593 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//! Two-node IRIX 7 rig.
+//!
+//! The rig starts two independent `iris` processes, each with its own state
+//! directory, NVRAM, MAC, NAT subnet, CI socket, monitor and serial log.  It
+//! serves a freshly built MCP module over a local HTTP fixture, waits for both
+//! kernels to print `BOOT-READY`, and then drives each kernel's HTTP client
+//! through a Rust TCP relay to the other kernel's MCP status page.  Every run
+//! writes a self-contained evidence bundle under `<work>/evidence`.
+//!
+//! It does not implement join, membership, route cache, migration or
+//! capabilities.  The NVRAM keys it seeds (`mesh.peer`, `mesh.authority`,
+//! `mesh.epoch`) are the handoff to M2-1.
+
+mod evidence;
+mod fixture;
+mod nvram;
+mod probe;
+mod relay;
+mod rig;
+mod sha256;
+
+use std::fs;
+use std::net::Ipv4Addr;
+use std::time::Duration;
+
+use evidence::{Evidence, NodeEvidence, ProbeEvidence};
+use fixture::Fixture;
+use probe::{ProbeError, ProbeOutcome};
+use relay::Relay;
+use rig::{
+    derive_nodes, git, read_serial, run_ci, start_cpu, start_node, wait_boot, wait_ci_ready,
+    write_nvram, Action, BootFacts, Node, Options, RunningNode,
+};
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Module bytes, PROM digest and module digest.
+type Prerequisites = (Vec<u8>, [u8; 32], [u8; 32]);
+
+/// Probe results and the relays that carried them.
+type ProbeSet = (Vec<ProbeEvidence>, Vec<(String, Relay)>);
+
+fn main() {
+    match run() {
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("m2-rig: {error}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn run() -> Result<i32, String> {
+    let Some(options) = rig::parse_args(std::env::args())? else {
+        print_help();
+        return Ok(0);
+    };
+
+    match options.action {
+        Action::Run => run_and_probe(&options),
+        Action::Up => up(&options),
+        Action::Down => down(&options),
+        Action::Status => status(&options),
+        Action::Probe => probe_only(&options),
+        Action::PrintConfig => print_config(&options),
+        Action::Clean => clean(&options),
+    }
+}
+
+fn print_help() {
+    println!(
+        "m2-rig — two independent IRIX 7 kernels over a Rust host relay
+
+Usage:
+  m2-rig <command> [options]
+
+Commands:
+  run           start both nodes, probe both directions, stop, write evidence
+  up            start both nodes and leave them running
+  down          stop both nodes through their CI sockets
+  status        show lifecycle state and boot markers
+  probe         probe both directions against running nodes
+  print-config  print the derived instance and NVRAM table
+  clean         remove the rig work directory
+
+Options:
+  --repo DIR       repository root (default: discovered from cwd)
+  --work DIR       work directory (default: <repo>/target/m2-rig)
+  --iris PATH      iris binary (default: $IRIS or ../iris/target/release/iris)
+  --iris-ci PATH   iris-ci binary (default: $IRIS_CI or ../iris/target/release/iris-ci)
+  --rom PATH       PROM image (default: <work>/irix7-rom.bin)
+  --module PATH    fresh MCP module (default: <work>/mcp.module)
+  --base-port N    first monitor port block (default: 9100)
+  --timeout SECS   boot deadline (default: 180)
+  --keep           with run, leave the nodes running
+  --verbose        print extra detail
+
+Workflow:
+  tools/m2-rig/build.sh
+  cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \\
+    --iris <iris> --iris-ci <iris-ci>
+"
+    );
+}
+
+fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
+    for (label, option, path) in [
+        ("iris", "--iris", &options.iris),
+        ("iris-ci", "--iris-ci", &options.iris_ci),
+        ("PROM", "--rom", &options.rom),
+        ("MCP module", "--module", &options.module),
+    ] {
+        if !path.is_file() {
+            return Err(format!(
+                "{label} is missing at {}; run tools/m2-rig/build.sh and pass {option} if needed",
+                path.display()
+            ));
+        }
+    }
+    let rom = fs::read(&options.rom).map_err(|error| format!("read PROM: {error}"))?;
+    if rom.len() > 524_288 {
+        return Err(format!("PROM is {} bytes; the window is 524288", rom.len()));
+    }
+    let module = fs::read(&options.module).map_err(|error| format!("read MCP module: {error}"))?;
+    if module.len() > 2 * 1024 * 1024 {
+        return Err(format!(
+            "MCP module is {} bytes; the slot is 2 MiB",
+            module.len()
+        ));
+    }
+    let rom_sha = sha256::digest(&rom);
+    let module_sha = sha256::digest(&module);
+    Ok((module, rom_sha, module_sha))
+}
+
+fn up(options: &Options) -> Result<i32, String> {
+    let (fixture, running, facts) = bring_up(options)?;
+    println!("two nodes are up");
+    println!("{}", rig::node_table(&nodes_of(&running)));
+    for (node, fact) in running.iter().zip(facts.iter()) {
+        println!(
+            "{}: {}",
+            node.node.name,
+            fact.boot_ready.as_deref().unwrap_or("no BOOT-READY")
+        );
+    }
+    println!(
+        "module was served during boot from 127.0.0.1:{}; serial logs under {}",
+        fixture.port,
+        options.work.display()
+    );
+    println!("status: m2-rig status --work {}", options.work.display());
+    println!("stop with: m2-rig down --work {}", options.work.display());
+    Ok(0)
+}
+
+fn down(options: &Options) -> Result<i32, String> {
+    let nodes = derive_nodes(options)?;
+    let mut failed = false;
+    for node in &nodes {
+        if node.ci_socket.exists() {
+            match run_ci(options, node, &["quit"]) {
+                Ok(_) => println!("{}: stopped", node.name),
+                Err(error) => {
+                    eprintln!("{}: {error}", node.name);
+                    failed = true;
+                }
+            }
+        } else {
+            println!("{}: not running", node.name);
+        }
+    }
+    Ok(if failed { 1 } else { 0 })
+}
+
+fn status(options: &Options) -> Result<i32, String> {
+    let nodes = derive_nodes(options)?;
+    let mut failed = false;
+    for node in &nodes {
+        println!("== {} (instance {})", node.name, node.instance);
+        match run_ci(options, node, &["status"]) {
+            Ok(text) => {
+                for line in text.lines() {
+                    println!("  {line}");
+                }
+            }
+            Err(error) => {
+                println!("  {error}");
+                failed = true;
+            }
+        }
+        let facts = BootFacts::from_serial(&read_serial(node));
+        if let Some(line) = &facts.boot_ready {
+            println!("  {line}");
+        } else {
+            println!("  no BOOT-READY");
+            failed = true;
+        }
+        if let Some(line) = &facts.mesh {
+            println!("  {line}");
+        }
+        if let Some(line) = &facts.network_ip {
+            println!("  {line}");
+        }
+        if let Err(error) = facts.verify(node) {
+            println!("  identity check failed: {error}");
+            failed = true;
+        }
+    }
+    Ok(if failed { 1 } else { 0 })
+}
+
+fn probe_only(options: &Options) -> Result<i32, String> {
+    let nodes = derive_nodes(options)?;
+    let (probes, relays) = probe_two_way(&nodes)?;
+    let passed = probes.iter().all(|probe| probe.ok);
+    print_probe_table(&probes);
+    let directory = write_evidence(
+        options,
+        &nodes,
+        &[],
+        &probes,
+        &relays,
+        None,
+        "probe",
+        if passed { "pass" } else { "fail" },
+        None,
+    )?;
+    println!("evidence: {}", directory.display());
+    Ok(if passed { 0 } else { 1 })
+}
+
+fn run_and_probe(options: &Options) -> Result<i32, String> {
+    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
+    let module_sha_text = sha256::hex(&module_sha);
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let nodes = derive_nodes(options)?;
+
+    let mut running = Vec::new();
+    let mut facts = Vec::new();
+    let mut bring_up_error = None;
+    if let Err(error) = start_all(
+        options,
+        &nodes,
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    ) {
+        bring_up_error = Some(error);
+    }
+    if bring_up_error.is_none() {
+        match wait_boot(options, &mut running) {
+            Ok(value) => facts = value,
+            Err(error) => bring_up_error = Some(error),
+        }
+    }
+
+    let mut probes = Vec::new();
+    let mut relays = Vec::new();
+    let mut probe_error = None;
+    if bring_up_error.is_none() {
+        match probe_two_way(&nodes) {
+            Ok((value, value_relays)) => {
+                probes = value;
+                relays = value_relays;
+            }
+            Err(error) => probe_error = Some(error),
+        }
+    } else {
+        // Keep the evidence useful even when a node never booted: record what
+        // the serial logs show and do not invent a probe result.
+        for node in &nodes {
+            facts.push(BootFacts::from_serial(&read_serial(node)));
+        }
+    }
+
+    let passed = bring_up_error.is_none()
+        && probe_error.is_none()
+        && probes.len() == 2
+        && probes.iter().all(|probe| probe.ok);
+    let verdict = if passed { "pass" } else { "fail" };
+    let error = bring_up_error
+        .as_deref()
+        .or(probe_error.as_deref())
+        .map(str::to_string);
+
+    if !options.keep {
+        let errors = rig::stop_nodes(options, &mut running);
+        for error in errors {
+            eprintln!("m2-rig: {error}");
+        }
+    }
+
+    print_probe_table(&probes);
+    for (node, fact) in running.iter().zip(facts.iter()) {
+        println!(
+            "{}: {}",
+            node.node.name,
+            fact.boot_ready.as_deref().unwrap_or("no BOOT-READY")
+        );
+    }
+
+    let directory = write_evidence(
+        options,
+        &nodes,
+        &facts,
+        &probes,
+        &relays,
+        Some(&fixture),
+        "run",
+        verdict,
+        error.as_deref(),
+    )?;
+    println!("evidence: {}", directory.display());
+    if passed {
+        Ok(0)
+    } else {
+        if let Some(error) = &error {
+            eprintln!("m2-rig: {error}");
+        }
+        Ok(1)
+    }
+}
+
+fn start_all(
+    options: &Options,
+    nodes: &[Node],
+    fixture_port: u16,
+    module_sha256: &str,
+    running: &mut Vec<RunningNode>,
+) -> Result<(), String> {
+    let authority = nodes[0].mac_string();
+    let peer0 = format!("{}:{}", nodes[0].gateway, nodes[1].mesh_port);
+    let peer1 = format!("{}:{}", nodes[1].gateway, nodes[0].mesh_port);
+    write_nvram(&nodes[0], fixture_port, module_sha256, &peer0, &authority)?;
+    write_nvram(&nodes[1], fixture_port, module_sha256, &peer1, &authority)?;
+
+    for node in nodes {
+        match start_node(options, node) {
+            Ok(child) => running.push(child),
+            Err(error) => {
+                let _ = rig::stop_nodes(options, running);
+                return Err(error);
+            }
+        }
+    }
+    for child in running.iter() {
+        if let Err(error) = wait_ci_ready(options, &child.node, Duration::from_secs(20)) {
+            let _ = rig::stop_nodes(options, running);
+            return Err(error);
+        }
+        if let Err(error) = start_cpu(options, &child.node) {
+            let _ = rig::stop_nodes(options, running);
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFacts>), String> {
+    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
+    let module_sha_text = sha256::hex(&module_sha);
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let nodes = derive_nodes(options)?;
+    let mut running = Vec::new();
+    start_all(
+        options,
+        &nodes,
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    )?;
+    let facts = match wait_boot(options, &mut running) {
+        Ok(facts) => facts,
+        Err(error) => {
+            let _ = rig::stop_nodes(options, &mut running);
+            return Err(error);
+        }
+    };
+    Ok((fixture, running, facts))
+}
+
+fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
+    // `BOOT-READY` is printed as soon as the module entry returns; the module
+    // arms its first listener on a later idle tick, after the autoload
+    // socket has been removed from the shared set.  Give both guests time to
+    // settle before the first host connection so the forward never races the
+    // listener and resets the connection.  The emulated MIPS CPU and the
+    // module tick are slow enough that a couple of seconds is not reliable.
+    std::thread::sleep(Duration::from_secs(10));
+    let relay_ab = Relay::start((Ipv4Addr::LOCALHOST, nodes[1].http_port).into())
+        .map_err(|error| format!("start relay n0->n1: {error}"))?;
+    let relay_ba = Relay::start((Ipv4Addr::LOCALHOST, nodes[0].http_port).into())
+        .map_err(|error| format!("start relay n1->n0: {error}"))?;
+
+    let result_ab = probe::probe_http(&nodes[0], nodes[0].gateway, relay_ab.port, PROBE_TIMEOUT);
+    let url_ab = format!("http://{}:{}/", nodes[0].gateway, relay_ab.port);
+    let relay_ab_text = format!(
+        "127.0.0.1:{} -> 127.0.0.1:{}",
+        relay_ab.port, nodes[1].http_port
+    );
+    let mut probes = vec![probe_evidence(
+        &nodes[0],
+        &nodes[1],
+        url_ab,
+        relay_ab_text,
+        result_ab,
+    )];
+
+    let result_ba = probe::probe_http(&nodes[1], nodes[1].gateway, relay_ba.port, PROBE_TIMEOUT);
+    let url_ba = format!("http://{}:{}/", nodes[1].gateway, relay_ba.port);
+    let relay_ba_text = format!(
+        "127.0.0.1:{} -> 127.0.0.1:{}",
+        relay_ba.port, nodes[0].http_port
+    );
+    probes.push(probe_evidence(
+        &nodes[1],
+        &nodes[0],
+        url_ba,
+        relay_ba_text,
+        result_ba,
+    ));
+
+    Ok((
+        probes,
+        vec![("n0-to-n1".into(), relay_ab), ("n1-to-n0".into(), relay_ba)],
+    ))
+}
+
+fn probe_evidence(
+    from: &Node,
+    to: &Node,
+    url: String,
+    relay: String,
+    result: Result<ProbeOutcome, ProbeError>,
+) -> ProbeEvidence {
+    match result {
+        Ok(outcome) => ProbeEvidence {
+            from: from.name.clone(),
+            to: to.name.clone(),
+            url,
+            relay,
+            ok: true,
+            message: format!(
+                "HTTP {} from {}'s HTTP client, {} bytes",
+                outcome.status, from.name, outcome.bytes
+            ),
+            status: Some(outcome.status),
+            bytes: Some(outcome.bytes),
+            sha256: outcome.sha256,
+            text: outcome.text,
+            raw: outcome.transcript,
+        },
+        Err(error) => ProbeEvidence {
+            from: from.name.clone(),
+            to: to.name.clone(),
+            url,
+            relay,
+            ok: false,
+            message: error.message,
+            status: None,
+            bytes: None,
+            sha256: None,
+            text: error.text,
+            raw: error.transcript,
+        },
+    }
+}
+
+fn print_probe_table(probes: &[ProbeEvidence]) {
+    for probe in probes {
+        println!(
+            "{} -> {}: {} ({})",
+            probe.from,
+            probe.to,
+            if probe.ok { "pass" } else { "FAIL" },
+            probe.message
+        );
+        if probe.ok {
+            if let (Some(status), Some(bytes)) = (probe.status, probe.bytes) {
+                println!("  http {status}, {bytes} bytes");
+            }
+            if let Some(sha) = &probe.sha256 {
+                println!("  sha256 {sha}");
+            }
+        }
+    }
+}
+
+fn nodes_of(running: &[RunningNode]) -> Vec<Node> {
+    running.iter().map(|child| child.node.clone()).collect()
+}
+
+fn print_config(options: &Options) -> Result<i32, String> {
+    let nodes = derive_nodes(options)?;
+    println!("{}", rig::node_table(&nodes));
+    let authority = nodes[0].mac_string();
+    let module_sha = fs::read(&options.module)
+        .map(|bytes| sha256::hex(&sha256::digest(&bytes)))
+        .unwrap_or_else(|_| "<module sha256>".into());
+    for (index, node) in nodes.iter().enumerate() {
+        let peer = &nodes[1 - index];
+        let mesh_peer = format!("{}:{}", node.gateway, peer.mesh_port);
+        println!("env {}:", node.name);
+        println!("  mcp.url=http://{}:<fixture>/mcp.module", node.gateway);
+        println!("  mcp.sha256={module_sha}");
+        println!("  mesh.peer={mesh_peer}");
+        println!("  mesh.authority={authority}");
+        println!("  mesh.epoch=1");
+        println!("  console=serial0");
+    }
+    println!("probe relays are allocated on ephemeral loopback ports at probe time");
+    println!("n0 -> n1 target: 127.0.0.1:{}", nodes[1].http_port);
+    println!("n1 -> n0 target: 127.0.0.1:{}", nodes[0].http_port);
+    Ok(0)
+}
+
+fn clean(options: &Options) -> Result<i32, String> {
+    for instance in 0..2 {
+        let socket = options.node_dir(instance).join("iris.sock");
+        if socket.exists() {
+            return Err(format!(
+                "{} exists; run `m2-rig down` before clean",
+                socket.display()
+            ));
+        }
+    }
+    if options.work.exists() {
+        fs::remove_dir_all(&options.work)
+            .map_err(|error| format!("remove {}: {error}", options.work.display()))?;
+        println!("removed {}", options.work.display());
+    } else {
+        println!("{} does not exist", options.work.display());
+    }
+    Ok(0)
+}
+
+/// Build and write the evidence bundle.
+#[allow(clippy::too_many_arguments)]
+fn write_evidence(
+    options: &Options,
+    nodes: &[Node],
+    facts: &[BootFacts],
+    probes: &[ProbeEvidence],
+    relays: &[(String, Relay)],
+    fixture: Option<&Fixture>,
+    action: &str,
+    verdict: &str,
+    error: Option<&str>,
+) -> Result<std::path::PathBuf, String> {
+    let node_evidence: Vec<NodeEvidence> = nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let facts = facts
+                .get(index)
+                .cloned()
+                .unwrap_or_else(|| BootFacts::from_serial(&read_serial(node)));
+            NodeEvidence::capture(node, facts)
+        })
+        .collect();
+    let rom_sha = sha256::hex(&sha256::digest(
+        &fs::read(&options.rom).map_err(|error| format!("read PROM: {error}"))?,
+    ));
+    let module_sha = sha256::hex(&sha256::digest(
+        &fs::read(&options.module).map_err(|error| format!("read module: {error}"))?,
+    ));
+    let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let commit = git(&options.repo, &["rev-parse", "HEAD"]);
+    let relay_refs: Vec<(String, &Relay)> = relays
+        .iter()
+        .map(|(name, relay)| (name.clone(), relay))
+        .collect();
+    let bundle = Evidence {
+        work: &options.work,
+        action,
+        repo: &options.repo,
+        branch: &branch,
+        commit: &commit,
+        rom: &options.rom,
+        rom_sha256: &rom_sha,
+        module: &options.module,
+        module_sha256: &module_sha,
+        nodes: &node_evidence,
+        probes,
+        fixture,
+        relays: &relay_refs,
+        verdict,
+        error,
+    };
+    evidence::write(&bundle)
+}
