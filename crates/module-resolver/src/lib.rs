@@ -28,6 +28,7 @@ extern crate alloc;
 
 pub mod codec;
 pub mod footer;
+pub mod manager;
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;

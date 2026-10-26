@@ -13,7 +13,9 @@ This crate does **not** load or execute module images. It defines:
 - `Manifest::encode` / `Manifest::decode`: the version 1 little-endian manifest
   record (`I7MM`), with a 64 KiB bound and strict truncation/UTF-8 checks;
 - `footer::wrap` / `footer::parse`: an optional `I7MF` footer that locates the
-  manifest record after a flat image, while leaving standalone images valid.
+  manifest record after a flat image, while leaving standalone images valid;
+- `manager::ModuleManager`: host model of atomic load, SHA-256 image
+  verification, reference counting and unload. It does not execute an image.
 
 Version 1 resolves exact versions only. Version ranges, a package-index parser,
 signature validation, relocation, slot allocation and a module manager are
