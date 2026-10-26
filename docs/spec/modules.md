@@ -292,10 +292,61 @@ ticker: tick
 - Runtime module dependencies: a module declares exact `name`, `version` and
   SHA-256 records; a downloadable module manager resolves the graph, verifies
   every image, loads dependencies before dependents and publishes versioned C
-  export tables. This is required after M1 and is tracked in #217. It is not
-  implemented by the fixed-slot loader below.
+  export tables. This is required after M1 and is tracked in #217. The first
+  host slice, `crates/module-resolver`, implements the manifest records,
+  deterministic DAG order and fail-closed cycle/missing/digest/ABI tests; it
+  does not load or execute an image. The fixed-slot loader below remains
+  standalone-only.
 
 These are additive to the version 2 table.
+
+### 8.1 Manifest record v1 (implemented host slice)
+
+`crates/module-resolver` encodes a manifest record as little-endian bytes:
+
+```text
+I7MM | u16 format=1 | u16 abi major | u16 abi minor
+     | u16 name length | UTF-8 name
+     | u16 version length | UTF-8 version
+     | u16 dependency count
+     | (u16 name length, name, u16 version length, version, 32-byte SHA-256)*
+     | u16 export count
+     | (u16 interface length, interface, u16 export version)*
+```
+
+The record is limited to 64 KiB. Dependency and export counts are bounded by the
+remaining bytes before a vector is reserved. Strings must be UTF-8. There is no
+CRC in the record: the enclosing module image digest is the integrity boundary.
+Version 1 has exact versions only; ranges and a solver are not part of this
+format. Decoding rejects bad magic, an unsupported format version, truncation,
+trailing bytes, invalid UTF-8 and oversized records.
+
+### 8.2 Manifest footer v1 (implemented host slice)
+
+A module image may append its manifest record and a 16-byte footer:
+
+```text
+image bytes | manifest record | I7MF | u16 version=1 | u16 reserved=0
+            | u32 manifest offset | u32 manifest length
+```
+
+The manifest range must end exactly at the footer, and the record must decode
+as version 1. A standalone image has no footer. A present but malformed footer
+fails closed; it is not treated as an older standalone image. The image digest
+covers the image, manifest and footer; the footer has no separate checksum.
+
+The host implementation is `module_resolver::footer::{wrap, parse}`.
+
+### 8.3 Host manager model (implemented host slice)
+
+`module_resolver::manager::ModuleManager` models the next stage without loading
+or executing code. It consumes a `Registry` and an `ImageSource`, resolves the
+graph, fetches every not-yet-loaded image, verifies its SHA-256 against the
+record and publishes the whole set atomically. A missing image or digest
+mismatch leaves all existing loads and reference counts unchanged. Re-loading a
+root increments every module in its resolution; unloading decrements and
+removes only modules that reach zero. Slot allocation, relocation and execution
+remain in the downloadable module manager.
 
 ## 9. Non-goals
 
