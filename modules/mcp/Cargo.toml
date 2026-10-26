@@ -26,3 +26,4 @@ block-cache = { path = "../../crates/block-cache" }
 overlay = { path = "../../crates/overlay" }
 mesh-core = { path = "../../crates/mesh-core" }
 mesh-join = { path = "../../crates/mesh-join" }
+mesh-route = { path = "../../crates/mesh-route" }

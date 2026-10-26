@@ -518,6 +518,8 @@ static mut NEXT_ARMED: bool = false;
 /// queued first; the action fires after a few idle ticks.
 static mut ACTION: u32 = 0;
 static mut COUNTDOWN: u32 = 0;
+/// Diagnostic: log the first HTTP listen failure of a boot.
+static mut LISTEN_FAIL_LOGGED: bool = false;
 
 /// Bearer token from `mcp.token`; an empty token leaves the endpoint open.
 static mut TOKEN: [u8; 64] = [0; 64];
@@ -614,10 +616,22 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 IN_CONN = false;
             }
             let slot = unsafe { CURRENT };
-            if (services.tcp_listen)(slot, PORT) == 0 {
+            let code = (services.tcp_listen)(slot, PORT);
+            if code == 0 {
                 unsafe {
                     PHASE = WAIT_REQUEST;
                 }
+            } else if !unsafe { LISTEN_FAIL_LOGGED } {
+                unsafe {
+                    LISTEN_FAIL_LOGGED = true;
+                }
+                let mut line = Out::new(unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) });
+                line.push(b"mcp: http listen failed slot=");
+                line.u64(slot as u64);
+                line.push(b" state=");
+                line.u64((services.tcp_state)(slot) as u64);
+                line.byte(b'\n');
+                (services.write)(line.buf.as_ptr(), line.len);
             }
         }
         WAIT_REQUEST => {
@@ -900,6 +914,12 @@ fn handle_request(services: &Services, slot: u32) {
         send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
+    if !is_post && (path == b"/mesh/route" || path.starts_with(b"/mesh/route?")) {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::route_response(services, path, response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
+        return;
+    }
 
     let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
     let (content_type, n) = if is_post && path.starts_with(b"/mcp") {
@@ -1161,6 +1181,7 @@ fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
 fn send_http_status(services: &Services, slot: u32, status: u16, content_type: &[u8], body: &[u8]) {
     let reason: &[u8] = match status {
         200 => b"200 OK",
+        202 => b"202 Accepted",
         400 => b"400 Bad Request",
         404 => b"404 Not Found",
         409 => b"409 Conflict",

@@ -157,7 +157,7 @@ mod tests {
                 ("mesh.peer", "192.168.0.1:9712"),
                 ("mesh.authority", "08:00:69:4d:32:00"),
                 ("mesh.epoch", "1"),
-                ("mesh.obj", "8"),
+                ("mesh.route", "1"),
                 ("mesh.key", &key),
             ],
             MAC,
@@ -167,7 +167,7 @@ mod tests {
         assert_eq!(parsed.len(), 8);
         assert!(parsed
             .iter()
-            .any(|(name, value)| name == "mesh.obj" && value == "8"));
+            .any(|(name, value)| name == "mesh.route" && value == "1"));
     }
 
     #[test]

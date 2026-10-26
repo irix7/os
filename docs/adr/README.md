@@ -19,6 +19,7 @@ next free global number.
 | [M2-ADR-0004](m2-0004-actor-runtime.md) | Native stackless actors as the M2 runtime substrate; Wasm deferred to Phase 4 | Accepted for M2 |
 | [M2-ADR-0005](m2-0005-join-epoch.md) | A signed join handshake, an authority-confirmed epoch and explicit restart rules | Accepted for M2, limited |
 | [M2-ADR-0006](m2-0006-homes.md) | Rendezvous homes from the confirmed snapshot, with a bounded MCP evidence surface | Accepted for M2, limited |
+| [M2-ADR-0007](m2-0007-route.md) | Remote capability routing, home leases and the one-`MOVED` retry | Accepted for M2, limited |
 
 The practical runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md). The harness is [`tools/m2-rig`](../../tools/m2-rig/README.md).
 

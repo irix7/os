@@ -8,6 +8,24 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- M2-4 remote capability routing and the one-`MOVED` retry. `crates/mesh-route`
+  resolves an object through the existing `mesh-core` rendezvous home and route
+  cache (no central directory), carries a `cap-engine`-signed `Capability` over
+  the unchanged M2-1 transport, verifies the issuer, subject, rights, validity,
+  object generation and home/epoch fencing at the home, and serves a bounded
+  `I7R1` result. A root-signed, view-scoped one-object home-lease move puts the
+  old home into `DRAINING`; it answers `MOVED` with exactly `home_epoch + 1`, a
+  confirmed member and bounded lease/grace, and the sender retries exactly once.
+  Repeated `MOVED`, stale or unknown epochs, a wrong home, a non-member target,
+  malformed bodies, missing peers and capability mismatch fail closed. The MCP
+  module serves `GET /mesh/route` and drives the five rig steps (`?step=N`) while
+  staying inside its 512 KiB slot A. `tools/m2-rig` proves a remote stat at n1, a
+  wire `MOVED` with a local retry, and a local `MOVED` with a wire retry on two
+  real iris kernels, recomputes every fixture object, home, epoch and value, and
+  records both reports. `--fault no-route` preserves the M1/M2-1/M2-2/M2-3
+  markers. L0 migration, live TLS/socket/fd migration, general home moves,
+  failure/partition fencing and a persistent route directory remain out of
+  scope; see M2-ADR-0007.
 - M2-2 join and membership-epoch convergence. `crates/mesh-join` defines a
   versioned little-endian `JoinRequest`/`EpochConfirm`/`JoinAck` exchange, an
   Ed25519 authority proof through `cap-engine`, and a fail-closed state machine

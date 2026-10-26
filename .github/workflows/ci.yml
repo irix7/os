@@ -90,7 +90,7 @@ jobs:
             cargo test -p kernel -p kernel-test -p boot-protocol-tests \
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-join \
-              -p mesh-service -p mesh-sim -p fabric -p guest-abi -p cas-core \
+              -p mesh-route -p mesh-service -p mesh-sim -p fabric -p guest-abi -p cas-core \
               -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
               -p wasm-policy-host -p module-resolver -p module-trust \
@@ -345,7 +345,7 @@ jobs:
             target/mips3-sgi-irix7-n32/release/runtime-m2-root-module target/modules/m2-root.flat
 
           echo "=== current MCP ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
             cargo build --release -Z build-std=core,alloc \
               -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
@@ -1372,7 +1372,7 @@ jobs:
           hello  hello-module  core 2
           ticker ticker-module core 2
           block  block-module  core 2
-          mcp    mcp-module    core,alloc 2
+          mcp    mcp-module    core,alloc z
           erofs  erofs-module  core,alloc 2
           logical logical-module core,alloc 2
           cache  cache-module  core,alloc 2
@@ -1391,6 +1391,9 @@ jobs:
             limit="$LIMIT"
             if [ "$module" = wasm ]; then
               limit=1572864
+            elif [ "$module" = mcp ]; then
+              # MCP is slot A: 512 KiB at 0x88400000.
+              limit=524288
             elif [ "$module" = manager ] || [ "$module" = demo-dep ] || [ "$module" = demo-root ] || [ "$module" = m2-mesh ] || [ "$module" = m2-root ]; then
               # The manager occupies the first 256 KiB of slot B; the arena
               # regions after it are also 256 KiB.
@@ -1413,6 +1416,9 @@ jobs:
               limit="$LIMIT"
               if [ "$module" = wasm ]; then
                 limit=1572864
+              elif [ "$module" = mcp ]; then
+                # MCP is slot A: 512 KiB at 0x88400000.
+                limit=524288
               elif [ "$module" = manager ] || [ "$module" = demo-dep ] || [ "$module" = demo-root ] || [ "$module" = m2-mesh ] || [ "$module" = m2-root ]; then
                 limit=262144
               fi

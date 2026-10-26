@@ -13,6 +13,7 @@ use crate::homes::HomesEvidence;
 use crate::join::JoinEvidence;
 use crate::nvram;
 use crate::relay::{lines as log_lines, SharedLog};
+use crate::route::RouteEvidence;
 use crate::rig::{copy_if_present, write_text, BootFacts, Node};
 
 /// One node as recorded in the bundle.
@@ -167,6 +168,8 @@ pub struct Evidence<'a> {
     pub join: Option<&'a JoinEvidence>,
     /// Rendezvous-home evidence, when one ran.
     pub homes: Option<&'a HomesEvidence>,
+    /// Remote capability-route evidence, when one ran.
+    pub route: Option<&'a RouteEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
@@ -295,7 +298,7 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             node.telnet_port, node.http_port, node.mesh_port
         ));
         out.push_str(&format!(
-            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
+            "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"mesh_route_enabled\": {}, \"mesh_route_disabled\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
             json_option(&node.facts.boot_ready),
             json_option(&node.facts.mcp),
             json_option(&node.facts.mesh),
@@ -314,6 +317,8 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             json_option(&node.facts.mesh_join_refused),
             json_option(&node.facts.mesh_join_timeout),
             json_option(&node.facts.mesh_join_reject),
+            json_option(&node.facts.mesh_route_enabled),
+            json_option(&node.facts.mesh_route_disabled),
             json_option(&node.facts.network_mac),
             json_option(&node.facts.network_ip),
             json_env(&node.nvram_env)
@@ -384,6 +389,11 @@ fn render_json(evidence: &Evidence<'_>) -> String {
     out.push_str(",\n  \"homes\": ");
     match evidence.homes {
         Some(homes) => out.push_str(&render_homes_json(homes)),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n  \"route\": ");
+    match evidence.route {
+        Some(route) => out.push_str(&render_route_json(route)),
         None => out.push_str("null"),
     }
     out.push_str("\n}\n");
@@ -613,6 +623,83 @@ fn json_escape(text: &str) -> String {
     out
 }
 
+fn render_route_json(route: &RouteEvidence) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"ok\": {}, \"fault\": \"{}\", \"wire\": {}, \"local\": {}, \"message\": \"{}\", ",
+        route.ok,
+        json_escape(&route.fault),
+        json_option(&route.wire),
+        json_option(&route.local),
+        json_escape(&route.message)
+    ));
+    out.push_str("\"steps\": ");
+    out.push_str(&json_strings(&route.steps));
+    out.push_str(", \"checks\": ");
+    out.push_str(&json_strings(&route.checks));
+    out.push_str(", \"nodes\": [");
+    for (index, node) in route.nodes.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"status\": {}, \"error\": {}, \"report\": ",
+            json_escape(&node.name),
+            node.status
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            json_option(&node.error)
+        ));
+        match &node.report {
+            Some(report) => {
+                out.push_str(&format!(
+                    "{{\"state\": \"{}\", \"reason\": {}, \"view_epoch\": {}, \"members\": {}, \"digest\": {}, \"move_old\": {}, \"move_new\": {}, \"moved_remote\": {}, \"moved_local\": {}, \"retries\": {}, \"completes\": {}, \"rejects\": {}, \"timeouts\": {}, \"last_reject\": {}, \"results\": [",
+                    json_escape(&report.state),
+                    json_option(&report.reason),
+                    report
+                        .view_epoch
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".into()),
+                    report
+                        .members
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "null".into()),
+                    json_option(&report.digest),
+                    json_option(&report.move_old),
+                    json_option(&report.move_new),
+                    report.moved_remote,
+                    report.moved_local,
+                    report.retries,
+                    report.completes,
+                    report.rejects,
+                    report.timeouts,
+                    json_option(&report.last_reject)
+                ));
+                for (row_index, row) in report.results.iter().enumerate() {
+                    out.push_str(&format!(
+                        "{{\"object\": \"{}\", \"home\": \"{}\", \"home_epoch\": {}, \"value\": \"{}\", \"attempts\": {}, \"moved\": {}}}",
+                        json_escape(&row.object),
+                        json_escape(&row.home),
+                        row.home_epoch,
+                        json_escape(&row.value),
+                        row.attempts,
+                        row.moved
+                    ));
+                    if row_index + 1 < report.results.len() {
+                        out.push(',');
+                    }
+                }
+                out.push_str("]}");
+            }
+            None => out.push_str("null"),
+        }
+        out.push('}');
+        if index + 1 < route.nodes.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
+    out
+}
+
 fn render_summary(evidence: &Evidence<'_>) -> String {
     let mut out = String::new();
     out.push_str("# M2 two-node rig evidence\n\n");
@@ -671,6 +758,12 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             out.push_str(&format!("- `{line}`\n"));
         }
         if let Some(line) = &node.facts.mesh_transport_pass {
+            out.push_str(&format!("- `{line}`\n"));
+        }
+        if let Some(line) = &node.facts.mesh_route_enabled {
+            out.push_str(&format!("- `{line}`\n"));
+        }
+        if let Some(line) = &node.facts.mesh_route_disabled {
             out.push_str(&format!("- `{line}`\n"));
         }
         if let Some(line) = &node.facts.network_mac {
@@ -902,6 +995,104 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             }
             out.push_str("```\n\n");
         }
+    }
+
+    if let Some(route) = evidence.route {
+        out.push_str("## Remote capability route\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Fault mode:** `{}`  \n**Wire object:** {}  \n**Local object:** {}\n\n",
+            if route.ok { "pass" } else { "FAIL" },
+            route.fault,
+            route.wire.as_deref().unwrap_or("-"),
+            route.local.as_deref().unwrap_or("-")
+        ));
+        out.push_str(&format!("{}\n\n", route.message));
+        if !route.steps.is_empty() {
+            out.push_str("### Steps\n\n```text\n");
+            for step in &route.steps {
+                out.push_str(step);
+                out.push('\n');
+            }
+            out.push_str("```\n\n");
+        }
+        out.push_str("### Checks\n\n");
+        for check in &route.checks {
+            out.push_str(&format!("- {check}\n"));
+        }
+        out.push('\n');
+        out.push_str(
+            "### Node reports\n\n| Node | HTTP | State | View | Move old | Move new | MOVED local/remote | Retries | Completes | Rejects |\n|---|---|---|---|---|---|---|---|---|---|\n",
+        );
+        for node in &route.nodes {
+            let report = node.report.as_ref();
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {}/{} | {} | {} | {} |\n",
+                node.name,
+                node.status
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                report.map(|report| report.state.as_str()).unwrap_or("-"),
+                report
+                    .map(|report| format!(
+                        "{}/{}",
+                        report
+                            .view_epoch
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".into()),
+                        report
+                            .members
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".into())
+                    ))
+                    .unwrap_or_else(|| "-".into()),
+                report
+                    .and_then(|report| report.move_old.as_deref())
+                    .unwrap_or("-"),
+                report
+                    .and_then(|report| report.move_new.as_deref())
+                    .unwrap_or("-"),
+                report.map(|report| report.moved_local).unwrap_or(0),
+                report.map(|report| report.moved_remote).unwrap_or(0),
+                report.map(|report| report.retries).unwrap_or(0),
+                report.map(|report| report.completes).unwrap_or(0),
+                report.map(|report| report.rejects).unwrap_or(0)
+            ));
+        }
+        out.push('\n');
+        let mut wrote_results = false;
+        for node in &route.nodes {
+            let Some(report) = &node.report else {
+                continue;
+            };
+            for row in &report.results {
+                if !wrote_results {
+                    out.push_str("### Results\n\n| Node | Object | Home | Home epoch | Attempts | MOVED | Value |\n|---|---|---|---|---|---|---|\n");
+                    wrote_results = true;
+                }
+                out.push_str(&format!(
+                    "| {} | {} | {} | {} | {} | {} | {} |\n",
+                    node.name,
+                    row.object,
+                    row.home,
+                    row.home_epoch,
+                    row.attempts,
+                    row.moved,
+                    row.value
+                ));
+            }
+        }
+        if wrote_results {
+            out.push('\n');
+        }
+        out.push_str("### Raw reports\n\n```text\n");
+        for node in &route.nodes {
+            if let Some(report) = &node.report {
+                out.push_str(&format!("== {} ==\n{}\n", node.name, report.raw));
+            } else if let Some(error) = &node.error {
+                out.push_str(&format!("== {} ==\n{error}\n", node.name));
+            }
+        }
+        out.push_str("```\n\n");
     }
 
     if let Some(fixture) = evidence.fixture {

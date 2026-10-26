@@ -56,9 +56,13 @@ epoch. The kernel still prints `mesh=single`; that is the M1 bootstrap view, and
 confirmed membership is the module's `mesh-join:` evidence. M2-1's framing, short
 read/write, deadline, heartbeat, backoff and tag-release tests live in
 `crates/mesh-transport`; the join codec, Ed25519 confirmation, replay/equivocation and
-restart rules live in `crates/mesh-join`. Homes, capability routes and migration are
-M2-3..M2-6. The rig is a manual command until the M2-8 CI job wraps it; the evidence
-bundle under `target/m2-rig/evidence/` is the review artefact.
+restart rules live in `crates/mesh-join`; the home-lease, capability, `MOVED` and replay
+tests live in `crates/mesh-route`. The M2-4 rig drives a remote stat, a wire `MOVED` with
+a local retry and a local `MOVED` with a wire retry on both kernels, and `no-route`
+preserves the M2-1/M2-2/M2-3 markers. Homes, capability routes and migration are
+M2-3..M2-6; M2-4 is the capability route, while L0 migration and failure/partition
+fencing remain M2-5/M2-6. The rig is a manual command until the M2-8 CI job wraps it; the
+evidence bundle under `target/m2-rig/evidence/` is the review artefact.
 
 The independent endian and migration tests are listed in [`milestones.md`](milestones.md)
 and must include a big-endian MIPS → little-endian x86_64/AArch64 state hash.

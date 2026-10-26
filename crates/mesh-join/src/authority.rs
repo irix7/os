@@ -158,6 +158,18 @@ impl AuthorityRoot {
         self.table.epoch()
     }
 
+    /// The root's public key.  A member hears the same key through
+    /// `mesh.pub`; the root derives it from `mesh.key`.
+    pub fn public_key(&self) -> NodeKey {
+        self.signing.public()
+    }
+
+    /// Sign one canonical authority message.  The capability and route layers
+    /// use this seam so they never receive the private seed itself.
+    pub fn sign(&self, message: &[u8]) -> [u8; 64] {
+        self.signing.sign(message)
+    }
+
     /// The root's current confirmed snapshot.
     pub fn snapshot(&self) -> Result<MembershipSnapshot, AuthorityError> {
         Ok(MembershipSnapshot::from_view(&self.table.snapshot())?)

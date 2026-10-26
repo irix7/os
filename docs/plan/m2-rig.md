@@ -1,20 +1,27 @@
 # M2 two-node rig — runbook
 
-**Status:** working; M2-1 transport, M2-2 join/epoch and M2-3 rendezvous homes
-**Scope:** M2-0 foundation, the M2-1 framed mesh transport, the M2-2 join and the M2-3
-rendezvous homes. The rig starts two independent kernels, proves both reach `BOOT-READY`
-with distinct identities, proves a two-way HTTP exchange through the chosen path, connects
-the two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, drives
-the signed join handshake until both nodes report the same membership epoch and snapshot,
-and fetches the rendezvous home table from both kernels. It then stops and restarts the
-member and requires it to rejoin at the **same** epoch with the **same** table. It does not
-implement remote capabilities, migration, leave/removal, failure detection or home moves.
+**Status:** working; M2-1 transport, M2-2 join/epoch, M2-3 rendezvous homes and the M2-4
+remote capability route
+**Scope:** M2-0 foundation, the M2-1 framed mesh transport, the M2-2 join, the M2-3
+rendezvous homes and the M2-4 remote capability route. The rig starts two independent
+kernels, proves both reach `BOOT-READY` with distinct identities, proves a two-way HTTP
+exchange through the chosen path, connects the two guest mesh listeners so the kernels
+exchange framed `MeshEnvelope` records, drives the signed join handshake until both nodes
+report the same membership epoch and snapshot, and fetches the rendezvous home table from
+both kernels. In the default route mode it then issues a capability at n0, serves the
+remote stat at n1, performs a controlled root-signed home-lease move, consumes one
+`MOVED` and retries exactly once in each direction, and fetches the route report from both
+kernels. It then stops and restarts the member and requires it to rejoin at the **same**
+epoch with the **same** table. It does not implement L0 migration, live TLS/socket/fd
+migration, leave/removal, failure detection, general home moves or a persistent route
+directory.
 
 The decisions behind the rig are [M2-ADR-0001](../adr/m2-0001-two-node-rig.md),
 [M2-ADR-0002](../adr/m2-0002-transport.md), [M2-ADR-0003](../adr/m2-0003-authority.md),
 [M2-ADR-0004](../adr/m2-0004-actor-runtime.md),
 [M2-ADR-0005](../adr/m2-0005-join-epoch.md) and
-[M2-ADR-0006](../adr/m2-0006-homes.md).
+[M2-ADR-0006](../adr/m2-0006-homes.md) and
+[M2-ADR-0007](../adr/m2-0007-route.md).
 
 ## Prerequisites
 
@@ -62,9 +69,10 @@ cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
 
 `run` starts both nodes, waits for readiness, probes both HTTP directions, runs the mesh
 framing probe, waits for the join and the member's acknowledgement, fetches the rendezvous
-home table from both kernels and checks the stale-epoch negative, stops and restarts
-**only n1**, waits for it to rejoin at the same epoch, fetches the tables again, stops both
-nodes and writes `target/m2-rig/evidence/`.
+home table from both kernels and checks the stale-epoch negative, drives the five route
+steps (`/mesh/route?step=1..5`) and fetches the route report from both kernels, then stops
+and restarts **only n1**, waits for it to rejoin at the same epoch, fetches the tables
+again, stops both nodes and writes `target/m2-rig/evidence/`.
 
 The lifecycle commands:
 
@@ -79,7 +87,8 @@ The lifecycle commands:
 | `clean` | Remove the work directory. Stop the nodes first. |
 
 Useful options: `--work DIR`, `--base-port N`, `--timeout SECS`, `--keep` (with `run`,
-leave the nodes running), `--verbose`, and `--fault none|no-peer|wrong-authority`.
+leave the nodes running), `--verbose`, and
+`--fault none|no-peer|wrong-authority|no-route`.
 
 ### Fault modes
 
@@ -87,9 +96,10 @@ The fault modes are negative evidence, not extra features:
 
 | Mode | Setup | Expected result |
 |---|---|---|
-| `none` | Full two-node configuration. | Join converges; both kernels serve the same home table; n1 rejoins at the same epoch with the same table; `?epoch=1` is refused as stale. |
+| `none` | Full two-node configuration, including `mesh.route=1`. | Join converges; both kernels serve the same home table; the remote stat completes and one wire `MOVED` plus one local `MOVED` retry succeed; n1 rejoins at the same epoch with the same table; `?epoch=1` is refused as stale. |
 | `no-peer` | No `mesh.*` key is written. | MCP keeps its two slots, no mesh listener, no join, `/mesh/homes` is `404 disabled`; `mesh=single` and `mesh=0/0/0` are preserved. |
 | `wrong-authority` | n1 gets a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, stays at its seed view and serves `409 pending` with no homes. |
+| `no-route` | The join and homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both kernels log `mesh-route: disabled reason=config`, `/mesh/route` is `404 disabled`, and no route step or `MOVED` runs. |
 
 `run --fault no-peer` deliberately skips the M2-1 mesh probe (there is no listener) and
 passes on the HTTP probe plus the M1/M2-0 markers. `probe` and `run` write the mode into
@@ -239,6 +249,74 @@ is compared against the independent table as well. The guest-level HTTP probe ru
 the MCP fetch and before the restart, so the control-plane fetch is not behind a probe
 connection.
 
+## Remote capability route (M2-4)
+
+The route is the M2-3 rendezvous home. The sender computes it with
+`mesh-core::home_for` over the confirmed snapshot, caches it in the bounded
+`mesh-core::RouteCache`, and carries a `cap-engine`-signed `Capability` to that home. There
+is no central directory and no second placement model.
+
+`mesh.route=1` is the opt-in. When it is absent the module logs
+`mesh-route: disabled reason=config` and keeps the M2-1/M2-2/M2-3 behaviour; when
+`mesh.peer` is absent the mesh listener and the route do not exist. The route does not
+change `/mesh/homes`: that surface remains the confirmed rendezvous membership mapping,
+while the route report carries the per-object lease movement.
+
+The MCP endpoint is `GET /mesh/route`:
+
+```text
+mesh-route: state=enabled view_epoch=2 members=2 digest=<32 hex>
+mesh-route: move old=<64 hex|-> new=<64 hex|->
+mesh-route: result object=<64 hex> home=<32 hex> home_epoch=3 value=<64 hex> attempts=2 moved=1
+mesh-route: counters completes=1 retries=2 rejects=0 timeouts=0 results=3 moved_local=1 moved_remote=1
+```
+
+A disabled node answers `404` with `mesh-route: state=disabled reason=config|peer`. The
+report is in memory only; it is not persisted and it is not a directory.
+
+`GET /mesh/route?step=N` is the rig-driven control surface. The rig chooses the order and
+the route policy chooses the first fixture object with the required confirmed home:
+
+| Step | Effect |
+|---|---|
+| 1 | n0 issues a capability for the first n1-homed fixture object and n1 serves the stat. |
+| 2 | n0 signs a root-authorised move of that object from n1 to n0; n1 enters `DRAINING`. |
+| 3 | n0 repeats the stat on its stale n1 route; n1 answers `MOVED`; n0 retries once locally and completes. |
+| 4 | n0 signs a move of the first n0-homed fixture object to n1. |
+| 5 | n0 repeats the stat on its stale n0 route; the local old home answers `MOVED`; n0 retries once at n1 and completes. |
+
+The MCP HTTP slot keeps its close handshake for up to 5 s. The rig waits 10 s after the
+join/homes serial group before the first control-plane fetch and 6 s before each
+non-idempotent route command, so a half-open host forward cannot replay a step. A lost
+command response is reported, not silently repeated; the operator restarts the pair.
+
+The `MOVED` answer is bounded: it names exactly `old_home_epoch + 1`, a confirmed member,
+the remaining lease and the remaining forwarding grace. The sender checks that it came
+from its cached old home, validates the object, epochs, member and bounds, replaces the
+cache entry and retries exactly once. A second `MOVED`, a lower or unknown epoch, a wrong
+home, a non-member target or a malformed frame fails closed with `repeated-moved`,
+`stale-epoch`, `unknown-epoch`, `wrong-home`, `not-home` or `malformed`. A node that is not
+the current home and holds no draining lease answers `not-home`; it never invents a
+redirect.
+
+The rig recomputes the fixture object IDs, rendezvous winners, epoch pairs and the
+deterministic value independently. It requires:
+
+- both reports to carry the join-confirmed epoch, member count and digest;
+- n1 to serve the remote stat (one completion) and n0 to verify the value;
+- n0's `move new` and n1's `move old` to name the wire object;
+- n1 to emit one `moved source=remote`, n0 to retry once locally and complete at n0;
+- n0's `move old` and n1's `move new` to name the local object;
+- n0 to emit one `moved source=local`, retry once at n1 and complete at n1;
+- the three result rows to name the expected object, home, home epoch, attempt count,
+  `moved` flag and independently recomputed value;
+- `rejects=0` and `timeouts=0` on both nodes.
+
+The controlled move is a **root-signed lab lease move**, not a membership change. M2 has
+no leave/removal, so the stale path cannot be driven by a real epoch advance. The move is
+scoped to the confirmed membership epoch/digest, one object and one `home_epoch` step; it
+is not a general home-migration policy. See M2-ADR-0007.
+
 ## NVRAM keys
 
 The rig writes a DS1386 image per node. The keys are:
@@ -250,7 +328,8 @@ The rig writes a DS1386 image per node. The keys are:
 | `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:9712` for `n0`, `192.168.1.1:9702` for `n1`. Its presence enables the guest mesh listener and the join. |
 | `mesh.authority` | Node 0's MAC; the 1-of-1 authority root. |
 | `mesh.epoch` | Initial seed epoch, `1`. |
-| `mesh.obj` | Number of M2 home-fixture objects, `1`–`32` (the rig uses `8`). Short key because the environment is bounded. |
+| `mesh.obj` | Number of M2 home-fixture objects, `1`–`32` (the rig uses the default `8` and omits the key so the route opt-in fits). |
+| `mesh.route` | `1` enables the M2-4 remote capability route. Absent preserves the M2-3 behaviour. |
 | `mesh.pub` | The root's Ed25519 public key (64 hex characters). Written to the member. |
 | `mesh.key` | The root's 32-byte Ed25519 seed (64 hex characters). Written only to the root; a lab fixture, redacted in the evidence bundle. |
 | `console` | `serial0`. |
@@ -259,9 +338,11 @@ The image is 8 KiB; the environment starts at byte `0x10`, the MAC is at byte `3
 the environment must end before the MAC. The harness checks the bound and records the
 parsed environment in the evidence bundle. The environment limit is 298 bytes; the root
 stores only `mesh.key` and derives its public key so both 64-hex keys fit, and
-`mesh.obj` uses the short name because only a few bytes remain. The `nvram` host test
-builds the full two-node environment at the worst-case five-digit fixture port and
-requires it to fit. `--fault no-peer` omits every `mesh.*` key.
+`mesh.obj` uses the short name because only a few bytes remain. The route opt-in is
+`mesh.route=1`; the rig omits `mesh.obj` when it is the default eight so the full route
+environment still fits. The `nvram` host test builds the full two-node environment at the
+worst-case five-digit fixture port and requires it to fit. `--fault no-peer` omits every
+`mesh.*` key.
 
 ## Readiness and evidence
 
@@ -322,12 +403,24 @@ and, on a stale query, the HTTP body (not a serial line):
 mesh-homes: state=stale requested_epoch=1 epoch=2 members=2 digest=<32 hex> count=0
 ```
 
+The M2-4 route adds the opt-in marker:
+
+```text
+mesh-route: enabled role=root|member objects=8
+mesh-route: disabled reason=config|peer
+```
+
+The detailed route evidence is the `GET /mesh/route` body:
+`state=enabled view_epoch=2 members=2 digest=<32 hex>`, the `move old=/new=` rows, one
+`result` row per operation with object, home, home epoch, value, attempts and `moved`, and
+the `counters` row. A disabled node answers `state=disabled reason=config|peer`.
+
 The evidence bundle contains:
 
 | File | Content |
 |---|---|
-| `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, rendezvous homes, relay logs. |
-| `run.json` | Machine-readable version of the same, including every home table. |
+| `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, rendezvous homes, remote capability route, relay logs. |
+| `run.json` | Machine-readable version of the same, including every home table and the route reports. |
 | `serial-n0.log`, `serial-n1.log` | Final serial transcripts. |
 | `serial-n1-boot1.log` | The member's transcript before the restart (when `run` restarted it). |
 | `stdout-n0.log`, `stderr-n0.log`, etc. | Emulator output. |
@@ -376,13 +469,22 @@ digest changes with the uptime; the status and byte count are the pass criteria.
   both restart deterministically. See M2-ADR-0005.
 - **1-of-1 authority.** No threshold, no key rotation, no revocation and no production
   key custody. The key is a lab fixture.
-- **No leave/removal and no epoch push.** A third-node join, failure detection, home
-  moves, capability routes and migration remain M2-4..M2-6/M3.
+- **No leave/removal and no epoch push.** A third-node join, failure detection, general
+  home moves, L0 migration and lease fencing across a partition remain M2-5/M2-6/M3.
+  The M2-4 route uses a root-signed one-object lab lease move, not membership churn.
+- **The route is not a directory.** A route is the confirmed rendezvous home plus a
+  bounded lease and route cache. There is no persistent route table, no central lookup
+  and no trusted redirector other than a home that holds the old lease.
+- **The capability is a bearer token.** The M2 transport is plain TCP on host loopback,
+  so the token has no confidentiality, peer authentication or replay window at the
+  transport. The subject check is an application-layer binding, not a TLS identity.
+- **The capability window uses the boot clock.** The module ABI has no wall-clock
+  service; the route lease is the real time bound. A shared time service is later work.
+- **The `MOVED` retry is exactly one hop.** Multi-hop forwarding, an arbitrary stale-route
+  chase and a third-member retry are not implemented.
 - **No membership change in the rejoin check.** The member restarts and rejoins at the
   same epoch. Leave/removal does not exist, so the rig cannot advance the epoch by
   changing the member set; the host tests cover that policy property.
-- **Homes are evidence, not routing.** A home in `/mesh/homes` is not a capability route,
-  lease or `MOVED` authority. Those remain later slices.
 - **The guests still print `mesh=single`.** That is the kernel's M1 bootstrap view; the
   module's confirmed view is `mesh-join: converged`.
 
@@ -410,9 +512,25 @@ M2-3 (rendezvous homes) is implemented in `crates/mesh-core`, `modules/mcp` and
 - the rig fetches both kernels, recomputes the object IDs, homes and digest independently,
   checks before/after the member rejoin, and drives the stale-epoch negative.
 
-What remains for M2: a remote capability route (M2-4), L0 migration in both directions
-(M2-5), and failure/partition with lease fencing (M2-6). This slice does not claim the
-full M2 gate.
+M2-4 (remote capability route) is implemented in `crates/mesh-route`, `modules/mcp` and
+`tools/m2-rig`:
+
+- `mesh-route` defines the bounded `I7R1` bodies, the confirmed-view home lease, the
+  `DRAINING`/`MOVED` state machine, the route-cache refresh, the `cap-engine` capability
+  checks and the one-retry rule; host tests cover remote completion, wrong home, stale
+  epoch, one-`MOVED` success, repeated-`MOVED` rejection, missing peer/partition,
+  malformed bodies, capability mismatch, authority-signed moves and the rig step sequence;
+- the module serves `GET /mesh/route` from an in-memory report and drives `?step=N`; the
+  route code and report stay inside the 512 KiB slot A;
+- the rig issues the capability at n0, serves the remote stat at n1, drives the two
+  root-signed lease moves, consumes one wire `MOVED` with a local retry and one local
+  `MOVED` with a wire retry, recomputes every value and epoch, and records both reports;
+- `--fault no-route` proves the opt-in negative while the M2-1/M2-2/M2-3 markers still
+  pass, and `--fault no-peer` keeps the M1 path.
+
+What remains for M2: L0 migration in both directions (M2-5) and failure/partition with
+lease fencing (M2-6). This slice does not claim the full M2 gate and does not implement
+L0 migration, live TLS/socket/fd migration or a persistent route directory.
 
 ## Troubleshooting
 
