@@ -22,6 +22,26 @@ pub const ARENA_BASE: usize = 0x884c_0000;
 /// Arena length; slot B ends at `0x8860_0000`.
 pub const ARENA_LEN: usize = 0x0014_0000;
 
+/// Fixed status block used by the runtime manager and MCP.
+pub const STATUS_ADDR: usize = 0x883f_e000;
+/// Status text capacity.
+pub const STATUS_TEXT: usize = 1024;
+/// Magic written by a live manager.
+pub const STATUS_MAGIC: u64 = 0x4d4f_4453_5441_5431; // "MODSTAT1"
+
+/// Runtime module graph status written by the manager.
+#[repr(C)]
+pub struct ModuleStatus {
+    /// [`STATUS_MAGIC`] when populated.
+    pub magic: u64,
+    /// Status format version.
+    pub version: u32,
+    /// Valid bytes in `text`.
+    pub len: u32,
+    /// Human-readable resolved graph and load results.
+    pub text: [u8; STATUS_TEXT],
+}
+
 /// A runtime module entry.
 ///
 /// The first argument is the loader table (so dependency modules can load or

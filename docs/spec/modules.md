@@ -381,6 +381,14 @@ verified copy and cache-safe entry. This is an explicit ROM-freeze exception:
 the M1 image grows from 520,312 to 522,500 bytes in this slice; the manager and
 all policy stay outside the PROM.
 
+### 8.6 MCP runtime graph status
+
+The manager writes a `ModuleStatus` record at the fixed `0x883f_e000` status
+block. MCP's `GET /modules` reads it and returns the resolved graph/load result;
+before a manager has published, it returns `runtime manager: unavailable`. The
+text is bounded to 1 KiB. The status block is informational; it is not an
+authority path.
+
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).

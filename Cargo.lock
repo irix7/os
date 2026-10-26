@@ -706,6 +706,7 @@ version = "0.1.0"
 dependencies = [
  "block-cache",
  "erofs",
+ "loader-abi",
  "mesh-transport",
  "module-abi",
  "overlay",

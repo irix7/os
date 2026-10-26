@@ -24,6 +24,8 @@ All notable changes to IRIX 7 are recorded here. The format follows
   a module manifest with exact name/version/digest dependencies, a resolver,
   versioned export tables and a downloadable module manager. The current
   fixed-slot loader remains standalone-only.
+- MCP now exposes `GET /modules` from the fixed runtime `ModuleStatus` block;
+  before a manager publishes it reports `runtime manager: unavailable`.
 - Added the kernel loader/arena table (`loader-abi`, at `0x883f_f000`) and its
   HTTP/TLS load, fetch and cache-safe enter services. This is the explicit
   freeze exception for the runtime module manager; the manager itself and all
