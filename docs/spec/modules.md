@@ -331,6 +331,17 @@ covers the image, manifest and footer; the footer has no separate checksum.
 
 The host implementation is `module_resolver::footer::{wrap, parse}`.
 
+### 8.3 Host manager model (implemented host slice)
+
+`module_resolver::manager::ModuleManager` models the next stage without loading
+or executing code. It consumes a `Registry` and an `ImageSource`, resolves the
+graph, fetches every not-yet-loaded image, verifies its SHA-256 against the
+record and publishes the whole set atomically. A missing image or digest
+mismatch leaves all existing loads and reference counts unchanged. Re-loading a
+root increments every module in its resolution; unloading decrements and
+removes only modules that reach zero. Slot allocation, relocation and execution
+remain in the downloadable module manager.
+
 ## 9. Non-goals
 
 - User-mode code, capabilities or process isolation (see the architecture specification).
