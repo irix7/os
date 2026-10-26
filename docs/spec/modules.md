@@ -407,10 +407,9 @@ The kernel reserves a bounded arena after the runtime-manager image:
 The kernel only loads/executes verified images. Resolution, manifests,
 signatures, package metadata, rollback and unload policy stay in the
 downloadable manager. This is the explicit ROM-freeze exception; the M1 image
-is 522,908 bytes of 524,288 in this slice.
+is 522,824 bytes of 524,288 in the release build.
 
 ### 8.6 MCP runtime graph status
-
 
 The manager writes a `ModuleStatus` record at the fixed `0x883f_e000` status
 block. MCP's `GET /modules` reads it and returns the resolved graph/load result;

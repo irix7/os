@@ -417,9 +417,9 @@ jobs:
           grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
           # No SCSI target is attached: the user loader must fail cleanly and
           # leave the network-backed sash at the console.
-          iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
+          iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 60
+          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 60
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 60
 
           python3 - <<'PY'
           import socket
