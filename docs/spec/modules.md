@@ -407,7 +407,7 @@ The kernel reserves a bounded arena after the runtime-manager image:
 The kernel only loads/executes verified images. Resolution, manifests,
 signatures, package metadata, rollback and unload policy stay in the
 downloadable manager. This is the explicit ROM-freeze exception; the M1 image
-is 522,824 bytes of 524,288 in the release build.
+is 522,904 bytes of 524,288 in the release build.
 
 ### 8.6 MCP runtime graph status
 
@@ -458,7 +458,7 @@ the manager's 256 KiB limit. The iris boot job builds manager, `demo-dep`,
 `demo-root` and a current MCP, signs them with one throwaway key, loads the
 graph over HTTP and asserts the serial order and `GET /modules` text. The
 release-built manager image is about 121 KiB and the unchanged clean ROM is
-522,824 of 524,288 bytes.
+522,904 of 524,288 bytes.
 
 ### 8.8 Kernel `module_find` limitation
 
