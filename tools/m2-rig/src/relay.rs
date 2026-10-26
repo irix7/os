@@ -14,8 +14,10 @@
 
 use std::io::{Read, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Arc, Barrier, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 
 /// A grow-only log shared with the orchestrator.
 pub type SharedLog = Arc<Mutex<Vec<String>>>;
@@ -162,6 +164,316 @@ fn pump(mut from: TcpStream, mut to: TcpStream, direction: &str, log: SharedLog)
     drop(to);
 }
 
+// ---------------------------------------------------------------------------
+// Mesh relay
+// ---------------------------------------------------------------------------
+
+/// A persistent mesh link may legitimately be idle between heartbeats.  The
+/// probe relay's five-second quiet-period close is deliberately not reused.
+pub const MESH_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long the relay waits for both guests to send their first frame.
+pub const MESH_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
+/// First reconnect delay for the mesh relay.
+pub const MESH_RETRY_MIN: Duration = Duration::from_millis(250);
+/// Reconnect delay cap for the mesh relay.
+pub const MESH_RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// A bidirectional mesh relay between the two guest port-7000 forwards.
+///
+/// The relay connects *to* both host forwards rather than listening for a
+/// guest connection: the guest has no TCP connect service, so both modules
+/// listen and the host is the only side that can initiate.  It is still a dumb
+/// byte pump: it does not parse `MeshHeader`, choose a peer or confirm an
+/// epoch.  The modules generate the heartbeats; any bytes count as activity.
+pub struct MeshRelay {
+    /// Connection and byte log.
+    pub log: SharedLog,
+    stop: Arc<AtomicBool>,
+}
+
+impl MeshRelay {
+    /// Start a relay between two guest mesh forwards.
+    pub fn start(a: SocketAddr, b: SocketAddr) -> std::io::Result<Self> {
+        let log = log();
+        let stop = Arc::new(AtomicBool::new(false));
+        note(&log, format!("mesh-relay targets {a} <-> {b}"));
+        let thread_log = log.clone();
+        let thread_stop = stop.clone();
+        thread::Builder::new()
+            .name("m2-mesh-relay".into())
+            .spawn(move || supervisor(a, b, thread_log, thread_stop))?;
+        Ok(Self { log, stop })
+    }
+}
+
+impl Drop for MeshRelay {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+fn supervisor(a: SocketAddr, b: SocketAddr, log: SharedLog, stop: Arc<AtomicBool>) {
+    let mut delay = MESH_RETRY_MIN;
+    while !stop.load(Ordering::SeqCst) {
+        match session(a, b, &log, &stop) {
+            Ok(()) => {
+                note(&log, "mesh-relay session ended");
+                delay = MESH_RETRY_MIN;
+            }
+            Err(error) => {
+                note(&log, format!("mesh-relay session failed: {error}"));
+                delay = (delay * 2).min(MESH_RETRY_MAX);
+            }
+        }
+        if stop.load(Ordering::SeqCst) {
+            break;
+        }
+        note(
+            &log,
+            format!("mesh-relay reconnecting in {} ms", delay.as_millis()),
+        );
+        sleep_interruptible(delay, &stop);
+    }
+    note(&log, "mesh-relay stopped");
+}
+
+fn sleep_interruptible(delay: Duration, stop: &AtomicBool) {
+    let deadline = Instant::now() + delay;
+    while Instant::now() < deadline {
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn session(
+    a: SocketAddr,
+    b: SocketAddr,
+    log: &SharedLog,
+    stop: &Arc<AtomicBool>,
+) -> Result<(), String> {
+    let a = connect_retry(a, stop)?;
+    let b = connect_retry(b, stop)?;
+    let _ = a.set_nodelay(true);
+    let _ = b.set_nodelay(true);
+    let _ = a.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = b.set_write_timeout(Some(Duration::from_secs(5)));
+    note(log, "mesh-relay connected both forwards");
+
+    let a_control = a
+        .try_clone()
+        .map_err(|error| format!("clone n0: {error}"))?;
+    let b_control = b
+        .try_clone()
+        .map_err(|error| format!("clone n1: {error}"))?;
+    let a_read = a
+        .try_clone()
+        .map_err(|error| format!("clone n0 read: {error}"))?;
+    let b_read = b
+        .try_clone()
+        .map_err(|error| format!("clone n1 read: {error}"))?;
+    let barrier = Arc::new(Barrier::new(2));
+    let fail = Arc::new(AtomicBool::new(false));
+    let activity = Arc::new(AtomicU64::new(0));
+    let started = Instant::now();
+    let (ready_tx, ready_rx) = mpsc::channel();
+
+    let up = pump_mesh(
+        a_read,
+        b,
+        "n0->n1",
+        log.clone(),
+        barrier.clone(),
+        ready_tx.clone(),
+        stop.clone(),
+        fail.clone(),
+        activity.clone(),
+        started,
+    );
+    let down = pump_mesh(
+        b_read,
+        a,
+        "n1->n0",
+        log.clone(),
+        barrier,
+        ready_tx,
+        stop.clone(),
+        fail.clone(),
+        activity,
+        started,
+    );
+
+    let mut first = 0usize;
+    let deadline = Instant::now() + MESH_FIRST_BYTE_TIMEOUT + Duration::from_secs(5);
+    while first < 2 {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            break;
+        }
+        match ready_rx.recv_timeout(left) {
+            Ok(true) => first += 1,
+            Ok(false) => break,
+            Err(_) => break,
+        }
+    }
+    if first != 2 {
+        fail.store(true, Ordering::SeqCst);
+        let _ = a_control.shutdown(Shutdown::Both);
+        let _ = b_control.shutdown(Shutdown::Both);
+        let _ = up.join();
+        let _ = down.join();
+        return Err("both guests did not send their first mesh bytes".into());
+    }
+    note(log, "mesh-relay established after first bytes both ways");
+
+    let _ = up.join();
+    let _ = down.join();
+    let _ = a_control.shutdown(Shutdown::Both);
+    let _ = b_control.shutdown(Shutdown::Both);
+    Ok(())
+}
+
+fn connect_retry(addr: SocketAddr, stop: &AtomicBool) -> Result<TcpStream, String> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        if stop.load(Ordering::SeqCst) {
+            return Err("stopped".into());
+        }
+        match TcpStream::connect_timeout(&addr, Duration::from_millis(500)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => {
+                if Instant::now() >= deadline {
+                    return Err(format!("connect {addr}: {error}"));
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pump_mesh(
+    mut from: TcpStream,
+    mut to: TcpStream,
+    direction: &'static str,
+    log: SharedLog,
+    barrier: Arc<Barrier>,
+    ready: mpsc::Sender<bool>,
+    stop: Arc<AtomicBool>,
+    fail: Arc<AtomicBool>,
+    activity: Arc<AtomicU64>,
+    started: Instant,
+) -> thread::JoinHandle<()> {
+    thread::Builder::new()
+        .name(format!("m2-mesh-{direction}"))
+        .spawn(move || {
+            let _ = from.set_read_timeout(Some(Duration::from_millis(100)));
+            let mut first = vec![0u8; 8192];
+            let mut first_len = 0usize;
+            let mut opened = false;
+            let deadline = Instant::now() + MESH_FIRST_BYTE_TIMEOUT;
+            loop {
+                if stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
+                    break;
+                }
+                match from.read(&mut first) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        first_len = count;
+                        opened = true;
+                        break;
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            || error.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        if Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = ready.send(opened);
+            // Both directions must have their first chunk before either is
+            // written.  This is the early-data guard for the iris port
+            // forward, which may accept the host connection before the guest
+            // listener is ready.
+            barrier.wait();
+            if !opened || stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
+                let _ = to.shutdown(Shutdown::Both);
+                return;
+            }
+            if let Err(error) = to.write_all(&first[..first_len]) {
+                note(&log, format!("mesh-relay {direction} first write: {error}"));
+                fail.store(true, Ordering::SeqCst);
+                let _ = from.shutdown(Shutdown::Both);
+                let _ = to.shutdown(Shutdown::Both);
+                return;
+            }
+            let mut total = first_len as u64;
+            activity.store(
+                started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                Ordering::SeqCst,
+            );
+            note(
+                &log,
+                format!("mesh-relay {direction} first {first_len} bytes"),
+            );
+
+            let mut buffer = [0u8; 8192];
+            loop {
+                if stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
+                    break;
+                }
+                match from.read(&mut buffer) {
+                    Ok(0) => {
+                        break;
+                    }
+                    Ok(count) => {
+                        total += count as u64;
+                        activity.store(
+                            started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            Ordering::SeqCst,
+                        );
+                        if let Err(error) = to.write_all(&buffer[..count]) {
+                            note(&log, format!("mesh-relay {direction} write: {error}"));
+                            fail.store(true, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                    Err(error)
+                        if error.kind() == std::io::ErrorKind::WouldBlock
+                            || error.kind() == std::io::ErrorKind::TimedOut =>
+                    {
+                        let now = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                        let last = activity.load(Ordering::SeqCst);
+                        if now.saturating_sub(last) >= MESH_IDLE_TIMEOUT.as_millis() as u64 {
+                            note(
+                                &log,
+                                format!("mesh-relay {direction} idle after {total} bytes"),
+                            );
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        note(&log, format!("mesh-relay {direction} read: {error}"));
+                        break;
+                    }
+                }
+            }
+            fail.store(true, Ordering::SeqCst);
+            let _ = from.shutdown(Shutdown::Both);
+            let _ = to.shutdown(Shutdown::Both);
+            note(
+                &log,
+                format!("mesh-relay {direction} closed after {total} bytes"),
+            );
+        })
+        .expect("spawn mesh relay pump")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +499,47 @@ mod tests {
         let mut buffer = [0u8; 5];
         client.read_exact(&mut buffer).unwrap();
         assert_eq!(&buffer, b"hello");
+    }
+
+    #[test]
+    fn mesh_relay_waits_for_both_first_bytes() {
+        let left = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let right = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let left_port = left.local_addr().unwrap().port();
+        let right_port = right.local_addr().unwrap().port();
+        let (left_tx, left_rx) = mpsc::channel();
+        let (right_tx, right_rx) = mpsc::channel();
+        thread::spawn(move || {
+            let (mut stream, _) = left.accept().unwrap();
+            let _ = stream.write_all(b"L");
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).unwrap();
+            let _ = left_tx.send(byte[0]);
+        });
+        thread::spawn(move || {
+            let (mut stream, _) = right.accept().unwrap();
+            let _ = stream.write_all(b"R");
+            let mut byte = [0u8; 1];
+            stream.read_exact(&mut byte).unwrap();
+            let _ = right_tx.send(byte[0]);
+        });
+
+        let relay = MeshRelay::start(
+            SocketAddr::from(([127, 0, 0, 1], left_port)),
+            SocketAddr::from(([127, 0, 0, 1], right_port)),
+        )
+        .unwrap();
+        // The left guest must receive the right guest's first byte, and the
+        // right guest the left one.  Neither write happens before both reads,
+        // which is the early-data guard the iris forward needs.
+        assert_eq!(
+            left_rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(b'R')
+        );
+        assert_eq!(
+            right_rx.recv_timeout(std::time::Duration::from_secs(5)),
+            Ok(b'L')
+        );
+        drop(relay);
     }
 }

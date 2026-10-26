@@ -701,8 +701,10 @@ version = "0.1.0"
 dependencies = [
  "block-cache",
  "erofs",
+ "mesh-transport",
  "module-abi",
  "overlay",
+ "sys-primitives",
 ]
 
 [[package]]
@@ -738,6 +740,13 @@ dependencies = [
  "ed25519-dalek",
  "mesh-core",
  "mesh-service",
+ "sys-primitives",
+]
+
+[[package]]
+name = "mesh-transport"
+version = "0.1.0"
+dependencies = [
  "sys-primitives",
 ]
 

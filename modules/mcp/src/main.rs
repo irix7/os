@@ -7,9 +7,17 @@
 //! `console`, `block.read`, `fs.read`, `fs.list`, `fs.stat`, `fs.readlink`,
 //! `fs.write`, `fs.remove`).  This is the first long-running module and the
 //! prototype for the control plane: the compressed PROM image does not grow.
+//!
+//! M2-1 adds an interim mesh listener on guest port 7000 in the same module.
+//! When NVRAM carries `mesh.peer`, the mesh owns module TCP slot 1 and HTTP is
+//! confined to slot 0; without it the module keeps the original two-slot HTTP
+//! server.  See `mesh.rs` for the transport state machine and the listen-only
+//! deviation from M2-ADR-0002.
 
 #![no_std]
 #![no_main]
+
+mod mesh;
 
 extern crate alloc;
 
@@ -525,6 +533,18 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
         services as *const Services as *mut Services,
         Ordering::Release,
     );
+    // The mesh listener is an M2-1 extension inside this module.  It is off
+    // unless NVRAM carries `mesh.peer`; a normal boot keeps the original
+    // two-slot HTTP server behaviour.  When it is on, slot 1 belongs to the
+    // mesh listener and HTTP is confined to slot 0.
+    let mesh_enabled = unsafe { mesh::init(services) };
+    if mesh_enabled {
+        unsafe {
+            CURRENT = mesh::HTTP_SLOT;
+            NEXT = 1;
+            NEXT_ARMED = false;
+        }
+    }
     let mut token = [0u8; 64];
     let n = unsafe {
         (services.config_get)(
@@ -559,6 +579,10 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
     let Some(services) = (unsafe { services.as_ref() }) else {
         return 1;
     };
+
+    // The mesh listener owns module TCP slot 1 when configured.  It is a
+    // separate protocol and state machine from the HTTP server below.
+    mesh::tick(services);
 
     // A deferred system action runs after the tool response has had a few
     // poll cycles to reach the client.
@@ -629,11 +653,16 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                         }
                     } else {
                         // Arm the other slot before the client closes, so the
-                        // next connection lands on a listening socket.
-                        let next = unsafe { NEXT };
-                        if (services.tcp_listen)(next, PORT) == 0 {
-                            unsafe {
-                                NEXT_ARMED = true;
+                        // next connection lands on a listening socket.  With
+                        // the mesh listener enabled slot 1 is reserved for
+                        // port 7000, so HTTP re-arms slot 0 after the close
+                        // handshake instead.
+                        if !mesh::enabled() {
+                            let next = unsafe { NEXT };
+                            if (services.tcp_listen)(next, PORT) == 0 {
+                                unsafe {
+                                    NEXT_ARMED = true;
+                                }
                             }
                         }
                         unsafe {
@@ -661,10 +690,12 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     SCREEN_STREAMING = false;
                 }
-                let next = unsafe { NEXT };
-                if (services.tcp_listen)(next, PORT) == 0 {
-                    unsafe {
-                        NEXT_ARMED = true;
+                if !mesh::enabled() {
+                    let next = unsafe { NEXT };
+                    if (services.tcp_listen)(next, PORT) == 0 {
+                        unsafe {
+                            NEXT_ARMED = true;
+                        }
                     }
                 }
                 unsafe {

@@ -151,6 +151,12 @@ A server can arm the second slot while the first connection is closing. smoltcp 
 two listening sockets on the same port, and the mcp module uses that to avoid a re-arm
 gap between back-to-back clients.
 
+M2-1 adds the mesh listener to the same module. When NVRAM contains `mesh.peer`, the mesh
+owns module TCP slot 1 for guest port 7000 and MCP uses only slot 0 for HTTP, so the
+two-slot pre-arm is disabled. Without `mesh.peer`, the mesh listener is disabled and MCP
+keeps the two-slot behaviour. This is a fixed share, not a module slot manager; general
+runtime module dependencies remain issue #217.
+
 The entry returns a pointer to a vtable, or null for "initialised, no callback":
 
 | Offset | Field | Meaning |

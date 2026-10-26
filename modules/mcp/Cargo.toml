@@ -18,6 +18,8 @@ opt-level = 2
 
 [dependencies]
 module-abi.workspace = true
+mesh-transport = { path = "../../crates/mesh-transport" }
+sys-primitives = { path = "../../crates/sys-primitives" }
 erofs = { path = "../../crates/erofs" }
 block-cache = { path = "../../crates/block-cache" }
 overlay = { path = "../../crates/overlay" }

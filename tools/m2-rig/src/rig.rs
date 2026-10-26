@@ -651,6 +651,10 @@ pub struct BootFacts {
     pub mcp: Option<String>,
     /// The `mesh: single node` line.
     pub mesh: Option<String>,
+    /// The `mesh-transport: listening` line.
+    pub mesh_transport_listen: Option<String>,
+    /// The `mesh-transport: pass` line.
+    pub mesh_transport_pass: Option<String>,
     /// The `network: mac` line.
     pub network_mac: Option<String>,
     /// The DHCP address line.
@@ -672,6 +676,14 @@ impl BootFacts {
                 .map(|line| line.trim().to_string()),
             mcp: find("mcp: listening on port 80"),
             mesh: find("mesh: single node "),
+            mesh_transport_listen: text
+                .lines()
+                .find(|line| line.contains("mesh-transport: listening"))
+                .map(|line| line.trim().to_string()),
+            mesh_transport_pass: text
+                .lines()
+                .find(|line| line.contains("mesh-transport: pass "))
+                .map(|line| line.trim().to_string()),
             network_mac: find("network: mac "),
             network_ip: text
                 .lines()
@@ -916,5 +928,21 @@ mod tests {
             port_base: 9100,
         };
         assert_eq!(node.node_id_string(), "0800694D320000000000000000000000");
+    }
+
+    #[test]
+    fn boot_facts_find_mesh_transport_lines_after_the_prompt() {
+        let text = "sash> mesh-transport: listening on port 7000\n\
+                    mesh-transport: pass peer=0800694D320000000000000000000000 \
+                    rx_frames=2 tx_frames=2 rejects=0\n";
+        let facts = BootFacts::from_serial(text);
+        assert_eq!(
+            facts.mesh_transport_listen.as_deref(),
+            Some("sash> mesh-transport: listening on port 7000")
+        );
+        assert!(facts
+            .mesh_transport_pass
+            .as_deref()
+            .is_some_and(|line| line.contains("peer=0800694D320000000000000000000000")));
     }
 }
