@@ -706,6 +706,7 @@ dependencies = [
  "block-cache",
  "erofs",
  "loader-abi",
+ "mesh-core",
  "mesh-join",
  "mesh-transport",
  "module-abi",

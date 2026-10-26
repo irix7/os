@@ -11,8 +11,9 @@
 //! M2-1 adds an interim mesh listener on guest port 7000 in the same module.
 //! When NVRAM carries `mesh.peer`, the mesh owns module TCP slot 1 and HTTP is
 //! confined to slot 0; without it the module keeps the original two-slot HTTP
-//! server.  See `mesh.rs` for the transport state machine and the listen-only
-//! deviation from M2-ADR-0002.
+//! server.  M2-3 adds `GET /mesh/homes`, a bounded rendezvous-home evidence
+//! surface computed from the confirmed membership snapshot.  See `mesh.rs` for
+//! the transport state machine and the listen-only deviation from M2-ADR-0002.
 
 #![no_std]
 #![no_main]
@@ -478,6 +479,11 @@ fn stat_json(stat: &FsStat, out: &mut [u8]) -> usize {
 }
 
 static mut PHASE: u32 = ARM;
+/// When the current HTTP connection entered its close handshake.  With the
+/// mesh listener owning slot 1, HTTP has only one slot; a client that keeps
+/// its side open must not wedge the control plane forever.
+static mut CLOSE_START_MS: u64 = 0;
+const CLOSE_TIMEOUT_MS: u64 = 5_000;
 static mut SCREEN_ROW: u32 = 0;
 static mut SCREEN_OFF: usize = 0;
 static mut SCREEN_STREAMING: bool = false;
@@ -671,12 +677,14 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                         }
                         unsafe {
                             IN_CONN = false;
+                            CLOSE_START_MS = (services.clock_ms)();
                             PHASE = WAIT_CLOSE;
                         }
                     }
                 } else if state == 3 {
                     (services.tcp_close)(slot);
                     unsafe {
+                        CLOSE_START_MS = (services.clock_ms)();
                         PHASE = CLOSING;
                     }
                 }
@@ -703,6 +711,7 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                     }
                 }
                 unsafe {
+                    CLOSE_START_MS = (services.clock_ms)();
                     PHASE = WAIT_CLOSE;
                 }
             } else {
@@ -755,6 +764,17 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
         }
         WAIT_CLOSE => {
             let slot = unsafe { CURRENT };
+            if (services.clock_ms)().saturating_sub(unsafe { CLOSE_START_MS }) >= CLOSE_TIMEOUT_MS {
+                // The client is holding its side open.  The response has
+                // already been written; reclaim the only HTTP slot.
+                let message = b"mcp: http close timeout\n";
+                (services.write)(message.as_ptr(), message.len());
+                (services.tcp_abort)(slot);
+                unsafe {
+                    finish_close();
+                }
+                return 0;
+            }
             match (services.tcp_state)(slot) {
                 3 => {
                     (services.tcp_close)(slot);
@@ -770,6 +790,15 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
         }
         CLOSING => {
             let slot = unsafe { CURRENT };
+            if (services.clock_ms)().saturating_sub(unsafe { CLOSE_START_MS }) >= CLOSE_TIMEOUT_MS {
+                let message = b"mcp: http close timeout\n";
+                (services.write)(message.as_ptr(), message.len());
+                (services.tcp_abort)(slot);
+                unsafe {
+                    finish_close();
+                }
+                return 0;
+            }
             if (services.tcp_state)(slot) == 0 {
                 (services.tcp_abort)(slot);
                 unsafe {
@@ -863,6 +892,12 @@ fn handle_request(services: &Services, slot: u32) {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let n = module_status(services, response);
         send_http(services, slot, &b"text/plain"[..], &response[..n]);
+        return;
+    }
+    if !is_post && (path == b"/mesh/homes" || path.starts_with(b"/mesh/homes?")) {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::homes_response(path, response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
 
@@ -1120,9 +1155,23 @@ fn le16(dst: &mut [u8], value: u16) {
 }
 
 fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
+    send_http_status(services, slot, 200, content_type, body);
+}
+
+fn send_http_status(services: &Services, slot: u32, status: u16, content_type: &[u8], body: &[u8]) {
+    let reason: &[u8] = match status {
+        200 => b"200 OK",
+        400 => b"400 Bad Request",
+        404 => b"404 Not Found",
+        409 => b"409 Conflict",
+        500 => b"500 Internal Server Error",
+        _ => b"500 Internal Server Error",
+    };
     let mut header = [0u8; 160];
     let mut w = Out::new(&mut header);
-    w.push(b"HTTP/1.0 200 OK\r\nContent-Type: ");
+    w.push(b"HTTP/1.0 ");
+    w.push(reason);
+    w.push(b"\r\nContent-Type: ");
     w.push(content_type);
     w.push(b"\r\nConnection: close\r\nContent-Length: ");
     w.u64(body.len() as u64);

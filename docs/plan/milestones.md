@@ -179,6 +179,20 @@ member-restart, root-restart and both-restart rules are explicit in M2-ADR-0005.
 one M2 gate, not the full gate: homes, a remote capability route, L0 migration and
 failure/partition with lease fencing remain.
 
+**M2-3 status (2026-10-27):** both kernels now compute rendezvous homes from the
+confirmed membership snapshot with the existing `mesh-core` policy. The MCP module serves
+a bounded `GET /mesh/homes` surface (object ID, home NodeId, epoch and membership digest)
+and logs the same rows on convergence; a member without a confirmed view answers
+`409 pending`, and `?epoch=N` answers `409 stale` with no rows instead of relabelling an
+old table. The fixture object set is deterministic from a documented domain and a
+configured count (`mesh.obj`, 1–32, default 8), not a second directory. `tools/m2-rig`
+recomputes the object IDs, homes and digest independently, requires both kernels to agree
+before and after the member rejoin at the same epoch, and records the stale-epoch
+negative. `crates/mesh-core` host tests cover deterministic placement, empty/single/two-
+node sets, epoch changes, distribution, mismatch detection and membership-change movement.
+This is still not full M2: there is no leave/removal, no home move, no remote capability
+route, no `MOVED`, no lease fencing and no migration. See M2-ADR-0006.
+
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 

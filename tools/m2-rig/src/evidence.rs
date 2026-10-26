@@ -9,6 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::fixture::Fixture;
+use crate::homes::HomesEvidence;
 use crate::join::JoinEvidence;
 use crate::nvram;
 use crate::relay::{lines as log_lines, SharedLog};
@@ -164,6 +165,8 @@ pub struct Evidence<'a> {
     pub mesh: Option<&'a MeshProbeEvidence>,
     /// Join and membership-epoch evidence, when one ran.
     pub join: Option<&'a JoinEvidence>,
+    /// Rendezvous-home evidence, when one ran.
+    pub homes: Option<&'a HomesEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
@@ -378,7 +381,125 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         Some(join) => out.push_str(&render_join_json(join)),
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"homes\": ");
+    match evidence.homes {
+        Some(homes) => out.push_str(&render_homes_json(homes)),
+        None => out.push_str("null"),
+    }
     out.push_str("\n}\n");
+    out
+}
+
+fn render_homes_json(homes: &HomesEvidence) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"ok\": {}, \"object_set\": \"{}\", \"count\": {}, \"message\": \"{}\", ",
+        homes.ok,
+        json_escape(&homes.object_set),
+        homes.count,
+        json_escape(&homes.message)
+    ));
+    for (index, (name, round)) in [
+        ("before", homes.before.as_ref()),
+        ("after", homes.after.as_ref()),
+        ("stale", homes.stale.as_ref()),
+        ("disabled", homes.disabled.as_ref()),
+        ("wrong_authority", homes.wrong_authority.as_ref()),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if index > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&format!("\"{name}\": "));
+        match round {
+            Some(round) => out.push_str(&render_home_round(round)),
+            None => out.push_str("null"),
+        }
+    }
+    out.push('}');
+    out
+}
+
+fn render_home_round(round: &crate::homes::HomeRound) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"label\": \"{}\", \"ok\": {}, \"message\": \"{}\", \"expected\": ",
+        json_escape(&round.label),
+        round.ok,
+        json_escape(&round.message)
+    ));
+    match &round.expected {
+        Some(table) => out.push_str(&render_home_table(table)),
+        None => out.push_str("null"),
+    }
+    out.push_str(", \"nodes\": [");
+    for (index, node) in round.nodes.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"path\": \"{}\", \"status\": {}, \"error\": {}, \"table\": ",
+            json_escape(&node.name),
+            json_escape(&node.path),
+            node.status
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            json_option(&node.error),
+        ));
+        match &node.table {
+            Some(table) => out.push_str(&render_home_table(table)),
+            None => out.push_str("null"),
+        }
+        out.push('}');
+    }
+    out.push_str("]}");
+    out
+}
+
+fn render_home_table(table: &crate::homes::HomeTable) -> String {
+    let mut out = String::new();
+    out.push('{');
+    out.push_str(&format!(
+        "\"state\": \"{}\", \"requested_epoch\": {}, \"reason\": {}, \"object_set\": {}, \"epoch\": {}, \"members\": {}, \"digest\": {}, \"count\": {}, \"raw\": \"{}\", \"rows\": [",
+        json_escape(&table.state),
+        table
+            .requested_epoch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".into()),
+        json_option(&table.reason),
+        json_option(&table.object_set),
+        table
+            .epoch
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".into()),
+        table
+            .members
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".into()),
+        json_option(&table.digest),
+        table
+            .count
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".into()),
+        json_escape(&table.raw)
+    ));
+    for (index, row) in table.rows.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        out.push_str(&format!(
+            "{{\"object\": \"{}\", \"home\": \"{}\", \"epoch\": {}, \"digest\": \"{}\"}}",
+            json_escape(&row.object),
+            json_escape(&row.home),
+            row.epoch,
+            json_escape(&row.digest)
+        ));
+    }
+    out.push_str("]}");
     out
 }
 
@@ -708,6 +829,79 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             }
         }
         out.push_str("```\n\n");
+    }
+
+    if let Some(homes) = evidence.homes {
+        out.push_str("## Rendezvous homes\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Object set:** `{}`  \n**Configured count:** {}  \n",
+            if homes.ok { "pass" } else { "FAIL" },
+            homes.object_set,
+            homes.count
+        ));
+        out.push_str(&format!("{}\n\n", homes.message));
+        out.push_str(
+            "| Round | Node | Path | HTTP | State | Epoch | Count | Digest | Result |\n|---|---|---|---|---|---|---|---|---|\n",
+        );
+        for round in [
+            homes.before.as_ref(),
+            homes.after.as_ref(),
+            homes.stale.as_ref(),
+            homes.disabled.as_ref(),
+            homes.wrong_authority.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for node in &round.nodes {
+                out.push_str(&format!(
+                    "| {} | {} | `{}` | {} | {} | {} | {} | {} | {} |\n",
+                    round.label,
+                    node.name,
+                    node.path,
+                    node.status
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    node.table
+                        .as_ref()
+                        .map(|table| table.state.as_str())
+                        .unwrap_or("-"),
+                    node.table
+                        .as_ref()
+                        .and_then(|table| table.epoch)
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    node.table
+                        .as_ref()
+                        .and_then(|table| table.count)
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "-".into()),
+                    node.table
+                        .as_ref()
+                        .and_then(|table| table.digest.as_deref())
+                        .unwrap_or("-"),
+                    if round.ok { "pass" } else { "FAIL" }
+                ));
+            }
+        }
+        out.push('\n');
+        for (label, round) in [
+            ("before the member restart", homes.before.as_ref()),
+            ("after the member rejoin", homes.after.as_ref()),
+            ("stale-epoch query", homes.stale.as_ref()),
+        ] {
+            let Some(round) = round else {
+                continue;
+            };
+            out.push_str(&format!("### Homes {label}\n\n```text\n"));
+            for node in &round.nodes {
+                if let Some(table) = &node.table {
+                    out.push_str(&table.raw);
+                    out.push('\n');
+                }
+            }
+            out.push_str("```\n\n");
+        }
     }
 
     if let Some(fixture) = evidence.fixture {

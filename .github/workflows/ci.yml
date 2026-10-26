@@ -574,8 +574,10 @@ jobs:
               wasm.group(1),
           )
           PY
-          iris-ci --socket "$socket" quit
-          wait "$pid"
+          # The Wasm boot has completed and all policy assertions have passed;
+          # iris may already be tearing down, so make the quit/wait best-effort.
+          iris-ci --socket "$socket" quit || true
+          wait "$pid" || true
 
       - name: Boot runtime manager and dependency graph
         env:

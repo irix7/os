@@ -14,6 +14,7 @@
 
 mod evidence;
 mod fixture;
+mod homes;
 mod join;
 mod nvram;
 mod probe;
@@ -27,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
 use fixture::Fixture;
+use homes::HomesEvidence;
 use join::{JoinEvidence, RestartInput};
 use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
@@ -217,7 +219,6 @@ fn status(options: &Options) -> Result<i32, String> {
 
 fn probe_only(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
-    let (probes, relays) = probe_two_way(&nodes)?;
     let (mesh, mesh_relay) = if options.fault == Fault::NoPeer {
         (None, None)
     } else {
@@ -226,26 +227,42 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     };
     if options.fault.joins() {
         wait_join(&nodes, Duration::from_secs(60));
+        wait_join_ack(&nodes, Duration::from_secs(20));
+        wait_homes_serial(&nodes, Duration::from_secs(20));
     } else if options.fault == Fault::WrongAuthority {
         wait_join_reject(&nodes, Duration::from_secs(30));
     }
     let facts = snapshot_facts(&nodes);
     let keys = AuthorityKeys::lab();
     let join = join::evaluate(&nodes, &facts, &keys, options.fault, None);
+    let home_inputs = collect_homes(options, &nodes, &facts, &join);
+    let homes = homes::evaluate(
+        options.fault,
+        home_inputs.before,
+        None,
+        home_inputs.stale,
+        home_inputs.disabled,
+        home_inputs.wrong_authority,
+        false,
+    );
+    let (probes, relays) = probe_two_way(&nodes)?;
     let http_ok = probes.iter().all(|probe| probe.ok);
     let mesh_ok = mesh.as_ref().is_none_or(|mesh| mesh.ok);
-    let passed = http_ok && mesh_ok && join.ok;
+    let passed = http_ok && mesh_ok && join.ok && homes.ok;
     print_probe_table(&probes);
     if let Some(mesh) = &mesh {
         print_mesh_result(mesh);
     }
     print_join_result(&join);
+    print_homes_result(&homes);
     let error = if !http_ok {
         Some("one or both HTTP probes failed".to_string())
     } else if !mesh_ok {
         mesh.as_ref().map(|mesh| mesh.message.clone())
     } else if !join.ok {
         Some(join.message.clone())
+    } else if !homes.ok {
+        Some(homes.message.clone())
     } else {
         None
     };
@@ -258,6 +275,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         mesh.as_ref(),
         mesh_relay.as_ref(),
         Some(&join),
+        Some(&homes),
         None,
         "probe",
         if passed { "pass" } else { "fail" },
@@ -297,15 +315,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut mesh_relay = None;
     let mut probe_error = None;
     let mut join_error = None;
+    let mut homes_error = None;
     let mut restart = None;
+    let mut home_inputs = HomeInputs::default();
+    let keys = AuthorityKeys::lab();
     if bring_up_error.is_none() {
-        match probe_two_way(&nodes) {
-            Ok((value, value_relays)) => {
-                probes = value;
-                relays = value_relays;
-            }
-            Err(error) => probe_error = Some(error),
-        }
+        // The guest-level HTTP probe runs after the join and homes collection.
+        // The MCP server has one HTTP slot while the mesh owns the other, and
+        // the iris forward can hold a half-open guest connection after that
+        // probe; collecting homes on the clean control plane first keeps the
+        // evidence independent of the forward's close behaviour.
         if options.fault == Fault::NoPeer {
             // No mesh listener and no join: the M2-1 probe is skipped by
             // design and the evidence says so.
@@ -320,10 +339,29 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // member is restarted; otherwise the restart can truncate it and
             // there is no evidence that B installed what A signed.
             wait_join_ack(&nodes, Duration::from_secs(20));
+            wait_homes_serial(&nodes, Duration::from_secs(20));
         } else if options.fault == Fault::WrongAuthority {
             wait_join_reject(&nodes, Duration::from_secs(30));
         }
         facts = snapshot_facts(&nodes);
+
+        let join_before = join::evaluate(&nodes, &facts, &keys, options.fault, None);
+        home_inputs = collect_homes(options, &nodes, &facts, &join_before);
+        if let Some(error) = home_inputs.error.take() {
+            homes_error = Some(error);
+        }
+
+        // The guest-level HTTP probe still runs before the member restart, as
+        // in M2-0/M2-1/M2-2.  It runs after the MCP homes fetch because the
+        // iris host forward can hold a half-open guest connection after the
+        // probe; the control-plane evidence is collected on the clean path.
+        match probe_two_way(&nodes) {
+            Ok((value, value_relays)) => {
+                probes = value;
+                relays = value_relays;
+            }
+            Err(error) => probe_error = Some(error),
+        }
 
         if options.fault.joins() {
             match restart_member(options, &nodes, &mut running, &facts, &mut mesh_relay) {
@@ -331,6 +369,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     restart = Some(input);
                     // The root's transcript gained a confirmation and the
                     // member's transcript is now the rejoin boot.
+                    wait_homes_serial(&nodes, Duration::from_secs(20));
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
@@ -342,8 +381,24 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         facts = snapshot_facts(&nodes);
     }
 
-    let keys = AuthorityKeys::lab();
     let join = join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref());
+    if options.fault == Fault::None && join_error.is_none() {
+        if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
+            home_inputs.after =
+                Some(homes::collect_current_serial(&nodes, &facts, epoch, digest, &join.members));
+        } else {
+            homes_error = Some("join evidence has no epoch/digest for the rejoin homes".into());
+        }
+    }
+    let homes = homes::evaluate(
+        options.fault,
+        home_inputs.before,
+        home_inputs.after,
+        home_inputs.stale,
+        home_inputs.disabled,
+        home_inputs.wrong_authority,
+        true,
+    );
     let mesh_ok = match options.fault {
         Fault::NoPeer => true,
         _ => mesh.as_ref().is_some_and(|mesh| mesh.ok),
@@ -351,21 +406,25 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let passed = bring_up_error.is_none()
         && probe_error.is_none()
         && join_error.is_none()
+        && homes_error.is_none()
         && probes.len() == 2
         && probes.iter().all(|probe| probe.ok)
         && mesh_ok
-        && join.ok;
+        && join.ok
+        && homes.ok;
     let verdict = if passed { "pass" } else { "fail" };
     let error = bring_up_error
         .as_deref()
         .or(probe_error.as_deref())
         .or(join_error.as_deref())
+        .or(homes_error.as_deref())
         .or_else(|| {
             mesh.as_ref()
                 .filter(|mesh| !mesh.ok)
                 .map(|mesh| mesh.message.as_str())
         })
         .or_else(|| (!join.ok).then_some(join.message.as_str()))
+        .or_else(|| (!homes.ok).then_some(homes.message.as_str()))
         .map(str::to_string);
 
     // Let the emulated UART drain the last pass/reject line before the
@@ -384,6 +443,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         print_mesh_result(mesh);
     }
     print_join_result(&join);
+    print_homes_result(&homes);
     for (node, fact) in running.iter().zip(facts.iter()) {
         println!(
             "{}: {}",
@@ -401,6 +461,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         mesh.as_ref(),
         mesh_relay.as_ref(),
         Some(&join),
+        Some(&homes),
         Some(&fixture),
         "run",
         verdict,
@@ -423,6 +484,24 @@ fn snapshot_facts(nodes: &[Node]) -> Vec<BootFacts> {
         .iter()
         .map(|node| BootFacts::from_serial(&read_serial(node)))
         .collect()
+}
+
+/// Wait until both modules have armed their mesh listener.
+fn wait_mesh_listen(nodes: &[Node], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let facts = snapshot_facts(nodes);
+        if facts
+            .iter()
+            .all(|fact| fact.mesh_transport_listen.is_some())
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 /// Wait until both nodes print a converged join view, or the deadline passes.
@@ -455,6 +534,25 @@ fn wait_join_ack(nodes: &[Node], timeout: Duration) {
     }
 }
 
+/// Wait until both transcripts carry a complete home group.
+fn wait_homes_serial(nodes: &[Node], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let facts = snapshot_facts(nodes);
+        let ready = facts.iter().all(|fact| {
+            fact.mesh_homes_lines
+                .iter()
+                .filter(|line| line.contains("mesh-home: "))
+                .count()
+                >= homes::OBJECT_COUNT as usize
+        });
+        if ready || Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Wait until the member logs a join rejection (the wrong-authority fault).
 fn wait_join_reject(nodes: &[Node], timeout: Duration) {
     let deadline = Instant::now() + timeout;
@@ -467,6 +565,96 @@ fn wait_join_reject(nodes: &[Node], timeout: Duration) {
             return;
         }
         std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+#[derive(Default)]
+struct HomeInputs {
+    before: Option<homes::HomeRound>,
+    after: Option<homes::HomeRound>,
+    stale: Option<homes::HomeRound>,
+    disabled: Option<homes::HomeRound>,
+    wrong_authority: Option<homes::HomeRound>,
+    error: Option<String>,
+}
+
+/// Collect the homes surface appropriate to the fault mode.
+fn collect_homes(
+    options: &Options,
+    nodes: &[Node],
+    facts: &[BootFacts],
+    join: &JoinEvidence,
+) -> HomeInputs {
+    let mut inputs = HomeInputs::default();
+    match options.fault {
+        Fault::None => {
+            let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) else {
+                inputs.error = Some("join evidence has no epoch/digest for homes".into());
+                return inputs;
+            };
+            inputs.before = Some(homes::collect_current(
+                nodes,
+                facts,
+                epoch,
+                digest,
+                &join.members,
+                Duration::from_secs(30),
+            ));
+            inputs.stale = Some(homes::collect_stale(
+                nodes,
+                1,
+                epoch,
+                digest,
+                Duration::from_secs(30),
+            ));
+        }
+        Fault::NoPeer => {
+            inputs.disabled = Some(homes::collect_disabled(nodes, Duration::from_secs(30)));
+        }
+        Fault::WrongAuthority => {
+            inputs.wrong_authority = Some(homes::collect_wrong_authority(
+                nodes,
+                facts,
+                Duration::from_secs(30),
+            ));
+        }
+    }
+    inputs
+}
+
+fn print_homes_result(homes: &HomesEvidence) {
+    println!(
+        "homes [{} count={}]: {} ({})",
+        homes.object_set,
+        homes.count,
+        if homes.ok { "pass" } else { "FAIL" },
+        homes.message
+    );
+    for round in [
+        homes.before.as_ref(),
+        homes.after.as_ref(),
+        homes.stale.as_ref(),
+        homes.disabled.as_ref(),
+        homes.wrong_authority.as_ref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        println!("  {}: {}", round.label, if round.ok { "pass" } else { "FAIL" });
+        for node in &round.nodes {
+            match &node.table {
+                Some(table) => println!(
+                    "    {} {} state={} epoch={:?} count={:?} digest={:?}",
+                    node.name, node.path, table.state, table.epoch, table.count, table.digest
+                ),
+                None => println!(
+                    "    {} {} error={}",
+                    node.name,
+                    node.path,
+                    node.error.as_deref().unwrap_or("no response")
+                ),
+            }
+        }
     }
 }
 
@@ -740,6 +928,10 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
 /// line includes the peer `NodeId`, frame counts and reject count, so the rig
 /// can prove that each kernel decoded a header from the other real node.
 fn probe_mesh(nodes: &[Node]) -> (MeshProbeEvidence, Option<MeshRelay>) {
+    // `BOOT-READY` precedes the module's first listener tick.  The relay's
+    // cold session uses a first-byte guard and does not reconnect quickly, so
+    // wait for both guest listeners before connecting to either forward.
+    wait_mesh_listen(nodes, Duration::from_secs(60));
     let relay_text = format!(
         "127.0.0.1:{} <-> 127.0.0.1:{}",
         nodes[0].mesh_port, nodes[1].mesh_port
@@ -1022,6 +1214,7 @@ fn write_evidence(
     mesh: Option<&MeshProbeEvidence>,
     mesh_relay: Option<&MeshRelay>,
     join: Option<&JoinEvidence>,
+    homes: Option<&HomesEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
     verdict: &str,
@@ -1067,6 +1260,7 @@ fn write_evidence(
         probes,
         mesh,
         join,
+        homes,
         fixture,
         relays: &relay_logs,
         verdict,

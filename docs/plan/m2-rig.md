@@ -1,18 +1,20 @@
 # M2 two-node rig — runbook
 
-**Status:** working; M2-1 transport and the M2-2 join/epoch slice
-**Scope:** M2-0 foundation, the M2-1 framed mesh transport and the M2-2 join. The rig
-starts two independent kernels, proves both reach `BOOT-READY` with distinct identities,
-proves a two-way HTTP exchange through the chosen path, connects the two guest mesh
-listeners so the kernels exchange framed `MeshEnvelope` records, and drives the signed
-join handshake until both nodes report the same membership epoch and snapshot. It then
-stops and restarts the member and requires it to rejoin at the **same** epoch. It does not
-implement homes, remote capabilities, migration, leave/removal or failure detection.
+**Status:** working; M2-1 transport, M2-2 join/epoch and M2-3 rendezvous homes
+**Scope:** M2-0 foundation, the M2-1 framed mesh transport, the M2-2 join and the M2-3
+rendezvous homes. The rig starts two independent kernels, proves both reach `BOOT-READY`
+with distinct identities, proves a two-way HTTP exchange through the chosen path, connects
+the two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, drives
+the signed join handshake until both nodes report the same membership epoch and snapshot,
+and fetches the rendezvous home table from both kernels. It then stops and restarts the
+member and requires it to rejoin at the **same** epoch with the **same** table. It does not
+implement remote capabilities, migration, leave/removal, failure detection or home moves.
 
 The decisions behind the rig are [M2-ADR-0001](../adr/m2-0001-two-node-rig.md),
 [M2-ADR-0002](../adr/m2-0002-transport.md), [M2-ADR-0003](../adr/m2-0003-authority.md),
-[M2-ADR-0004](../adr/m2-0004-actor-runtime.md) and
-[M2-ADR-0005](../adr/m2-0005-join-epoch.md).
+[M2-ADR-0004](../adr/m2-0004-actor-runtime.md),
+[M2-ADR-0005](../adr/m2-0005-join-epoch.md) and
+[M2-ADR-0006](../adr/m2-0006-homes.md).
 
 ## Prerequisites
 
@@ -59,9 +61,10 @@ cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
 ```
 
 `run` starts both nodes, waits for readiness, probes both HTTP directions, runs the mesh
-framing probe, waits for the join and the member's acknowledgement, stops and restarts
-**only n1**, waits for it to rejoin at the same epoch, stops both nodes and writes
-`target/m2-rig/evidence/`.
+framing probe, waits for the join and the member's acknowledgement, fetches the rendezvous
+home table from both kernels and checks the stale-epoch negative, stops and restarts
+**only n1**, waits for it to rejoin at the same epoch, fetches the tables again, stops both
+nodes and writes `target/m2-rig/evidence/`.
 
 The lifecycle commands:
 
@@ -84,9 +87,9 @@ The fault modes are negative evidence, not extra features:
 
 | Mode | Setup | Expected result |
 |---|---|---|
-| `none` | Full two-node configuration. | Join converges; n1 rejoins at the same epoch after restart. |
-| `no-peer` | No `mesh.*` key is written. | MCP keeps its two slots, no mesh listener, no join; `mesh=single` and `mesh=0/0/0` are preserved. |
-| `wrong-authority` | n1 gets a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature` and stays at its seed view. |
+| `none` | Full two-node configuration. | Join converges; both kernels serve the same home table; n1 rejoins at the same epoch with the same table; `?epoch=1` is refused as stale. |
+| `no-peer` | No `mesh.*` key is written. | MCP keeps its two slots, no mesh listener, no join, `/mesh/homes` is `404 disabled`; `mesh=single` and `mesh=0/0/0` are preserved. |
+| `wrong-authority` | n1 gets a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, stays at its seed view and serves `409 pending` with no homes. |
 
 `run --fault no-peer` deliberately skips the M2-1 mesh probe (there is no listener) and
 passes on the HTTP probe plus the M1/M2-0 markers. `probe` and `run` write the mode into
@@ -196,6 +199,46 @@ epoch would be refused with `epoch-regression`, because the module cannot persis
 confirmed epoch (the ABI has `config_get` only). Failing closed is deliberate; see
 M2-ADR-0005 §4 and the host test `root_restart_refuses_to_lower_a_member_epoch`.
 
+## Rendezvous homes (M2-3)
+
+The module computes homes from the **confirmed** membership snapshot with
+`mesh-core::home_for`; it does not carry a second hash or placement model. A member that
+has not installed a confirmation serves `409 pending` and no rows.
+
+The fixture object set is deterministic and configured by `mesh.obj` (1–32, default 8):
+
+```text
+object[i] = BLAKE3-256("IRIX7-M2-HOME-OBJECT-v1" || i u32 LE)
+```
+
+The MCP endpoint is `GET /mesh/homes`:
+
+```text
+mesh-homes: state=current object_set=m2-v1 epoch=2 members=2 digest=<32 hex> count=8
+mesh-home: object=<64 hex> home=<32 hex> epoch=2 digest=<32 hex>
+...
+```
+
+Every row repeats the epoch and digest. The module logs the same header and rows at
+convergence. `GET /mesh/homes?epoch=N` answers `409 stale` with `count=0` and no object
+rows when `N` is not the confirmed epoch; it never relabels the old table as current.
+
+The rig independently recomputes the fixture IDs, the rendezvous winners and the
+membership digest. It requires both kernels to match that table, to match each other, and
+to keep the same table across the member rejoin. It also fetches `?epoch=1` on both nodes
+and requires `409 stale` with no rows. This is a **rejoin at the same epoch**, not a
+membership change: leave/removal and a third-node epoch advance do not exist in this
+slice.
+
+The before-restart table and the stale-epoch negative are fetched from `/mesh/homes` on
+the clean control plane. The after-rejoin comparison uses the module's `mesh-homes:`
+serial group, which carries the same header and rows. The iris host forward can keep a
+half-open guest connection across the member restart, so a second MCP fetch from the
+root is not a reliable gate primitive; the serial group is produced by both kernels and
+is compared against the independent table as well. The guest-level HTTP probe runs after
+the MCP fetch and before the restart, so the control-plane fetch is not behind a probe
+connection.
+
 ## NVRAM keys
 
 The rig writes a DS1386 image per node. The keys are:
@@ -207,6 +250,7 @@ The rig writes a DS1386 image per node. The keys are:
 | `mesh.peer` | The peer's mesh host port, reached through this node's gateway: `192.168.0.1:9712` for `n0`, `192.168.1.1:9702` for `n1`. Its presence enables the guest mesh listener and the join. |
 | `mesh.authority` | Node 0's MAC; the 1-of-1 authority root. |
 | `mesh.epoch` | Initial seed epoch, `1`. |
+| `mesh.obj` | Number of M2 home-fixture objects, `1`–`32` (the rig uses `8`). Short key because the environment is bounded. |
 | `mesh.pub` | The root's Ed25519 public key (64 hex characters). Written to the member. |
 | `mesh.key` | The root's 32-byte Ed25519 seed (64 hex characters). Written only to the root; a lab fixture, redacted in the evidence bundle. |
 | `console` | `serial0`. |
@@ -214,8 +258,10 @@ The rig writes a DS1386 image per node. The keys are:
 The image is 8 KiB; the environment starts at byte `0x10`, the MAC is at byte `314`, and
 the environment must end before the MAC. The harness checks the bound and records the
 parsed environment in the evidence bundle. The environment limit is 298 bytes; the root
-stores only `mesh.key` and derives its public key so both 64-hex keys fit. `--fault
-no-peer` omits every `mesh.*` key.
+stores only `mesh.key` and derives its public key so both 64-hex keys fit, and
+`mesh.obj` uses the short name because only a few bytes remain. The `nvram` host test
+builds the full two-node environment at the worst-case five-digit fixture port and
+requires it to fit. `--fault no-peer` omits every `mesh.*` key.
 
 ## Readiness and evidence
 
@@ -262,12 +308,26 @@ mesh-join: retry attempt=N
 mesh-join: timeout attempts=N state=pending
 ```
 
+The M2-3 homes surface adds:
+
+```text
+mesh-homes: configured set=m2-v1 count=8
+mesh-homes: state=current object_set=m2-v1 epoch=2 members=2 digest=<32 hex> count=8
+mesh-home: object=<64 hex> home=<32 hex> epoch=2 digest=<32 hex>
+```
+
+and, on a stale query, the HTTP body (not a serial line):
+
+```text
+mesh-homes: state=stale requested_epoch=1 epoch=2 members=2 digest=<32 hex> count=0
+```
+
 The evidence bundle contains:
 
 | File | Content |
 |---|---|
-| `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, relay logs. |
-| `run.json` | Machine-readable version of the same. |
+| `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, rendezvous homes, relay logs. |
+| `run.json` | Machine-readable version of the same, including every home table. |
 | `serial-n0.log`, `serial-n1.log` | Final serial transcripts. |
 | `serial-n1-boot1.log` | The member's transcript before the restart (when `run` restarted it). |
 | `stdout-n0.log`, `stderr-n0.log`, etc. | Emulator output. |
@@ -299,9 +359,14 @@ digest changes with the uptime; the status and byte count are the pass criteria.
   lower-`NodeId`-initiates rule is not exercised until a connect service or fixed forward
   path exists.
 - **The mesh listener owns module TCP slot 1.** When `mesh.peer` is present MCP uses only
-  slot 0 for HTTP; without it the original two-slot MCP behaviour is unchanged.
+  slot 0 for HTTP; without it the original two-slot MCP behaviour is unchanged. A client
+  that keeps its side of an HTTP connection open is aborted after 5 s so the single slot
+  cannot wedge the control plane; the response has already been written.
 - **The relay is a host single point of failure.** It is a laboratory seam, not the
   production data path.
+- **The host forward can keep a half-open guest connection.** The after-rejoin homes
+  check therefore uses the serial group. The MCP endpoint is still fetched and validated
+  before the restart; this is a harness limitation, not a second home model.
 - **The checked-in v0.1.3 MCP module is not used.** The rig builds and serves the current
   module.
 - **Fixed ports.** Another rig run can collide. Use `--base-port` and stop the previous
@@ -311,12 +376,17 @@ digest changes with the uptime; the status and byte count are the pass criteria.
   both restart deterministically. See M2-ADR-0005.
 - **1-of-1 authority.** No threshold, no key rotation, no revocation and no production
   key custody. The key is a lab fixture.
-- **No leave/removal and no epoch push.** A third-node join, failure detection, homes,
-  capability routes and migration remain M2-3..M2-6/M3.
+- **No leave/removal and no epoch push.** A third-node join, failure detection, home
+  moves, capability routes and migration remain M2-4..M2-6/M3.
+- **No membership change in the rejoin check.** The member restarts and rejoins at the
+  same epoch. Leave/removal does not exist, so the rig cannot advance the epoch by
+  changing the member set; the host tests cover that policy property.
+- **Homes are evidence, not routing.** A home in `/mesh/homes` is not a capability route,
+  lease or `MOVED` authority. Those remain later slices.
 - **The guests still print `mesh=single`.** That is the kernel's M1 bootstrap view; the
   module's confirmed view is `mesh-join: converged`.
 
-## M2-2 status and handoff
+## M2 status and handoff
 
 M2-2 (join/epoch) is implemented in `crates/mesh-join`, `crates/mesh-service`,
 `crates/cap-engine`, `modules/mcp` and `tools/m2-rig`:
@@ -329,9 +399,20 @@ M2-2 (join/epoch) is implemented in `crates/mesh-join`, `crates/mesh-service`,
   membership, restarts the member and asserts the same epoch on rejoin, and records the
   negative `no-peer` and `wrong-authority` modes.
 
-What remains for M2: rendezvous homes and a remote capability route (M2-3), L0 migration
-in both directions (M2-5), and failure/partition with lease fencing (M2-6). M2-2 does not
-claim the full M2 gate.
+M2-3 (rendezvous homes) is implemented in `crates/mesh-core`, `modules/mcp` and
+`tools/m2-rig`:
+
+- `mesh-core` exposes the fixture object set and a `HomeTable` over the existing
+  `home_for`; host tests cover deterministic placement, empty/single/two-node sets, epoch
+  changes, distribution, mismatch detection and membership-change movement;
+- the module serves `GET /mesh/homes` from a confirmed snapshot only, logs the same lines,
+  and refuses a stale epoch with `409` and no rows;
+- the rig fetches both kernels, recomputes the object IDs, homes and digest independently,
+  checks before/after the member rejoin, and drives the stale-epoch negative.
+
+What remains for M2: a remote capability route (M2-4), L0 migration in both directions
+(M2-5), and failure/partition with lease fencing (M2-6). This slice does not claim the
+full M2 gate.
 
 ## Troubleshooting
 
@@ -357,3 +438,9 @@ claim the full M2 gate.
 - If the member restart fails, check `serial-n1-boot1.log` and the current
   `serial-n1.log`. The harness waits for n0 to leave its old link before restarting n1;
   `mesh-transport: listen retry` on n0 means its listener could not re-arm.
+- If the homes check fails, fetch the endpoint by hand:
+  `curl -sS http://127.0.0.1:9701/mesh/homes` and `...:9711/mesh/homes`. A
+  `state=pending` member has not installed a confirmation; a `404 disabled` means
+  `mesh.peer` was absent; a `state=stale` response is the expected answer for
+  `?epoch=1` after the epoch advanced. Compare the `mesh-home:` rows with
+  `summary.md`; the rig's independent table is in `run.json` under `homes`.
