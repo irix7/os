@@ -990,6 +990,8 @@ jobs:
           erofs  erofs-module  core,alloc 2
           logical logical-module core,alloc 2
           cache  cache-module  core,alloc 2
+          manager runtime-manager-module core,alloc z
+          demo-dep runtime-demo-dep-module core,alloc z
           wasm   wasm-module   core,alloc z
           EOF
 

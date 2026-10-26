@@ -1,0 +1,15 @@
+[package]
+name = "runtime-manager-module"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Downloadable runtime module manager for IRIX 7"
+[[bin]]
+name = "runtime-manager-module"
+path = "src/main.rs"
+[profile.release]
+panic = "abort"
+opt-level = "z"
+[dependencies]
+module-abi.workspace = true
+loader-abi = { path = "../../crates/loader-abi" }

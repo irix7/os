@@ -26,6 +26,10 @@ All notable changes to IRIX 7 are recorded here. The format follows
   fixed-slot loader remains standalone-only.
 - MCP now exposes `GET /modules` from the fixed runtime `ModuleStatus` block;
   before a manager publishes it reports `runtime manager: unavailable`.
+- ABI v12 adds the seven module-loader services and a 1.25 MiB five-region
+  arena. A downloadable manager loads and executes a separate dependency image
+  (`modules/demo-dep`) on iris; MCP publishes the result at `GET /modules`.
+  PROM: 522,908/524,288.
 - Added the kernel loader/arena table (`loader-abi`, at `0x883f_f000`) and its
   HTTP/TLS load, fetch and cache-safe enter services. This is the explicit
   freeze exception for the runtime module manager; the manager itself and all

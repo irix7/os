@@ -361,33 +361,50 @@ recorded epoch.
 The downloadable module manager will perform this check before loading. Package
 index signatures and the release key policy remain to be integrated.
 
-### 8.5 Loader/arena table (kernel freeze exception)
+### 8.5 Loader/arena ABI v12
 
-The runtime manager needs a kernel-free way to place and enter dependencies.
-The kernel publishes a small fixed `LoaderTable` at `0x883f_f000`, below the
-module area:
+ABI v12 appends seven module-loader services to `Services` (offsets
+`0x54..0x6c`): `module_arena`, `module_load`, `module_execute`,
+`module_find`, `module_find_export`, `module_query` and `module_unload`.
 
-- `arena_base = 0x884c0000`, `arena_len = 0x00140000` (1.25 MiB after the
-  256 KiB manager image in slot B);
-- `load(url, digest, dest, len)` fetches over HTTP/TLS, verifies SHA-256 and
-  copies into the arena;
-- `fetch(url, out)` returns bounded package-index/metadata bytes;
-- `enter(entry, len, context)` performs data/instruction cache maintenance and
-  calls a dependency entry with the loader table and manager context.
+The kernel reserves a bounded arena after the runtime-manager image:
 
-The manager module chooses URLs, parses manifests, verifies signatures, resolves
-dependencies and provides policy. The kernel only performs the bounded,
-verified copy and cache-safe entry. This is an explicit ROM-freeze exception:
-the M1 image grows from 520,312 to 522,500 bytes in this slice; the manager and
-all policy stay outside the PROM.
+- base `0x884c_0000`;
+- five regions of 256 KiB (`0x0014_0000` total);
+- `module_load` fetches an immutable URL, checks SHA-256, copies atomically
+  into the chosen region, and registers the exact identity and export table;
+- `module_execute` performs cache maintenance and calls the entry with
+  `Services *` and an opaque `ModuleContext *`;
+- handles are `generation << 32 | region`; stale handles fail closed;
+- `module_find_export` returns the verified table pointer and owner handle;
+- `module_unload` clears the region and invalidates the handle.
+
+The kernel only loads/executes verified images. Resolution, manifests,
+signatures, package metadata, rollback and unload policy stay in the
+downloadable manager. This is the explicit ROM-freeze exception; the M1 image
+is 522,908 bytes of 524,288 in this slice.
 
 ### 8.6 MCP runtime graph status
+
 
 The manager writes a `ModuleStatus` record at the fixed `0x883f_e000` status
 block. MCP's `GET /modules` reads it and returns the resolved graph/load result;
 before a manager has published, it returns `runtime manager: unavailable`. The
 text is bounded to 1 KiB. The status block is informational; it is not an
 authority path.
+
+### 8.7 Downloadable manager and dependency pair
+
+`modules/manager` is a flat slot-B module that reads a combined
+`manager.dep=<url>,<sha256>` NVRAM value, calls `module_load` for region 0 and
+`module_execute` with a `ModuleContext`. `modules/demo-dep` is a separate
+image linked at the arena base; it returns status 42 and logs its entry. The
+manager publishes the result through the fixed `ModuleStatus` block consumed
+by MCP `GET /modules`.
+
+This proves actual image loading and execution with the SDK ABI, but not yet
+manifest v2 parsing, multiple dependencies, signatures or package-index
+resolution.
 
 ## 9. Non-goals
 

@@ -604,7 +604,6 @@ pub extern "C" fn _start_rust() -> ! {
     graphics_console::init();
     kbd::init();
     net::init();
-    loader::init();
     telnet::init();
     mesh::init();
     logical::init();
