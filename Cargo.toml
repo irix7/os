@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/guest-abi", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-transport", "crates/module-resolver", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "modules/block", "modules/cache", "modules/erofs", "modules/hello", "modules/logical", "modules/mcp", "modules/ticker", "modules/wasm", "rom"]
+members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/guest-abi", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/loader-abi", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-transport", "crates/module-resolver", "crates/module-trust", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "modules/block", "modules/cache", "modules/erofs", "modules/hello", "modules/demo-dep", "modules/logical", "modules/manager", "modules/mcp", "modules/ticker", "modules/wasm", "rom"]
 # The target-only kernel, ROM and flat modules cannot link as host binaries.
 # Plain `cargo build`/`cargo test` therefore means the host-testable crates;
 # the cross and release jobs select kernel/ROM/module packages explicitly.
@@ -27,13 +27,15 @@ default-members = [
   "crates/cap-engine",
   "crates/agnostic-core",
   "crates/m1-policy-bridge",
+  "crates/loader-abi",
   "crates/module-resolver",
+  "crates/module-trust",
   "crates/wasm-host",
   "crates/wasm-policy-host",
 ]
 
 [workspace.dependencies]
-module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.6.0", package = "module-abi" }
+module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.7.0", package = "module-abi" }
 
 [profile.dev]
 panic = "abort"

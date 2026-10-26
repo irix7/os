@@ -9,13 +9,19 @@
 //! service table rather than linking against kernel symbols, so the core and
 //! a module can be rebuilt independently.
 
+use crate::sha256::Sha256;
 use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer};
 
 /// The loadable-module ABI, shared with every module image.
-pub use module_abi::{ModuleVtable, Services, ABI_VERSION, MODULE_BASE, MODULE_MAX};
+pub use module_abi::{
+    ModuleArena, ModuleContext, ModuleEntry, ModuleExportBinding, ModuleHandle, ModuleInfo,
+    ModuleLoad, ModuleVtable, Services, ABI_VERSION, MODULE_BASE, MODULE_ERR_ARGUMENT,
+    MODULE_ERR_BUSY, MODULE_ERR_DIGEST, MODULE_ERR_LIMIT, MODULE_ERR_REGION, MODULE_ERR_STATE,
+    MODULE_LOAD_REPLACE, MODULE_MAX, MODULE_OK, MODULE_STATE_ENTERED, MODULE_STATE_LOADED,
+};
 
 /// A module entry point.
 pub type Entry = unsafe extern "C" fn(*const Services) -> *const ModuleVtable;
@@ -72,6 +78,13 @@ static SERVICES: Services = Services {
     screen_read: service_screen_read,
     block_read: service_block_read,
     block_write: service_block_write,
+    module_arena: service_module_arena,
+    module_load: service_module_load,
+    module_execute: service_module_execute,
+    module_find: service_module_find,
+    module_find_export: service_module_find_export,
+    module_query: service_module_query,
+    module_unload: service_module_unload,
 };
 
 /// Periodic callbacks for the two slots.
@@ -176,6 +189,382 @@ pub fn poll() {
             }
         }
     }
+}
+
+const REGION_SIZE: usize = 0x0004_0000;
+const REGION_COUNT: usize = 5;
+const ARENA_BASE: usize = 0x884c_0000;
+
+#[derive(Clone, Copy)]
+struct LoadedExport {
+    interface: [u8; 64],
+    interface_len: u32,
+    version: u16,
+    offset: u32,
+}
+
+impl LoadedExport {
+    const EMPTY: Self = Self {
+        interface: [0; 64],
+        interface_len: 0,
+        version: 0,
+        offset: 0,
+    };
+}
+
+#[derive(Clone, Copy)]
+struct LoadedModule {
+    live: bool,
+    generation: u32,
+    image_size: u32,
+    state: u32,
+    name: [u8; 64],
+    name_len: u32,
+    version: [u8; 32],
+    version_len: u32,
+    exports: [LoadedExport; 16],
+    export_count: u32,
+}
+
+impl LoadedModule {
+    const EMPTY: Self = Self {
+        live: false,
+        generation: 0,
+        image_size: 0,
+        state: 0,
+        name: [0; 64],
+        name_len: 0,
+        version: [0; 32],
+        version_len: 0,
+        exports: [LoadedExport::EMPTY; 16],
+        export_count: 0,
+    };
+}
+
+static mut MODULES: [LoadedModule; REGION_COUNT] = [LoadedModule::EMPTY; REGION_COUNT];
+
+unsafe extern "C" fn service_module_arena(out: *mut ModuleArena) -> i32 {
+    if out.is_null() {
+        return MODULE_ERR_ARGUMENT;
+    }
+    let mut used_lo = 0u32;
+    let mut used_hi = 0u32;
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
+    for (index, module) in modules.iter().enumerate() {
+        if module.live {
+            if index < 32 {
+                used_lo |= 1 << index;
+            } else {
+                used_hi |= 1 << (index - 32);
+            }
+        }
+    }
+    let arena = ModuleArena {
+        base: ARENA_BASE as u32,
+        length: (REGION_SIZE * REGION_COUNT) as u32,
+        region_size: REGION_SIZE as u32,
+        region_count: REGION_COUNT as u32,
+        used_lo,
+        used_hi,
+        flags: module_abi::MODULE_ARENA_EXECUTABLE,
+        reserved: 0,
+    };
+    unsafe { core::ptr::write(out, arena) };
+    MODULE_OK
+}
+
+unsafe extern "C" fn service_module_load(
+    request: *const ModuleLoad,
+    out: *mut ModuleHandle,
+) -> i32 {
+    if request.is_null() || out.is_null() {
+        return MODULE_ERR_ARGUMENT;
+    }
+    // SAFETY: the manager supplies a complete request for this synchronous call.
+    let request = unsafe { &*request };
+    if request.url.is_null()
+        || request.url_len == 0
+        || request.url_len > module_abi::MODULE_URL_MAX
+        || request.name.is_null()
+        || request.name_len == 0
+        || request.name_len > module_abi::MODULE_NAME_MAX
+        || request.version.is_null()
+        || request.version_len == 0
+        || request.version_len > module_abi::MODULE_VERSION_MAX
+        || request.region as usize >= REGION_COUNT
+        || request.export_count > module_abi::MODULE_EXPORT_MAX
+    {
+        return MODULE_ERR_ARGUMENT;
+    }
+    if request.max_size != 0 && request.max_size > REGION_SIZE as u32 {
+        return MODULE_ERR_LIMIT;
+    }
+    let region = request.region as usize;
+    let base = ARENA_BASE + region * REGION_SIZE;
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &mut *core::ptr::addr_of_mut!(MODULES) };
+    if modules[region].live && request.flags & MODULE_LOAD_REPLACE == 0 {
+        return MODULE_ERR_BUSY;
+    }
+    // SAFETY: the request points at module-memory bytes for this synchronous call.
+    let url = unsafe { core::slice::from_raw_parts(request.url, request.url_len as usize) };
+    let Ok(url) = core::str::from_utf8(url) else {
+        return MODULE_ERR_ARGUMENT;
+    };
+    let destination = unsafe { core::slice::from_raw_parts_mut(base as *mut u8, REGION_SIZE) };
+    let summary = match crate::loader::fetch_url(url, destination) {
+        Ok(summary) => summary,
+        Err(_) => return MODULE_ERR_STATE,
+    };
+    if !summary.sha256.eq_digest(&Sha256(request.sha256)) {
+        return MODULE_ERR_DIGEST;
+    }
+    let image_size = summary.body_len as u32;
+    if request.max_size != 0 && image_size > request.max_size {
+        return MODULE_ERR_LIMIT;
+    }
+    if request.export_count > 0 {
+        if request.exports.is_null() {
+            return MODULE_ERR_ARGUMENT;
+        }
+        // SAFETY: the module supplies the export descriptor array.
+        let exports =
+            unsafe { core::slice::from_raw_parts(request.exports, request.export_count as usize) };
+        for export in exports {
+            if export.interface.is_null()
+                || export.interface_len == 0
+                || export.interface_len > module_abi::MODULE_INTERFACE_MAX
+                || export.offset % module_abi::MODULE_OFFSET_ALIGN != 0
+                || export.offset != 0 && export.offset + 4 > image_size
+            {
+                return MODULE_ERR_ARGUMENT;
+            }
+        }
+    }
+    let generation = modules[region].generation.wrapping_add(1).max(1);
+    let mut loaded = LoadedModule::EMPTY;
+    loaded.live = true;
+    loaded.generation = generation;
+    loaded.image_size = image_size;
+    loaded.state = MODULE_STATE_LOADED;
+    loaded.name_len = request.name_len;
+    // SAFETY: bounded request pointers copied synchronously.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            request.name,
+            loaded.name.as_mut_ptr(),
+            request.name_len as usize,
+        );
+        core::ptr::copy_nonoverlapping(
+            request.version,
+            loaded.version.as_mut_ptr(),
+            request.version_len as usize,
+        );
+    }
+    loaded.export_count = request.export_count;
+    if request.export_count > 0 {
+        // SAFETY: bounded pointer array validated above.
+        let exports =
+            unsafe { core::slice::from_raw_parts(request.exports, request.export_count as usize) };
+        for (slot, export) in loaded.exports.iter_mut().zip(exports.iter()) {
+            slot.interface_len = export.interface_len;
+            slot.version = export.version;
+            slot.offset = export.offset;
+            // SAFETY: bounded interface bytes copied synchronously.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    export.interface,
+                    slot.interface.as_mut_ptr(),
+                    export.interface_len as usize,
+                );
+            }
+        }
+    }
+    modules[region] = loaded;
+    let handle = ((generation as u64) << 32) | region as u64;
+    // SAFETY: out is a validated manager pointer.
+    unsafe { core::ptr::write(out, handle) };
+    MODULE_OK
+}
+
+unsafe extern "C" fn service_module_execute(
+    handle: ModuleHandle,
+    entry_offset: u32,
+    context: *const ModuleContext,
+    out_status: *mut i32,
+) -> i32 {
+    let region = (handle & 0xffff_ffff) as usize;
+    let generation = (handle >> 32) as u32;
+    if region >= REGION_COUNT || entry_offset % module_abi::MODULE_OFFSET_ALIGN != 0 {
+        return MODULE_ERR_ARGUMENT;
+    }
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &mut *core::ptr::addr_of_mut!(MODULES) };
+    let module = &mut modules[region];
+    if !module.live || module.generation != generation {
+        return MODULE_ERR_STATE;
+    }
+    if entry_offset + 4 > module.image_size {
+        return MODULE_ERR_ARGUMENT;
+    }
+    let entry = ARENA_BASE + region * REGION_SIZE + entry_offset as usize;
+    crate::cache::dcache_writeback_invalidate(
+        ARENA_BASE + region * REGION_SIZE,
+        module.image_size as usize,
+    );
+    crate::cache::icache_invalidate(
+        ARENA_BASE + region * REGION_SIZE,
+        module.image_size as usize,
+    );
+    crate::cache::sync();
+    // SAFETY: the region was verified and the offset is inside the image. The
+    // manager owns the opaque context for the duration of the call.
+    let entry: ModuleEntry = unsafe { core::mem::transmute(entry) };
+    let vtable = unsafe { entry(&SERVICES, context) };
+    module.state = MODULE_STATE_ENTERED;
+    if !out_status.is_null() {
+        // SAFETY: optional manager out pointer.
+        unsafe {
+            *out_status = if vtable.is_null() {
+                0
+            } else {
+                (*vtable).status
+            };
+        }
+    }
+    MODULE_OK
+}
+
+unsafe extern "C" fn service_module_find(
+    name: *const u8,
+    name_len: u32,
+    version: *const u8,
+    version_len: u32,
+    out: *mut ModuleHandle,
+) -> i32 {
+    if name.is_null()
+        || version.is_null()
+        || out.is_null()
+        || name_len == 0
+        || name_len > module_abi::MODULE_NAME_MAX
+        || version_len == 0
+        || version_len > module_abi::MODULE_VERSION_MAX
+    {
+        return MODULE_ERR_ARGUMENT;
+    }
+    let name = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
+    let version = unsafe { core::slice::from_raw_parts(version, version_len as usize) };
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
+    for (region, module) in modules.iter().enumerate() {
+        if module.live
+            && &module.name[..module.name_len as usize] == name
+            && &module.version[..module.version_len as usize] == version
+        {
+            let handle = ((module.generation as u64) << 32) | region as u64;
+            unsafe { core::ptr::write(out, handle) };
+            return MODULE_OK;
+        }
+    }
+    MODULE_ERR_STATE
+}
+
+unsafe extern "C" fn service_module_find_export(
+    interface: *const u8,
+    interface_len: u32,
+    version: u16,
+    out: *mut ModuleExportBinding,
+) -> i32 {
+    if interface.is_null()
+        || out.is_null()
+        || interface_len == 0
+        || interface_len > module_abi::MODULE_INTERFACE_MAX
+    {
+        return MODULE_ERR_ARGUMENT;
+    }
+    let interface = unsafe { core::slice::from_raw_parts(interface, interface_len as usize) };
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
+    for (region, module) in modules.iter().enumerate() {
+        if !module.live {
+            continue;
+        }
+        for export in &module.exports[..module.export_count as usize] {
+            if export.version == version
+                && &export.interface[..export.interface_len as usize] == interface
+            {
+                let table = if export.offset == 0 {
+                    core::ptr::null()
+                } else {
+                    (ARENA_BASE + region * REGION_SIZE + export.offset as usize) as *const u8
+                };
+                let binding = ModuleExportBinding {
+                    handle: ((module.generation as u64) << 32) | region as u64,
+                    table,
+                    version,
+                    reserved: 0,
+                };
+                unsafe { core::ptr::write(out, binding) };
+                return MODULE_OK;
+            }
+        }
+    }
+    MODULE_ERR_STATE
+}
+
+unsafe extern "C" fn service_module_query(handle: ModuleHandle, out: *mut ModuleInfo) -> i32 {
+    if out.is_null() {
+        return MODULE_ERR_ARGUMENT;
+    }
+    let region = (handle & 0xffff_ffff) as usize;
+    let generation = (handle >> 32) as u32;
+    if region >= REGION_COUNT {
+        return MODULE_ERR_ARGUMENT;
+    }
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
+    let module = &modules[region];
+    if !module.live || module.generation != generation {
+        return MODULE_ERR_STATE;
+    }
+    let info = ModuleInfo {
+        handle,
+        base: (ARENA_BASE + region * REGION_SIZE) as u32,
+        image_size: module.image_size,
+        region: region as u32,
+        export_count: module.export_count,
+        state: module.state,
+        reserved: 0,
+    };
+    unsafe { core::ptr::write(out, info) };
+    MODULE_OK
+}
+
+unsafe extern "C" fn service_module_unload(handle: ModuleHandle) -> i32 {
+    let region = (handle & 0xffff_ffff) as usize;
+    let generation = (handle >> 32) as u32;
+    if region >= REGION_COUNT {
+        return MODULE_ERR_ARGUMENT;
+    }
+    // SAFETY: single-threaded kernel.
+    let modules = unsafe { &mut *core::ptr::addr_of_mut!(MODULES) };
+    let module = &mut modules[region];
+    if !module.live || module.generation != generation {
+        return MODULE_ERR_STATE;
+    }
+    let base = ARENA_BASE + region * REGION_SIZE;
+    // SAFETY: the region is owned by this module slot and is being released.
+    unsafe { core::ptr::write_bytes(base as *mut u8, 0, REGION_SIZE) };
+    crate::cache::dcache_writeback_invalidate(base, REGION_SIZE);
+    crate::cache::icache_invalidate(base, REGION_SIZE);
+    crate::cache::sync();
+    module.live = false;
+    module.generation = generation.wrapping_add(1).max(1);
+    module.image_size = 0;
+    module.state = 0;
+    module.export_count = 0;
+    MODULE_OK
 }
 
 extern "C" fn service_write(ptr: *const u8, len: usize) {

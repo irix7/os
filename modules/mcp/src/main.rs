@@ -859,6 +859,12 @@ fn handle_request(services: &Services, slot: u32) {
         screen_start(services, slot);
         return;
     }
+    if !is_post && path == b"/modules" {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let n = module_status(services, response);
+        send_http(services, slot, &b"text/plain"[..], &response[..n]);
+        return;
+    }
 
     let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
     let (content_type, n) = if is_post && path.starts_with(b"/mcp") {
@@ -887,6 +893,19 @@ fn request_line(request: &[u8]) -> (&[u8], bool) {
         None => b"/",
     };
     (path, is_post)
+}
+
+fn module_status(_services: &Services, out: &mut [u8]) -> usize {
+    let mut w = Out::new(out);
+    let status = unsafe { &*(loader_abi::STATUS_ADDR as *const loader_abi::ModuleStatus) };
+    if status.magic != loader_abi::STATUS_MAGIC {
+        w.push(b"runtime manager: unavailable\n");
+        return w.len;
+    }
+    let len = (status.len as usize).min(status.text.len());
+    w.push(b"runtime module graph:\n");
+    w.push(&status.text[..len]);
+    w.len
 }
 
 fn status_page(services: &Services, out: &mut [u8]) -> usize {

@@ -39,6 +39,7 @@ pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
+pub mod loader;
 pub mod logical;
 pub mod mesh;
 pub mod module;

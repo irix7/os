@@ -105,15 +105,24 @@ pub struct Export {
     pub interface: String,
     /// Interface version.
     pub version: u16,
+    /// Image-relative function-table offset; zero means declaration only.
+    pub offset: u32,
 }
 
 impl Export {
-    /// Construct an export declaration.
+    /// Construct an export declaration with no table.
     pub fn new(interface: impl Into<String>, version: u16) -> Self {
         Self {
             interface: interface.into(),
             version,
+            offset: 0,
         }
+    }
+
+    /// Build an export declaration with an image-relative table offset.
+    pub fn with_offset(mut self, offset: u32) -> Self {
+        self.offset = offset;
+        self
     }
 }
 
@@ -124,6 +133,8 @@ pub struct Manifest {
     pub id: ModuleId,
     /// ABI the image was built for.
     pub abi: Abi,
+    /// Image-relative manager entry offset; zero is legacy `_start`.
+    pub entry_offset: u32,
     /// Exact runtime dependencies.
     pub dependencies: Vec<Dependency>,
     /// Interfaces this module provides.
@@ -136,9 +147,16 @@ impl Manifest {
         Self {
             id: ModuleId::new(name, version),
             abi,
+            entry_offset: 0,
             dependencies: Vec::new(),
             exports: Vec::new(),
         }
+    }
+
+    /// Set the manager entry offset.
+    pub fn with_entry_offset(mut self, offset: u32) -> Self {
+        self.entry_offset = offset;
+        self
     }
 
     /// Add an exact dependency declaration.

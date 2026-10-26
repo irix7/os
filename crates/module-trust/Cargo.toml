@@ -1,0 +1,9 @@
+[package]
+name = "module-trust"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Module signature verification and key-epoch rotation for IRIX 7"
+
+[dependencies]
+ed25519-dalek = { version = "2.1", default-features = false }

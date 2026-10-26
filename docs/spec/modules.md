@@ -300,26 +300,28 @@ ticker: tick
 
 These are additive to the version 2 table.
 
-### 8.1 Manifest record v1 (implemented host slice)
+### 8.1 Manifest record v2
 
 `crates/module-resolver` encodes a manifest record as little-endian bytes:
 
 ```text
-I7MM | u16 format=1 | u16 abi major | u16 abi minor
+I7MM | u16 format=2 | u16 abi major | u16 abi minor
+     | u32 entry_offset
      | u16 name length | UTF-8 name
      | u16 version length | UTF-8 version
      | u16 dependency count
      | (u16 name length, name, u16 version length, version, 32-byte SHA-256)*
      | u16 export count
-     | (u16 interface length, interface, u16 export version)*
+     | (u16 interface length, interface, u16 export version, u32 table offset)*
 ```
 
-The record is limited to 64 KiB. Dependency and export counts are bounded by the
-remaining bytes before a vector is reserved. Strings must be UTF-8. There is no
-CRC in the record: the enclosing module image digest is the integrity boundary.
-Version 1 has exact versions only; ranges and a solver are not part of this
-format. Decoding rejects bad magic, an unsupported format version, truncation,
-trailing bytes, invalid UTF-8 and oversized records.
+`entry_offset` and export table offsets are image-relative and 4-byte aligned;
+zero entry means legacy `_start`, zero export offset means a declaration with no
+table. The record is limited to 64 KiB. Counts are bounded by remaining bytes
+before a vector is reserved. Strings must be UTF-8. There is no CRC in the
+record: the enclosing image digest is the integrity boundary. Version 1 records
+remain decode-only with zero entry/export offsets; the encoder emits v2.
+Dependency versions are exact; ranges and a solver are not part of this format.
 
 ### 8.2 Manifest footer v1 (implemented host slice)
 
@@ -347,6 +349,64 @@ mismatch leaves all existing loads and reference counts unchanged. Re-loading a
 root increments every module in its resolution; unloading decrements and
 removes only modules that reach zero. Slot allocation, relocation and execution
 remain in the downloadable module manager.
+
+### 8.4 Signatures and key epochs (host policy)
+
+`crates/module-trust` verifies Ed25519 signatures over a domain-separated image
+digest. A `SignatureRecord` names the key epoch. A `TrustStore` keeps live and
+revoked epochs; unknown, revoked or invalid signatures fail closed. A
+`Rotation` is signed by the current epoch key, must advance the epoch, must
+install a live key at the new epoch and may revoke the old key. Key rotation
+does not rewrite old module signatures; the manager verifies them against the
+recorded epoch.
+
+The downloadable module manager will perform this check before loading. Package
+index signatures and the release key policy remain to be integrated.
+
+### 8.5 Loader/arena ABI v12
+
+ABI v12 appends seven module-loader services to `Services` (offsets
+`0x54..0x6c`): `module_arena`, `module_load`, `module_execute`,
+`module_find`, `module_find_export`, `module_query` and `module_unload`.
+
+The kernel reserves a bounded arena after the runtime-manager image:
+
+- base `0x884c_0000`;
+- five regions of 256 KiB (`0x0014_0000` total);
+- `module_load` fetches an immutable URL, checks SHA-256, copies atomically
+  into the chosen region, and registers the exact identity and export table;
+- `module_execute` performs cache maintenance and calls the entry with
+  `Services *` and an opaque `ModuleContext *`;
+- handles are `generation << 32 | region`; stale handles fail closed;
+- `module_find_export` returns the verified table pointer and owner handle;
+- `module_unload` clears the region and invalidates the handle.
+
+The kernel only loads/executes verified images. Resolution, manifests,
+signatures, package metadata, rollback and unload policy stay in the
+downloadable manager. This is the explicit ROM-freeze exception; the M1 image
+is 522,908 bytes of 524,288 in this slice.
+
+### 8.6 MCP runtime graph status
+
+
+The manager writes a `ModuleStatus` record at the fixed `0x883f_e000` status
+block. MCP's `GET /modules` reads it and returns the resolved graph/load result;
+before a manager has published, it returns `runtime manager: unavailable`. The
+text is bounded to 1 KiB. The status block is informational; it is not an
+authority path.
+
+### 8.7 Downloadable manager and dependency pair
+
+`modules/manager` is a flat slot-B module that reads a combined
+`manager.dep=<url>,<sha256>` NVRAM value, calls `module_load` for region 0 and
+`module_execute` with a `ModuleContext`. `modules/demo-dep` is a separate
+image linked at the arena base; it returns status 42 and logs its entry. The
+manager publishes the result through the fixed `ModuleStatus` block consumed
+by MCP `GET /modules`.
+
+This proves actual image loading and execution with the SDK ABI, but not yet
+manifest v2 parsing, multiple dependencies, signatures or package-index
+resolution.
 
 ## 9. Non-goals
 
