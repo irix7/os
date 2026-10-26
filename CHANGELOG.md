@@ -8,6 +8,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The M2 runtime graph is now a real dependency pair in the signed index:
+  `modules/m2-mesh` links `mesh-transport`/`sys-primitives` at arena region 2
+  and exports `irix7.mesh.transport@1`; `modules/m2-root` at region 3 declares
+  the exact digest, does not link the mesh library, resolves the export through
+  `module_find_export`, checks the owner handle/table and calls the
+  encode/decode probe. `manager.root=m2-root@1.0.0` prints the ordered graph
+  and `m2-root: ... result=ok ... len=340 max=65536`. Host tests cover
+  dependency-first order and bad digest, missing export, stale handle, oversize
+  and owner-mismatch failures. The M2-1 MCP listener still uses build-time
+  transport; this graph proves the library can be a runtime dependency.
 - The downloadable runtime manager now loads a signed package-index image into
   the reserved arena region, verifies its detached Ed25519 signature, resolves
   the exact v2 `depends=` graph, verifies every module signature, loads every

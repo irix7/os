@@ -446,17 +446,37 @@ status; no dependent is entered.
 through `module_find_export`, checks the owner handle and calls the table. It
 prints `demo-root: dep=0x217 owner=0x...`.
 
+The M2 runtime graph is a second pair in the same signed index:
+
+- `modules/m2-mesh` is linked at region 2 (`0x8854_0000`), links
+  `mesh-transport` and `sys-primitives`, and exports
+  `irix7.mesh.transport@1` at `MESH_API`. Its deterministic probe encodes and
+  decodes one fixed M2 Ping envelope and checks the 64 KiB framing bounds.
+- `modules/m2-root` is linked at region 3 (`0x8858_0000`), declares the exact
+  `m2-mesh@1.0.0` digest, and does not link `mesh-transport`. It resolves the
+  export through `module_find_export`, checks the table version and owner
+  handle/region, calls the probe, and prints
+  `m2-root: dep=m2-mesh@1.0.0 ... owner=0x... result=ok magic=... len=340 max=65536`.
+
+Selecting `m2-root@1.0.0` as `manager.root` proves that the mesh library can be
+a real runtime dependency. The current M2-1 MCP mesh listener still links
+`mesh-transport` at build time; moving that listener onto this runtime table is
+a later refactor, not part of this graph. The two graphs share the signed index
+and trust policy but execute separately; a boot selects one `manager.root`.
+
 `tools/module-release` wraps flat images with their manifest v2 footer, resolves
 entry/export symbol offsets from the ELF, signs image digests and emits the v2
 package index, the detached index signature and the release trust policy.
-`packages/runtime-modules.toml` is the exact graph spec. The manager publishes
-the resolved graph in the fixed `ModuleStatus` block; MCP `GET /modules` returns
-it.
+`packages/runtime-modules.toml` is the exact graph spec; `--root` selects a
+different root from the same spec for the M2 self-check.
+The manager publishes the resolved graph in the fixed `ModuleStatus` block; MCP
+`GET /modules` returns it.
 
 The CI modules job builds and signs the graph with a throwaway key and checks
 the manager's 256 KiB limit. The iris boot job builds manager, `demo-dep`,
-`demo-root` and a current MCP, signs them with one throwaway key, loads the
-graph over HTTP and asserts the serial order and `GET /modules` text. The
+`demo-root`, `m2-mesh`, `m2-root` and a current MCP, signs them with one
+throwaway key, loads each graph over HTTP and asserts the serial order,
+`GET /modules` text and the unchanged no-`mesh.peer` M1/M2 markers. The
 release-built manager image is about 121 KiB and the unchanged clean ROM is
 522,904 of 524,288 bytes.
 

@@ -1018,6 +1018,8 @@ mod tests {
         fail_status: i32,
         corrupt: Option<ModuleId>,
         stale_execute: bool,
+        drop_exports: bool,
+        export_owner: Option<Handle>,
     }
 
     impl Fake {
@@ -1041,6 +1043,8 @@ mod tests {
                 fail_status: -5,
                 corrupt: None,
                 stale_execute: false,
+                drop_exports: false,
+                export_owner: None,
             }
         }
 
@@ -1075,6 +1079,11 @@ mod tests {
             self.generation = self.generation.wrapping_add(1).max(1);
             let handle = ((self.generation as u64) << 32) | request.region as u64;
             let base = self.arena.base + request.region as usize * self.arena.region_size;
+            let exports = if self.drop_exports {
+                Vec::new()
+            } else {
+                request.exports.to_vec()
+            };
             self.loaded.insert(
                 handle,
                 FakeLoaded {
@@ -1082,7 +1091,7 @@ mod tests {
                     region: request.region,
                     base,
                     image,
-                    exports: request.exports.to_vec(),
+                    exports,
                 },
             );
             self.load_log.push(id);
@@ -1127,7 +1136,7 @@ mod tests {
                     .find(|export| export.interface == interface && export.version == version)
                 {
                     return Ok(Some(ExportBinding {
-                        handle: *handle,
+                        handle: self.export_owner.unwrap_or(*handle),
                         table: (export.offset != 0).then(|| loaded.base + export.offset as usize),
                     }));
                 }
@@ -1475,5 +1484,225 @@ mod tests {
         ));
         assert!(fake.exec_log.is_empty());
         assert!(fake.loaded.is_empty());
+    }
+
+    fn m2_export() -> Export {
+        Export::new("irix7.mesh.transport", 1).with_offset(8)
+    }
+
+    fn m2_graph() -> (PackageIndex, Vec<u8>, Vec<u8>) {
+        let export = m2_export();
+        let mesh = image("m2-mesh", "1.0.0", &[], core::slice::from_ref(&export));
+        let root = image(
+            "m2-root",
+            "1.0.0",
+            &[("m2-mesh", "1.0.0", digest(&mesh))],
+            &[],
+        );
+        let index = index(&[
+            line(
+                "m2-mesh",
+                "1.0.0",
+                2,
+                &mesh,
+                &[],
+                core::slice::from_ref(&export),
+                None,
+            ),
+            line(
+                "m2-root",
+                "1.0.0",
+                3,
+                &root,
+                &[("m2-mesh", "1.0.0", digest(&mesh))],
+                &[],
+                None,
+            ),
+        ]);
+        (index, mesh, root)
+    }
+
+    #[test]
+    fn m2_runtime_graph_loads_mesh_before_root() {
+        let (index, mesh, root) = m2_graph();
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        assert_eq!(plan.nodes.len(), 2);
+        assert_eq!(plan.nodes[0].region, 2);
+        assert_eq!(plan.nodes[1].region, 3);
+        assert_eq!(plan.nodes[0].exports, vec![m2_export()]);
+
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", mesh);
+        fake.add("m2-root", "1.0.0", root);
+        let report = run(&plan, &policy(false), &mut fake).expect("run");
+
+        assert_eq!(fake.load_log[0].name, "m2-mesh");
+        assert_eq!(fake.load_log[1].name, "m2-root");
+        assert_eq!(fake.exec_log[0].name, "m2-mesh");
+        assert_eq!(fake.exec_log[1].name, "m2-root");
+        let mesh_exec = fake
+            .exec_log
+            .iter()
+            .position(|id| id.name == "m2-mesh")
+            .expect("mesh executed");
+        let root_exec = fake
+            .exec_log
+            .iter()
+            .position(|id| id.name == "m2-root")
+            .expect("root executed");
+        assert!(mesh_exec < root_exec, "root entered before m2-mesh");
+        assert!(report
+            .status_text()
+            .contains("order=m2-mesh@1.0.0,m2-root@1.0.0"));
+        assert!(report
+            .status_text()
+            .contains("export=m2-mesh@1.0.0 interface=irix7.mesh.transport version=1 offset=8"));
+        assert!(fake.unload_log.is_empty());
+    }
+
+    #[test]
+    fn m2_bad_mesh_digest_fails_closed_before_root_entry() {
+        let (index, mesh, root) = m2_graph();
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", mesh);
+        fake.add("m2-root", "1.0.0", root);
+        fake.corrupt = Some(ModuleId::new("m2-mesh", "1.0.0"));
+        assert!(matches!(
+            run(&plan, &policy(false), &mut fake),
+            Err(RuntimeError::DigestMismatch(_))
+        ));
+        assert!(fake.exec_log.is_empty());
+        assert!(fake.loaded.is_empty());
+    }
+
+    #[test]
+    fn m2_missing_export_fails_closed_before_root_entry() {
+        let (index, mesh, root) = m2_graph();
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", mesh);
+        fake.add("m2-root", "1.0.0", root);
+        fake.drop_exports = true;
+        assert!(matches!(
+            run(&plan, &policy(false), &mut fake),
+            Err(RuntimeError::ExportMissing {
+                interface,
+                version: 1,
+                ..
+            }) if interface == "irix7.mesh.transport"
+        ));
+        assert!(fake.exec_log.is_empty());
+        assert!(fake.loaded.is_empty());
+    }
+
+    #[test]
+    fn m2_stale_handle_fails_closed_before_root_entry() {
+        let (index, mesh, root) = m2_graph();
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", mesh);
+        fake.add("m2-root", "1.0.0", root);
+        fake.stale_execute = true;
+        assert!(matches!(
+            run(&plan, &policy(false), &mut fake),
+            Err(RuntimeError::Backend {
+                stage: "execute",
+                status: -9,
+                ..
+            })
+        ));
+        assert!(fake.exec_log.is_empty());
+        assert_eq!(fake.unload_log.len(), 2);
+        assert!(fake.loaded.is_empty());
+    }
+
+    #[test]
+    fn m2_oversized_mesh_fails_closed_before_root_entry() {
+        let oversized = footer::wrap(
+            &alloc::vec![0u8; 300 * 1024],
+            &Manifest::new("m2-mesh", "1.0.0", ABI),
+        )
+        .expect("wrap oversized mesh");
+        let root = image(
+            "m2-root",
+            "1.0.0",
+            &[("m2-mesh", "1.0.0", digest(&oversized))],
+            &[],
+        );
+        let index = index(&[
+            line("m2-mesh", "1.0.0", 2, &oversized, &[], &[], None),
+            line(
+                "m2-root",
+                "1.0.0",
+                3,
+                &root,
+                &[("m2-mesh", "1.0.0", digest(&oversized))],
+                &[],
+                None,
+            ),
+        ]);
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", oversized);
+        fake.add("m2-root", "1.0.0", root);
+        assert!(matches!(
+            run(&plan, &policy(false), &mut fake),
+            Err(RuntimeError::Load { status: -5, .. })
+        ));
+        assert!(fake.exec_log.is_empty());
+        assert!(fake.loaded.is_empty());
+    }
+
+    #[test]
+    fn m2_export_owner_mismatch_is_rejected_before_root_entry() {
+        let (index, mesh, root) = m2_graph();
+        let plan = Plan::from_index(&index, "m2-root", "1.0.0", ABI).expect("plan");
+        let mut fake = Fake::new(5);
+        fake.add("m2-mesh", "1.0.0", mesh);
+        fake.add("m2-root", "1.0.0", root);
+        fake.export_owner = Some(0x0000_0001_0000_0003);
+        assert!(matches!(
+            run(&plan, &policy(false), &mut fake),
+            Err(RuntimeError::ExportOwner {
+                interface,
+                version: 1,
+                ..
+            }) if interface == "irix7.mesh.transport"
+        ));
+        assert!(fake.exec_log.is_empty());
+        assert!(fake.loaded.is_empty());
+    }
+
+    #[test]
+    fn m2_root_declares_the_exact_mesh_digest() {
+        let export = m2_export();
+        let mesh = image("m2-mesh", "1.0.0", &[], core::slice::from_ref(&export));
+        let wrong = [0x55u8; 32];
+        let root = image("m2-root", "1.0.0", &[("m2-mesh", "1.0.0", wrong)], &[]);
+        let index = index(&[
+            line(
+                "m2-mesh",
+                "1.0.0",
+                2,
+                &mesh,
+                &[],
+                core::slice::from_ref(&export),
+                None,
+            ),
+            line(
+                "m2-root",
+                "1.0.0",
+                3,
+                &root,
+                &[("m2-mesh", "1.0.0", wrong)],
+                &[],
+                None,
+            ),
+        ]);
+        assert!(matches!(
+            Plan::from_index(&index, "m2-root", "1.0.0", ABI),
+            Err(RuntimeError::Resolve(ResolveError::DigestMismatch { .. }))
+        ));
     }
 }

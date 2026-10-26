@@ -1,0 +1,14 @@
+[package]
+name = "runtime-m2-root-module"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Runtime M2 mesh graph root for IRIX 7"
+[[bin]]
+name = "runtime-m2-root-module"
+path = "src/main.rs"
+[profile.release]
+panic = "abort"
+opt-level = "z"
+[dependencies]
+module-abi.workspace = true

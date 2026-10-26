@@ -52,6 +52,36 @@ max_size = 262144
 depends = ["demo-dep@1.0.0"]
 
 [[module]]
+name = "m2-mesh"
+version = "1.0.0"
+abi = "12.0"
+region = 2
+load_address = 0x88540000
+elf = "{target}/mips3-sgi-irix7-n32/release/runtime-m2-mesh-module"
+flat = "{target}/modules/m2-mesh.flat"
+image = "m2-mesh.module"
+url = "{raw_base}/boot/modules/{version}/m2-mesh.module"
+max_size = 262144
+
+[[module.exports]]
+interface = "irix7.mesh.transport"
+version = 1
+symbol = "MESH_API"
+
+[[module]]
+name = "m2-root"
+version = "1.0.0"
+abi = "12.0"
+region = 3
+load_address = 0x88580000
+elf = "{target}/mips3-sgi-irix7-n32/release/runtime-m2-root-module"
+flat = "{target}/modules/m2-root.flat"
+image = "m2-root.module"
+url = "{raw_base}/boot/modules/{version}/m2-root.module"
+max_size = 262144
+depends = ["m2-mesh@1.0.0"]
+
+[[module]]
 name = "manager"
 version = "1.0.0"
 abi = "12.0"
