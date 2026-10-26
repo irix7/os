@@ -1,0 +1,8 @@
+[package]
+name = "module-resolver"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Exact-version module manifest and dependency resolver for IRIX 7"
+
+[dependencies]

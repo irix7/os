@@ -286,8 +286,11 @@ ticker: tick
 - Runtime module dependencies: a module declares exact `name`, `version` and
   SHA-256 records; a downloadable module manager resolves the graph, verifies
   every image, loads dependencies before dependents and publishes versioned C
-  export tables. This is required after M1 and is tracked in #217. It is not
-  implemented by the fixed-slot loader below.
+  export tables. This is required after M1 and is tracked in #217. The first
+  host slice, `crates/module-resolver`, implements the manifest records,
+  deterministic DAG order and fail-closed cycle/missing/digest/ABI tests; it
+  does not load or execute an image. The fixed-slot loader below remains
+  standalone-only.
 
 These are additive to the version 2 table.
 
