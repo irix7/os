@@ -36,7 +36,7 @@ hpc3 = { path = "../crates/hpc3" }
 irix-elf = { path = "../crates/irix-elf" }
 mesh-core = { path = "../crates/mesh-core" }
 m1-policy-bridge = { path = "../crates/m1-policy-bridge" }
-mesh-service = { path = "../crates/mesh-service" }
+mesh-service = { path = "../crates/mesh-service", default-features = false }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384", "rsa"] }

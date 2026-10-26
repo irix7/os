@@ -8,6 +8,13 @@ description = "Membership and failure-detection state for the IRIX 7 1-128-node 
 [lib]
 path = "src/lib.rs"
 
+[features]
+# The confirmed-view install path is used by the M2 join module, not by the
+# frozen kernel/ROM.  The kernel depends with default-features = false so the
+# bootstrap image does not grow for a module-only feature.
+default = ["confirmed"]
+confirmed = []
+
 [dependencies]
 mesh-core = { path = "../mesh-core" }
 sys-primitives = { path = "../sys-primitives" }

@@ -1,0 +1,16 @@
+[package]
+name = "mesh-join"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "M2 join handshake, authority-confirmed membership epoch and restart rules"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sys-primitives = { path = "../sys-primitives" }
+mesh-core = { path = "../mesh-core" }
+mesh-service = { path = "../mesh-service" }
+cap-engine = { path = "../cap-engine" }
+blake3 = { version = "1.8", default-features = false, features = ["pure"] }

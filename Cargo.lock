@@ -706,6 +706,7 @@ dependencies = [
  "block-cache",
  "erofs",
  "loader-abi",
+ "mesh-join",
  "mesh-transport",
  "module-abi",
  "overlay",
@@ -723,6 +724,17 @@ name = "mesh-core"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "sys-primitives",
+]
+
+[[package]]
+name = "mesh-join"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "cap-engine",
+ "mesh-core",
+ "mesh-service",
  "sys-primitives",
 ]
 
