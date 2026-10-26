@@ -389,42 +389,47 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
     // listener and resets the connection.  The emulated MIPS CPU and the
     // module tick are slow enough that a couple of seconds is not reliable.
     std::thread::sleep(Duration::from_secs(10));
-    let relay_ab = Relay::start((Ipv4Addr::LOCALHOST, nodes[1].http_port).into())
+    let relay_n0_n1 = Relay::start((Ipv4Addr::LOCALHOST, nodes[1].http_port).into())
         .map_err(|error| format!("start relay n0->n1: {error}"))?;
-    let relay_ba = Relay::start((Ipv4Addr::LOCALHOST, nodes[0].http_port).into())
+    let relay_n1_n0 = Relay::start((Ipv4Addr::LOCALHOST, nodes[0].http_port).into())
         .map_err(|error| format!("start relay n1->n0: {error}"))?;
 
-    let result_ab = probe::probe_http(&nodes[0], nodes[0].gateway, relay_ab.port, PROBE_TIMEOUT);
-    let url_ab = format!("http://{}:{}/", nodes[0].gateway, relay_ab.port);
-    let relay_ab_text = format!(
+    let result_n0_n1 =
+        probe::probe_http(&nodes[0], nodes[0].gateway, relay_n0_n1.port, PROBE_TIMEOUT);
+    let url_n0_n1 = format!("http://{}:{}/", nodes[0].gateway, relay_n0_n1.port);
+    let relay_text_n0_n1 = format!(
         "127.0.0.1:{} -> 127.0.0.1:{}",
-        relay_ab.port, nodes[1].http_port
+        relay_n0_n1.port, nodes[1].http_port
     );
     let mut probes = vec![probe_evidence(
         &nodes[0],
         &nodes[1],
-        url_ab,
-        relay_ab_text,
-        result_ab,
+        url_n0_n1,
+        relay_text_n0_n1,
+        result_n0_n1,
     )];
 
-    let result_ba = probe::probe_http(&nodes[1], nodes[1].gateway, relay_ba.port, PROBE_TIMEOUT);
-    let url_ba = format!("http://{}:{}/", nodes[1].gateway, relay_ba.port);
-    let relay_ba_text = format!(
+    let result_n1_n0 =
+        probe::probe_http(&nodes[1], nodes[1].gateway, relay_n1_n0.port, PROBE_TIMEOUT);
+    let url_n1_n0 = format!("http://{}:{}/", nodes[1].gateway, relay_n1_n0.port);
+    let relay_text_n1_n0 = format!(
         "127.0.0.1:{} -> 127.0.0.1:{}",
-        relay_ba.port, nodes[0].http_port
+        relay_n1_n0.port, nodes[0].http_port
     );
     probes.push(probe_evidence(
         &nodes[1],
         &nodes[0],
-        url_ba,
-        relay_ba_text,
-        result_ba,
+        url_n1_n0,
+        relay_text_n1_n0,
+        result_n1_n0,
     ));
 
     Ok((
         probes,
-        vec![("n0-to-n1".into(), relay_ab), ("n1-to-n0".into(), relay_ba)],
+        vec![
+            ("n0-to-n1".into(), relay_n0_n1),
+            ("n1-to-n0".into(), relay_n1_n0),
+        ],
     ))
 }
 
