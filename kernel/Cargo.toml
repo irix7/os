@@ -27,7 +27,6 @@ cross = []
 erofs-debug = ["dep:erofs"]
 
 [dependencies]
-loader-abi = { path = "../crates/loader-abi" }
 agnostic-core = { path = "../crates/agnostic-core" }
 cas-core = { path = "../crates/cas-core" }
 cas-store = { path = "../crates/cas-store" }
