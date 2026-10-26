@@ -102,33 +102,45 @@ namespace/CAS, actor and capability policy at boot; the signed 1-of-1 policy
 remains the module probe. The slot-B Wasm module now runs the local policy
 from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses
 and checks the capability rights, and commits atomically. Its
-`m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence matches the native
-`m1:` line, while MCP remains in slot A. The general module multiplexer is
-still missing; the fixed A/B layout is the current coexistence mechanism. Zero
-mesh traffic is instrumented and asserted on the M1 line.
+`m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence has a distinct
+guest root and actor; rights and home match the native `m1:` line, while MCP remains loaded in slot A; the released v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers. The general module multiplexer is
+still missing; the fixed A/B layout is the current coexistence mechanism. The
+kernel has no mesh transport; the counters are self-tested and the M1 lines assert zero (a construction invariant, not packet-level instrumentation).
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
 494,140 of 524,288 bytes. A trial that linked the namespace, CAS store and actor
 directory directly into the kernel produced 522,248 bytes, leaving only 2,040
 bytes of headroom, so it was not merged. The v0.1.3 console/sash plus EROFS
 Range image is 520,840 bytes (3,448 free); the unreleased ABI v11 cache and
-userland-install image with the kernel M1 policy and fat LTO is 521,320 bytes
-(2,968 free). Runtime policy, modules and userland software must
+userland-install image with the kernel M1 policy, fat LTO and `opt-level=z` is 520,312 bytes
+(3,976 free). Runtime policy, modules and userland software must
 ship in the package index or a separate core image; they cannot grow the fixed
 bootstrap.
 
+**ROM freeze:** after M1 is re-closed, the compressed PROM/kernel image is
+frozen for new features. Only correctness, security and hardware-enablement
+fixes may change it. M2 and later policy, runtime, transport, server and device
+work ships as modules through the package index; the kernel keeps only the
+fixed service table and boot-critical path.
 The optional SCSI write cache is deliberately a module, not PROM code: verified
 downloads wait in a bounded RAM queue, and the module drains it by SHA-256 into
 a cache-owned range during its idle tick.  ABI v11 now has `block_write`, and
 `modules/cache` proves the idle write and readback on target 1 to target 3.
 The automatic queue, lookup and module multiplexer are still to come.
 
+**M1 Wasm seam (scope decision, 2026-10-26):** the live Wasm policy runs in
+the downloadable `modules/wasm` module behind the `wasm-host` host ABI
+(`HostHooks`). That module host is the M1 platform seam. The native
+`platform-api::PlatformShim` trait remains the native-core contract and is
+integrated in Phase 4; M1 does not require a second in-kernel Wasm host. This
+scope decision was approved before M1 closure.
+
 **M1 software status (2026-10-26):** the iris gate boots the no-network,
 no-module path and the slot-B Wasm-policy path; the native and Wasm
-root/actor/home/capability evidence match, MCP remains live in slot A, and
+actor/rights/home evidence match; the guest root and actor are distinct, MCP remains loaded in slot A (the v0.1.3 release artifact HTTP bug is tracked), and
 `mesh=0/0/0` is asserted both before and after the optional Wasm probe and
-userland smoke. The rebuilt PROM is 521,320 of 524,288 bytes
-(2,968 free) and the Wasm module is 1,345,976 bytes, inside the
+userland smoke. The rebuilt PROM is 520,312 bytes in CI (local 520,312) of 524,288 bytes
+(3,976 free) and the Wasm module is 1,347,640 bytes (CI; local build 1,347,640), inside the
 1,572,864-byte slot-B limit. The optional slot-B probe now runs after the
 readiness marker. MCP-only readiness measured 7.3–7.7 s. The instrumented Wasm
 path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the
@@ -136,18 +148,21 @@ local SCSI cache, with `wasm: runtime=0 ms`; fetch/copy dominate. The
 network-off/local-SCSI boot also exercises the Wasm policy with
 `mcp=disabled`. The full-path load time is recorded as an observation under
 issue #214, not a gate; the local cache is the preferred optional source. The live
-Wasm-policy bridge is deferred to Phase 5 (#213): M1 accepts the native kernel
-policy plus the
-boot-time Wasm proof, not a resident Wasm authority. **Real-Indy execution was not available in this
-workspace.** The exact limitation is hardware-specific: no physical Indy IP24
+Wasm-policy bridge is now adopted for the userland `/etc/motd` path: the
+kernel validates the fixed bridge and reads that object through the committed
+guest policy, with the native kernel policy as fallback. The actor/run-queue
+and full resident authority remains Phase 5 work (#213). **Real-Indy
+execution was not available in this workspace.** The exact limitation is hardware-specific: no physical Indy IP24
 or self-hosted lab runner was attached, so the gate cannot validate the real
 SCC, Seeq DMA, SCSI, REX3 or DS1386 timing and cache behaviour. The gate is
 iris-only and must not be reported as a real-Indy pass; the follow-up is the
 lab work in #16.
 
-**Exit:** M1. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
-and POSIX image unchanged; no mesh RPCs; no regression beyond the 5%/1 ms
-budgets.
+**Exit:** M1 is complete on iris with the recorded real-Indy limitation and the
+module-host seam. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
+and POSIX image pass; no network or mesh transport is required. Boot time is
+**recorded, not gated** for the 1994 hardware path; the optional module load is
+likewise an observation.
 
 ### Phase 3 — Asynchronous fabric and two-node routing
 
@@ -164,7 +179,8 @@ trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 Integrate wasmi deterministically with fuel metering, the guest ABI, host
 memory validation and the completion ring. Start an echo/scheduler actor. Add
 the MIPS build gate and a kill criterion for runtime or performance failure;
-keep the native core option.
+keep the native core option. Add the module manifest and runtime dependency
+manager required by #217, without growing the frozen PROM.
 
 **Exit:** core starts on iris; actor suite; deterministic corpus; native
 POSIX/IRIX paths still pass; no packet or block data path inside Wasm.

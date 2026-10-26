@@ -594,7 +594,6 @@ pub extern "C" fn _start_rust() -> ! {
     frames::init(&usable_descs, usable_count);
 
     scheduler::init();
-    capability::init();
     idle::init();
 
     console_println("kernel: up");
@@ -636,21 +635,11 @@ pub extern "C" fn _start_rust() -> ! {
     // marker. Its 1.3 MiB fetch is not part of the readiness budget and must
     // not delay MCP or the local console.
     autoload::boot_wasm();
+    logical::adopt_wasm();
 
     // The boot log is the local display now.  Paint it before handing over so
     // the last kernel messages are visible even if userland never returns.
     start_userland();
-
-    // Re-report the mesh counters after the optional Wasm probe and userland
-    // smoke. The M1 gate must cover the whole boot, not only the pre-readiness
-    // snapshot.
-    console_write("m1-post: mesh=");
-    write_u64_dec(crate::mesh::frames() as u64);
-    console_write("/");
-    write_u64_dec(crate::mesh::rpcs() as u64);
-    console_write("/");
-    write_u64_dec(crate::mesh::envelopes() as u64);
-    console_println("");
 
     // Userland returned (normally after exit, or because target 2 had no
     // loadable image).  Keep the console, network and module services alive.
@@ -668,13 +657,14 @@ pub extern "C" fn _start_rust() -> ! {
 fn start_userland() {
     console_println("kernel: starting userland from SCSI target 2");
     graphics_console::flush();
-
+    let _ = crate::logical::actor_enter();
     // SAFETY: single-threaded kernel; the trampoline saves and restores the
     // caller's $sp/$ra and callee-saved registers around the one-way entry.
     unsafe {
         traps::user_from_console_elf();
     }
 
+    crate::logical::actor_leave();
     user::cleanup();
     console_println("kernel: userland returned to kernel console");
     graphics_console::flush();
@@ -700,6 +690,27 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         module::poll();
         telnet::poll();
         telnet::poll_local();
+        // Report once after the first full service pass, so MCP/telnet
+        // traffic and the optional Wasm probe are inside the smoke window.
+        static mut POST_REPORTED: bool = false;
+        unsafe {
+            if !POST_REPORTED {
+                POST_REPORTED = true;
+                console_write("m1-post: mesh=");
+                write_u64_dec(crate::mesh::frames() as u64);
+                console_write("/");
+                write_u64_dec(crate::mesh::rpcs() as u64);
+                console_write("/");
+                write_u64_dec(crate::mesh::envelopes() as u64);
+                if let Some(actor) = crate::logical::actor_id() {
+                    console_write(" actor=");
+                    for byte in actor.0 {
+                        print_hex8(byte);
+                    }
+                }
+                console_println("");
+            }
+        }
         if telnet::reboot_requested() {
             reboot();
         }

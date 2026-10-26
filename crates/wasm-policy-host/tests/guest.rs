@@ -245,13 +245,21 @@ fn run_policy_guest() {
     assert!(evidence.contains("wasm: host=1\n"));
     assert!(evidence.contains("m1-wasm: root="));
     assert!(evidence.contains(" cap=ok rights=35 home="));
-    assert!(evidence.contains("objects=5 actors=1 queued=1 caps=1\n"));
+    assert!(evidence.contains("objects=9 actors=1 queued=1 caps=1\n"));
 
     let mut namespace = Namespace::new();
     namespace.create_dir_all("/etc").expect("etc");
     namespace
-        .put("/etc/motd", ObjectKind::Blob, b"Welcome to IRIX 7.\n")
+        .put(
+            "/etc/motd",
+            ObjectKind::Blob,
+            b"Welcome to IRIX 7 (Wasm).\n",
+        )
         .expect("motd");
+    namespace.create_dir_all("/dev").expect("dev");
+    namespace
+        .put("/dev/null", ObjectKind::Blob, b"")
+        .expect("null");
     let expected = hex(namespace.root().as_bytes());
     assert!(
         evidence.contains(&format!("root={expected}")),
@@ -261,7 +269,7 @@ fn run_policy_guest() {
         "actor={}",
         hex(&{
             let mut actor = node.0;
-            actor[15] = 1;
+            actor[15] = 2;
             actor
         })
     )));

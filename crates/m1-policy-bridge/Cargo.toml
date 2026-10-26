@@ -1,0 +1,9 @@
+[package]
+name = "m1-policy-bridge"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Fixed slot bridge for the M1 Wasm policy to the native userland"
+
+[lib]
+path = "src/lib.rs"

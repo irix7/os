@@ -175,6 +175,14 @@ impl CapTable {
             && entry.rights & rights == rights
     }
 
+    fn authorize(&self, rights: u32, object: &ObjectId) -> bool {
+        rights != 0
+            && rights & !RIGHTS_ALL == 0
+            && self.entries[1..].iter().any(|entry| {
+                entry.live && entry.object == *object && entry.rights & rights == rights
+            })
+    }
+
     fn rights(&self, handle: u64, object: &ObjectId) -> Option<u32> {
         if handle == 0 {
             return None;
@@ -467,6 +475,18 @@ impl Policy {
         match self.current() {
             Some(Current::Stage(stage)) => stage.caps().check(handle, rights, object),
             Some(Current::Committed(committed)) => committed.caps().check(handle, rights, object),
+            None => false,
+        }
+    }
+
+    /// Check whether any live capability authorises `rights` over `object`.
+    ///
+    /// The bridge uses this for the fixed M1 userland path; the guest still
+    /// performs the handle-specific checks before commit.
+    pub fn authorize(&self, rights: u32, object: &ObjectId) -> bool {
+        match self.current() {
+            Some(Current::Stage(stage)) => stage.caps().authorize(rights, object),
+            Some(Current::Committed(committed)) => committed.caps().authorize(rights, object),
             None => false,
         }
     }

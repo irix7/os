@@ -44,6 +44,15 @@ later format change.
 Comments and blank lines are ignored.  Unknown fields are rejected by the
 client; a future format version is not guessed.
 
+### 3.1 Dependency records (planned)
+
+Version 1 records have no dependency field.  The runtime module work in #217
+will add an exact `depends=name@version:sha256,...` list (and the module
+manifest that binds it to the image digest).  The first client resolves exact
+versions only; ranges, conflict solving and automatic upgrades are a later
+format change.  Until then a record is standalone, and a distribution that
+needs a dependency must bundle it into the image explicitly.
+
 ## 4. Client rules
 
 Sash fetches the index over the kernel TLS client, lists entries, and on
@@ -93,5 +102,8 @@ coexist with the MCP module until a multiplexer or merged policy module lands.
 
 ## 7. Non-goals
 
-Dependency solving, binary deltas, per-package signing keys, central accounts
-and automatic execution without digest verification are out of scope for v1.
+For v1, version ranges/SAT solving, binary deltas, per-package signing keys,
+central accounts and automatic execution without digest verification are out
+of scope.  Runtime dependency support is a required post-M1 feature (#217), not
+a permanent non-goal; the v1 client stays standalone until the module manager
+lands.
