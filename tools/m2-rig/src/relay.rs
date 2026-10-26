@@ -194,7 +194,15 @@ pub struct MeshRelay {
 impl MeshRelay {
     /// Start a relay between two guest mesh forwards.
     pub fn start(a: SocketAddr, b: SocketAddr) -> std::io::Result<Self> {
-        let log = log();
+        Self::start_with_log(a, b, log())
+    }
+
+    /// Start a relay that appends to an existing connection log.
+    ///
+    /// The rig restarts the relay around a member restart so the live root
+    /// does not accumulate half-open host connections while its peer is down.
+    /// Reusing the log keeps the whole run's relay history in one file.
+    pub fn start_with_log(a: SocketAddr, b: SocketAddr, log: SharedLog) -> std::io::Result<Self> {
         let stop = Arc::new(AtomicBool::new(false));
         note(&log, format!("mesh-relay targets {a} <-> {b}"));
         let thread_log = log.clone();
@@ -214,8 +222,9 @@ impl Drop for MeshRelay {
 
 fn supervisor(a: SocketAddr, b: SocketAddr, log: SharedLog, stop: Arc<AtomicBool>) {
     let mut delay = MESH_RETRY_MIN;
+    let mut warm = false;
     while !stop.load(Ordering::SeqCst) {
-        match session(a, b, &log, &stop) {
+        match session(a, b, &log, &stop, warm) {
             Ok(()) => {
                 note(&log, "mesh-relay session ended");
                 delay = MESH_RETRY_MIN;
@@ -225,6 +234,9 @@ fn supervisor(a: SocketAddr, b: SocketAddr, log: SharedLog, stop: Arc<AtomicBool
                 delay = (delay * 2).min(MESH_RETRY_MAX);
             }
         }
+        // After the first attempt the guests are warm; later sessions must
+        // not use the cold-start first-byte barrier.
+        warm = true;
         if stop.load(Ordering::SeqCst) {
             break;
         }
@@ -252,6 +264,7 @@ fn session(
     b: SocketAddr,
     log: &SharedLog,
     stop: &Arc<AtomicBool>,
+    warm: bool,
 ) -> Result<(), String> {
     let a = connect_retry(a, stop)?;
     let b = connect_retry(b, stop)?;
@@ -273,7 +286,12 @@ fn session(
     let b_read = b
         .try_clone()
         .map_err(|error| format!("clone n1 read: {error}"))?;
-    let barrier = Arc::new(Barrier::new(2));
+    // The first session uses the first-byte guard for the iris forward's
+    // early-data race.  A later session (for example after one node restarts)
+    // must not deadlock: the live guest can send a join retry before the other
+    // guest's listener is armed, and the relay has to carry it so the peer can
+    // answer.  Warm sessions pump each direction as soon as it has bytes.
+    let barrier = Arc::new(Barrier::new(if warm { 1 } else { 2 }));
     let fail = Arc::new(AtomicBool::new(false));
     let activity = Arc::new(AtomicU64::new(0));
     let started = Instant::now();
@@ -290,6 +308,7 @@ fn session(
         fail.clone(),
         activity.clone(),
         started,
+        warm,
     );
     let down = pump_mesh(
         b_read,
@@ -302,7 +321,20 @@ fn session(
         fail.clone(),
         activity,
         started,
+        warm,
     );
+
+    if warm {
+        note(
+            log,
+            "mesh-relay warm session: pumping without the first-byte guard",
+        );
+        let _ = up.join();
+        let _ = down.join();
+        let _ = a_control.shutdown(Shutdown::Both);
+        let _ = b_control.shutdown(Shutdown::Both);
+        return Ok(());
+    }
 
     let mut first = 0usize;
     let deadline = Instant::now() + MESH_FIRST_BYTE_TIMEOUT + Duration::from_secs(5);
@@ -364,6 +396,7 @@ fn pump_mesh(
     fail: Arc<AtomicBool>,
     activity: Arc<AtomicU64>,
     started: Instant,
+    warm: bool,
 ) -> thread::JoinHandle<()> {
     thread::Builder::new()
         .name(format!("m2-mesh-{direction}"))
@@ -395,12 +428,14 @@ fn pump_mesh(
                     Err(_) => break,
                 }
             }
-            let _ = ready.send(opened);
-            // Both directions must have their first chunk before either is
-            // written.  This is the early-data guard for the iris port
-            // forward, which may accept the host connection before the guest
-            // listener is ready.
-            barrier.wait();
+            if !warm {
+                let _ = ready.send(opened);
+                // Both directions must have their first chunk before either
+                // is written.  This is the early-data guard for the iris port
+                // forward, which may accept the host connection before the
+                // guest listener is ready.
+                barrier.wait();
+            }
             if !opened || stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
                 let _ = to.shutdown(Shutdown::Both);
                 return;

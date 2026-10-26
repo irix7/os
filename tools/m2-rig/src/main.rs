@@ -14,6 +14,7 @@
 
 mod evidence;
 mod fixture;
+mod join;
 mod nvram;
 mod probe;
 mod relay;
@@ -26,11 +27,13 @@ use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
 use fixture::Fixture;
+use join::{JoinEvidence, RestartInput};
 use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
 use rig::{
-    derive_nodes, git, read_serial, run_ci, start_cpu, start_node, wait_boot, wait_ci_ready,
-    write_nvram, Action, BootFacts, Node, Options, RunningNode,
+    derive_nodes, git, mesh_environments, read_serial, run_ci, start_cpu, start_node, wait_boot,
+    wait_ci_ready, write_nvram, Action, AuthorityKeys, BootFacts, Fault, Node, Options,
+    RunningNode,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -93,6 +96,7 @@ Options:
   --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
   --timeout SECS   boot deadline (default: 180)
+  --fault MODE     none (default), no-peer or wrong-authority
   --keep           with run, leave the nodes running
   --verbose        print extra detail
 
@@ -214,30 +218,50 @@ fn status(options: &Options) -> Result<i32, String> {
 fn probe_only(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
     let (probes, relays) = probe_two_way(&nodes)?;
-    let (mesh, mesh_relay) = probe_mesh(&nodes);
+    let (mesh, mesh_relay) = if options.fault == Fault::NoPeer {
+        (None, None)
+    } else {
+        let (value, relay) = probe_mesh(&nodes);
+        (Some(value), relay)
+    };
+    if options.fault.joins() {
+        wait_join(&nodes, Duration::from_secs(60));
+    } else if options.fault == Fault::WrongAuthority {
+        wait_join_reject(&nodes, Duration::from_secs(30));
+    }
+    let facts = snapshot_facts(&nodes);
+    let keys = AuthorityKeys::lab();
+    let join = join::evaluate(&nodes, &facts, &keys, options.fault, None);
     let http_ok = probes.iter().all(|probe| probe.ok);
-    let passed = http_ok && mesh.ok;
+    let mesh_ok = mesh.as_ref().is_none_or(|mesh| mesh.ok);
+    let passed = http_ok && mesh_ok && join.ok;
     print_probe_table(&probes);
-    print_mesh_result(&mesh);
+    if let Some(mesh) = &mesh {
+        print_mesh_result(mesh);
+    }
+    print_join_result(&join);
     let error = if !http_ok {
-        Some("one or both HTTP probes failed")
-    } else if !mesh.ok {
-        Some(mesh.message.as_str())
+        Some("one or both HTTP probes failed".to_string())
+    } else if !mesh_ok {
+        mesh.as_ref().map(|mesh| mesh.message.clone())
+    } else if !join.ok {
+        Some(join.message.clone())
     } else {
         None
     };
     let directory = write_evidence(
         options,
         &nodes,
-        &[],
+        &facts,
         &probes,
         &relays,
-        Some(&mesh),
+        mesh.as_ref(),
         mesh_relay.as_ref(),
+        Some(&join),
         None,
         "probe",
         if passed { "pass" } else { "fail" },
-        error,
+        error.as_deref(),
     )?;
     println!("evidence: {}", directory.display());
     Ok(if passed { 0 } else { 1 })
@@ -250,7 +274,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
 
     let mut running = Vec::new();
-    let mut facts = Vec::new();
+    let mut facts;
     let mut bring_up_error = None;
     if let Err(error) = start_all(
         options,
@@ -262,9 +286,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         bring_up_error = Some(error);
     }
     if bring_up_error.is_none() {
-        match wait_boot(options, &mut running) {
-            Ok(value) => facts = value,
-            Err(error) => bring_up_error = Some(error),
+        if let Err(error) = wait_boot(options, &mut running) {
+            bring_up_error = Some(error);
         }
     }
 
@@ -273,6 +296,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut mesh = None;
     let mut mesh_relay = None;
     let mut probe_error = None;
+    let mut join_error = None;
+    let mut restart = None;
     if bring_up_error.is_none() {
         match probe_two_way(&nodes) {
             Ok((value, value_relays)) => {
@@ -281,40 +306,72 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             }
             Err(error) => probe_error = Some(error),
         }
-        let (value, relay) = probe_mesh(&nodes);
-        mesh = Some(value);
-        mesh_relay = relay;
-        // The mesh probe appends lines after the boot facts were captured;
-        // re-read the transcripts so the evidence bundle carries them.
-        facts = nodes
-            .iter()
-            .map(|node| BootFacts::from_serial(&read_serial(node)))
-            .collect();
+        if options.fault == Fault::NoPeer {
+            // No mesh listener and no join: the M2-1 probe is skipped by
+            // design and the evidence says so.
+        } else {
+            let (value, relay) = probe_mesh(&nodes);
+            mesh = Some(value);
+            mesh_relay = relay;
+        }
+        if options.fault.joins() {
+            wait_join(&nodes, Duration::from_secs(60));
+            // The terminal acknowledgement must cross the relay before the
+            // member is restarted; otherwise the restart can truncate it and
+            // there is no evidence that B installed what A signed.
+            wait_join_ack(&nodes, Duration::from_secs(20));
+        } else if options.fault == Fault::WrongAuthority {
+            wait_join_reject(&nodes, Duration::from_secs(30));
+        }
+        facts = snapshot_facts(&nodes);
+
+        if options.fault.joins() {
+            match restart_member(options, &nodes, &mut running, &facts, &mut mesh_relay) {
+                Ok(input) => {
+                    restart = Some(input);
+                    // The root's transcript gained a confirmation and the
+                    // member's transcript is now the rejoin boot.
+                    facts = snapshot_facts(&nodes);
+                }
+                Err(error) => join_error = Some(error),
+            }
+        }
     } else {
         // Keep the evidence useful even when a node never booted: record what
         // the serial logs show and do not invent a probe result.
-        for node in &nodes {
-            facts.push(BootFacts::from_serial(&read_serial(node)));
-        }
+        facts = snapshot_facts(&nodes);
     }
 
-    let mesh_ok = mesh.as_ref().is_some_and(|mesh| mesh.ok);
+    let keys = AuthorityKeys::lab();
+    let join = join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref());
+    let mesh_ok = match options.fault {
+        Fault::NoPeer => true,
+        _ => mesh.as_ref().is_some_and(|mesh| mesh.ok),
+    };
     let passed = bring_up_error.is_none()
         && probe_error.is_none()
+        && join_error.is_none()
         && probes.len() == 2
         && probes.iter().all(|probe| probe.ok)
-        && mesh_ok;
+        && mesh_ok
+        && join.ok;
     let verdict = if passed { "pass" } else { "fail" };
     let error = bring_up_error
         .as_deref()
         .or(probe_error.as_deref())
+        .or(join_error.as_deref())
         .or_else(|| {
             mesh.as_ref()
                 .filter(|mesh| !mesh.ok)
                 .map(|mesh| mesh.message.as_str())
         })
+        .or_else(|| (!join.ok).then_some(join.message.as_str()))
         .map(str::to_string);
 
+    // Let the emulated UART drain the last pass/reject line before the
+    // processes are stopped; a quit can otherwise truncate the final serial
+    // line and the evidence reader sees a partial counter list.
+    std::thread::sleep(Duration::from_secs(2));
     if !options.keep {
         let errors = rig::stop_nodes(options, &mut running);
         for error in errors {
@@ -326,6 +383,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     if let Some(mesh) = &mesh {
         print_mesh_result(mesh);
     }
+    print_join_result(&join);
     for (node, fact) in running.iter().zip(facts.iter()) {
         println!(
             "{}: {}",
@@ -342,6 +400,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         &relays,
         mesh.as_ref(),
         mesh_relay.as_ref(),
+        Some(&join),
         Some(&fixture),
         "run",
         verdict,
@@ -358,6 +417,212 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     }
 }
 
+/// Re-read both transcripts.
+fn snapshot_facts(nodes: &[Node]) -> Vec<BootFacts> {
+    nodes
+        .iter()
+        .map(|node| BootFacts::from_serial(&read_serial(node)))
+        .collect()
+}
+
+/// Wait until both nodes print a converged join view, or the deadline passes.
+fn wait_join(nodes: &[Node], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let facts = snapshot_facts(nodes);
+        if facts.iter().all(|fact| fact.mesh_join_converged.is_some()) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Wait until the root logs the member's join acknowledgement.
+fn wait_join_ack(nodes: &[Node], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let facts = snapshot_facts(nodes);
+        if !facts[0].mesh_join_acks.is_empty() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Wait until the member logs a join rejection (the wrong-authority fault).
+fn wait_join_reject(nodes: &[Node], timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let facts = snapshot_facts(nodes);
+        if facts[1].mesh_join_reject.is_some() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// Stop and restart the member, then wait for it to rejoin.
+///
+/// The root's listener and the host mesh relay stay up, so this is the
+/// "member restart, root still authoritative" case: the same epoch must come
+/// back.  The first transcript is copied before the restart because
+/// `start_node` owns the serial log from its first byte.
+fn restart_member(
+    options: &Options,
+    nodes: &[Node],
+    running: &mut [RunningNode],
+    facts_before: &[BootFacts],
+    mesh_relay: &mut Option<MeshRelay>,
+) -> Result<RestartInput, String> {
+    let node = &nodes[1];
+    let first = facts_before[1]
+        .mesh_join_converged
+        .as_deref()
+        .and_then(join::JoinLine::parse)
+        .ok_or_else(|| "n1 did not converge before the restart".to_string())?;
+    let boot1_log = options.work.join("serial-n1-boot1.log");
+    // Pause the byte pump while the member is down.  Otherwise the supervisor
+    // repeatedly connects to the live root's forward and drops the connection,
+    // which leaves the iris forward holding half-open guest attempts.  The log
+    // is reused so the evidence keeps the pre-restart history.
+    let disconnects_before = BootFacts::from_serial(&read_serial(&nodes[0]))
+        .mesh_transport_disconnects
+        .len();
+    let relay_log = mesh_relay.take().map(|relay| {
+        let log = relay.log.clone();
+        drop(relay);
+        log
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    rig::stop_node(options, &mut running[1])?;
+    fs::copy(&node.serial_log, &boot1_log)
+        .map_err(|error| format!("copy {}: {error}", node.serial_log.display()))?;
+    // Wait until the root has left its old connection and re-armed its
+    // listener.  The iris port forward does not reliably propagate the peer's
+    // close to the guest, so the heartbeat timeout is the root's only signal;
+    // connecting to its forward before that leaves half-open guest attempts in
+    // the forward and the restart never converges.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let facts = BootFacts::from_serial(&read_serial(&nodes[0]));
+        if facts.mesh_transport_disconnects.len() > disconnects_before {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "n0 did not leave the old mesh link before the restart\n--- serial ---\n{}",
+                rig::tail(&read_serial(&nodes[0]), 40)
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    // A clean quit normally unlinks the CI socket; remove any stale path
+    // before the new process binds it.
+    let _ = fs::remove_file(&node.ci_socket);
+    let child = start_node(options, node)?;
+    running[1] = child;
+    wait_ci_ready(options, node, Duration::from_secs(20))?;
+    start_cpu(options, node)?;
+    rig::wait_serial(options, &mut running[1], "BOOT-READY", options.timeout)?;
+    rig::wait_serial(
+        options,
+        &mut running[1],
+        "mesh-transport: listening",
+        Duration::from_secs(60),
+    )?;
+    if let Some(log) = relay_log {
+        let relay = MeshRelay::start_with_log(
+            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+            log,
+        )
+        .map_err(|error| format!("restart mesh relay: {error}"))?;
+        *mesh_relay = Some(relay);
+    } else {
+        let relay = MeshRelay::start(
+            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+        )
+        .map_err(|error| format!("restart mesh relay: {error}"))?;
+        *mesh_relay = Some(relay);
+    }
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let fact = BootFacts::from_serial(&read_serial(node));
+        if fact.mesh_join_converged.is_some() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "n1 did not rejoin before the deadline\n--- serial ---\n{}",
+                rig::tail(&read_serial(node), 40)
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let rejoin = BootFacts::from_serial(&read_serial(node))
+        .mesh_join_converged
+        .as_deref()
+        .and_then(join::JoinLine::parse)
+        .ok_or_else(|| "n1 rejoin line is malformed".to_string())?;
+    let fact = BootFacts::from_serial(&read_serial(node));
+    let request_last_epoch = fact
+        .mesh_join_request
+        .as_deref()
+        .and_then(join::request_last_epoch);
+    let root_facts = BootFacts::from_serial(&read_serial(&nodes[0]));
+    let confirm_epoch = root_facts
+        .mesh_join_confirms
+        .last()
+        .and_then(|line| join::field_u32(line, "epoch="));
+    Ok(RestartInput {
+        node: node.name.clone(),
+        boot1_log,
+        first,
+        rejoin,
+        request_last_epoch,
+        confirm_epoch,
+    })
+}
+
+fn print_join_result(join: &JoinEvidence) {
+    println!(
+        "join [{}]: {} ({})",
+        join.fault,
+        if join.ok { "pass" } else { "FAIL" },
+        join.message
+    );
+    for node in &join.nodes {
+        if let Some(line) = &node.converged {
+            println!("  {line}");
+        }
+        if let Some(line) = &node.reject {
+            println!("  {line}");
+        }
+    }
+    if let Some(restart) = &join.restart {
+        println!(
+            "  rejoin {}: epoch {} -> {} digest {} -> {} same={}",
+            restart.node,
+            restart.first_epoch,
+            restart.rejoin_epoch,
+            restart.first_digest,
+            restart.rejoin_digest,
+            restart.same_epoch
+        );
+    }
+}
+
 fn start_all(
     options: &Options,
     nodes: &[Node],
@@ -365,11 +630,10 @@ fn start_all(
     module_sha256: &str,
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
-    let authority = nodes[0].mac_string();
-    let peer0 = format!("{}:{}", nodes[0].gateway, nodes[1].mesh_port);
-    let peer1 = format!("{}:{}", nodes[1].gateway, nodes[0].mesh_port);
-    write_nvram(&nodes[0], fixture_port, module_sha256, &peer0, &authority)?;
-    write_nvram(&nodes[1], fixture_port, module_sha256, &peer1, &authority)?;
+    let (environments, _authority, _wrong) = mesh_environments(nodes, options.fault);
+    for (node, environment) in nodes.iter().zip(environments.iter()) {
+        write_nvram(node, fixture_port, module_sha256, environment.as_ref())?;
+    }
 
     for node in nodes {
         match start_node(options, node) {
@@ -692,20 +956,30 @@ fn nodes_of(running: &[RunningNode]) -> Vec<Node> {
 fn print_config(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
     println!("{}", rig::node_table(&nodes));
-    let authority = nodes[0].mac_string();
+    println!("fault={}", options.fault.as_str());
     let module_sha = fs::read(&options.module)
         .map(|bytes| sha256::hex(&sha256::digest(&bytes)))
         .unwrap_or_else(|_| "<module sha256>".into());
-    for (index, node) in nodes.iter().enumerate() {
-        let peer = &nodes[1 - index];
-        let mesh_peer = format!("{}:{}", node.gateway, peer.mesh_port);
+    let (environments, authority, wrong) = mesh_environments(&nodes, options.fault);
+    println!("authority={}", nodes[0].node_id_string());
+    println!("authority.pub={}", authority.public_hex);
+    if options.fault == Fault::WrongAuthority {
+        println!("n1.mesh.pub={} (wrong key)", wrong.public_hex);
+    }
+    for (node, environment) in nodes.iter().zip(environments.iter()) {
         println!("env {}:", node.name);
-        println!("  mcp.url=http://{}:<fixture>/mcp.module", node.gateway);
-        println!("  mcp.sha256={module_sha}");
-        println!("  mesh.peer={mesh_peer}");
-        println!("  mesh.authority={authority}");
-        println!("  mesh.epoch=1");
-        println!("  console=serial0");
+        let mut env = node.environment(0, environment.as_ref());
+        for (name, value) in &mut env {
+            if name == "mcp.sha256" {
+                *value = module_sha.clone();
+            }
+            let shown = match name.as_str() {
+                "mcp.url" => format!("http://{}:<fixture>/mcp.module", node.gateway),
+                "mesh.key" => "<32-byte lab seed, root only>".into(),
+                _ => value.clone(),
+            };
+            println!("  {name}={shown}");
+        }
     }
     println!("HTTP probe relays are allocated on ephemeral loopback ports at probe time");
     println!("n0 -> n1 HTTP target: 127.0.0.1:{}", nodes[1].http_port);
@@ -747,6 +1021,7 @@ fn write_evidence(
     relays: &[(String, Relay)],
     mesh: Option<&MeshProbeEvidence>,
     mesh_relay: Option<&MeshRelay>,
+    join: Option<&JoinEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
     verdict: &str,
@@ -791,6 +1066,7 @@ fn write_evidence(
         nodes: &node_evidence,
         probes,
         mesh,
+        join,
         fixture,
         relays: &relay_logs,
         verdict,

@@ -60,6 +60,43 @@ impl Action {
     }
 }
 
+/// A deliberate join-path fault for negative evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fault {
+    /// The normal two-node join.
+    None,
+    /// Omit every `mesh.*` key: the M2-1 listener and join are not configured.
+    NoPeer,
+    /// Give the member a valid but wrong root public key.
+    WrongAuthority,
+}
+
+impl Fault {
+    /// Parse the command-line word.
+    pub fn parse(word: &str) -> Option<Self> {
+        Some(match word {
+            "none" => Self::None,
+            "no-peer" => Self::NoPeer,
+            "wrong-authority" => Self::WrongAuthority,
+            _ => return None,
+        })
+    }
+
+    /// A stable label for evidence.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NoPeer => "no-peer",
+            Self::WrongAuthority => "wrong-authority",
+        }
+    }
+
+    /// Whether the join is expected to converge in this mode.
+    pub const fn joins(self) -> bool {
+        matches!(self, Self::None)
+    }
+}
+
 /// Parsed command line.
 #[derive(Debug)]
 pub struct Options {
@@ -81,6 +118,8 @@ pub struct Options {
     pub base_port: u16,
     /// Boot deadline.
     pub timeout: Duration,
+    /// Join-path fault mode.
+    pub fault: Fault,
     /// Leave the nodes running after `run`.
     pub keep: bool,
     /// Print extra detail.
@@ -141,6 +180,7 @@ where
     let mut module = None;
     let mut base_port = 9100u16;
     let mut timeout = Duration::from_secs(180);
+    let mut fault = Fault::None;
     let mut keep = false;
     let mut verbose = false;
 
@@ -165,6 +205,12 @@ where
                     .parse()
                     .map_err(|_| "--timeout must be seconds".to_string())?;
                 timeout = Duration::from_secs(seconds.max(10));
+            }
+            "--fault" => {
+                let word = next_value(&mut iter, "--fault")?;
+                fault = Fault::parse(&word).ok_or_else(|| {
+                    "--fault must be none, no-peer or wrong-authority".to_string()
+                })?;
             }
             "--keep" => keep = true,
             "--verbose" => verbose = true,
@@ -206,6 +252,7 @@ where
         module,
         base_port,
         timeout,
+        fault,
         keep,
         verbose,
     }))
@@ -307,24 +354,121 @@ impl Node {
     }
 
     /// The environment the rig writes into this node's DS1386 image.
-    pub fn environment(
-        &self,
-        fixture_port: u16,
-        mesh_peer: &str,
-        authority: &str,
-    ) -> Vec<(String, String)> {
-        vec![
+    ///
+    /// `mesh` is `None` in the `no-peer` fault mode: no `mesh.*` key is
+    /// written, so the module keeps the M1/M2-1 two-slot behaviour.
+    pub fn environment(&self, fixture_port: u16, mesh: Option<&MeshEnv>) -> Vec<(String, String)> {
+        let mut env = vec![
             (
                 "mcp.url".into(),
                 format!("http://{}:{fixture_port}/mcp.module", self.gateway),
             ),
             ("mcp.sha256".into(), String::new()),
-            ("mesh.peer".into(), mesh_peer.into()),
-            ("mesh.authority".into(), authority.into()),
-            ("mesh.epoch".into(), "1".into()),
             ("console".into(), "serial0".into()),
-        ]
+        ];
+        if let Some(mesh) = mesh {
+            if let Some(peer) = &mesh.peer {
+                env.push(("mesh.peer".into(), peer.clone()));
+            }
+            if let Some(authority) = &mesh.authority {
+                env.push(("mesh.authority".into(), authority.clone()));
+            }
+            if let Some(epoch) = mesh.epoch {
+                env.push(("mesh.epoch".into(), epoch.to_string()));
+            }
+            if let Some(key) = &mesh.public_key {
+                env.push(("mesh.pub".into(), key.clone()));
+            }
+            if let Some(key) = &mesh.seed {
+                env.push(("mesh.key".into(), key.clone()));
+            }
+        }
+        env
     }
+}
+
+/// The mesh-related NVRAM values for one node.
+#[derive(Clone, Debug, Default)]
+pub struct MeshEnv {
+    /// The peer's mesh host port through this node's gateway.
+    pub peer: Option<String>,
+    /// The authority root's MAC-derived `NodeId`.
+    pub authority: Option<String>,
+    /// The bootstrap epoch.
+    pub epoch: Option<u32>,
+    /// The authority root's Ed25519 public key as lower-case hex (`mesh.pub`).
+    pub public_key: Option<String>,
+    /// The authority root's 32-byte Ed25519 seed as lower-case hex
+    /// (`mesh.key`).  Only the root carries this; it is a lab fixture, not a
+    /// secret store.
+    pub seed: Option<String>,
+}
+
+/// The deterministic lab authority key pair.
+#[derive(Clone, Debug)]
+pub struct AuthorityKeys {
+    /// Seed as lower-case hex.
+    pub seed_hex: String,
+    /// Public key as lower-case hex.
+    pub public_hex: String,
+}
+
+impl AuthorityKeys {
+    /// Derive a key pair from a domain separator.
+    pub fn derive(domain: &[u8]) -> Self {
+        let seed = crate::sha256::digest(domain);
+        let signing = ed25519_dalek::SigningKey::from_bytes(&seed);
+        let public = signing.verifying_key().to_bytes();
+        Self {
+            seed_hex: crate::sha256::hex(&seed),
+            public_hex: crate::sha256::hex(&public),
+        }
+    }
+
+    /// The fixed M2 lab authority key.  It is public test material by design;
+    /// key custody is not claimed in M2.
+    pub fn lab() -> Self {
+        Self::derive(b"irix7 M2 lab authority key v1")
+    }
+
+    /// A valid but wrong key, for the `wrong-authority` fault.
+    pub fn wrong() -> Self {
+        Self::derive(b"irix7 M2 lab wrong authority key v1")
+    }
+}
+
+/// Build the `mesh.*` environment for each node under a fault mode.
+pub fn mesh_environments(
+    nodes: &[Node],
+    fault: Fault,
+) -> (Vec<Option<MeshEnv>>, AuthorityKeys, AuthorityKeys) {
+    let authority = AuthorityKeys::lab();
+    let wrong = AuthorityKeys::wrong();
+    if fault == Fault::NoPeer {
+        return (vec![None, None], authority, wrong);
+    }
+    let mut envs = Vec::new();
+    for (index, node) in nodes.iter().enumerate() {
+        let peer = &nodes[1 - index];
+        let mut env = MeshEnv {
+            peer: Some(format!("{}:{}", node.gateway, peer.mesh_port)),
+            authority: Some(nodes[0].mac_string()),
+            epoch: Some(1),
+            public_key: None,
+            seed: None,
+        };
+        if index == 0 {
+            env.seed = Some(authority.seed_hex.clone());
+        } else {
+            env.public_key = Some(if fault == Fault::WrongAuthority {
+                wrong.public_hex.clone()
+            } else {
+                authority.public_hex.clone()
+            });
+        }
+        envs.push(Some(env));
+    }
+    (envs, authority, wrong)
 }
 
 /// Derive both nodes, write their configs, and return them.
@@ -473,10 +617,9 @@ pub fn write_nvram(
     node: &Node,
     fixture_port: u16,
     module_sha256: &str,
-    mesh_peer: &str,
-    authority: &str,
+    mesh: Option<&MeshEnv>,
 ) -> Result<(), String> {
-    let mut env = node.environment(fixture_port, mesh_peer, authority);
+    let mut env = node.environment(fixture_port, mesh);
     for (name, value) in &mut env {
         if name == "mcp.sha256" {
             *value = module_sha256.to_string();
@@ -617,8 +760,11 @@ pub fn wait_serial(
     let deadline = Instant::now() + timeout;
     loop {
         let text = read_serial(&running.node);
-        if let Some(line) = text.lines().find(|line| line.contains(marker)) {
-            return Ok(line.trim().to_string());
+        // The emulated UART can deliver a line in pieces.  A marker is only
+        // ready once its line is newline-terminated; otherwise a caller can
+        // parse a truncated `BOOT-READY` and fail the readiness check.
+        if let Some(line) = complete_line(&text, marker) {
+            return Ok(line);
         }
         if let Some(status) = running
             .child
@@ -655,6 +801,32 @@ pub struct BootFacts {
     pub mesh_transport_listen: Option<String>,
     /// The `mesh-transport: pass` line.
     pub mesh_transport_pass: Option<String>,
+    /// Every `mesh-transport: disconnected` line.
+    pub mesh_transport_disconnects: Vec<String>,
+    /// The `mesh-join: enabled` line.
+    pub mesh_join_enabled: Option<String>,
+    /// The `mesh-join: disabled` line.
+    pub mesh_join_disabled: Option<String>,
+    /// The `mesh-join: local` line from this boot.
+    pub mesh_join_local: Option<String>,
+    /// The first `mesh-join: request` line.
+    pub mesh_join_request: Option<String>,
+    /// Every `mesh-join: confirm` line (the root re-confirms on rejoin).
+    pub mesh_join_confirms: Vec<String>,
+    /// The first `mesh-join: converged` line.
+    pub mesh_join_converged: Option<String>,
+    /// Every `mesh-join: ack` line (the root received the member's ack).
+    pub mesh_join_acks: Vec<String>,
+    /// Every `mesh-join: ack-sent` line (the member sent its ack).
+    pub mesh_join_acks_sent: Vec<String>,
+    /// The first `mesh-join: duplicate` line.
+    pub mesh_join_duplicate: Option<String>,
+    /// The first `mesh-join: refused` line.
+    pub mesh_join_refused: Option<String>,
+    /// The first `mesh-join: timeout` line.
+    pub mesh_join_timeout: Option<String>,
+    /// The first `mesh-join: reject` line.
+    pub mesh_join_reject: Option<String>,
     /// The `network: mac` line.
     pub network_mac: Option<String>,
     /// The DHCP address line.
@@ -663,7 +835,12 @@ pub struct BootFacts {
 
 impl BootFacts {
     /// Extract the facts from a transcript.
+    ///
+    /// A trailing partial line is ignored: the serial UART can deliver a line
+    /// in pieces, and a fact parsed from half a line is worse than no fact.
     pub fn from_serial(text: &str) -> Self {
+        let cutoff = text.rfind('\n').map(|index| index + 1).unwrap_or(0);
+        let text = &text[..cutoff];
         let find = |prefix: &str| {
             text.lines()
                 .find(|line| line.trim_start().starts_with(prefix))
@@ -683,6 +860,62 @@ impl BootFacts {
             mesh_transport_pass: text
                 .lines()
                 .find(|line| line.contains("mesh-transport: pass "))
+                .map(|line| line.trim().to_string()),
+            mesh_transport_disconnects: text
+                .lines()
+                .filter(|line| line.contains("mesh-transport: disconnected"))
+                .map(|line| line.trim().to_string())
+                .collect(),
+            mesh_join_enabled: text
+                .lines()
+                .find(|line| line.contains("mesh-join: enabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_disabled: text
+                .lines()
+                .find(|line| line.contains("mesh-join: disabled "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_local: text
+                .lines()
+                .find(|line| line.contains("mesh-join: local "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_request: text
+                .lines()
+                .find(|line| line.contains("mesh-join: request "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_confirms: text
+                .lines()
+                .filter(|line| line.contains("mesh-join: confirm "))
+                .map(|line| line.trim().to_string())
+                .collect(),
+            mesh_join_converged: text
+                .lines()
+                .find(|line| line.contains("mesh-join: converged "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_acks: text
+                .lines()
+                .filter(|line| line.contains("mesh-join: ack "))
+                .map(|line| line.trim().to_string())
+                .collect(),
+            mesh_join_acks_sent: text
+                .lines()
+                .filter(|line| line.contains("mesh-join: ack-sent "))
+                .map(|line| line.trim().to_string())
+                .collect(),
+            mesh_join_duplicate: text
+                .lines()
+                .find(|line| line.contains("mesh-join: duplicate "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_refused: text
+                .lines()
+                .find(|line| line.contains("mesh-join: refused "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_timeout: text
+                .lines()
+                .find(|line| line.contains("mesh-join: timeout "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_reject: text
+                .lines()
+                .find(|line| line.contains("mesh-join: reject "))
                 .map(|line| line.trim().to_string()),
             network_mac: find("network: mac "),
             network_ip: text
@@ -800,6 +1033,14 @@ pub fn stop_nodes(options: &Options, nodes: &mut [RunningNode]) -> Vec<String> {
     errors
 }
 
+/// Find a newline-terminated line containing `marker`.
+fn complete_line(text: &str, marker: &str) -> Option<String> {
+    text.split_inclusive('\n')
+        .filter(|line| line.ends_with('\n'))
+        .find(|line| line.contains(marker))
+        .map(|line| line.trim().to_string())
+}
+
 /// The last `count` lines of a transcript.
 pub fn tail(text: &str, count: usize) -> String {
     let lines: Vec<&str> = text.lines().collect();
@@ -892,6 +1133,7 @@ mod tests {
             module: PathBuf::from("module"),
             base_port: 9100,
             timeout: Duration::from_secs(1),
+            fault: Fault::None,
             keep: false,
             verbose: false,
         };
@@ -928,6 +1170,70 @@ mod tests {
             port_base: 9100,
         };
         assert_eq!(node.node_id_string(), "0800694D320000000000000000000000");
+    }
+
+    #[test]
+    fn complete_line_ignores_a_partial_tail() {
+        let text = "BOOT-READY v=1 kernel=up network=up\nBOOT-READY v=1 kernel=up net";
+        assert_eq!(
+            complete_line(text, "BOOT-READY").as_deref(),
+            Some("BOOT-READY v=1 kernel=up network=up")
+        );
+        assert_eq!(complete_line("BOOT-READY v=1 ker", "BOOT-READY"), None);
+        let facts = BootFacts::from_serial(text);
+        assert_eq!(
+            facts.boot_ready.as_deref(),
+            Some("BOOT-READY v=1 kernel=up network=up")
+        );
+    }
+
+    #[test]
+    fn lab_authority_key_is_valid_and_deterministic() {
+        let first = AuthorityKeys::lab();
+        let second = AuthorityKeys::lab();
+        assert_eq!(first.public_hex, second.public_hex);
+        assert_eq!(first.public_hex.len(), 64);
+        assert_ne!(first.public_hex, AuthorityKeys::wrong().public_hex);
+        let signing = ed25519_dalek::SigningKey::from_bytes(&crate::sha256::digest(
+            b"irix7 M2 lab authority key v1",
+        ));
+        assert_eq!(
+            first.public_hex,
+            crate::sha256::hex(&signing.verifying_key().to_bytes())
+        );
+    }
+
+    #[test]
+    fn boot_facts_find_join_lines_after_the_prompt() {
+        let text = "sash> mesh-join: enabled role=member seed_epoch=1 \
+                    authority=08006995F50000000000000000000000 key=00\n\
+                    mesh-join: local role=member epoch=1 members=1 digest=0011 \
+                    snapshot=08006969B60100000000000000000000 state=pending\n\
+                    mesh-join: request from=08006995F50000000000000000000000 \
+                    incarnation=1 last_epoch=1 nonce=7\n\
+                    mesh-join: converged role=member epoch=2 members=2 \
+                    digest=50D2F9696E00259437DF3A5ACCEB0BEF \
+                    snapshot=08006995F50000000000000000000000,08006969B60100000000000000000000\n\
+                    mesh-join: ack from=08006969B60100000000000000000000 epoch=2 digest=50D2F9696E00259437DF3A5ACCEB0BEF\n";
+        let facts = BootFacts::from_serial(text);
+        assert!(facts
+            .mesh_join_enabled
+            .as_deref()
+            .is_some_and(|line| line.contains("role=member")));
+        assert!(facts
+            .mesh_join_local
+            .as_deref()
+            .is_some_and(|line| line.contains("state=pending")));
+        assert!(facts
+            .mesh_join_request
+            .as_deref()
+            .is_some_and(|line| line.contains("last_epoch=1")));
+        assert_eq!(facts.mesh_join_confirms.len(), 0);
+        assert!(facts
+            .mesh_join_converged
+            .as_deref()
+            .is_some_and(|line| line.contains("epoch=2")));
+        assert_eq!(facts.mesh_join_acks.len(), 1);
     }
 
     #[test]
