@@ -1790,6 +1790,8 @@ impl Mesh {
                     self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: confirm", snapshot);
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
+                    self.log_homes(services, snapshot, true);
+                    self.log_shard(services, snapshot, false);
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
