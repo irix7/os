@@ -28,7 +28,8 @@ mod sha256;
 mod shard;
 
 use std::fs;
-use std::net::Ipv4Addr;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpStream};
 use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
@@ -885,11 +886,6 @@ fn raw_line<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
     text.lines().rev().find(|line| line.contains(needle))
 }
 
-/// Count raw lines containing `needle`.
-fn raw_count(text: &str, needle: &str) -> usize {
-    text.lines().filter(|line| line.contains(needle)).count()
-}
-
 /// Re-read both transcripts.
 fn snapshot_facts(nodes: &[Node]) -> Vec<BootFacts> {
     nodes
@@ -944,6 +940,11 @@ fn wait_join_ack(nodes: &[Node], timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Count raw lines containing `needle`.
+fn raw_count(text: &str, needle: &str) -> usize {
+    text.lines().filter(|line| line.contains(needle)).count()
 }
 
 /// Wait until both transcripts carry a complete home group.
@@ -1074,6 +1075,55 @@ fn print_homes_result(homes: &HomesEvidence) {
     }
 }
 
+/// Call one MCP tool on a guest through its host HTTP forward.
+fn mcp_tool(node: &Node, name: &str) -> Result<(), String> {
+    let body = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"{name}\"}}}}"
+    );
+    let request = format!(
+        "POST /mcp HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let mut last = String::new();
+    for attempt in 1..=6 {
+        let result = (|| -> Result<(), String> {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, node.http_port))
+                .map_err(|error| format!("connect {}:{}: {error}", node.name, node.http_port))?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| format!("timeout {}: {error}", node.name))?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| format!("timeout {}: {error}", node.name))?;
+            stream
+                .write_all(request.as_bytes())
+                .and_then(|_| stream.write_all(body.as_bytes()))
+                .map_err(|error| format!("write {}: {error}", node.name))?;
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            if response.contains(" 200 ") && response.contains("\"result\"") {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} {name} response was not 200/result: {}",
+                    node.name,
+                    response.lines().next().unwrap_or("-")
+                ))
+            }
+        })();
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = error;
+                if attempt < 6 {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
 /// Stop and restart the member, then wait for it to rejoin.
 ///
 /// The root's listener and the host mesh relay stay up, so this is the
@@ -1181,6 +1231,12 @@ fn restart_member(
         "mesh-transport: listening",
         Duration::from_secs(60),
     )?;
+    // The root kept its old guest-side mesh socket while the member was down.
+    // The iris forward can keep delivering the new requests to that socket,
+    // so the root's replies never reach the new relay.  Reset the live root's
+    // link; it keeps the confirmed view and re-arms the listener.
+    mcp_tool(&nodes[0], "mesh.reconnect")?;
+    std::thread::sleep(Duration::from_secs(1));
     // Let the restarted forward settle before the relay connects to it; the
     // guest listener is armed, but the host forward can otherwise accept the
     // relay before its guest-side path is ready.
@@ -1318,6 +1374,10 @@ fn restart_root(
         "mesh-transport: listening",
         Duration::from_secs(60),
     )?;
+    // The member kept its old socket while the root was down; reset it for the
+    // same reason as the member-restart path.
+    mcp_tool(&nodes[1], "mesh.reconnect")?;
+    std::thread::sleep(Duration::from_secs(1));
     std::thread::sleep(Duration::from_secs(2));
     if let Some(log) = relay_log {
         let relay = MeshRelay::start_with_log(
@@ -1399,7 +1459,6 @@ fn restart_root(
         epoch_regression,
     })
 }
-
 fn print_join_result(join: &JoinEvidence) {
     println!(
         "join [{}]: {} ({})",

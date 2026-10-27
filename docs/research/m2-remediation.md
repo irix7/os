@@ -229,6 +229,15 @@ feature was added outside the epoch store and the lifecycle fixes below.
    `RECEIVE_DEADLINE_MS` and `SEND_DEADLINE_MS` now match the 30 s heartbeat window; a dead
    peer is still detected by `HEARTBEAT_TIMEOUT_MS`.  This is the diagnosed cause of the
    mesh link resets during the two-way probe, not a blind timeout increase.
+6. **Half-open root socket across a member restart:** after n1 was stopped and restarted,
+   the root kept its old guest-side mesh socket.  The iris host forward delivered the new
+   member requests to that socket, so the root processed and answered them, but the
+   replies went to the old relay connection and the new relay read nothing.  The member
+   logged `rx_frames=0` on every reconnect.  The module now exposes the link-only
+   `mesh.reconnect` MCP tool; the rig aborts and re-arms the live peer's socket before
+   starting the new relay.  The confirmed epoch, route and migration state are retained;
+   no membership change is manufactured.  The root-restart path uses the same control on
+   the live member.
 
 ## 7. Remaining limits
 

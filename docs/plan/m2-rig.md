@@ -245,7 +245,11 @@ old relay, and waits for n0 to be between links.  The wait accepts either a new
 count not greater than `disconnected`); a root already waiting for a peer will never log
 a second disconnect.  It reads raw serial lines, because the disconnect is often the
 final line without a trailing newline.  It then restarts n1 with the same NVRAM image and
-scratch volume and starts a fresh mesh relay.  The rig requires:
+scratch volume, asks the live root (through the MCP tool `mesh.reconnect`) to abort its
+old guest-side mesh socket and re-arm, and starts a fresh mesh relay.  The root keeps its
+confirmed epoch, route and migration state; only the link is reset.  This is required
+because the iris host forward can keep delivering the member's new requests to the old
+root socket, so the root's replies never reach the new relay.  The rig requires:
 
 - `epoch-store: restored epoch=<first> ... source=confirmation` in the member's new boot;
 - the rejoin epoch and digest equal the first epoch and digest;
@@ -263,6 +267,11 @@ a fresh relay.  The rig requires:
 - the live member's next request carries `last_epoch=<confirmed>`;
 - the root confirms the same epoch and the member duplicate-installs it;
 - neither transcript logs `epoch-regression`.
+
+After the root restart the rig asks the live member to `mesh.reconnect` for the same
+reason: the member's old guest-side socket must be aborted before the new relay connects.
+Neither reset advances the epoch or discards the confirmed view; they are link controls,
+not membership changes.
 
 The host tests cover the corrupt/foreign record and wrong-subject cases directly.  The
 older no-store rule (`root restart refuses to lower a member epoch`, host test

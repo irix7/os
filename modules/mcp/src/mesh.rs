@@ -323,6 +323,24 @@ pub unsafe fn init(services: *const Services) -> bool {
     true
 }
 
+/// Reset the mesh link and re-arm the listener.
+///
+/// This is the M2 restart harness control.  It is deliberately link-only: the
+/// confirmed membership, epoch, route and migration state stay in memory, so
+/// the node can rejoin without a process restart.  The old guest-side socket is
+/// aborted and the listener re-arms on the next tick; that is what closes the
+/// half-open connection the iris host forward can retain while a peer is down.
+pub fn admin_reconnect(services: &Services) -> bool {
+    // SAFETY: single-threaded module; the pointer is written once at entry.
+    let slot = unsafe { &mut *core::ptr::addr_of_mut!(MESH) };
+    let Some(mesh) = slot.as_mut() else {
+        return false;
+    };
+    let now = (services.clock_ms)();
+    mesh.disconnect(services, now, "admin-reconnect");
+    true
+}
+
 /// Drive the listener from the module tick.
 pub fn tick(services: &Services) {
     // SAFETY: the module tick is single-threaded.  The pointer is valid for

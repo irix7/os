@@ -91,11 +91,12 @@ the eight-node monitor block (`base+600`) cannot collide.
   the rig recomputes that digest independently.
 - A signed epoch restore on member restart: n1 stops, verifies the stored root-signed
   confirmation, presents `last_epoch=2` rather than the seed, and the root re-confirms the
-  same epoch and snapshot.  The rig fails the run if the restore line is missing or the
-  presented epoch is the seed.
+  same epoch and snapshot.  The rig resets the live root's mesh link (`mesh.reconnect`)
+  so the iris forward cannot keep the old guest-side socket, then starts the relay.  It
+  fails the run if the restore line is missing or the presented epoch is the seed.
 - A signed epoch restore on root restart: n0 stops while n1 stays up, verifies its stored
   signed epoch record, resumes epoch 2, and confirms the live member's `last_epoch=2`
-  without `epoch-regression`.
+  without `epoch-regression`.  The live member gets the same link reset.
 - A real rendezvous mapping: both kernels compute the same object-to-home rows from the
   confirmed snapshot with `mesh-core`; the rig recomputes the fixture IDs, winners and
   digest independently, compares the MCP body with the serial group, and checks the same
