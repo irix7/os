@@ -74,19 +74,28 @@
 extern crate alloc;
 
 mod authority;
+mod gossip;
+mod model;
 mod node;
 mod wire;
 
 pub use authority::{
     AuthorityError, AuthorityRoot, AuthorityVerifier, Expectation, SigningAuthority,
 };
-pub use mesh_service::{
-    FailureDetector, NodeState, Observe, Transition, FAIL_AFTER_MS, SUSPECT_AFTER_MS,
+pub use gossip::{
+    Aggregator, Follower, GossipError, GossipStats, Ingest, FANOUT, MAX_HOPS, RELAY_CAPACITY,
+    SUMMARY_INTERVAL_MS,
 };
+pub use mesh_service::{
+    Change, ChangeSet, FailureDetector, NodeState, Observe, Transition, FAIL_AFTER_MS,
+    SUSPECT_AFTER_MS,
+};
+pub use model::{run as run_model, Convergence, ModelError, ModelResult};
 pub use node::{JoinEvent, JoinNode, Outcome, Role, Tick, MAX_ATTEMPTS, RETRY_INTERVAL_MS};
 pub use wire::{
-    EpochConfirmation, EpochRecord, EpochRefusal, JoinAck, JoinMessage, JoinRequest,
-    MembershipSnapshot, RefusalReason, WireError, MAX_BODY, MAX_MEMBERS, SNAPSHOT_VERSION, VERSION,
+    EpochConfirmation, EpochRecord, EpochRefusal, EpochSummary, JoinAck, JoinMessage, JoinRequest,
+    MemberGrant, MemberSummary, MembershipSnapshot, RefusalReason, WireError, MAX_BODY,
+    MAX_MEMBERS, SNAPSHOT_VERSION, VERSION,
 };
 
 pub use mesh_core::MembershipView;

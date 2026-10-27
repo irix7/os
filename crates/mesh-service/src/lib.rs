@@ -320,6 +320,61 @@ impl fmt::Display for MembershipError {
     }
 }
 
+/// One requested membership change inside a [`MembershipTable::apply`] set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// Add a node, or revive and re-incarnate an existing one.
+    Add {
+        /// The node to add.
+        node: NodeId,
+        /// The joining incarnation, echoed in signed summaries.
+        incarnation: u64,
+    },
+    /// Remove a node from the confirmed view.
+    Remove {
+        /// The node to remove.
+        node: NodeId,
+    },
+}
+
+impl Change {
+    /// The node this change names.
+    pub const fn node(&self) -> NodeId {
+        match self {
+            Self::Add { node, .. } | Self::Remove { node } => *node,
+        }
+    }
+}
+
+/// The result of applying one [`MembershipTable::apply`] change set.
+///
+/// `changed` is false when the set was idempotent; `epoch` is then the
+/// unchanged epoch.  A changed set advances the epoch exactly once regardless
+/// of how many nodes it names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ChangeSet {
+    /// The epoch after the set (or the unchanged epoch).
+    pub epoch: u32,
+    /// Nodes inserted, revived or re-incarnated.
+    pub added: alloc::vec::Vec<NodeId>,
+    /// Nodes removed.
+    pub removed: alloc::vec::Vec<NodeId>,
+    /// Whether the set changed the table.
+    pub changed: bool,
+}
+
+impl ChangeSet {
+    /// Number of node-level changes in the set.
+    pub fn len(&self) -> usize {
+        self.added.len() + self.removed.len()
+    }
+
+    /// Whether the set is empty after idempotence.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// The local, eventually consistent membership view.
 ///
 /// The authority service confirms a global membership epoch; this table is
@@ -526,6 +581,103 @@ impl MembershipTable {
             .checked_add(1)
             .ok_or(MembershipError::EpochOverflow)?;
         Ok(true)
+    }
+
+    /// Apply one change set atomically, advancing the epoch at most once.
+    ///
+    /// A change set is what a gossip round produces: a batch of joins,
+    /// incarnation changes and removals that the authority decided in one
+    /// aggregation step.  The epoch is the authority's change counter, not a
+    /// per-node counter, so a batch of `k` changes must cost exactly one
+    /// epoch.  Per-node [`MembershipTable::join`] and
+    /// [`MembershipTable::leave`] remain the single-change convenience paths.
+    ///
+    /// The whole set is validated before any record is touched.  A zero node,
+    /// a duplicate node in one set, or a resulting view above `MAX_NODES`
+    /// leaves the table unchanged.  Removing a node that is already absent is
+    /// a no-op, and re-adding an alive node with the same incarnation is
+    /// idempotent, so a retried change set cannot inflate the epoch.
+    #[cfg(feature = "confirmed")]
+    pub fn apply(&mut self, changes: &[Change], now_ns: u64) -> Result<ChangeSet, MembershipError> {
+        let mut seen = alloc::collections::BTreeSet::new();
+        for change in changes {
+            let node = change.node();
+            if node.is_zero() {
+                return Err(MembershipError::ZeroNode);
+            }
+            if !seen.insert(node) {
+                return Err(MembershipError::DuplicateNode);
+            }
+        }
+        // Validate capacity against the post-set size before mutating.
+        let mut resulting = self.nodes.len();
+        for change in changes {
+            match change {
+                Change::Add { node, .. } => {
+                    if !self.nodes.contains_key(node) {
+                        resulting += 1;
+                    }
+                }
+                Change::Remove { node } => {
+                    if self.nodes.contains_key(node) {
+                        resulting = resulting.saturating_sub(1);
+                    }
+                }
+            }
+        }
+        if resulting > MAX_NODES {
+            return Err(MembershipError::Capacity);
+        }
+
+        let mut set = ChangeSet {
+            epoch: self.epoch,
+            added: alloc::vec::Vec::new(),
+            removed: alloc::vec::Vec::new(),
+            changed: false,
+        };
+        for change in changes {
+            match change {
+                Change::Add { node, incarnation } => match self.nodes.get_mut(node) {
+                    Some(record) => {
+                        let was_failed = record.state == NodeState::Failed;
+                        let new_incarnation = *incarnation != record.incarnation;
+                        record.state = NodeState::Alive;
+                        record.incarnation = *incarnation;
+                        record.last_seen_ns = now_ns;
+                        if was_failed || new_incarnation {
+                            set.changed = true;
+                            set.added.push(*node);
+                        }
+                    }
+                    None => {
+                        self.nodes.insert(
+                            *node,
+                            NodeRecord {
+                                state: NodeState::Alive,
+                                incarnation: *incarnation,
+                                last_seen_ns: now_ns,
+                            },
+                        );
+                        set.changed = true;
+                        set.added.push(*node);
+                    }
+                },
+                Change::Remove { node } => {
+                    if self.nodes.remove(node).is_some() {
+                        set.changed = true;
+                        set.removed.push(*node);
+                    }
+                }
+            }
+        }
+        if set.changed {
+            self.epoch = self
+                .epoch
+                .checked_add(1)
+                .ok_or(MembershipError::EpochOverflow)?;
+            set.epoch = self.epoch;
+        }
+        Ok(set)
     }
 
     /// Take a deterministic routing snapshot.
@@ -891,5 +1043,123 @@ mod tests {
             Some(NodeState::Failed)
         );
         assert_eq!(table.snapshot().len(), 1);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn change_set_advances_the_epoch_exactly_once() {
+        let mut table = MembershipTable::confirmed(4, &[node(1)], 0).expect("table");
+        let set = table
+            .apply(
+                &[
+                    Change::Add {
+                        node: node(2),
+                        incarnation: 7,
+                    },
+                    Change::Add {
+                        node: node(3),
+                        incarnation: 9,
+                    },
+                    Change::Add {
+                        node: node(4),
+                        incarnation: 11,
+                    },
+                ],
+                0,
+            )
+            .expect("batch join");
+        assert!(set.changed);
+        assert_eq!(set.epoch, 5);
+        assert_eq!(table.epoch(), 5);
+        assert_eq!(set.added, vec![node(2), node(3), node(4)]);
+        assert_eq!(table.active_count(), 4);
+        assert_eq!(table.get(node(2)).map(|record| record.incarnation), Some(7));
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn batched_removal_is_one_epoch_for_the_whole_set() {
+        let mut table =
+            MembershipTable::confirmed(2, &[node(1), node(2), node(3), node(4)], 0).expect("table");
+        let set = table
+            .apply(
+                &[
+                    Change::Remove { node: node(2) },
+                    Change::Remove { node: node(3) },
+                ],
+                0,
+            )
+            .expect("batch removal");
+        assert_eq!(set.epoch, 3);
+        assert_eq!(set.removed, vec![node(2), node(3)]);
+        assert_eq!(table.snapshot().nodes, vec![node(1), node(4)]);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn idempotent_change_set_does_not_advance_the_epoch() {
+        let mut table = MembershipTable::confirmed(6, &[node(1), node(2)], 0).expect("table");
+        let set = table
+            .apply(
+                &[
+                    Change::Add {
+                        node: node(2),
+                        incarnation: 0,
+                    },
+                    Change::Remove { node: node(9) },
+                ],
+                100,
+            )
+            .expect("idempotent");
+        assert!(!set.changed);
+        assert_eq!(set.epoch, 6);
+        assert_eq!(table.epoch(), 6);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn failed_member_revival_is_a_membership_change() {
+        let mut table = MembershipTable::confirmed(2, &[node(1), node(2)], 0).expect("table");
+        table.fail(node(2)).expect("fail");
+        let set = table
+            .apply(
+                &[Change::Add {
+                    node: node(2),
+                    incarnation: 3,
+                }],
+                10,
+            )
+            .expect("revive");
+        assert!(set.changed);
+        assert_eq!(set.epoch, 3);
+        assert_eq!(table.snapshot().len(), 2);
+    }
+
+    #[cfg(feature = "confirmed")]
+    #[test]
+    fn invalid_change_set_leaves_the_table_untouched() {
+        let mut table = MembershipTable::confirmed(2, &[node(1)], 0).expect("table");
+        assert_eq!(
+            table.apply(
+                &[Change::Add {
+                    node: NodeId::ZERO,
+                    incarnation: 1
+                }],
+                0
+            ),
+            Err(MembershipError::ZeroNode)
+        );
+        assert_eq!(
+            table.apply(
+                &[
+                    Change::Remove { node: node(2) },
+                    Change::Remove { node: node(2) }
+                ],
+                0
+            ),
+            Err(MembershipError::DuplicateNode)
+        );
+        assert_eq!(table.epoch(), 2);
+        assert_eq!(table.active_count(), 1);
     }
 }

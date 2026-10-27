@@ -139,39 +139,53 @@ fn eight_members_converge_through_bounded_signed_refresh() {
     assert_eq!(members[0].epoch(), 2);
     assert_eq!(members[6].epoch(), 8);
 
-    // Every converged member now re-asks on the same signed path.  The root
-    // confirms its current epoch and full list; it does not advance again.
+    // Every converged member installs the root's signed aggregate, then
+    // reports liveness with a small summary instead of a full join request.
+    // The root accepts each in-epoch summary (refreshing liveness, no epoch
+    // advance) and signs one aggregate for the current view.
     let refresh_at = 1_000 + REFRESH_INTERVAL_MS + 10;
-    for (index, (member, member_id)) in members.iter_mut().zip(&member_ids).enumerate() {
-        let request = match member.poll(refresh_at) {
-            Tick::Refresh(request) => request,
-            other => panic!("member {index} expected a refresh, got {other:?}"),
-        };
-        assert_eq!(request.last_epoch, member.epoch());
-        let outcome = root.on_message(*member_id, JoinMessage::Request(request), refresh_at);
-        let confirmation = match outcome.reply {
-            Some(JoinMessage::Confirm(confirmation)) => confirmation,
-            other => panic!("expected confirmation, got {other:?}"),
-        };
-        assert_eq!(confirmation.epoch, 8);
-        let outcome = member.on_message(root_id, JoinMessage::Confirm(confirmation), refresh_at);
+    let aggregate = root
+        .publish_aggregate()
+        .expect("root publishes an aggregate");
+    assert_eq!(aggregate.epoch, 8, "a refresh must not advance the epoch");
+    for (index, member) in members.iter_mut().enumerate() {
+        let outcome = member.on_message(root_id, JoinMessage::Epoch(aggregate.clone()), refresh_at);
         assert!(
             matches!(
                 outcome.event,
-                JoinEvent::Converged(ref snapshot)
-                    | JoinEvent::Refreshed(ref snapshot)
+                JoinEvent::Converged(ref snapshot) | JoinEvent::Refreshed(ref snapshot)
                     if snapshot.epoch == 8 && snapshot.len() == 8
             ),
             "member {index} did not install the eight-node view: {:?}",
             outcome.event
         );
-        if let Some(JoinMessage::Ack(ack)) = outcome.reply {
-            let outcome = root.on_message(*member_id, JoinMessage::Ack(ack), refresh_at);
-            assert!(matches!(outcome.event, JoinEvent::Acked { .. }));
-        } else {
-            panic!("member {index} did not acknowledge the refresh");
-        }
     }
+
+    // All members now hold epoch 8; their summaries match the signed aggregate.
+    let summary_at = refresh_at + REFRESH_INTERVAL_MS + 1;
+    for (index, (member, member_id)) in members.iter_mut().zip(&member_ids).enumerate() {
+        assert_eq!(
+            member.poll(summary_at),
+            Tick::Summary,
+            "member {index} expected a summary tick"
+        );
+        let summary = member.member_summary().expect("member summary");
+        assert_eq!(summary.epoch, 8);
+        let outcome = root.on_message(*member_id, JoinMessage::Summary(summary), refresh_at);
+        assert!(
+            matches!(outcome.event, JoinEvent::None),
+            "root rejected summary from member {index}: {:?}",
+            outcome.event
+        );
+    }
+
+    // A second aggregate for the unchanged view still signs at epoch 8.
+    let again = root.publish_aggregate().expect("root re-publishes");
+    assert_eq!(again.epoch, 8, "a re-publish must not advance the epoch");
+    assert_eq!(
+        again.signature, aggregate.signature,
+        "same view yields the same signature"
+    );
 
     let root_snapshot = root.snapshot();
     assert_eq!(root.epoch(), 8, "a refresh must not advance the epoch");
@@ -251,10 +265,9 @@ fn duplicate_confirmation_is_idempotent_and_a_new_epoch_is_not() {
     // The duplicate is terminal for the rejoin attempt.  M3 then schedules one
     // bounded epoch refresh; it does not retry the same request.
     assert_eq!(pair.member.poll(2_000 + RETRY_INTERVAL_MS - 1), Tick::Idle);
-    match pair.member.poll(2_000 + REFRESH_INTERVAL_MS) {
-        Tick::Refresh(request) => assert_eq!(request.last_epoch, 2),
-        other => panic!("expected a refresh, got {other:?}"),
-    }
+    assert_eq!(pair.member.poll(2_000 + REFRESH_INTERVAL_MS), Tick::Summary);
+    let summary = pair.member.member_summary().expect("summary");
+    assert_eq!(summary.epoch, 2);
     let _ = first;
 }
 
@@ -530,6 +543,7 @@ fn retry_reuses_the_request_and_then_times_out() {
             }
             Tick::TimedOut => break,
             Tick::Refresh(_) => panic!("a pending request must not refresh"),
+            Tick::Summary => panic!("pre-convergence member must not refresh"),
             Tick::Idle => panic!("expected progress"),
         }
         assert!(sends <= MAX_ATTEMPTS);
@@ -560,6 +574,7 @@ fn partition_after_convergence_keeps_the_last_view() {
             Tick::Send(_) => {}
             Tick::TimedOut => break,
             Tick::Refresh(_) => panic!("a pending rejoin must not refresh"),
+            Tick::Summary => panic!("pre-convergence member must not refresh"),
             Tick::Idle => panic!("expected progress"),
         }
     }
@@ -807,7 +822,7 @@ fn events_named(events: &[JoinEvent], label: &str) -> usize {
                 (label, event),
                 ("suspect", JoinEvent::Suspect { .. })
                     | ("failed", JoinEvent::Failed { .. })
-                    | ("removed", JoinEvent::Removed { .. })
+                    | ("removed_batch", JoinEvent::RemovedBatch { .. })
                     | ("lost", JoinEvent::AuthorityLost { .. })
                     | ("recovered", JoinEvent::Recovered { .. })
             )
@@ -840,7 +855,7 @@ fn root_removes_a_failed_member_at_boundaries_and_only_once() {
 
     let failed = pair.root.poll_failures(1_000 + crate::FAIL_AFTER_MS);
     assert_eq!(events_named(&failed, "failed"), 1);
-    assert_eq!(events_named(&failed, "removed"), 1);
+    assert_eq!(events_named(&failed, "removed_batch"), 1);
     assert_eq!(pair.root.epoch(), 3);
     assert_eq!(pair.root.snapshot().members, vec![pair.root_id]);
     assert_eq!(pair.root.snapshot().digest(), pair.root.snapshot().digest());

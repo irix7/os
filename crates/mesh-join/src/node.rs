@@ -27,6 +27,10 @@
 //!
 //! [`EpochRecord`]: crate::wire::EpochRecord
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+
 use mesh_service::{FailureDetector, MembershipError, MembershipTable, NodeState};
 use sys_primitives::{NodeId, NodeKey};
 
@@ -37,6 +41,7 @@ use crate::wire::{
     EpochConfirmation, EpochRecord, EpochRefusal, JoinAck, JoinMessage, JoinRequest,
     MembershipSnapshot, RefusalReason,
 };
+use crate::wire::{EpochSummary, MemberGrant, MemberSummary};
 
 /// Interval between retries of the same join request.
 pub const RETRY_INTERVAL_MS: u64 = 5_000;
@@ -85,6 +90,13 @@ pub enum Tick {
     /// only produced after a member has converged.  The authority still decides
     /// the epoch and the member list.
     Refresh(JoinRequest),
+    /// Send one small liveness summary at the installed epoch.
+    ///
+    /// After the first confirmation a converged member stops sending signed
+    /// join requests every interval.  It sends this summary instead, and the
+    /// root signs at most one aggregate per change set rather than one full
+    /// confirmation per member per refresh.
+    Summary,
     /// The attempt budget is exhausted; log once and keep the last view.
     TimedOut,
 }
@@ -150,6 +162,13 @@ pub enum JoinEvent {
         /// The new confirmed view.
         snapshot: MembershipSnapshot,
     },
+    /// The root removed a whole failure set in one epoch.
+    RemovedBatch {
+        /// Every member removed in the set.
+        nodes: Vec<NodeId>,
+        /// The confirmed view after the set.
+        snapshot: MembershipSnapshot,
+    },
     /// A member lost contact with the authority.  It cannot confirm a new
     /// epoch and must not create a second authoritative home.
     AuthorityLost {
@@ -189,6 +208,12 @@ struct Outstanding {
 struct RootState {
     authority: AuthorityRoot,
     converged: MembershipSnapshot,
+    /// The incarnation the root confirmed for each member.
+    incarnations: BTreeMap<NodeId, u64>,
+    /// Highest summary counter accepted per member in the current epoch.
+    counters: BTreeMap<NodeId, u64>,
+    /// The last aggregate this root signed, if any.
+    published: Option<EpochSummary>,
 }
 
 struct MemberState {
@@ -203,6 +228,10 @@ struct MemberState {
     root_state: NodeState,
     /// Monotonic time of the last accepted frame from the root.
     root_seen_ms: u64,
+    /// The incarnation the root most recently confirmed for this member.
+    incarnation: u64,
+    /// Monotonic summary counter (one per refresh interval).
+    summary_counter: u64,
     /// Whether the root's liveness is tracked (after the first confirmation).
     root_tracked: bool,
     /// Whether this member currently has an authoritative view.  A lost
@@ -217,8 +246,11 @@ struct MemberState {
 }
 
 enum Engine {
-    Root(RootState),
-    Member(MemberState),
+    /// Boxed so the enum stays compact: both variants hold the potentially
+    /// large state tables behind a pointer, so `Engine` itself is a single
+    /// pointer and there is no large size difference between variants.
+    Root(Box<RootState>),
+    Member(Box<MemberState>),
 }
 
 /// The local join state for one node.
@@ -245,10 +277,17 @@ impl JoinNode {
             root: self_id,
             seed_epoch,
             sequence: 0,
-            engine: Engine::Root(RootState {
+            engine: Engine::Root(Box::new(RootState {
                 authority,
-                converged,
-            }),
+                converged: converged.clone(),
+                incarnations: {
+                    let mut incarnations = BTreeMap::new();
+                    incarnations.insert(self_id, 0);
+                    incarnations
+                },
+                counters: BTreeMap::new(),
+                published: None,
+            })),
         })
     }
 
@@ -273,7 +312,7 @@ impl JoinNode {
             root,
             seed_epoch,
             sequence: 0,
-            engine: Engine::Member(MemberState {
+            engine: Engine::Member(Box::new(MemberState {
                 table,
                 verifier,
                 outstanding: None,
@@ -283,10 +322,12 @@ impl JoinNode {
                 detector: FailureDetector::m2(),
                 root_state: NodeState::Alive,
                 root_seen_ms: now_ms,
+                incarnation: 0,
+                summary_counter: 0,
                 root_tracked: false,
                 authority_current: false,
                 refresh_at_ms: None,
-            }),
+            })),
         })
     }
 
@@ -552,10 +593,10 @@ impl JoinNode {
                     };
                     events.push(event);
                 }
-                for removal in state.authority.remove_failed() {
+                if let Some(removal) = state.authority.remove_failed() {
                     state.converged = removal.snapshot.clone();
-                    events.push(JoinEvent::Removed {
-                        node: removal.node,
+                    events.push(JoinEvent::RemovedBatch {
+                        nodes: removal.nodes,
                         snapshot: removal.snapshot,
                     });
                 }
@@ -637,8 +678,6 @@ impl JoinNode {
     /// Retry the outstanding request after the interval, up to the budget, and
     /// start one bounded epoch refresh after a converged member's interval.
     pub fn poll(&mut self, now_ms: u64) -> Tick {
-        let self_id = self.self_id;
-        let root = self.root;
         match &mut self.engine {
             Engine::Root(_) => Tick::Idle,
             Engine::Member(state) => {
@@ -649,9 +688,8 @@ impl JoinNode {
                 if !state.refresh_due(now_ms) {
                     return Tick::Idle;
                 }
-                let sequence = self.sequence.wrapping_add(1);
-                self.sequence = sequence;
-                Tick::Refresh(state.new_attempt(self_id, root, now_ms, sequence, true))
+                state.refresh_at_ms = Some(now_ms.saturating_add(REFRESH_INTERVAL_MS));
+                Tick::Summary
             }
         }
     }
@@ -668,6 +706,71 @@ impl JoinNode {
             Engine::Member(state) => state.handle(self_id, src, message, now_ms),
         }
     }
+    /// Build the member's periodic liveness summary at the installed epoch.
+    ///
+    /// Member only.  Returns `None` before the first confirmation or when the
+    /// authority view is lost.  The counter advances on every call so a replay
+    /// of an old summary is detectable.
+    pub fn member_summary(&mut self) -> Option<MemberSummary> {
+        let Engine::Member(state) = &mut self.engine else {
+            return None;
+        };
+        if !state.authority_current || state.converged.is_none() {
+            return None;
+        }
+        let snapshot = state.snapshot();
+        let counter = {
+            state.summary_counter = state.summary_counter.saturating_add(1);
+            state.summary_counter
+        };
+        Some(MemberSummary {
+            node: self.self_id,
+            epoch: snapshot.epoch,
+            digest: snapshot.digest(),
+            incarnation: state.incarnation,
+            counter,
+        })
+    }
+
+    /// Root: sign one aggregate for the current confirmed view and publish it.
+    ///
+    /// Returns `None` when not a root.  The signed aggregate binds every
+    /// member `(node, incarnation)` to `epoch + digest`; it is the single
+    /// signature per change set.
+    pub fn publish_aggregate(&mut self) -> Option<EpochSummary> {
+        let Engine::Root(state) = &mut self.engine else {
+            return None;
+        };
+        let snapshot = state.converged.clone();
+        let mut grants: Vec<MemberGrant> = snapshot
+            .members
+            .iter()
+            .map(|&node| MemberGrant {
+                node,
+                incarnation: state.incarnations.get(&node).copied().unwrap_or(0),
+            })
+            .collect();
+        grants.sort_by_key(|grant| grant.node);
+        let mut summary = EpochSummary::new(self.root, snapshot.epoch, &grants).ok()?;
+        summary.signature = state.authority.sign(&summary.signed_bytes());
+        state.published = Some(summary.clone());
+        Some(summary)
+    }
+
+    /// Member: install a root-signed aggregate.
+    ///
+    /// The signature is verified before any field is trusted.  The aggregate
+    /// must name this member and must not move the local epoch backwards.
+    pub fn install_aggregate(
+        &mut self,
+        summary: &EpochSummary,
+        now_ms: u64,
+    ) -> Result<JoinEvent, &'static str> {
+        let Engine::Member(state) = &mut self.engine else {
+            return Err("not-member");
+        };
+        state.install_aggregate(self.self_id, summary, now_ms)
+    }
 }
 
 impl RootState {
@@ -680,6 +783,8 @@ impl RootState {
                 match self.authority.confirm(&request, now_ms) {
                     Ok(confirmation) => {
                         let snapshot = confirmation.snapshot();
+                        self.incarnations
+                            .insert(confirmation.subject, confirmation.incarnation);
                         self.converged = snapshot.clone();
                         Outcome {
                             reply: Some(JoinMessage::Confirm(confirmation)),
@@ -709,11 +814,6 @@ impl RootState {
                     return Outcome::rejected("ack-subject");
                 }
                 if ack.epoch < self.converged.epoch {
-                    // A later join advanced the epoch before this ack arrived.
-                    // The member acknowledged a confirmation that was correct
-                    // when issued; it is stale, not an equivocation.  Ignore
-                    // it and let the member's next refresh confirm the current
-                    // view.
                     return Outcome {
                         reply: None,
                         event: JoinEvent::Rejected("ack-stale"),
@@ -729,6 +829,28 @@ impl RootState {
                         epoch: ack.epoch,
                         digest: ack.digest,
                     },
+                }
+            }
+            JoinMessage::Summary(summary) => {
+                if summary.epoch != self.converged.epoch
+                    || summary.digest != self.converged.digest()
+                {
+                    return Outcome::rejected("epoch-digest-mismatch");
+                }
+                let known = self.incarnations.get(&src).copied().unwrap_or(0);
+                if known != 0 && summary.incarnation != known {
+                    return Outcome::rejected("incarnation-mismatch");
+                }
+                let prev = self.counters.get(&src).copied().unwrap_or(0);
+                if summary.counter <= prev {
+                    return Outcome::rejected("stale-counter");
+                }
+                self.counters.insert(src, summary.counter);
+                self.authority
+                    .observe_with_incarnation(src, summary.incarnation, now_ms);
+                Outcome {
+                    reply: None,
+                    event: JoinEvent::None,
                 }
             }
             _ => Outcome::rejected("unexpected-message"),
@@ -867,7 +989,47 @@ impl MemberState {
                     },
                 }
             }
+            JoinMessage::Epoch(summary) => {
+                match self.install_aggregate(self_id, &summary, now_ms) {
+                    Ok(event) => Outcome { reply: None, event },
+                    Err(reason) => Outcome::rejected(reason),
+                }
+            }
             _ => Outcome::rejected("unexpected-message"),
+        }
+    }
+
+    fn install_aggregate(
+        &mut self,
+        self_id: NodeId,
+        summary: &EpochSummary,
+        now_ms: u64,
+    ) -> Result<JoinEvent, &'static str> {
+        self.verifier
+            .verify_signature(&summary.signed_bytes(), &summary.signature)
+            .map_err(|_| "bad-signature")?;
+        let snapshot = summary.snapshot().map_err(|_| "digest-mismatch")?;
+        if !snapshot.members.contains(&self_id) {
+            return Err("not-a-member");
+        }
+        if snapshot.epoch < self.table.epoch() {
+            return Err("epoch-regression");
+        }
+        self.table
+            .install(snapshot.epoch, &snapshot.members, now_ms)
+            .map_err(|_| "install-failed")?;
+        self.incarnation = summary.grant(self_id).unwrap_or(0);
+        self.root_tracked = true;
+        self.root_seen_ms = now_ms;
+        self.root_state = NodeState::Alive;
+        self.authority_current = true;
+        self.refresh_at_ms = Some(now_ms.saturating_add(REFRESH_INTERVAL_MS));
+        let was_converged = self.converged.is_some();
+        self.converged = Some(snapshot.clone());
+        if was_converged {
+            Ok(JoinEvent::Refreshed(snapshot))
+        } else {
+            Ok(JoinEvent::Converged(snapshot))
         }
     }
 

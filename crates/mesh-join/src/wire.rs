@@ -32,6 +32,10 @@ pub const KIND_CONFIRM: u8 = 2;
 pub const KIND_REFUSAL: u8 = 3;
 /// The member's terminal acknowledgement.
 pub const KIND_ACK: u8 = 4;
+/// A member liveness summary.
+pub const KIND_SUMMARY: u8 = 5;
+/// A root-signed epoch aggregate.
+pub const KIND_EPOCH: u8 = 6;
 
 /// Fixed prefix: magic, version, kind, flags.
 const PREFIX: usize = 8;
@@ -67,6 +71,8 @@ pub enum WireError {
     ZeroNode,
     /// The message is shorter or longer than its kind requires.
     LengthMismatch,
+    /// A member list does not match the digest that claims it.
+    DigestMismatch,
     /// The refusal reason is unknown.
     BadReason,
     /// The caller's output buffer is too small.
@@ -87,6 +93,7 @@ impl WireError {
             Self::NonCanonicalMembers => "non-canonical-members",
             Self::ZeroNode => "zero-node",
             Self::LengthMismatch => "length-mismatch",
+            Self::DigestMismatch => "digest-mismatch",
             Self::BadReason => "bad-reason",
             Self::OutputTooSmall => "output-too-small",
         }
@@ -640,6 +647,251 @@ impl JoinAck {
     }
 }
 
+/// The incarnation the authority confirmed for one member.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberGrant {
+    /// The confirmed member.
+    pub node: NodeId,
+    /// The incarnation confirmed for that member.
+    pub incarnation: u64,
+}
+
+/// A member's liveness summary at the epoch it currently holds.
+///
+/// The summary is small and unsigned on the wire: its authority comes from the
+/// root-signed [`EpochSummary`] that binds `node` and `incarnation` to `epoch`
+/// and `digest`.  A receiver validates every field against the signed aggregate
+/// it holds, so a member cannot claim an epoch or incarnation the root did not
+/// issue, and a replayed summary is rejected by the monotonic `counter`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MemberSummary {
+    /// The reporting member.
+    pub node: NodeId,
+    /// The epoch the member holds.
+    pub epoch: u32,
+    /// The digest of the member's snapshot.
+    pub digest: [u8; 16],
+    /// The member's join incarnation.
+    pub incarnation: u64,
+    /// Monotonic per-incarnation summary counter.
+    pub counter: u64,
+}
+
+impl MemberSummary {
+    /// Encoded body length, including the prefix.
+    pub const LEN: usize = PREFIX + 16 + 4 + 16 + 8 + 8;
+
+    /// Encode into `out`.
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, WireError> {
+        if out.len() < Self::LEN {
+            return Err(WireError::OutputTooSmall);
+        }
+        write_prefix(out, KIND_SUMMARY);
+        let mut cursor = PREFIX;
+        put_node(out, &mut cursor, &self.node);
+        put_u32(out, &mut cursor, self.epoch);
+        out[cursor..cursor + 16].copy_from_slice(&self.digest);
+        cursor += 16;
+        put_u64(out, &mut cursor, self.incarnation);
+        put_u64(out, &mut cursor, self.counter);
+        debug_assert_eq!(cursor, Self::LEN);
+        Ok(Self::LEN)
+    }
+
+    fn decode(body: &[u8]) -> Result<Self, WireError> {
+        if body.len() != Self::LEN - PREFIX {
+            return Err(WireError::LengthMismatch);
+        }
+        let mut reader = Reader::new(body);
+        let node = reader.node()?;
+        let epoch = reader.u32()?;
+        let mut digest = [0u8; 16];
+        digest.copy_from_slice(reader.take(16)?);
+        let incarnation = reader.u64()?;
+        let counter = reader.u64()?;
+        if node.is_zero() {
+            return Err(WireError::ZeroNode);
+        }
+        if epoch == 0 || counter == 0 {
+            return Err(WireError::NonCanonical);
+        }
+        Ok(Self {
+            node,
+            epoch,
+            digest,
+            incarnation,
+            counter,
+        })
+    }
+}
+
+/// A root-signed aggregate of the whole membership at one epoch.
+///
+/// This is the aggregated refresh: one signature and one record per change set,
+/// carrying every member's confirmed incarnation.  A member installs the
+/// snapshot once, and its periodic [`MemberSummary`] is then verifiable against
+/// this record without a per-member authority signature.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochSummary {
+    /// The authority root that signed the aggregate.
+    pub root: NodeId,
+    /// The aggregate epoch.
+    pub epoch: u32,
+    /// Confirmed members and incarnations, in canonical node order.
+    pub grants: Vec<MemberGrant>,
+    /// Digest of the member list at this epoch.
+    pub digest: [u8; 16],
+    /// Ed25519 signature over [`EpochSummary::signed_bytes`].
+    pub signature: [u8; 64],
+}
+
+impl EpochSummary {
+    /// The domain separator for the signed aggregate.
+    pub const DOMAIN: &'static [u8] = b"IRIX7-M3-EPOCH-SUMMARY-v1";
+    /// Fixed body length without the grants, including the prefix.
+    pub const FIXED: usize = PREFIX + 16 + 4 + 2 + 2 + 16 + 64;
+    /// Encoded length for `members` grants.
+    pub const fn len(members: usize) -> usize {
+        Self::FIXED + 24 * members
+    }
+    /// The largest encoded aggregate (a full 128-member view).
+    pub const MAX_LEN: usize = Self::len(MAX_MEMBERS);
+
+    /// Build an aggregate from an ordered member list and incarnations.
+    ///
+    /// The list is canonicalised and cross-checked against `grants`: a grant
+    /// for an unknown member, a duplicate, or a missing grant is rejected.
+    pub fn new(root: NodeId, epoch: u32, grants: &[MemberGrant]) -> Result<Self, WireError> {
+        let nodes: Vec<NodeId> = grants.iter().map(|grant| grant.node).collect();
+        let snapshot = MembershipSnapshot::new(epoch, &nodes)?;
+        let mut sorted = grants.to_vec();
+        sorted.sort_unstable_by_key(|grant| grant.node);
+        for pair in sorted.windows(2) {
+            if pair[0].node == pair[1].node {
+                return Err(WireError::NonCanonicalMembers);
+            }
+        }
+        Ok(Self {
+            root,
+            epoch,
+            digest: snapshot.digest(),
+            grants: sorted,
+            signature: [0u8; 64],
+        })
+    }
+
+    /// The snapshot this aggregate authorises.
+    pub fn snapshot(&self) -> Result<MembershipSnapshot, WireError> {
+        let nodes: Vec<NodeId> = self.grants.iter().map(|grant| grant.node).collect();
+        let snapshot = MembershipSnapshot::new(self.epoch, &nodes)?;
+        if snapshot.digest() != self.digest {
+            return Err(WireError::DigestMismatch);
+        }
+        Ok(snapshot)
+    }
+
+    /// The confirmed incarnation for `node`, if it is a member.
+    pub fn grant(&self, node: NodeId) -> Option<u64> {
+        self.grants
+            .binary_search_by(|grant| grant.node.cmp(&node))
+            .ok()
+            .map(|index| self.grants[index].incarnation)
+    }
+
+    /// The canonical signed bytes.
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            Self::DOMAIN.len() + 1 + 16 + 4 + 2 + 2 + 24 * self.grants.len() + 16,
+        );
+        out.extend_from_slice(Self::DOMAIN);
+        out.push(VERSION);
+        out.extend_from_slice(self.root.as_bytes());
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&(self.grants.len() as u16).to_le_bytes());
+        out.extend_from_slice(&0u16.to_le_bytes());
+        for grant in &self.grants {
+            out.extend_from_slice(grant.node.as_bytes());
+            out.extend_from_slice(&grant.incarnation.to_le_bytes());
+        }
+        out.extend_from_slice(&self.digest);
+        out
+    }
+
+    /// Encode into `out`.
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, WireError> {
+        let len = Self::len(self.grants.len());
+        if out.len() < len {
+            return Err(WireError::OutputTooSmall);
+        }
+        if len > MAX_BODY {
+            return Err(WireError::TooLong);
+        }
+        write_prefix(out, KIND_EPOCH);
+        let mut cursor = PREFIX;
+        put_node(out, &mut cursor, &self.root);
+        put_u32(out, &mut cursor, self.epoch);
+        put_u16(out, &mut cursor, self.grants.len() as u16);
+        put_u16(out, &mut cursor, 0);
+        for grant in &self.grants {
+            put_node(out, &mut cursor, &grant.node);
+            put_u64(out, &mut cursor, grant.incarnation);
+        }
+        out[cursor..cursor + 16].copy_from_slice(&self.digest);
+        cursor += 16;
+        out[cursor..cursor + 64].copy_from_slice(&self.signature);
+        cursor += 64;
+        debug_assert_eq!(cursor, len);
+        Ok(len)
+    }
+
+    fn decode(body: &[u8]) -> Result<Self, WireError> {
+        if body.len() < Self::FIXED - PREFIX {
+            return Err(WireError::TooShort);
+        }
+        let mut reader = Reader::new(body);
+        let root = reader.node()?;
+        let epoch = reader.u32()?;
+        let count = reader.u16()? as usize;
+        reader.u16()?; // reserved
+        if count == 0 || count > MAX_MEMBERS {
+            return Err(WireError::BadCount);
+        }
+        let expected = Self::len(count) - PREFIX;
+        if body.len() != expected {
+            return Err(WireError::LengthMismatch);
+        }
+        let mut grants = Vec::with_capacity(count);
+        for _ in 0..count {
+            let node = reader.node()?;
+            let incarnation = reader.u64()?;
+            grants.push(MemberGrant { node, incarnation });
+        }
+        let mut digest = [0u8; 16];
+        digest.copy_from_slice(reader.take(16)?);
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(reader.take(64)?);
+        if root.is_zero() || epoch == 0 {
+            return Err(WireError::NonCanonical);
+        }
+        for pair in grants.windows(2) {
+            if pair[0].node >= pair[1].node {
+                return Err(WireError::NonCanonicalMembers);
+            }
+        }
+        let summary = Self {
+            root,
+            epoch,
+            grants,
+            digest,
+            signature,
+        };
+        // Recompute the digest so a decoded aggregate cannot claim a member
+        // list it does not carry.
+        summary.snapshot()?;
+        Ok(summary)
+    }
+}
+
 /// One decoded join body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum JoinMessage {
@@ -651,6 +903,10 @@ pub enum JoinMessage {
     Refused(EpochRefusal),
     /// The member acknowledges an installed confirmation.
     Ack(JoinAck),
+    /// A member's liveness summary at the epoch it holds.
+    Summary(MemberSummary),
+    /// The root's signed aggregate for one change set.
+    Epoch(EpochSummary),
 }
 
 impl JoinMessage {
@@ -677,6 +933,8 @@ impl JoinMessage {
             KIND_CONFIRM => Ok(Self::Confirm(EpochConfirmation::decode(payload)?)),
             KIND_REFUSAL => Ok(Self::Refused(EpochRefusal::decode(payload)?)),
             KIND_ACK => Ok(Self::Ack(JoinAck::decode(payload)?)),
+            KIND_SUMMARY => Ok(Self::Summary(MemberSummary::decode(payload)?)),
+            KIND_EPOCH => Ok(Self::Epoch(EpochSummary::decode(payload)?)),
             _ => Err(WireError::BadKind),
         }
     }
@@ -688,6 +946,8 @@ impl JoinMessage {
             Self::Confirm(confirmation) => confirmation.encode(out),
             Self::Refused(refusal) => refusal.encode(out),
             Self::Ack(ack) => ack.encode(out),
+            Self::Summary(summary) => summary.encode(out),
+            Self::Epoch(summary) => summary.encode(out),
         }
     }
 
@@ -698,6 +958,8 @@ impl JoinMessage {
             Self::Confirm(_) => "confirm",
             Self::Refused(_) => "refused",
             Self::Ack(_) => "ack",
+            Self::Summary(_) => "summary",
+            Self::Epoch(_) => "epoch",
         }
     }
 
@@ -710,6 +972,9 @@ impl JoinMessage {
             Self::Request(_) => MessageKind::Request,
             Self::Confirm(_) | Self::Refused(_) => MessageKind::Response,
             Self::Ack(_) => MessageKind::Completion,
+            // Gossip is a push stream with no request/response pairing: a
+            // summary and an epoch aggregate are both control records.
+            Self::Summary(_) | Self::Epoch(_) => MessageKind::Control,
         }
     }
 }
