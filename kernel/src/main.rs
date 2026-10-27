@@ -22,6 +22,7 @@ use core::panic::PanicInfo;
 use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
+pub mod arch;
 pub mod autoload;
 pub mod boot_config;
 pub mod cache;

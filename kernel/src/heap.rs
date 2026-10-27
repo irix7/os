@@ -49,7 +49,8 @@ unsafe impl GlobalAlloc for BumpAllocator {
             let Some(phys) = crate::frames::alloc_frames(pages) else {
                 return null_mut();
             };
-            let base = (phys as usize) | 0x8000_0000;
+            let base =
+                (phys as usize) + unsafe { crate::arch::arch().direct_map_offset() as usize };
             NEXT.store(base, Ordering::SeqCst);
             END.store(base + pages * PAGE, Ordering::SeqCst);
         }

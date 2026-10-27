@@ -9,3 +9,9 @@ rustflags = [
   "-C", "link-arg=-e",
   "-C", "link-arg=_start",
 ]
+
+[target.x86_64-irix7]
+rustflags = [
+  "-C", "link-arg=-e",
+  "-C", "link-arg=_start",
+]

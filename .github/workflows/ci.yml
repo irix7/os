@@ -168,6 +168,20 @@ jobs:
           export PATH="$RUST_LLD_DIR:$PATH"
           cargo build -Z build-std=core,alloc -Zjson-target-spec \
             --target targets/mips3-sgi-irix7-n32.json -p kernel
+      - name: Build x86_64 kernel (build-std, x86-arch gate)
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          RUST_LLD_DIR="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin"
+          export RUST_LLD_DIR
+          export PATH="$RUST_LLD_DIR:$PATH"
+          # Issue #266: x86_64 is the second supported machine type.  This step
+          # compiles the shared kernel core for the x86_64 target.  NOTE: on the
+          # pinned nightly the embedded-tls/crypto dependency chain
+          # (x509-cert -> sha2/polyval -> cpufeatures) hits an LLVM codegen error
+          # on this custom x86_64 target, so the link is blocked until that
+          # dependency/toolchain issue is resolved.  MIPS is unaffected.
+          cargo build -Z build-std=core,alloc -Zjson-target-spec \
+            --target targets/x86_64-irix7.json -p kernel
       - name: Build ROM (build-std, M1)
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
