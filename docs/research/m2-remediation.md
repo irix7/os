@@ -135,17 +135,32 @@ hash are recorded together and the tree state is explicit.
 
 ## 5. Final run
 
-The final run is made from the merged candidate commit and is recorded in the PR.  The
-evidence directory is not committed (as with the earlier M2 bundles); the immutable facts
-are:
+The final gate ran in the `Mesh two-kernel (M2 gate)` job of CI run
+[40442671141](https://github.com/irix7/os/actions/runs/40442671141) (job 121991706122,
+15m39s).  The PR head is `2da8baa`; the CI checkout for the pull request is the merge
+candidate `b375f08` (`2da8baa` merged into main `66e9f65`), clean (`dirty=false`).
+All four scenarios passed:
 
-| Artefact | Value |
+| Scenario | Result |
 |---|---|
-| Source commit | filled from the final candidate |
-| `describe` / dirty | filled from `BUILD-PROVENANCE.txt` |
-| PROM bytes / SHA-256 | filled from the final build |
-| Module bytes / SHA-256 | filled from the final build |
-| `iris` / `iris-ci` | v0.1.10+irix7, hashes in `manifest.json` |
+| `none` | join epoch 2/digest `2EDA13C5…`; member restart `store_restored=true`, `last_epoch=2`; root restart `store 2 local 2 confirm 2 member_last 2 same=true`; homes before and after the rejoin; route/`MOVED`; L0 migration n0→n1→n0 |
+| `no-peer` | M1 `mesh=single`/`mesh=0/0/0` preserved, no listener/join/homes |
+| `kill-peer` | suspect/failed/removed, homes recomputed, fence and survivor path |
+| `partition` | isolated member refuses the mutable commit, recovery rejoins at the new epoch |
+
+The immutable artefacts from the job's `mesh-real-artifacts` bundle:
+
+| Artefact | Bytes | SHA-256 |
+|---|---|---|
+| `irix7-rom.bin` | 523,184 | `37be9becdae020c847bf47d5a9c09e3173aba16ae9d267287fc63fef53ed8e4b` |
+| `mcp.module` | 369,032 | `d830e652cbc63288640df9f11e13569c7bbe1fa1c5bbdb158d8067410ffd3744` |
+| `iris` | 20,369,192 | `9ddbdf107cfdad11566b9843b5b3e80cd5a3340a2ced5d4c32b63e838008cf5d` |
+| `iris-ci` | 1,036,392 | `755f1250c43cdb1afb57b7dd5ab787d20072eeb53ce19b59cf50fa9d77e1a919` |
+
+The `mesh-real-evidence` artifact contains `none/`, `no-peer/`, `kill-peer/` and
+`partition/` summary, `run.json`, `manifest.json`, both serial logs and relay logs.  The
+`Boot (iris)` job was rerun after a serial-truncation flake and passed; the final run
+conclusion is `success`.
 
 ## 6. Engineering review
 
