@@ -32,16 +32,17 @@ no host relay):
 | Route | one wire `MOVED` B→A with local retry; one local `MOVED` A→B with wire retry |
 | Migration | n0→n1→n0, hashes `246A7909…` then `C0C3BD12…` |
 | Mesh latency | 50 samples: p50 30 ms, p95 31–32 ms (relay: p50 31 ms, p95 52 ms) |
-| Bulk | 64 KiB in 8 × 8 KiB chunks, 0.404 MiB/s mean (5.21× the 1 KiB baseline) |
+| Bulk | 64 KiB in 8 × 8 KiB chunks, 0.404 MiB/s mean (5.21× the 1 KiB baseline); a later run 3.72× with one 663 ms tail |
+| Root restart | after the rebase onto `206d19a`, the signed epoch store restored epoch 2 on both nodes and the root restarted at the same epoch |
+| HTTP probe | pass (both directions) on the rebased run |
 
 The `direct_fail` mode points the initiator at `gateway:1`; it logs
 `mesh-transport: direct fallback listen` and no join occurs.
 
 ## 3. What is not claimed
 
-- The guest two-way HTTP probe (`sash> http <peer>`) is still the MCP HTTP/1.0 close
-  race; it fails independently of the mesh transport and is recorded as a failure, not
-  hidden.
+- The guest two-way HTTP probe passed on the rebased `206d19a` run; the earlier
+  HTTP/1.0 close-race failure is fixed by the M2 remediation changes, not by this slice.
 - Plain TCP, no TLS, no peer authentication, no replay window.  The join is signed; the
   data path is not.
 - One listening port and one connection per peer.  A direct full mesh above two nodes
