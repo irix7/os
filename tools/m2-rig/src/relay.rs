@@ -221,16 +221,10 @@ impl MeshRelay {
     /// This is the partition seam: the TCP sessions stay alive, the modules
     /// see no frames and the membership detector declares the peer suspect and
     /// failed.  The iris port forward cannot reliably reopen a half-open guest
-    /// session, so a partition must not tear the session down.
+    /// session, so a partition must not tear the session down at the start.
     pub fn pause(&self) {
         self.paused.store(true, Ordering::SeqCst);
         note(&self.log, "mesh-relay paused by the partition fault");
-    }
-
-    /// Resume forwarding on the same sessions.
-    pub fn resume(&self) {
-        self.paused.store(false, Ordering::SeqCst);
-        note(&self.log, "mesh-relay resumed by the partition fault");
     }
 }
 

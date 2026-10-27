@@ -381,18 +381,48 @@ fn run_failure_scenario(
             let relay = mesh_relay
                 .take()
                 .ok_or_else(|| "the partition fault needs a live mesh relay".to_string())?;
-            // Drop frames, keep the sessions.  The iris port forward cannot
-            // reliably reopen a half-open guest connection, so tearing the
-            // relay down would test the forward, not the partition rule.
+            let relay_log = relay.log.clone();
+            // Drop frames, keep the sessions while the failure detector
+            // converges.  The iris port forward cannot reliably reopen a
+            // half-open guest connection, so tearing the relay down at the
+            // start would test the forward, not the partition rule.
             relay.pause();
+            let mut relay = Some(relay);
+            let mut reseamed = false;
             let evidence = {
                 let mut restore = || {
-                    relay.resume();
+                    // A cut longer than the module's receive deadline tears a
+                    // session mid-record.  Once the seam returns, reset both
+                    // guest links through the existing link-only control and
+                    // start a fresh relay; this is the same recovery the
+                    // member-restart path uses.  Membership, epoch, route and
+                    // lease state stay in memory.
+                    drop(relay.take());
+                    mcp_tool(&nodes[0], "mesh.reconnect")?;
+                    mcp_tool(&nodes[1], "mesh.reconnect")?;
+                    std::thread::sleep(Duration::from_secs(1));
+                    // Let the restart settle before the relay connects; the
+                    // guest listeners are armed, but the host forward can
+                    // otherwise accept the relay before its guest-side path
+                    // is ready.
+                    std::thread::sleep(Duration::from_secs(2));
+                    let restarted = MeshRelay::start_with_log(
+                        (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                        (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+                        relay_log.clone(),
+                    )
+                    .map_err(|error| format!("restart mesh relay: {error}"))?;
+                    *mesh_relay = Some(restarted);
+                    reseamed = true;
                     Ok(())
                 };
                 failure::partition(&nodes[0], &nodes[1], &before, stale_object, &mut restore)
             };
-            *mesh_relay = Some(relay);
+            if !reseamed {
+                // The restore step failed before a fresh relay was installed;
+                // leave the seam down rather than resuming a stale session.
+                let _ = relay.take();
+            }
             Ok(evidence)
         }
         _ => Err("not a failure mode".into()),

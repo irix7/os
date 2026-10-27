@@ -444,13 +444,16 @@ mesh-route: counters ... fences=N commits=N replays=N last_replay=stale-epoch
 ```
 
 The partition mode pauses the relay without closing the guest sessions: the iris port
-forward cannot reliably reopen a half-open guest connection, so tearing the relay down
-would test the forward instead of the partition rule. With failure detection enabled the
-transport heartbeat timeout is a 300 s backstop and the 12 s membership detector is the
-failure path; a member that lost authority asks for a fresh signed join on the next
-authority frame, so the same session carries the rejoin. Step 10 is used only after
-recovery: the root commits an object homed at the recovered member and the member serves
-it.
+forward cannot reliably reopen a half-open guest connection, so tearing the relay down at
+the start would test the forward instead of the partition rule. With failure detection
+enabled the transport heartbeat timeout is a 300 s backstop and the 12 s membership
+detector is the failure path. A cut longer than the module's receive deadline can still
+tear a session mid-record; on restore the rig therefore calls the link-only
+`mesh.reconnect` on both guests (the same control the member-restart path uses) and starts
+a fresh relay. That resets sockets only: the confirmed view, epoch, route and lease state
+stay in memory, and the member's fresh signed join carries the recovery. Step 10 is used
+only after recovery: the root commits an object homed at the recovered member and the
+member serves it.
 
 Step 6 re-routes the object that was homed at the removed node (the last object the root
 put on the wire); on the isolated member it reports an object homed on the other side as
