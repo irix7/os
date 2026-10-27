@@ -1074,7 +1074,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             match restart_root(options, &nodes, &mut running, &facts, &mut mesh_relay) {
                 Ok(input) => {
                     root_restart = Some(input);
-                    facts = snapshot_facts(&nodes);
                     // Probe on the stable pair after the root restart; the
                     // member's mesh link has re-established and both MCP HTTP
                     // servers are responsive.  Wait for homes first so the
