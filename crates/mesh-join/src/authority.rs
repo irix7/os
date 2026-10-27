@@ -142,6 +142,18 @@ pub struct BatchRemoval {
     pub snapshot: crate::wire::MembershipSnapshot,
 }
 
+/// The removal is the root's membership change; it advances the epoch exactly
+/// once and carries the full remaining member list.  The root installs it
+/// locally.  A live member installs it only through a signed confirmation when
+/// it next joins, so a partition cannot create a second authoritative view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    /// The removed node.
+    pub node: NodeId,
+    /// The confirmed view after the removal.
+    pub snapshot: MembershipSnapshot,
+}
+
 impl AuthorityRoot {
     /// Create the root at its configured seed epoch with itself as the only
     /// member.
@@ -256,7 +268,9 @@ impl AuthorityRoot {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
-            .filter(|(node, state)| state.failed)
+            .filter(|(node, record)| {
+                *node != self.root && record.state == mesh_service::NodeState::Failed
+            })
             .map(|(node, _)| node)
             .collect();
         let mut removals = alloc::vec::Vec::new();
