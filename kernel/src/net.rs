@@ -259,7 +259,10 @@ impl Device for SeeqDevice {
         // limits every socket to ~1.4 KiB in flight.  Seven segments is
         // 10,220 bytes, enough for one 8 KiB bulk chunk plus framing; the
         // eight-descriptor ring keeps one descriptor for the CPU, so 7 is the
-        // largest safe burst.
+        // largest safe burst.  This assignment is load-bearing: without it the
+        // 16 KiB socket window lets a peer burst past the ring and frames are
+        // lost under concurrent connections.
+        caps.max_burst_size = Some(7);
         caps.medium = Medium::Ethernet;
         caps
     }
@@ -482,7 +485,7 @@ fn dhcpv4_configure(
 
 /// Socket storage backing the shared `SocketSet`.  It must be static because
 /// the set is stored in `STACK` and used from `poll()`.
-const SOCKET_SLOTS: usize = 12;
+const SOCKET_SLOTS: usize = 20;
 
 static mut SOCKET_STORAGE: MaybeUninit<[SocketStorage<'static>; SOCKET_SLOTS]> =
     MaybeUninit::uninit();

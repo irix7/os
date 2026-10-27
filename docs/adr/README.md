@@ -40,3 +40,5 @@ proposal, not an ADR.
 - [M3-ADR-0003 — bounded mesh streams](m3-0003-multiplexed-streams.md)
 
 - [M3-ADR-0004 — readiness-driven module I/O](m3-0004-event-driven-io.md)
+
+- [M3-ADR-0005 — eight module TCP slots](m3-0005-multi-connection-transport.md)

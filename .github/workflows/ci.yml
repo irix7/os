@@ -1457,6 +1457,66 @@ jobs:
             ${{ runner.temp }}/m2-build/irix7-rom.bin
             ${{ runner.temp }}/m2-build/mcp.module
 
+  module-ports:
+    name: Module transport (8 TCP slots)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install pinned nightly + rust-src + llvm-tools
+        run: |
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
+          rustup default nightly-2026-10-03
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "module-ports"
+      - name: Setup IRIS
+        id: iris
+        uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
+        with:
+          version: v0.1.10+irix7
+      - name: Build the kernel and the slot probe
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/module-ports"
+          tools/m2-rig/build.sh "$work"
+          export CARGO_TARGET_DIR="$work/target"
+          HOST="$(rustc -vV | sed -n 's/^host: //p')"
+          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/ports/linker.ld" \
+            cargo build --release -Z build-std=core \
+              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
+              --target targets/mips3-sgi-irix7-n32.json -p ports-module
+          "$LLVM_OBJCOPY" -O binary \
+            "$CARGO_TARGET_DIR/mips3-sgi-irix7-n32/release/ports-module" \
+            "$work/ports.module"
+          test "$(stat -c%s "$work/ports.module")" -le 524288
+      - name: Open eight sockets at once
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/module-ports"
+          harness="$RUNNER_TEMP/module-ports-harness"
+          cargo build --release --manifest-path tools/m2-rig/Cargo.toml \
+            --target-dir "$harness"
+          "$harness/release/m2-rig" ports \
+            --work "$RUNNER_TEMP/module-ports-run" \
+            --rom "$work/irix7-rom.bin" --module "$work/ports.module" \
+            --iris "$(command -v iris)" --iris-ci "$(command -v iris-ci)" \
+            --base-port 10600 --timeout 240
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: module-ports-evidence
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/module-ports-run/evidence
+
   modules:
     name: Modules (flat images, 2 MiB limit)
     runs-on: ubuntu-latest
@@ -1514,6 +1574,7 @@ jobs:
           ticker ticker-module core 2
           block  block-module  core 2
           mcp    mcp-module    core,alloc z
+          ports  ports-module  core z
           erofs  erofs-module  core,alloc 2
           logical logical-module core,alloc 2
           cache  cache-module  core,alloc 2

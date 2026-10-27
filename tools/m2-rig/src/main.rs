@@ -23,6 +23,7 @@ mod join;
 mod latency;
 mod migrate;
 mod nvram;
+mod ports;
 mod probe;
 mod relay;
 mod rig;
@@ -40,6 +41,7 @@ use failure::FailureEvidence;
 use fixture::Fixture;
 use homes::HomesEvidence;
 use join::{JoinEvidence, RestartInput, RootRestartInput};
+use ports::PortsFixture;
 use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
 use rig::{
@@ -72,8 +74,8 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     };
 
-    if options.action != Action::Shard && options.nodes != 2 {
-        return Err("--nodes applies to the shard command; the M2 run is two-node".into());
+    if !matches!(options.action, Action::Shard | Action::Ports) && options.nodes != 2 {
+        return Err("--nodes applies to the shard/ports commands; the M2 run is two-node".into());
     }
     if options.transport != Transport::Relay
         && options.action == Action::Run
@@ -85,6 +87,7 @@ fn run() -> Result<i32, String> {
         Action::Run => run_and_probe(&options),
         Action::Bulk => bulk_run(&options),
         Action::Shard => shard::run(&options),
+        Action::Ports => ports_run(&options),
         Action::Up => up(&options),
         Action::Down => down(&options),
         Action::Status => status(&options),
@@ -120,7 +123,7 @@ Options:
   --rom PATH       PROM image (default: <work>/irix7-rom.bin)
   --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
-  --nodes N        shard kernels, 2..=8 (default: 2)
+  --nodes N        shard kernels, 2..=8; ports always uses one (default: 2)
   --hub            shard: use the experimental multi-node host link switch
   --transport M    relay (default), direct, or direct-fail (bulk/run)
   --timeout SECS   boot deadline (default: 180)
@@ -332,6 +335,123 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     )?;
     println!("evidence: {}", directory.display());
     Ok(if passed { 0 } else { 1 })
+}
+
+/// Boot one node running the module TCP slot probe.
+///
+/// The probe is the transport prerequisite for the multi-node membership
+/// work: it opens one socket per kernel slot and requires all of them to be
+/// connected at the same time.  The fixture records the echoed lines, so the
+/// pass is not taken from the guest's own claim alone.
+fn ports_run(options: &Options) -> Result<i32, String> {
+    let (module, rom_sha, module_sha) = check_prerequisites(options)?;
+    let module_sha_text = sha256::hex(&module_sha);
+    let rom_sha_text = sha256::hex(&rom_sha);
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let base = options.base_port.saturating_add(2_000);
+    let ports = PortsFixture::start(base, 8)
+        .map_err(|error| format!("start ports fixture on {base}: {error}"))?;
+
+    let mut single = options.clone();
+    single.nodes = 1;
+    let nodes = derive_nodes(&single)?;
+    let environment = MeshEnv {
+        extra: Some(vec![
+            ("ports.base".into(), base.to_string()),
+            ("ports.count".into(), "8".into()),
+        ]),
+        ..MeshEnv::default()
+    };
+    let mut running = Vec::new();
+    let started = start_all_with(
+        &single,
+        &nodes,
+        &[Some(environment)],
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    );
+    if let Err(error) = started {
+        let _ = rig::stop_nodes(&single, &mut running);
+        return Err(error);
+    }
+    let boot = (|| -> Result<(), String> {
+        rig::wait_serial(&single, &mut running[0], "BOOT-READY", single.timeout)?;
+        let facts = BootFacts::from_serial(&read_serial(&nodes[0]));
+        facts.verify_identity(&nodes[0])?;
+        Ok(())
+    })();
+    if let Err(error) = boot {
+        let _ = rig::stop_nodes(&single, &mut running);
+        return Err(error);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut marker = None;
+    let mut failure = None;
+    while Instant::now() < deadline {
+        let text = read_serial(&nodes[0]);
+        if let Some(line) = text
+            .lines()
+            .find(|line| line.contains("ports: pass sockets="))
+        {
+            marker = Some(line.trim().to_string());
+            break;
+        }
+        if let Some(line) = text.lines().find(|line| line.contains("ports: fail ")) {
+            failure = Some(line.trim().to_string());
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    let stop_errors = if single.keep {
+        println!(
+            "ports: keeping {} up (monitor {}); stop with `m2-rig down`",
+            nodes[0].name, nodes[0].monitor
+        );
+        Vec::new()
+    } else {
+        rig::stop_nodes(&single, &mut running)
+    };
+    let serial = read_serial(&nodes[0]);
+    let received = ports.lines();
+    let complete = ports.complete();
+    let ok = marker.is_some() && failure.is_none() && complete && stop_errors.is_empty();
+    let message = match (&marker, &failure) {
+        (_, Some(failure)) => failure.clone(),
+        (Some(marker), None) => marker.clone(),
+        (None, None) => "the probe did not report a result".into(),
+    };
+
+    let evidence_dir = options.work.join("evidence");
+    fs::create_dir_all(&evidence_dir)
+        .map_err(|error| format!("create {}: {error}", evidence_dir.display()))?;
+    let received_json = received
+        .iter()
+        .map(|line| format!("\"{line}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let document = format!(
+        "{{\n  \"ok\": {ok},\n  \"base\": {base},\n  \"count\": {},\n  \"message\": \"{message}\",\n  \"module_sha256\": \"{module_sha_text}\",\n  \"prom_sha256\": \"{rom_sha_text}\",\n  \"received\": [{received_json}],\n  \"serial\": \"{}\"\n}}\n",
+        8,
+        nodes[0].serial_log.display()
+    );
+    fs::write(evidence_dir.join("ports.json"), document)
+        .map_err(|error| format!("write ports evidence: {error}"))?;
+    fs::write(evidence_dir.join("serial.log"), &serial)
+        .map_err(|error| format!("write ports serial: {error}"))?;
+    for error in stop_errors {
+        eprintln!("m2-rig: {error}");
+    }
+    println!(
+        "ports [{}]: {message} ({} listeners at {})",
+        if ok { "pass" } else { "FAIL" },
+        ports.count,
+        ports.base
+    );
+    println!("{}", rig::node_table(&nodes));
+    println!("evidence: {}", evidence_dir.display());
+    Ok(if ok { 0 } else { 1 })
 }
 
 /// Run the real-kernel failure or partition scenario.
@@ -914,6 +1034,10 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Err(error) => failure_error = Some(error),
             }
             join_before_evidence = Some(join_before.clone());
+            // The failure/recovery path logs a fresh home group on both
+            // nodes.  Wait for the last group to be complete before the
+            // snapshot; a partial mirror group parses as a count mismatch.
+            wait_homes_serial(&nodes, Duration::from_secs(60));
             facts = snapshot_facts(&nodes);
         } else if options.fault.joins() {
             match restart_member(options, &nodes, &mut running, &facts, &mut mesh_relay) {
@@ -949,7 +1073,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Err(error) => probe_error = Some(error),
             }
         }
-
     } else {
         // Keep the evidence useful even when a node never booted: record what
         // the serial logs show and do not invent a probe result.
@@ -1079,7 +1202,11 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         println!("latency [FAIL]: {error}");
     }
     if let Some(bulk) = &bulk_evidence {
-        println!("bulk [{}]: {}", if bulk.ok { "pass" } else { "FAIL" }, bulk.message);
+        println!(
+            "bulk [{}]: {}",
+            if bulk.ok { "pass" } else { "FAIL" },
+            bulk.message
+        );
         for run in &bulk.runs {
             println!(
                 "  {} -> {}: {} B in {} chunks, {} ms, {:.3} MiB/s",
@@ -1242,13 +1369,13 @@ fn wait_homes_serial(nodes: &[Node], timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
         let facts = snapshot_facts(nodes);
-        let ready = facts.iter().all(|fact| {
-            fact.mesh_homes_lines
-                .iter()
-                .filter(|line| line.contains("mesh-home: "))
-                .count()
-                >= homes::OBJECT_COUNT as usize
-        });
+        // Require the *last* table group to declare and carry the same row
+        // count.  Earlier groups may already supply eight rows while the new
+        // group is still being mirrored; counting all rows would accept the
+        // partial tail and the homes parser would then reject it.
+        let ready = facts
+            .iter()
+            .all(|fact| homes::HomeTable::last_group_complete(&fact.mesh_homes_lines.join("\n")));
         if ready || Instant::now() >= deadline {
             return;
         }
@@ -1818,7 +1945,8 @@ fn start_all(
     module_sha256: &str,
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
-    let (environments, _authority, _wrong) = mesh_environments(nodes, options.fault, options.transport);
+    let (environments, _authority, _wrong) =
+        mesh_environments(nodes, options.fault, options.transport);
     start_all_with(
         options,
         nodes,
@@ -2195,7 +2323,8 @@ fn print_config(options: &Options) -> Result<i32, String> {
     let module_sha = fs::read(&options.module)
         .map(|bytes| sha256::hex(&sha256::digest(&bytes)))
         .unwrap_or_else(|_| "<module sha256>".into());
-    let (environments, authority, wrong) = mesh_environments(&nodes, options.fault, options.transport);
+    let (environments, authority, wrong) =
+        mesh_environments(&nodes, options.fault, options.transport);
     println!("authority={}", nodes[0].node_id_string());
     println!("authority.pub={}", authority.public_hex);
     if options.fault == Fault::WrongAuthority {

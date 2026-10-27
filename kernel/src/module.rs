@@ -114,6 +114,7 @@ static SERVICES: Services = Services {
     module_unload: service_module_unload,
     tcp_connect: service_tcp_connect,
     tcp_events: service_tcp_events,
+    tcp_slots: service_tcp_slots,
 };
 
 /// Periodic callbacks for every multiplexer region.
@@ -715,7 +716,7 @@ extern "C" fn service_poll() {
 }
 
 /// Module TCP slots.  Two is enough for an HTTP server plus a client.
-const MODULE_TCP_SLOTS: usize = 2;
+const MODULE_TCP_SLOTS: usize = 8;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
 /// Set when the last `tcp_send` accepted fewer bytes than requested.
@@ -811,9 +812,9 @@ unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> 
     // `address` is the IPv4 address in network byte order.
     let octets = address.to_be_bytes();
     let remote = smoltcp::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
-    // One mesh link per module lifecycle; a fixed IANA dynamic port is enough
-    // and keeps the connect path small.
-    let local_port = 49152;
+    // One module slot owns one socket.  Give each slot its own ephemeral local
+    // port so several connects (a star of peers) can be live at once.
+    let local_port = 49152 + slot_usize as u16;
     let result = crate::net::with_stack(|iface, sockets| {
         let handle = sockets.add(socket);
         let result = sockets.get_mut::<TcpSocket>(handle).connect(
@@ -876,6 +877,11 @@ extern "C" fn service_tcp_events(slot: u32) -> u32 {
         mask
     });
     result.unwrap_or(NO_SOCKET)
+}
+
+/// Number of module TCP slots the kernel provides.
+extern "C" fn service_tcp_slots() -> u32 {
+    MODULE_TCP_SLOTS as u32
 }
 
 extern "C" fn service_tcp_state(slot: u32) -> u32 {

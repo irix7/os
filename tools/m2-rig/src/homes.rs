@@ -92,16 +92,37 @@ impl HomeTable {
         }
     }
 
-    /// Parse the last `mesh-homes:` group in a body or serial transcript.
+    /// Parse the last complete `mesh-homes:` group.
     ///
-    /// A transcript can contain more than one group (the root logs a fresh
-    /// one on a member rejoin); the last group is the current one.
+    /// A transcript can contain more than one group (the root and the member
+    /// log a fresh one on a rejoin or refresh), and the serial mirror can be
+    /// caught after the header but before all rows.  A trailing partial group
+    /// is not a table: skip it and use the last complete one.  A body with a
+    /// single group still fails closed when its declared count is wrong.
     pub fn parse(text: &str) -> Result<Self, String> {
         let lines: Vec<&str> = text.lines().collect();
-        let header_index = lines
+        let headers: Vec<usize> = lines
             .iter()
-            .rposition(|line| line.contains(TABLE_PREFIX))
-            .ok_or_else(|| "no mesh-homes header".to_string())?;
+            .enumerate()
+            .filter(|(_, line)| line.contains(TABLE_PREFIX))
+            .map(|(index, _)| index)
+            .collect();
+        if headers.is_empty() {
+            return Err("no mesh-homes header".to_string());
+        }
+        let mut last_error = None;
+        for (position, &header_index) in headers.iter().enumerate().rev() {
+            let end = headers.get(position + 1).copied().unwrap_or(lines.len());
+            match Self::parse_group(&lines, header_index, end) {
+                Ok(table) => return Ok(table),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "no mesh-homes header".to_string()))
+    }
+
+    /// Parse one group bounded by the next header or the end of the text.
+    fn parse_group(lines: &[&str], header_index: usize, end: usize) -> Result<Self, String> {
         let header_line = lines[header_index].trim();
         let header_start = header_line
             .find(HEADER_PREFIX)
@@ -128,7 +149,7 @@ impl HomeTable {
             return Err("mesh-homes header has no state".into());
         }
         let mut raw = String::from(header_line);
-        for line in &lines[header_index + 1..] {
+        for line in &lines[header_index + 1..end] {
             let row_line = line.trim();
             let Some(start) = row_line.find(ROW_PREFIX) else {
                 continue;
@@ -172,6 +193,30 @@ impl HomeTable {
         }
         table.raw = raw;
         Ok(table)
+    }
+
+    /// Whether the last group in `text` declares and carries the same row
+    /// count.  `parse` skips a partial trailing group; this raw check is what
+    /// the rig waits on before taking a snapshot, so a header without its rows
+    /// is not mistaken for a complete table.
+    pub fn last_group_complete(text: &str) -> bool {
+        let lines: Vec<&str> = text.lines().collect();
+        let Some(header) = lines.iter().rposition(|line| line.contains(TABLE_PREFIX)) else {
+            return false;
+        };
+        let header_line = lines[header].trim();
+        let count = header_line
+            .split_whitespace()
+            .find_map(|token| token.strip_prefix("count="))
+            .and_then(|value| value.parse::<usize>().ok());
+        let Some(count) = count else {
+            return true;
+        };
+        let rows = lines[header + 1..]
+            .iter()
+            .filter(|line| line.contains(ROW_PREFIX))
+            .count();
+        rows == count
     }
 
     fn mapping_eq(&self, other: &Self) -> bool {
@@ -1152,6 +1197,68 @@ mod tests {
             }
         }
         assert!(HomeTable::parse(&text).expect("parse").mapping_eq(&first));
+    }
+
+    #[test]
+    fn last_group_completeness_is_raw() {
+        let table = sample(2, "AABB", &[id(1), id(2)]);
+        let mut text = String::new();
+        let _ = writeln!(
+            text,
+            "mesh-homes: state=current object_set={} epoch={} members={} digest={} count={}",
+            OBJECT_SET,
+            table.epoch.unwrap(),
+            table.members.unwrap(),
+            table.digest.as_deref().unwrap(),
+            table.count.unwrap()
+        );
+        for row in &table.rows {
+            let _ = writeln!(
+                text,
+                "mesh-home: object={} home={} epoch={} digest={}",
+                row.object, row.home, row.epoch, row.digest
+            );
+        }
+        assert!(HomeTable::last_group_complete(&text));
+        let _ = writeln!(
+            text,
+            "mesh-homes: state=current object_set={} epoch={} members={} digest={} count={}",
+            OBJECT_SET,
+            table.epoch.unwrap(),
+            table.members.unwrap(),
+            table.digest.as_deref().unwrap(),
+            table.count.unwrap()
+        );
+        assert!(!HomeTable::last_group_complete(&text));
+    }
+
+    #[test]
+    fn a_partial_trailing_group_is_skipped() {
+        // The serial mirror can leave the last group with a header and a
+        // couple of rows.  It is not a table; the previous complete group is
+        // the current view.
+        let table = sample(2, "AABB", &[id(1), id(2)]);
+        let mut text = String::new();
+        for group in 0..2 {
+            let _ = writeln!(
+                text,
+                "mesh-homes: state=current object_set={} epoch={} members={} digest={} count={}",
+                OBJECT_SET,
+                table.epoch.unwrap(),
+                table.members.unwrap(),
+                table.digest.as_deref().unwrap(),
+                table.count.unwrap()
+            );
+            let rows = if group == 0 { table.rows.len() } else { 2 };
+            for row in table.rows.iter().take(rows) {
+                let _ = writeln!(
+                    text,
+                    "sash> mesh-home: object={} home={} epoch={} digest={}",
+                    row.object, row.home, row.epoch, row.digest
+                );
+            }
+        }
+        assert!(HomeTable::parse(&text).expect("parse").mapping_eq(&table));
     }
 
     #[test]
