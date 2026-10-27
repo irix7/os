@@ -1059,6 +1059,17 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Ok(input) => {
                     root_restart = Some(input);
                     facts = snapshot_facts(&nodes);
+                    // The two-way HTTP probe runs after the root restart to
+                    // verify both nodes' MCP HTTP servers are responsive
+                    // following the restart.  By this point the mesh link has
+                    // re-established and both modules have served home tables.
+                    match settle_and_probe(&nodes) {
+                        Ok((value, value_relays)) => {
+                            probes = value;
+                            relays = value_relays;
+                        }
+                        Err(error) => probe_error = Some(error),
+                    }
                 }
                 Err(error) => join_error = Some(error),
             }
