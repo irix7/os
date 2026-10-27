@@ -133,6 +133,14 @@ pub struct AuthorityRoot {
 /// locally.  A live member installs it only through a signed confirmation when
 /// it next joins, so a partition cannot create a second authoritative view.
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removal {
+    /// The removed node.
+    pub node: NodeId,
+    /// The confirmed view after the removal.
+    pub snapshot: MembershipSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchRemoval {
     /// Every member removed in this change set.
     pub nodes: alloc::vec::Vec<NodeId>,
@@ -250,30 +258,24 @@ impl AuthorityRoot {
     /// Each removal is a separate authority-confirmed epoch advance, exactly
     /// as a clean leave would be.  The root is never removed.  A node that is
     /// merely suspect stays in the routing snapshot.
-    pub fn remove_failed(&mut self, _now_ms: u64) -> Option<BatchRemoval> {
+    pub fn remove_failed(&mut self) -> alloc::vec::Vec<Removal> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
-            .filter(|(node, record)| {
-                *node != self.root && record.state != mesh_service::NodeState::Alive
-            })
+            .filter(|(node, _)| self.failures.state(node) == Some(NodeState::Failed))
             .map(|(node, _)| node)
             .collect();
-        if failed.is_empty() {
-            return None;
-        }
-        let mut removed = alloc::vec::Vec::new();
-        let mut snapshot = None;
+        let mut removals = alloc::vec::Vec::new();
         for node in failed {
-            let _ = self.table.leave(node);
-            removed.push(node);
-            snapshot = self.snapshot().ok();
+            if !self.table.leave(node).unwrap_or(false) {
+                continue;
+            }
+            let Ok(snapshot) = self.snapshot() else {
+                continue;
+            };
+            removals.push(Removal { node, snapshot });
         }
-        let snapshot = snapshot?;
-        Some(BatchRemoval {
-            nodes: removed,
-            snapshot,
-        })
+        removals
     }
 
     /// The root's public key.  A member hears the same key through
