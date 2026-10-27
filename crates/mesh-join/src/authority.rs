@@ -262,7 +262,10 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return alloc::vec::Vec::new();
         }
-        let snapshot = self.snapshot().ok()?;
+        let snapshot = match self.snapshot() {
+            Ok(s) => s,
+            Err(_) => return alloc::vec::Vec::new(),
+        };
         failed
             .into_iter()
             .map(|node| Removal {
