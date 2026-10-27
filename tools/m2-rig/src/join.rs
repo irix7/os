@@ -433,7 +433,7 @@ pub fn evaluate(
                 JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
             }) {
                 Some(line) => line,
-                None => match evidence.nodes[1].mesh_join_duplicate.as_deref().and_then(|line| {
+                None => match evidence.nodes[1].duplicate.as_deref().and_then(|line| {
                     JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
                 }) {
                     Some(line) => line,
