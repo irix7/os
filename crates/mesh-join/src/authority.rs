@@ -130,6 +130,18 @@ pub struct AuthorityRoot {
     failures: FailureDetector,
 }
 
+/// The removal is the root's membership change; it advances the epoch exactly
+/// once and carries the full remaining member list.  The root installs it
+/// locally.  A live member installs it only through a signed confirmation when
+/// it next joins, so a partition cannot create a second authoritative view.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BatchRemoval {
+    /// Every member removed in this change set.
+    pub nodes: alloc::vec::Vec<NodeId>,
+    /// The confirmed view after the set.
+    pub snapshot: crate::wire::MembershipSnapshot,
+}
+
 impl AuthorityRoot {
     /// Create the root at its configured seed epoch with itself as the only
     /// member.
