@@ -914,17 +914,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             let (value, relay) = probe_mesh(&nodes);
             mesh = Some(value);
             mesh_relay = relay;
-            // Probe on the stable initial pair before any restarts or
-            // failures, when both mesh links are established.  Running the
-            // probe after a root/member restart is flaky because the member's
-            // mesh link has timed out and both links may be re-establishing.
-            match settle_and_probe(&nodes) {
-                Ok((value, value_relays)) => {
-                    probes = value;
-                    relays = value_relays;
-                }
-                Err(error) => probe_error = Some(error),
-            }
         }
         if options.fault.joins() {
             wait_join(&nodes, Duration::from_secs(60));
@@ -940,6 +929,18 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // and homes logging settles.  Give it the same 10 s the guest HTTP
             // probe uses before the first control-plane fetch.
             std::thread::sleep(Duration::from_secs(10));
+            // Probe on the stable initial pair before any restarts or
+            // failures, when both mesh links and HTTP servers are proven.
+            // Running the probe after a root/member restart is flaky because
+            // the member's mesh link has timed out and both links may be
+            // re-establishing.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
         } else if options.fault == Fault::WrongAuthority {
             wait_join_reject(&nodes, Duration::from_secs(30));
             std::thread::sleep(Duration::from_secs(10));
