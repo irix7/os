@@ -21,7 +21,7 @@ M2 or M3 gate.
 | `mesh-transport` | Fixed-capacity `StreamDecoder` and `SendQueue`; compaction instead of growth; 8 KiB control reserve for data records; `flush` reports writes and peak queue | The bump allocator does not grow a `Vec` on the data path; bulk cannot starve control. |
 | MCP module | 4 × 4 KiB reads per tick; one flush per tick (intermediate flushes removed); 32 KiB decoder/queue; 16,404-byte frame body buffer; bulk measurement path | One `tcp_send` per tick in the steady state; a 64 KiB *logical* record is four 16 KiB chunks. |
 | Host benchmark | `protocol-bench bulk` | Pins the window model and counts records per sink write. |
-| Rig | Three 64 KiB transfers in both directions after join | Real-kernel throughput, chunk count and module counters in `run.json`. |
+| Rig | `m2-rig bulk`: three 64 KiB transfers in both directions after join | Real-kernel throughput, chunk count and module counters in `bulk-evidence.json`. |
 
 The mesh wire format did not change.  A bulk chunk uses the existing
 `FrameHeader.offset`, `FrameHeader.length` and `flags::MORE`/`EOS`; the body is
@@ -59,7 +59,7 @@ alternates the origin:
 
 ```sh
 tools/m2-rig/build.sh
-cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
+cargo run --manifest-path tools/m2-rig/Cargo.toml -- bulk \
   --iris <iris> --iris-ci <iris-ci> --timeout 300
 ```
 
