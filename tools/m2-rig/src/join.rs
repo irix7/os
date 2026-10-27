@@ -98,6 +98,12 @@ pub fn node_line(facts: &BootFacts, role: &str) -> Option<JoinLine> {
                 .as_deref()
                 .and_then(|line| JoinLine::parse_with_role(line, role))
         })
+        .or_else(|| {
+            facts
+                .mesh_join_refreshed
+                .as_deref()
+                .and_then(|line| JoinLine::parse_with_role(line, role))
+        })
 }
 
 /// Parse a `last_epoch=` value out of a request or local line.

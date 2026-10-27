@@ -245,7 +245,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     if options.fault.joins() {
         wait_join(&nodes, Duration::from_secs(60));
         wait_join_ack(&nodes, Duration::from_secs(20));
-        wait_homes_serial(&nodes, Duration::from_secs(20));
+        wait_homes_serial(&nodes, Duration::from_secs(60));
         std::thread::sleep(Duration::from_secs(10));
     } else if options.fault == Fault::WrongAuthority {
         wait_join_reject(&nodes, Duration::from_secs(30));
@@ -573,7 +573,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // member is restarted; otherwise the restart can truncate it and
             // there is no evidence that B installed what A signed.
             wait_join_ack(&nodes, Duration::from_secs(20));
-            wait_homes_serial(&nodes, Duration::from_secs(20));
+            wait_homes_serial(&nodes, Duration::from_secs(60));
             // The MCP HTTP slot is armed by the module tick after the join
             // and homes logging settles.  Give it the same 10 s the guest HTTP
             // probe uses before the first control-plane fetch.
@@ -614,26 +614,18 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // in M2-0/M2-1/M2-2.  It runs after the MCP homes fetch because the
         // iris host forward can hold a half-open guest connection after the
         // probe; the control-plane evidence is collected on the clean path.
-        // The MCP server has one HTTP slot while the mesh is enabled, so let
-        // the last control-plane connection finish its close handshake before
-        // the peer's guest HTTP client arrives.  A single retry absorbs the
-        // iris forward's half-open connection without weakening the check.
-        std::thread::sleep(Duration::from_secs(12));
-        let mut probe_attempt = probe_two_way(&nodes);
-        if !probe_attempt
-            .as_ref()
-            .map(|(value, _)| value.iter().all(|probe| probe.ok))
-            .unwrap_or(false)
-        {
-            std::thread::sleep(Duration::from_secs(12));
-            probe_attempt = probe_two_way(&nodes);
-        }
-        match probe_attempt {
-            Ok((value, value_relays)) => {
-                probes = value;
-                relays = value_relays;
+        // Failure modes must probe while both guests are still alive.  The
+        // clean modes probe after the restart gates: the guest HTTP client
+        // can leave the single MCP HTTP slot in a close handshake, and the
+        // restart path needs that slot for `mesh.reconnect`.
+        if options.fault.failures() {
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
             }
-            Err(error) => probe_error = Some(error),
         }
 
         // Run the migration on the stable initial pair.  Driving it after a
@@ -697,7 +689,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     restart = Some(input);
                     // The root's transcript gained a confirmation and the
                     // member's transcript is now the rejoin boot.
-                    wait_homes_serial(&nodes, Duration::from_secs(20));
+                    wait_homes_serial(&nodes, Duration::from_secs(60));
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
@@ -713,6 +705,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
+            }
+        }
+
+        if !options.fault.failures() {
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
             }
         }
     } else {
@@ -1266,6 +1268,9 @@ fn restart_member(
             || text
                 .lines()
                 .any(|line| line.contains("mesh-join: duplicate "))
+            || text
+                .lines()
+                .any(|line| line.contains("mesh-join: refreshed "))
         {
             break;
         }
@@ -1286,6 +1291,10 @@ fn restart_member(
         })
         .or_else(|| {
             raw_line(&text, "mesh-join: local ")
+                .and_then(|line| join::JoinLine::parse_with_role(line, "member"))
+        })
+        .or_else(|| {
+            raw_line(&text, "mesh-join: refreshed ")
                 .and_then(|line| join::JoinLine::parse_with_role(line, "member"))
         })
         .ok_or_else(|| "n1 rejoin line is malformed".to_string())?;
@@ -1411,7 +1420,11 @@ fn restart_root(
             .filter(|line| line.contains("mesh-join: request "))
             .filter_map(join::request_last_epoch)
             .any(|epoch| epoch == first.epoch);
-        if restored && presented && raw_line(&root_text, "mesh-join: confirm ").is_some() {
+        if restored
+            && presented
+            && raw_line(&root_text, "mesh-join: confirm ").is_some()
+            && raw_line(&root_text, "mesh-join: ack from").is_some()
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -1591,6 +1604,25 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
         }
     };
     Ok((fixture, running, facts))
+}
+
+/// Let the last control-plane connection close, then run the two-way probe.
+///
+/// The MCP server has one HTTP slot while the mesh is enabled.  A single retry
+/// absorbs the iris forward's half-open connection without weakening the
+/// check.
+fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
+    std::thread::sleep(Duration::from_secs(12));
+    let mut attempt = probe_two_way(nodes);
+    if !attempt
+        .as_ref()
+        .map(|(value, _)| value.iter().all(|probe| probe.ok))
+        .unwrap_or(false)
+    {
+        std::thread::sleep(Duration::from_secs(12));
+        attempt = probe_two_way(nodes);
+    }
+    attempt
 }
 
 fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {

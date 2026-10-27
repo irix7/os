@@ -483,7 +483,7 @@ static mut PHASE: u32 = ARM;
 /// mesh listener owning slot 1, HTTP has only one slot; a client that keeps
 /// its side open must not wedge the control plane forever.
 static mut CLOSE_START_MS: u64 = 0;
-const CLOSE_TIMEOUT_MS: u64 = 5_000;
+const CLOSE_TIMEOUT_MS: u64 = 2_000;
 static mut SCREEN_ROW: u32 = 0;
 static mut SCREEN_OFF: usize = 0;
 static mut SCREEN_STREAMING: bool = false;
@@ -689,10 +689,16 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                                 }
                             }
                         }
+                        // The response is already in the TCP send buffer.
+                        // Close our side now rather than waiting for a
+                        // possibly half-open iris forward to send FIN; the
+                        // single HTTP slot is needed by the next control
+                        // request.  CLOSING drains or aborts after 2 s.
+                        (services.tcp_close)(slot);
                         unsafe {
                             IN_CONN = false;
                             CLOSE_START_MS = (services.clock_ms)();
-                            PHASE = WAIT_CLOSE;
+                            PHASE = CLOSING;
                         }
                     }
                 } else if state == 3 {

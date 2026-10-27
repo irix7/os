@@ -1025,6 +1025,8 @@ pub struct BootFacts {
     pub mesh_join_acks_sent: Vec<String>,
     /// The first `mesh-join: duplicate` line.
     pub mesh_join_duplicate: Option<String>,
+    /// The first `mesh-join: refreshed` line.
+    pub mesh_join_refreshed: Option<String>,
     /// The first `mesh-join: refused` line.
     pub mesh_join_refused: Option<String>,
     /// The first `mesh-join: timeout` line.
@@ -1131,6 +1133,10 @@ impl BootFacts {
             mesh_join_duplicate: text
                 .lines()
                 .find(|line| line.contains("mesh-join: duplicate "))
+                .map(|line| line.trim().to_string()),
+            mesh_join_refreshed: text
+                .lines()
+                .find(|line| line.contains("mesh-join: refreshed "))
                 .map(|line| line.trim().to_string()),
             mesh_join_refused: text
                 .lines()

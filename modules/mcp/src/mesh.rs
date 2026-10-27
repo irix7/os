@@ -95,6 +95,13 @@ const READS_PER_TICK: usize = 8;
 /// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
 const LINE_CAP: usize = 384;
+/// Routine join-view and ack logging interval.
+///
+/// The 5 s member refresh is a protocol liveness check, not evidence: logging
+/// every confirmation plus the full two-node home table (~1.5 KiB) saturates
+/// the emulated serial line and starves the receive path.  Epoch changes,
+/// first convergence, rejoin/duplicate and failures are still logged.
+const JOIN_LOG_INTERVAL_MS: u64 = 30_000;
 
 /// SCSI target reserved for the persistent epoch store.
 ///
@@ -193,6 +200,10 @@ struct Mesh {
     home_count: u32,
     shard_count: u32,
     join_timeout_logged: bool,
+    /// Last routine join-view log; rate-limits the 5 s refresh transcript.
+    last_join_log_ms: u64,
+    /// Last routine ack log; rate-limits the 5 s refresh transcript.
+    last_ack_log_ms: u64,
     last_arm_log_ms: u64,
     pass_logged: bool,
     listen_logged: bool,
@@ -310,6 +321,8 @@ pub unsafe fn init(services: *const Services) -> bool {
         home_count,
         shard_count,
         join_timeout_logged: false,
+        last_join_log_ms: 0,
+        last_ack_log_ms: 0,
         last_arm_log_ms: 0,
         pass_logged: false,
         listen_logged: false,
@@ -1284,18 +1297,16 @@ impl Mesh {
                 log(services, line.as_bytes());
             }
             Some((Tick::Refresh(request), _)) => {
+                // Routine refresh: the signed request is still sent, but the
+                // 5 s transcript line is omitted; the rate-limited
+                // `refreshed` event records the installed view.
                 self.send_join(
                     services,
                     JoinMessage::Request(request),
                     NodeId::ZERO,
                     now,
-                    self.verbose_join_log(),
+                    false,
                 );
-                let mut line = Line::new();
-                line.str("mesh-join: refresh epoch=");
-                line.u64(request.last_epoch as u64);
-                line.push(b'\n');
-                log(services, line.as_bytes());
             }
             Some((Tick::TimedOut, attempts)) if !self.join_timeout_logged => {
                 self.join_timeout_logged = true;
@@ -1762,6 +1773,7 @@ impl Mesh {
                 // still served by `/mesh/homes` and `/mesh/shard`.
                 if full_view {
                     self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
+                    self.last_join_log_ms = now;
                     // The M2 transcript (no `mesh.shard` key) keeps the full
                     // two-node evidence.  An M3 shard run reads the tables from
                     // `/mesh/homes` and `/mesh/shard`; writing 1.5 KiB of rows
@@ -1771,7 +1783,11 @@ impl Mesh {
                         self.log_homes(services, snapshot, true);
                         self.log_shard(services, snapshot, false);
                     }
-                } else if !self.m3_quiet() && snapshot.len() <= 2 {
+                } else if !self.m3_quiet()
+                    && snapshot.len() <= 2
+                    && now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS
+                {
+                    self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: confirm", snapshot);
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                 }
@@ -1780,6 +1796,7 @@ impl Mesh {
             JoinEvent::Converged(snapshot) => {
                 self.join_timeout_logged = false;
                 self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
+                self.last_join_log_ms = now;
                 if !self.m3_quiet() && snapshot.len() <= 2 {
                     self.log_homes(services, snapshot, true);
                     self.log_shard(services, snapshot, false);
@@ -1787,7 +1804,11 @@ impl Mesh {
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
-                if !self.m3_quiet() && snapshot.len() <= 2 {
+                if !self.m3_quiet()
+                    && snapshot.len() <= 2
+                    && now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS
+                {
+                    self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                     self.log_homes(services, snapshot, true);
                     self.log_shard(services, snapshot, false);
@@ -1798,17 +1819,21 @@ impl Mesh {
                 // Routine M3 refresh: another member joined and advanced the
                 // epoch.  Above two members the serial line is compact and
                 // the table is read over HTTP.
-                let mut line = Line::new();
-                line.str("mesh-join: refreshed epoch=");
-                line.u64(snapshot.epoch as u64);
-                line.str(" members=");
-                line.u64(snapshot.len() as u64);
-                line.str(" digest=");
-                line.digest(&snapshot.digest());
-                line.push(b'\n');
-                log(services, line.as_bytes());
-                if !self.m3_quiet() && snapshot.len() <= 2 {
-                    self.log_shard(services, snapshot, false);
+                if now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS {
+                    self.last_join_log_ms = now;
+                    let mut line = Line::new();
+                    line.str("mesh-join: refreshed epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.str(" digest=");
+                    line.digest(&snapshot.digest());
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    if !self.m3_quiet() && snapshot.len() <= 2 {
+                        self.log_homes(services, snapshot, true);
+                        self.log_shard(services, snapshot, false);
+                    }
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
@@ -1825,7 +1850,10 @@ impl Mesh {
                 node,
                 epoch,
                 digest,
-            } if self.verbose_join_log() => {
+            } if self.verbose_join_log()
+                && now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
+            {
+                self.last_ack_log_ms = now;
                 let mut line = Line::new();
                 line.str("mesh-join: ack from=");
                 line.node(node);
@@ -2263,7 +2291,10 @@ impl Mesh {
                     line.push(b'\n');
                     log(services, line.as_bytes());
                 }
-                JoinMessage::Ack(ack) => {
+                JoinMessage::Ack(ack)
+                    if now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
+                {
+                    self.last_ack_log_ms = now;
                     let mut line = Line::new();
                     line.str("mesh-join: ack-sent epoch=");
                     line.u64(ack.epoch as u64);
