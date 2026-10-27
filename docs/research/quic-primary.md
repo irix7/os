@@ -173,6 +173,15 @@ The path is correct and measured, but it has four properties that matter for QUI
 Point 4 is the single most important hardware constraint in this study, and it is not in
 the current issue plans.
 
+**smoltcp at this commit.** The kernel uses smoltcp 0.13 with `medium-ethernet`,
+`proto-ipv4`, `proto-ipv6`, `proto-dns`, `proto-dhcpv4`, `socket-icmp`, `socket-udp`,
+`socket-tcp` and `socket-dhcpv4` (`kernel/Cargo.toml`). There is no QUIC, no GSO/GRO, no
+`sendmmsg`, and one `Interface::poll` drives every socket. UDP sockets exist and are used by
+NTP and DNS (`kernel/src/ntp.rs`, `kernel/src/dns.rs`), so the datagram primitive is present;
+what is missing is the **module-facing UDP service**. The `max_burst_size = Some(1)` clamp is
+a device capability, not a TCP feature, and it is the reason every TCP socket advertises one
+segment.
+
 ### 2.3 QUIC-specific constraints
 
 | Constraint | Consequence |
