@@ -645,8 +645,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut probe_error = None;
     let mut join_error = None;
     let mut homes_error = None;
-    let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
-    let mut bulk_error: Option<String> = None;
+    let bulk_evidence: Option<bulk::BulkEvidence> = None;
+    let bulk_error: Option<String> = None;
     let mut route = None;
     let mut route_error = None;
     let mut migration = None;
