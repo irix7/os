@@ -158,3 +158,54 @@ member), not a production key store.  The module ABI has `config_get` only, so t
 confirmed epoch is not persisted; M2-ADR-0005 records the precise member-restart,
 root-restart and both-restart rules.  The root-restart case fails closed with
 `epoch-regression` rather than lowering a member's confirmed view.
+
+## M3 aggregated refresh (post-M2 gate)
+
+M3 replaces the per-member signed refresh with an aggregated root-signed summary.  The
+root publishes **one** `EpochSummary` per change set; a member reports liveness with a
+small unsigned `MemberSummary` at the refresh interval, and the root signs at most one
+aggregate per change set rather than one full confirmation per member per refresh.
+
+**Decision (M3):**
+
+1. **Trust boundary is unchanged: only the root signs.** One `EpochSummary` signature per
+   change set binds every member `(NodeId, incarnation)` to `epoch + digest`.  The
+   `MemberSummary` is unsigned and small (60 bytes); a receiver validates it against the
+   signed aggregate it holds, so a member cannot claim an epoch or incarnation the root
+   did not issue.  No per-member keys and no PKI.
+
+2. **One signed aggregate per change set, not per member per refresh.** A converged member
+   sends a `MemberSummary` every `SUMMARY_INTERVAL_MS` (5 s).  The root validates it
+   against the aggregate it last signed (epoch, digest, incarnation and a monotonic
+   counter) and refreshes that member's failure-clock record; it does not sign per
+   summary.  On any change (join or batched removal) the root signs one aggregate and
+   pushes it to every known peer.  The total cost of a change set is linear in the member
+   count, not quadratic.
+
+3. **Parameters.** `FANOUT = 3`, `MAX_HOPS = 5`, `SUMMARY_INTERVAL_MS = 5_000`,
+   `RELAY_CAPACITY = 32`, `RELAY_BUDGET = FANOUT`.  The host model (deterministic ring
+   jumps plus root) measures 2/8/128 nodes: 128-node join costs 1,264 messages
+   (~9.9 per node) versus the quadratic fan-in the per-member refresh produced; max
+   member records ≤ 64; 2 signatures per run (join plus batch removal); deterministic
+   digest.
+
+4. **Single-root limit.** The 1-of-1 root remains a single point of failure for
+   membership changes, not for the normal data path.  A partition leaves a member on its
+   last confirmed aggregate; it cannot self-confirm or create a second authoritative home.
+   An equivocated aggregate (re-signed different list at the same epoch) yields
+   `Equivocation` and is fail-closed.  A threshold root is Phase 8 work and is not claimed
+   here.
+
+5. **Batch removal.** The root removes every member the failure detector has confirmed
+   failed in one change set and one epoch advance, then signs one aggregate for the
+   post-removal view.
+
+6. **Per-link module state is deferred to M3-ADR (tracked in #264).** The module still
+   owns one mesh TCP slot for the join handshake; aggregated refresh runs over the
+   existing multi-source link (the host hub multiplexes the star onto the root's slot).
+   Direct per-member TCP slots and sparse fan-out over them are #264 work.
+
+**Status:** proposed for M3; not yet reviewed at a gate.  The library policy (gossip,
+authority, fail-closed rules, deterministic model) is implemented and host-tested in
+`crates/mesh-join`; the module wiring is in `modules/mcp/src/mesh.rs`; real 4-node
+convergence over the host hub is recorded in the #249 evidence bundle.
