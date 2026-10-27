@@ -2024,10 +2024,10 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
     for retry in 0..3 {
         std::thread::sleep(Duration::from_secs(20));
         attempt = Some(probe_two_way(nodes));
-        if attempt
-            .as_ref()
-            .is_some_and(|(value, _)| value.iter().all(|probe| probe.ok))
-        {
+        if matches!(
+            attempt.as_ref(),
+            Some(Ok((value, _))) if value.iter().all(|probe| probe.ok)
+        ) {
             break;
         }
         if retry < 2 {
