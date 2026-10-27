@@ -19,7 +19,7 @@ use core::fmt;
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
 use mesh_service::{
-    FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
+    Change, FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
 };
 use sys_primitives::{NodeId, NodeKey};
 
@@ -249,9 +249,10 @@ impl AuthorityRoot {
 
     /// Remove every member the detector has confirmed failed.
     ///
-    /// Each removal is a separate authority-confirmed epoch advance, exactly
-    /// as a clean leave would be.  The root is never removed.  A node that is
-    /// merely suspect stays in the routing snapshot.
+    /// All failed nodes are removed in a single change set so the membership
+    /// epoch advances exactly once for the whole removal set, not once per
+    /// node.  The root is never removed.  A node that is merely suspect stays
+    /// in the routing snapshot.
     pub fn remove_failed(&mut self) -> Option<BatchRemoval> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
@@ -262,8 +263,19 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        for node in &failed {
-            let _ = self.table.leave(*node);
+        let changes: alloc::vec::Vec<Change> = failed
+            .iter()
+            .copied()
+            .map(|node| Change::Remove { node })
+            .collect();
+        // `now_ns` is only used for `Change::Add` (last_seen_ns); a removal set
+        // never refreshes a record, so any value is valid here.
+        let set = match self.table.apply(&changes, 0) {
+            Ok(set) => set,
+            Err(_) => return None,
+        };
+        if !set.changed {
+            return None;
         }
         let snapshot = match self.snapshot() {
             Ok(s) => s,
