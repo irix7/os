@@ -12,6 +12,7 @@
 //! capabilities.  The NVRAM keys it seeds (`mesh.peer`, `mesh.authority`,
 //! `mesh.epoch`) are the handoff to M2-1.
 
+mod bulk;
 mod evidence;
 mod failure;
 mod fixture;
@@ -74,6 +75,7 @@ fn run() -> Result<i32, String> {
     }
     match options.action {
         Action::Run => run_and_probe(&options),
+        Action::Bulk => bulk_run(&options),
         Action::Shard => shard::run(&options),
         Action::Up => up(&options),
         Action::Down => down(&options),
@@ -93,6 +95,7 @@ Usage:
 
 Commands:
   run           start both M2 nodes, probe HTTP/mesh/join/route, write evidence
+  bulk          drive the #247 64 KiB bulk measurement through the bounded hub
   shard         start the M3 shard slice (two real kernels by default)
   up            start both nodes and leave them running
   down          stop both nodes through their CI sockets
@@ -312,6 +315,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         None,
         None,
         None,
+        None,
         "probe",
         if passed { "pass" } else { "fail" },
         error.as_deref(),
@@ -511,6 +515,105 @@ fn print_migration_result(migration: &migrate::MigrateEvidence) {
     }
 }
 
+fn bulk_run(options: &Options) -> Result<i32, String> {
+    let (_module, rom_sha, module_sha) = check_prerequisites(options)?;
+    let module = fs::read(&options.module).map_err(|error| format!("read module: {error}"))?;
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let nodes = derive_nodes(options)?;
+    let mut running = Vec::new();
+    let module_sha_text = sha256::hex(&module_sha);
+    start_all(
+        options,
+        &nodes,
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    )?;
+    let result = (|| -> Result<bulk::BulkEvidence, String> {
+        let _facts = wait_boot(options, &mut running)?;
+        // `BOOT-READY` is printed when the module entry returns; the mesh
+        // listener is armed on a later module tick.  The iris forward accepts
+        // a host connection before the guest socket exists, so start the hub
+        // only after both listeners are armed.
+        std::thread::sleep(Duration::from_secs(10));
+        let _hub = hub::MeshHub::start_with(&nodes, 1, hub::HubConfig::default())?;
+        wait_join(&nodes, Duration::from_secs(60));
+        wait_join_ack(&nodes, Duration::from_secs(20));
+        // Let the first home-table serial burst drain before measuring.
+        std::thread::sleep(Duration::from_secs(10));
+        bulk::run(&nodes[0], &nodes[1])
+    })();
+    let stop_errors = rig::stop_nodes(options, &mut running);
+    let evidence = result?;
+    for run in evidence.baseline.iter().chain(evidence.runs.iter()) {
+        println!(
+            "{} -> {}: {} B in {} x {} B chunks, {} ms, {:.3} MiB/s{}",
+            run.from,
+            run.to,
+            run.bytes,
+            run.chunks,
+            run.chunk,
+            run.elapsed_ms,
+            run.mb_per_s,
+            if run.chunk == bulk::BULK_BASELINE_CHUNK {
+                " (baseline)"
+            } else {
+                ""
+            }
+        );
+    }
+    println!("bulk: {}", evidence.message);
+    let commit = git(&options.repo, &["rev-parse", "HEAD"]);
+    let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let mut json = String::new();
+    json.push_str(&format!(
+        "{{\n  \"action\": \"bulk\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"module_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
+        evidence::json_escape(&branch),
+        commit,
+        sha256::hex(&rom_sha),
+        module_sha_text,
+        evidence.ok,
+        evidence::json_escape(&evidence.message)
+    ));
+    match &evidence.baseline {
+        Some(run) => json.push_str(&format!(
+            "{{\"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            run.mb_per_s,
+            evidence::json_escape(&run.raw)
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n  \"runs\": [");
+    for (index, run) in evidence.runs.iter().enumerate() {
+        json.push_str(&format!(
+            "\n    {{\"from\": \"{}\", \"to\": \"{}\", \"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
+            run.from,
+            run.to,
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            run.mb_per_s,
+            evidence::json_escape(&run.raw)
+        ));
+        if index + 1 < evidence.runs.len() {
+            json.push(',');
+        }
+    }
+    json.push_str("\n  ]\n}\n");
+    let path = options.work.join("bulk-evidence.json");
+    fs::write(&path, json).map_err(|error| format!("write {}: {error}", path.display()))?;
+    for error in stop_errors {
+        eprintln!("m2-rig: stop: {error}");
+    }
+    println!("evidence: {}", path.display());
+    Ok(if evidence.ok { 0 } else { 1 })
+}
+
 fn run_and_probe(options: &Options) -> Result<i32, String> {
     let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
     let module_sha_text = sha256::hex(&module_sha);
@@ -542,6 +645,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut probe_error = None;
     let mut join_error = None;
     let mut homes_error = None;
+    let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
+    let mut bulk_error = None;
     let mut route = None;
     let mut route_error = None;
     let mut migration = None;
@@ -597,6 +702,29 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 route = Some(value);
             }
             Err(error) => route_error = Some(error),
+        }
+
+        // The bulk measurement runs after join/homes/route and before the
+        // migration.  It is a mesh-path measurement: the module's start/finish
+        // timestamps exclude the MCP HTTP phase machine, but the bounded serial
+        // home table must have drained or the emulated 9,600-baud line would
+        // gate the tick.  A short settle plus HTTP retries absorbs the iris
+        // forward's half-open close.
+        if options.fault.joins() && join_before.ok && join_before.members.len() == 2 {
+            // The route scenario has just written its bounded report lines to
+            // the emulated 9,600-baud serial line.  A 1 KiB report blocks the
+            // module tick for about a second; let it drain before measuring
+            // the mesh, otherwise the "bulk throughput" is serial throughput.
+            std::thread::sleep(Duration::from_secs(8));
+            match bulk::run(&nodes[0], &nodes[1]) {
+                Ok(evidence) => {
+                    if !evidence.ok {
+                        bulk_error = Some(evidence.message.clone());
+                    }
+                    bulk_evidence = Some(evidence);
+                }
+                Err(error) => bulk_error = Some(error),
+            }
         }
         if !options.fault.migrates() && !options.fault.failures() {
             match collect_migration(options, &nodes) {
@@ -717,6 +845,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Err(error) => probe_error = Some(error),
             }
         }
+
     } else {
         // Keep the evidence useful even when a node never booted: record what
         // the serial logs show and do not invent a probe result.
@@ -778,6 +907,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         && join_error.is_none()
         && homes_error.is_none()
         && route_error.is_none()
+        && bulk_error.is_none()
         && migration_error.is_none()
         && (options.fault != Fault::None || migration_ok)
         && failure_ok
@@ -837,6 +967,18 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     if let Some(route) = &route {
         print_route_result(route);
     }
+    if let Some(bulk) = &bulk_evidence {
+        println!("bulk [{}]: {}", if bulk.ok { "pass" } else { "FAIL" }, bulk.message);
+        for run in &bulk.runs {
+            println!(
+                "  {} -> {}: {} B in {} chunks, {} ms, {:.3} MiB/s",
+                run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s
+            );
+        }
+    }
+    if let Some(error) = &bulk_error {
+        println!("bulk [FAIL]: {error}");
+    }
     if let Some(migration) = &migration {
         print_migration_result(migration);
     }
@@ -863,6 +1005,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         Some(&homes),
         route.as_ref(),
         migration.as_ref(),
+        bulk_evidence.as_ref(),
         failure_evidence.as_ref(),
         Some(&fixture),
         "run",
@@ -1981,6 +2124,7 @@ fn write_evidence(
     homes: Option<&HomesEvidence>,
     route: Option<&route::RouteEvidence>,
     migration: Option<&migrate::MigrateEvidence>,
+    bulk: Option<&bulk::BulkEvidence>,
     failure: Option<&FailureEvidence>,
     fixture: Option<&Fixture>,
     action: &str,
@@ -2047,6 +2191,7 @@ fn write_evidence(
         homes,
         route,
         migration,
+        bulk,
         failure,
         fixture,
         relays: &relay_logs,

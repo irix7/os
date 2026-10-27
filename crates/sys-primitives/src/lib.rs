@@ -1852,17 +1852,43 @@ fn get_u64(input: &[u8], off: usize) -> u64 {
 }
 
 /// CRC-32C (Castagnoli), the same polynomial used by iSCSI, ext4 and NVMe.
-/// The implementation is table-free so it stays small on the Indy.
+///
+/// The table has 16 entries (64 bytes of `.rodata`) and folds four bits per
+/// step.  It was chosen over a 256-entry table because the kernel is inside
+/// the compressed PROM: the full table costs about 1 KiB of image for a
+/// workload (128-byte headers) where the cache-miss penalty cancels most of
+/// the win.  The nibble table keeps the same polynomial and the same output
+/// value while removing half of the per-byte dependent shift rounds.
 pub fn crc32c(data: &[u8]) -> u32 {
+    const TABLE: [u32; 16] = crc32c_nibble_table();
     let mut crc = 0xffff_ffffu32;
     for &byte in data {
         crc ^= byte as u32;
-        for _ in 0..8 {
-            let mask = (crc & 1).wrapping_neg();
-            crc = (crc >> 1) ^ (0x82f6_3b78 & mask);
-        }
+        crc = (crc >> 4) ^ TABLE[(crc & 0x0f) as usize];
+        crc = (crc >> 4) ^ TABLE[(crc & 0x0f) as usize];
     }
     !crc
+}
+
+/// Build the 16-entry reflected CRC-32C table at compile time.
+const fn crc32c_nibble_table() -> [u32; 16] {
+    let mut table = [0u32; 16];
+    let mut index = 0;
+    while index < 16 {
+        let mut crc = index as u32;
+        let mut bit = 0;
+        while bit < 4 {
+            crc = if crc & 1 != 0 {
+                (crc >> 1) ^ 0x82f6_3b78
+            } else {
+                crc >> 1
+            };
+            bit += 1;
+        }
+        table[index] = crc;
+        index += 1;
+    }
+    table
 }
 
 // ---------------------------------------------------------------------------

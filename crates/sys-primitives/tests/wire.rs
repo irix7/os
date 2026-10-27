@@ -96,6 +96,44 @@ fn capability_round_trip_and_window() {
 }
 
 #[test]
+fn crc32c_nibble_matches_known_vectors() {
+    // The same values the table-free implementation produced before the
+    // nibble table; a change here is a wire change.
+    assert_eq!(sys_primitives::crc32c(b""), 0);
+    assert_eq!(sys_primitives::crc32c(b"123456789"), 0xE306_9283);
+    assert_eq!(
+        sys_primitives::crc32c(&[0u8; 32]),
+        0x8A91_36AA,
+        "32 zero bytes"
+    );
+
+    // Differential check against the bit-at-a-time reference.
+    fn reference(data: &[u8]) -> u32 {
+        let mut crc = 0xffff_ffffu32;
+        for &byte in data {
+            crc ^= byte as u32;
+            for _ in 0..8 {
+                let mask = (crc & 1).wrapping_neg();
+                crc = (crc >> 1) ^ (0x82f6_3b78 & mask);
+            }
+        }
+        !crc
+    }
+    let mut state = 0x1234_5678u32;
+    for len in 0..300 {
+        let mut bytes = [0u8; 300];
+        for byte in bytes.iter_mut().take(len) {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            *byte = (state >> 24) as u8;
+        }
+        assert_eq!(
+            sys_primitives::crc32c(&bytes[..len]),
+            reference(&bytes[..len])
+        );
+    }
+}
+
+#[test]
 fn mesh_envelope_round_trip() {
     let frame = MessageFrame::inline(
         MessageKind::Request,

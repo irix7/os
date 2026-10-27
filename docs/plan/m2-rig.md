@@ -9,7 +9,11 @@ migration and the M2-6 failure, lease-fencing and partition modes. The rig start
 with distinct identities, proves a two-way HTTP exchange through the chosen path, connects
 the two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, drives
 the signed join handshake until both nodes report the same membership epoch and snapshot,
-and fetches the rendezvous home table from both kernels. In the default route mode it then
+and fetches the rendezvous home table from both kernels.  After the join it also runs
+three 64 KiB bulk transfers in alternating directions (#247): the module streams four
+16 KiB chunks on one logical record, reports the mesh start/finish time and the
+`writes`/`batched`/`peak_queue`/`peak_decoder` counters, and the rig checks the exact byte
+and chunk count.  In the default route mode it then
 issues a capability at n0, serves the remote stat at n1, performs a controlled root-signed
 home-lease move, consumes one `MOVED` and retries exactly once in each direction, and
 fetches the route report from both kernels. It then stops and restarts the member and
@@ -703,7 +707,7 @@ The evidence bundle contains:
 | File | Content |
 |---|---|
 | `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, rendezvous homes, remote capability route, relay logs. |
-| `run.json` | Machine-readable version of the same, including every home table and the route reports. |
+| `run.json` | Machine-readable version of the same, including every home table, the route reports and the `bulk` runs (bytes, chunks, mesh elapsed ms, MiB/s, raw module line). |
 | `manifest.json` | Deterministic source commit/`describe`/dirty flag and the PROM, module, `iris` and `iris-ci` sizes and SHA-256 digests. |
 | `serial-n0.log`, `serial-n1.log` | Final serial transcripts. |
 | `serial-n1-boot1.log` | The member's transcript before the member restart. |

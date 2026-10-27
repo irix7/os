@@ -54,6 +54,14 @@ pub const MIN_ENVELOPE_LEN: usize = MeshHeader::LEN + 128 + 64;
 /// Maximum number of bytes a [`SendQueue`] buffers before reporting backpressure.
 pub const MAX_QUEUED_BYTES: usize = MAX_RECORD_LEN + LENGTH_PREFIX_LEN;
 
+/// Bytes of a [`SendQueue`] reserved for control records.
+///
+/// A data record may only use the space above this reserve, so a queued bulk
+/// chunk can never make a join, lease or route acknowledgement fail with
+/// [`Error::QueueFull`].  Eight KiB is one maximum-size control record plus a
+/// few hundred bytes of join/route traffic.
+pub const CONTROL_RESERVE_BYTES: usize = 8 * 1024;
+
 /// Connect deadline for a new TCP link (ADR M2-0002: 5 s).
 pub const CONNECT_DEADLINE_MS: u64 = 5_000;
 
@@ -117,6 +125,9 @@ pub enum Error {
     Poisoned,
     /// The decoder has a complete record that must be consumed first.
     Full,
+    /// The decoder buffer is at its fixed bound; the peer sent a record larger
+    /// than this link's configured limit.
+    DecoderFull,
     /// No complete record is available yet.
     NotReady,
     /// No request tag is available.
@@ -138,6 +149,7 @@ impl Error {
             Self::QueueFull => "queue-full",
             Self::Poisoned => "poisoned",
             Self::Full => "full",
+            Self::DecoderFull => "decoder-full",
             Self::NotReady => "not-ready",
             Self::NoTag => "no-tag",
             Self::Envelope(error) => envelope_error_label(error),
@@ -259,6 +271,12 @@ pub struct StreamDecoder {
     buffer: Vec<u8>,
     /// Total record length (prefix + envelope) once the prefix is known.
     expected: Option<usize>,
+    /// Hard cap on the buffer, independent of `MAX_QUEUED_BYTES`.
+    ///
+    /// A module can pre-allocate an exact 32 KiB and stream a 64 KiB logical
+    /// payload in 16 KiB frames; it must never grow the bump-allocated `Vec`
+    /// on the data path.
+    limit: usize,
     poisoned: bool,
 }
 
@@ -269,18 +287,34 @@ impl Default for StreamDecoder {
 }
 
 impl StreamDecoder {
-    /// Create a decoder with a small initial allocation.
+    /// Create a decoder with the module default: a 32 KiB fixed allocation.
     pub fn new() -> Self {
-        Self::with_capacity(4 * 1024)
+        Self::with_limit(32 * 1024, 32 * 1024)
     }
 
     /// Create a decoder with the given initial allocation.
     pub fn with_capacity(capacity: usize) -> Self {
+        Self::with_limit(capacity, capacity.min(MAX_QUEUED_BYTES))
+    }
+
+    /// Create a decoder with an exact initial allocation and hard limit.
+    ///
+    /// The limit is clamped to [`MAX_QUEUED_BYTES`].  A record larger than the
+    /// limit is rejected with [`Error::DecoderFull`] before the buffer grows.
+    pub fn with_limit(capacity: usize, limit: usize) -> Self {
+        let limit = limit.clamp(LENGTH_PREFIX_LEN, MAX_QUEUED_BYTES);
+        let capacity = capacity.clamp(LENGTH_PREFIX_LEN, limit);
         Self {
-            buffer: Vec::with_capacity(capacity.min(MAX_QUEUED_BYTES)),
+            buffer: Vec::with_capacity(capacity),
             expected: None,
+            limit,
             poisoned: false,
         }
+    }
+
+    /// The hard buffer bound in bytes.
+    pub const fn limit(&self) -> usize {
+        self.limit
     }
 
     /// Feed bytes from a short read.  Returns the number of bytes consumed.
@@ -397,7 +431,11 @@ impl StreamDecoder {
         if envelope_len < MIN_ENVELOPE_LEN {
             return Err(Error::TooShort);
         }
-        self.expected = Some(LENGTH_PREFIX_LEN + envelope_len);
+        let total = LENGTH_PREFIX_LEN + envelope_len;
+        if total > self.limit {
+            return Err(Error::DecoderFull);
+        }
+        self.expected = Some(total);
         Ok(())
     }
 }
@@ -447,6 +485,8 @@ pub struct FlushReport {
     pub blocked: bool,
     /// Whether the sink reported a closed link.
     pub closed: bool,
+    /// Number of sink writes issued during this flush.
+    pub writes: usize,
 }
 
 /// A bounded queue of encoded records.
@@ -462,6 +502,14 @@ pub struct SendQueue {
     offset: usize,
     ends: Vec<usize>,
     first_queued_ms: Option<u64>,
+    /// Total capacity, fixed at construction.
+    capacity: usize,
+    /// Bytes data records may not use.
+    control_reserve: usize,
+    /// High-water mark of queued bytes, for the module's memory evidence.
+    peak_pending: usize,
+    /// Number of sink writes issued by the most recent [`Self::flush`].
+    last_writes: usize,
 }
 
 impl Default for SendQueue {
@@ -471,29 +519,70 @@ impl Default for SendQueue {
 }
 
 impl SendQueue {
-    /// Create an empty send queue.
+    /// Create an empty send queue with the module default: a 32 KiB fixed
+    /// allocation and an 8 KiB control reserve.
     pub fn new() -> Self {
+        Self::with_capacity(32 * 1024)
+    }
+
+    /// Create a queue with an exact capacity, clamped to the record bound.
+    pub fn with_capacity(capacity: usize) -> Self {
+        let capacity = capacity.clamp(LENGTH_PREFIX_LEN + MIN_ENVELOPE_LEN, MAX_QUEUED_BYTES);
         Self {
-            bytes: Vec::with_capacity(4 * 1024),
+            bytes: Vec::with_capacity(capacity),
             offset: 0,
-            ends: Vec::new(),
+            ends: Vec::with_capacity(64),
             first_queued_ms: None,
+            capacity,
+            control_reserve: CONTROL_RESERVE_BYTES.min(capacity / 4),
+            peak_pending: 0,
+            last_writes: 0,
         }
     }
 
-    /// Encode and append one record.  `now_ms` starts the send deadline when
-    /// the queue becomes non-empty.
+    /// Create a queue with an explicit control reserve.
+    pub fn with_reserve(capacity: usize, control_reserve: usize) -> Self {
+        let mut queue = Self::with_capacity(capacity);
+        queue.control_reserve = control_reserve.min(queue.capacity / 2);
+        queue
+    }
+
+    /// Encode and append one control record.  `now_ms` starts the send
+    /// deadline when the queue becomes non-empty.
     pub fn push_record(&mut self, envelope: &MeshEnvelope<'_>, now_ms: u64) -> Result<(), Error> {
+        self.push_with_limit(envelope, now_ms, self.capacity)
+    }
+
+    /// Encode and append one data record.  Data may not consume the control
+    /// reserve, so a bulk stream cannot starve a join or lease acknowledgement.
+    pub fn push_data_record(
+        &mut self,
+        envelope: &MeshEnvelope<'_>,
+        now_ms: u64,
+    ) -> Result<(), Error> {
+        let limit = self.capacity.saturating_sub(self.control_reserve);
+        self.push_with_limit(envelope, now_ms, limit)
+    }
+
+    fn push_with_limit(
+        &mut self,
+        envelope: &MeshEnvelope<'_>,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<(), Error> {
         let total = record_len(envelope)?;
-        let pending = self.bytes.len().saturating_sub(self.offset);
-        if pending + total > MAX_QUEUED_BYTES {
-            return Err(Error::QueueFull);
-        }
-        if self.offset == self.bytes.len() {
-            self.bytes.clear();
+        if self.offset > 0 {
+            let remaining = self.bytes.len() - self.offset;
+            self.bytes.copy_within(self.offset.., 0);
+            self.bytes.truncate(remaining);
+            for end in &mut self.ends {
+                *end -= self.offset;
+            }
             self.offset = 0;
-            self.ends.clear();
-            self.first_queued_ms = None;
+        }
+        let pending = self.bytes.len();
+        if pending + total > limit {
+            return Err(Error::QueueFull);
         }
         let start = self.bytes.len();
         self.bytes.resize(start + total, 0);
@@ -503,6 +592,7 @@ impl SendQueue {
                 if self.first_queued_ms.is_none() {
                     self.first_queued_ms = Some(now_ms);
                 }
+                self.peak_pending = self.peak_pending.max(self.bytes.len());
                 Ok(())
             }
             Ok(_) => {
@@ -519,20 +609,24 @@ impl SendQueue {
     /// Write as much of the queued bytes as `sink` accepts now.
     pub fn flush(&mut self, sink: &mut impl ByteSink) -> FlushReport {
         let mut report = FlushReport::default();
+        self.last_writes = 0;
         loop {
             if self.offset == self.bytes.len() {
                 self.bytes.clear();
                 self.offset = 0;
                 self.ends.clear();
                 self.first_queued_ms = None;
+                report.writes = self.last_writes;
                 return report;
             }
             match sink.write(&self.bytes[self.offset..]) {
                 WriteOutcome::Wrote(0) | WriteOutcome::WouldBlock => {
                     report.blocked = true;
+                    report.writes = self.last_writes;
                     return report;
                 }
                 WriteOutcome::Wrote(count) => {
+                    self.last_writes += 1;
                     let count = count.min(self.bytes.len() - self.offset);
                     self.offset += count;
                     report.bytes_written += count;
@@ -540,9 +634,11 @@ impl SendQueue {
                         self.ends.remove(0);
                         report.frames_written += 1;
                     }
+                    report.writes = self.last_writes;
                 }
                 WriteOutcome::Closed => {
                     report.closed = true;
+                    report.writes = self.last_writes;
                     return report;
                 }
             }
@@ -565,6 +661,21 @@ impl SendQueue {
     /// Records queued but not yet completely accepted by the sink.
     pub fn pending_frames(&self) -> usize {
         self.ends.len()
+    }
+
+    /// Configured capacity in bytes.
+    pub const fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    /// Configured control reserve in bytes.
+    pub const fn control_reserve(&self) -> usize {
+        self.control_reserve
+    }
+
+    /// High-water mark of queued bytes since construction.
+    pub const fn peak_pending(&self) -> usize {
+        self.peak_pending
     }
 
     /// Whether a non-empty queue has exceeded the send deadline.
@@ -619,6 +730,20 @@ pub struct Stats {
     pub cancelled_tags: u64,
     /// Request tags released by their deadline.
     pub expired_tags: u64,
+    /// Sink writes issued by the send queue.
+    pub writes: u64,
+    /// Flushes that wrote more than one record in one sink call.
+    pub batched_flushes: u64,
+    /// High-water mark of queued send bytes.
+    pub peak_queued_bytes: usize,
+    /// High-water mark of decoder bytes.
+    pub peak_decoder_bytes: usize,
+    /// Bulk chunks accepted from a peer.
+    pub bulk_chunks_received: u64,
+    /// Bulk chunks sent to a peer.
+    pub bulk_chunks_sent: u64,
+    /// Bulk transfers abandoned by a reset or link loss.
+    pub bulk_aborts: u64,
 }
 
 /// Heartbeat scheduling for an established link.
@@ -873,6 +998,18 @@ mod tests {
     use sys_primitives::{
         mesh_flags, MeshEnvelope, MessageFrame, MessageKind, NodeId, OpCode, StreamId,
     };
+
+    #[derive(Default)]
+    struct NullSink {
+        bytes: usize,
+    }
+
+    impl ByteSink for NullSink {
+        fn write(&mut self, data: &[u8]) -> WriteOutcome {
+            self.bytes += data.len();
+            WriteOutcome::Wrote(data.len())
+        }
+    }
 
     fn node(byte: u8) -> NodeId {
         NodeId([byte; 16])
@@ -1289,5 +1426,116 @@ mod tests {
         assert!(decoder.next_record().unwrap().is_none());
         assert_eq!(decoder.push(&record).unwrap(), record.len());
         assert!(decoder.next_record().unwrap().is_some());
+    }
+
+    #[test]
+    fn decoder_hard_limit_rejects_a_larger_record_without_growth() {
+        let body = vec![0x5a; 8 * 1024];
+        let source = envelope(
+            node(1),
+            node(2),
+            MessageKind::Request,
+            OpCode::Read,
+            7,
+            &body,
+        );
+        let record = encoded(&source);
+        let mut decoder = StreamDecoder::with_limit(1024, 1024);
+        assert_eq!(decoder.limit(), 1024);
+        assert_eq!(decoder.push(&record[..4]), Err(Error::DecoderFull));
+        assert!(decoder.is_poisoned());
+        assert_eq!(decoder.buffered_len(), 4);
+    }
+
+    #[test]
+    fn send_queue_compacts_and_keeps_its_capacity() {
+        let mut queue = SendQueue::with_capacity(8 * 1024);
+        let capacity = queue.capacity();
+        let source = envelope(
+            node(1),
+            node(2),
+            MessageKind::Control,
+            OpCode::Ping,
+            1,
+            b"compact",
+        );
+        for _ in 0..8 {
+            queue.push_record(&source, 0).unwrap();
+        }
+        let mut sink = NullSink::default();
+        let report = queue.flush(&mut sink);
+        assert_eq!(report.frames_written, 8);
+        assert_eq!(queue.pending_bytes(), 0);
+        for _ in 0..8 {
+            queue.push_record(&source, 0).unwrap();
+        }
+        assert_eq!(queue.capacity(), capacity);
+        assert!(queue.peak_pending() <= capacity);
+    }
+
+    #[test]
+    fn data_cannot_consume_the_control_reserve() {
+        let mut queue = SendQueue::with_reserve(16 * 1024, 8 * 1024);
+        let body = vec![0u8; 7 * 1024];
+        let data = envelope(
+            node(1),
+            node(2),
+            MessageKind::Response,
+            OpCode::Read,
+            9,
+            &body,
+        );
+        queue.push_data_record(&data, 0).unwrap();
+        // A second data record would cross the 8 KiB data limit.
+        assert_eq!(queue.push_data_record(&data, 0), Err(Error::QueueFull));
+        let control = envelope(
+            node(1),
+            node(2),
+            MessageKind::Control,
+            OpCode::Ping,
+            1,
+            b"control",
+        );
+        queue.push_record(&control, 0).unwrap();
+        let mut sink = NullSink::default();
+        let report = queue.flush(&mut sink);
+        assert_eq!(report.frames_written, 2);
+    }
+
+    #[test]
+    fn flush_batches_many_records_in_one_write() {
+        struct CountingSink {
+            writes: usize,
+            bytes: usize,
+        }
+        impl ByteSink for CountingSink {
+            fn write(&mut self, data: &[u8]) -> WriteOutcome {
+                self.writes += 1;
+                self.bytes += data.len();
+                WriteOutcome::Wrote(data.len())
+            }
+        }
+        let mut queue = SendQueue::with_capacity(16 * 1024);
+        let body = [0u8; 16];
+        for tag in 1..=8 {
+            let source = envelope(
+                node(1),
+                node(2),
+                MessageKind::Control,
+                OpCode::Ping,
+                tag,
+                &body,
+            );
+            queue.push_record(&source, 0).unwrap();
+        }
+        let mut sink = CountingSink {
+            writes: 0,
+            bytes: 0,
+        };
+        let report = queue.flush(&mut sink);
+        assert_eq!(report.frames_written, 8);
+        assert_eq!(report.writes, 1);
+        assert_eq!(sink.writes, 1);
+        assert_eq!(sink.bytes, 8 * 340);
     }
 }

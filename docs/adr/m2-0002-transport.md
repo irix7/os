@@ -193,3 +193,29 @@ follows:
 - Module TCP slot 1 is now a shared resource when the mesh is enabled: a future module that
   wants to use it must coordinate with MCP or replace this combined module. Runtime module
   dependencies (#217) are not available, so M2-1 does not claim a general slot manager.
+
+## #247 implementation note — buffers, batching and a 64 KiB logical record
+
+**Status:** implemented; no wire-format change.
+
+The M2-1 transport kept a 2 KiB module RX ring and `max_burst_size = Some(1)`,
+so every socket advertised about 1,474 bytes and each 64 KiB transfer needed
+45 window-limited ticks.  #247 changes the transport and leaves the record
+format alone:
+
+- Seeq RX ring 16, `max_burst_size = Some(15)`, module RX 16 KiB / TX 32 KiB,
+  Nagle off and a 1 ms delayed ACK;
+- one `copy_nonoverlapping` from the uncached DMA buffer instead of a
+  per-byte `read_volatile` loop;
+- fixed-capacity decoder and send queue with an 8 KiB control reserve, and one
+  flush per module tick;
+- a 64 KiB **logical** record carried as four 16 KiB chunks using the existing
+  `FrameHeader.offset`/`length` and `flags::MORE`/`EOS`.
+
+The module linker asserts image + `.bss` stays below the next boot slot.  A
+single 64 KiB wire record is still accepted by `mesh-transport` (the 64 KiB
+bound is unchanged), but the module deliberately streams it: slot A has about
+50 KiB of headroom after this change, and one record would head-of-line block
+control for the whole transfer.  See
+[`docs/research/bulk-batching.md`](../research/bulk-batching.md) for the host
+model, the real two-kernel numbers and the remaining limits.

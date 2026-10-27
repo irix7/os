@@ -681,16 +681,19 @@ extern "C" fn service_poll() {
 const MODULE_TCP_SLOTS: usize = 2;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
-/// The receive buffer is deliberately larger than the two-node case needs.
+/// The receive buffer holds a full #247 16 KiB bulk chunk plus its framing.
 ///
 /// Under the M3 host hub several member records share the root's single mesh
-/// slot while the module writes a bounded serial burst.  A 2 KiB buffer fills
-/// during that burst, advertises a tiny window, and then trickles the rest of
-/// a 388-byte record through the host forward's zero-window probe; the 10 s
-/// receive deadline fires on a healthy link.  16 KiB holds a full eight-member
-/// join/refresh burst, so the window never collapses during logging.
-static mut MODULE_TCP_RX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
-static mut MODULE_TCP_TX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
+/// slot while the module writes a bounded serial burst.  16 KiB already held a
+/// full eight-member join/refresh burst; 32 KiB also holds one 16 KiB bulk
+/// chunk (16,728 bytes including the 324-byte envelope) so a chunk never needs
+/// a mid-record window update on the relay path.
+static mut MODULE_TCP_RX: [[u8; 32768]; MODULE_TCP_SLOTS] = [[0; 32768]; MODULE_TCP_SLOTS];
+/// Module transmit ring.  The module's send queue coalesces records and one
+/// `tcp_send` may hand over a whole 16 KiB bulk chunk; 32 KiB absorbs the
+/// chunk plus a control record without making the module wait for a short
+/// write on every flush.
+static mut MODULE_TCP_TX: [[u8; 32768]; MODULE_TCP_SLOTS] = [[0; 32768]; MODULE_TCP_SLOTS];
 
 fn module_handle(slot: u32) -> Option<SocketHandle> {
     let slot = slot as usize;
@@ -722,6 +725,12 @@ unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
         SocketBuffer::new(&mut tx[..]),
     );
     socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(60)));
+    // A module protocol has its own batching and deadlines; Nagle only adds
+    // an ACK-clocked delay to a small control record.  RFC 1122 requires a
+    // per-connection way to disable it.  A 1 ms delayed ACK lets the receiver
+    // acknowledge inside the same 10 ms service pass instead of the next one.
+    socket.set_nagle_enabled(false);
+    socket.set_ack_delay(Some(smoltcp::time::Duration::from_millis(1)));
     let Some(handle) = crate::net::sockets_with(|sockets| sockets.add(socket)) else {
         return -1;
     };

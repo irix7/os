@@ -22,6 +22,7 @@
 //! Every command prints a markdown table so the numbers can be pasted into
 //! `docs/research/wire-efficiency.md` without transcription.
 
+mod bulk;
 mod calibrate;
 mod codec;
 mod frames;
@@ -40,15 +41,17 @@ fn main() -> ExitCode {
         "codec" => codec::run(),
         "net" => netbench::run(),
         "http" => httpbench::run(),
+        "bulk" => bulk::run(),
         "all" => {
             frames::run();
             codec::run();
             netbench::run();
             httpbench::run();
+            bulk::run();
         }
         other => {
             eprintln!("unknown command: {other}");
-            eprintln!("usage: protocol-bench [frames|codec|net|http|all]");
+            eprintln!("usage: protocol-bench [frames|codec|net|http|bulk|all]");
             return ExitCode::FAILURE;
         }
     }

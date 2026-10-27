@@ -30,6 +30,9 @@ pub const TELNET_GUEST_PORT: u16 = 23;
 pub enum Action {
     /// Start both nodes, probe both directions, stop, and write evidence.
     Run,
+    /// Start two kernels through the bounded hub and run only the #247 bulk
+    /// measurement.
+    Bulk,
     /// Start the M3 shard slice: `--nodes` kernels, join through the direct
     /// two-node relay (or the experimental hub), shard evidence and one route.
     Shard,
@@ -52,6 +55,7 @@ impl Action {
     pub fn parse(word: &str) -> Option<Self> {
         Some(match word {
             "run" => Self::Run,
+            "bulk" => Self::Bulk,
             "shard" => Self::Shard,
             "up" => Self::Up,
             "down" => Self::Down,

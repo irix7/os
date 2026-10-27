@@ -23,3 +23,5 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
+
+- [Bulk buffers and batching](bulk-batching.md) — #247.
