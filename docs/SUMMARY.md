@@ -34,6 +34,7 @@
 - [M3-ADR-0001 — first shard slice](adr/m3-0001-shard-slice.md)
 - [M3-ADR-0002 — multi-member hub](adr/m3-0002-multi-node-hub.md)
 - [M2-ADR-0010 — direct peer transport](adr/m2-0010-direct-peer-transport.md)
+- [M3-ADR-0003 — bounded mesh streams](adr/m3-0003-multiplexed-streams.md)
 
 ## Plan
 
@@ -70,3 +71,4 @@
 - [QUIC as the primary transport](research/quic-primary.md)
 - [Bulk buffers and batching](research/bulk-batching.md)
 - [Direct peer transport](research/direct-peer.md)
+- [Bounded mesh streams](research/mesh-streams.md)

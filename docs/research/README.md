@@ -27,3 +27,5 @@ traceability.
 - [Bulk buffers and batching](bulk-batching.md) — #247.
 
 - [Direct peer transport](direct-peer.md) — #245.
+
+- [Bounded mesh streams](mesh-streams.md) — #246.

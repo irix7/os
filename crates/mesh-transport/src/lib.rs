@@ -744,6 +744,12 @@ pub struct Stats {
     pub bulk_chunks_sent: u64,
     /// Bulk transfers abandoned by a reset or link loss.
     pub bulk_aborts: u64,
+    /// Data frames blocked on stream credit.
+    pub credit_stalls: u64,
+    /// Window updates granted to a peer.
+    pub credit_grants: u64,
+    /// Streams reset by cancel or link loss.
+    pub stream_resets: u64,
 }
 
 /// Heartbeat scheduling for an established link.
