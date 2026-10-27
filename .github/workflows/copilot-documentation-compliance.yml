@@ -1,40 +1,32 @@
-name: Copilot Documentation Compliance
+name: Request Copilot Documentation Review
 
 on:
   pull_request:
     types: [opened, synchronize, edited]
 
+permissions:
+  pull-requests: write
+
 jobs:
-  copilot-review:
+  request-copilot-review:
     runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-      contents: read
-
+    # Copilot won't review drafts.
+    if: github.event.pull_request.draft == false
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Request Copilot Analysis
-        id: copilot
+      - name: Request Copilot review
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          echo "Triggering Copilot repository-wide documentation audit..."
-
-          # We use the GitHub CLI to trigger a code review summary via Copilot's API endpoint
-          # This forces Copilot to evaluate the diff against the .github/copilot-instructions.md rules
-          RESPONSE=$(gh api /repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews \
-            -f body="Please audit this PR for documentation sufficiency based on our repository's copilot-instructions.md file." \
-            -f event="COMMENT")
-
-          # Extract the assessment comment text to check for compliance status
-          REVIEW_TEXT=$(echo "$RESPONSE" | jq -r '.body // ""')
-
-          if [[ "$REVIEW_TEXT" == *"DOC_STATUS: FAIL"* ]]; then
-            echo "❌ Documentation audit failed."
-            exit 1
-          fi
-
-          echo "✅ Documentation compliance passed."
-          exit 0
+          # Trigger an actual GitHub Copilot code review by requesting
+          # the Copilot reviewer bot on this pull request. Copilot
+          # evaluates the diff and posts its review as review comments,
+          # including any guidance drawn from .github/copilot-instructions.md.
+          #
+          # NOTE: Copilot's review is free-text comments, not a structured
+          # pass/fail verdict. There is no DOC_STATUS: FAIL string to gate
+          # on; Copilot does not emit machine-readable compliance status.
+          gh api --method POST \
+            "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/requested_reviewers" \
+            -f 'reviewers[]=copilot-pull-request-reviewer[bot]' \
+            || echo "::warning::Could not request Copilot reviewer. Is Copilot code review enabled and installed on this repository?"
