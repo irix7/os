@@ -2386,8 +2386,7 @@ impl Mesh {
                 node,
                 epoch,
                 digest,
-            } if self.verbose_join_log() =>
-            {
+            } if self.verbose_join_log() => {
                 self.last_ack_log_ms = now;
                 let mut line = Line::new();
                 line.str("mesh-join: ack from=");
