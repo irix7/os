@@ -17,6 +17,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`rust-std-build-spike.md`](rust-std-build-spike.md) | The measured spike: build the `std` rlib for the native n32 target from a patched `rust-src` and libc, the exact method and patch set, the result, and the remaining runtime gaps. |
 | [`std-hello-bringup.md`](std-hello-bringup.md) | The first linked and running static `std` image: the 42-symbol shim, kernel syscall additions, loader fixes, output and remaining POSIX gaps. |
 | [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional (linked, not booted) IRIX PAL scaffold. |
+| [`quic-primary.md`](quic-primary.md) | Whether QUIC should replace TCP as the native transport, the Indy's crypto/code/memory budget, the recommended QUIC profile and the measured spike that decides it. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
