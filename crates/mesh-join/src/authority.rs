@@ -259,17 +259,17 @@ impl AuthorityRoot {
             .filter(|(node, record)| *node != self.root && record.state == NodeState::Failed)
             .map(|(node, _)| node)
             .collect();
-        let mut removals = alloc::vec::Vec::new();
-        for node in failed {
-            if !self.table.leave(node).unwrap_or(false) {
-                continue;
-            }
-            let Ok(snapshot) = self.snapshot() else {
-                continue;
-            };
-            removals.push(Removal { node, snapshot });
+        if failed.is_empty() {
+            return Vec::new();
         }
-        removals
+        let snapshot = self.snapshot().ok()?;
+        failed
+            .into_iter()
+            .map(|node| Removal {
+                node,
+                snapshot: snapshot.clone(),
+            })
+            .collect()
     }
 
     /// The root's public key.  A member hears the same key through
