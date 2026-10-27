@@ -32,7 +32,19 @@ pub struct JoinLine {
 impl JoinLine {
     /// Parse a `mesh-join: converged ...` line.
     pub fn parse(line: &str) -> Option<Self> {
-        let mut role = None;
+        Self::parse_inner(line, None)
+    }
+
+    /// Parse a line that may omit `role=`, using the node's known role.
+    ///
+    /// `mesh-join: duplicate` and `mesh-join: local` carry the same epoch,
+    /// digest and snapshot fields; only `duplicate` omits the role token.
+    pub fn parse_with_role(line: &str, role: &str) -> Option<Self> {
+        Self::parse_inner(line, Some(role))
+    }
+
+    fn parse_inner(line: &str, default_role: Option<&str>) -> Option<Self> {
+        let mut role = default_role.map(str::to_string);
         let mut epoch = None;
         let mut members = None;
         let mut digest = None;
@@ -64,6 +76,26 @@ impl JoinLine {
             raw: line.trim().to_string(),
         })
     }
+}
+
+/// The best join view line for one node, accepting the post-restart forms.
+pub fn node_line(facts: &BootFacts, role: &str) -> Option<JoinLine> {
+    facts
+        .mesh_join_converged
+        .as_deref()
+        .and_then(JoinLine::parse)
+        .or_else(|| {
+            facts
+                .mesh_join_duplicate
+                .as_deref()
+                .and_then(|line| JoinLine::parse_with_role(line, role))
+        })
+        .or_else(|| {
+            facts
+                .mesh_join_local
+                .as_deref()
+                .and_then(|line| JoinLine::parse_with_role(line, role))
+        })
 }
 
 /// Parse a `last_epoch=` value out of a request or local line.
@@ -150,20 +182,25 @@ pub struct JoinNodeEvidence {
 
 impl JoinNodeEvidence {
     /// Capture one node's join facts.
+    ///
+    /// A restarted node that restored its epoch logs a `duplicate` (or only
+    /// its `local` line) rather than a fresh `converged`, so the capture falls
+    /// back to those forms.  The epoch, digest and member list are the same
+    /// fields in every form.
     pub fn capture(node: &Node, facts: &BootFacts) -> Self {
-        let converged = facts
-            .mesh_join_converged
-            .as_deref()
-            .and_then(JoinLine::parse);
+        let role = if node.instance == 0 { "root" } else { "member" };
+        let line = node_line(facts, role);
+        let role = line.as_ref().map(|line| line.role.clone());
+        let converged = line.map(|line| line.raw);
         Self {
             name: node.name.clone(),
-            role: converged.map(|line| line.role),
+            role,
             enabled: facts.mesh_join_enabled.clone(),
             disabled: facts.mesh_join_disabled.clone(),
             local: facts.mesh_join_local.clone(),
             request: facts.mesh_join_request.clone(),
             confirms: facts.mesh_join_confirms.clone(),
-            converged: facts.mesh_join_converged.clone(),
+            converged,
             acks: facts.mesh_join_acks.clone(),
             acks_sent: facts.mesh_join_acks_sent.clone(),
             duplicate: facts.mesh_join_duplicate.clone(),
@@ -193,6 +230,38 @@ pub struct RestartEvidence {
     pub request_last_epoch: Option<u32>,
     /// The root's confirmation epoch after the rejoin.
     pub confirm_epoch: Option<u32>,
+    /// Whether the member restored its epoch from the signed store.
+    pub store_restored: bool,
+    /// The epoch named by the member's `epoch-store: restored` line.
+    pub store_epoch: Option<u32>,
+    /// Whether the epoch and digest are unchanged.
+    pub same_epoch: bool,
+}
+
+/// The root restart evidence: the root must resume the confirmed epoch from
+/// its signed store while the member stays up.
+#[derive(Clone, Debug)]
+pub struct RootRestartEvidence {
+    /// The restarted node (`n0`).
+    pub node: String,
+    /// The root transcript before the restart.
+    pub boot1_log: PathBuf,
+    /// The confirmed epoch before the restart.
+    pub first_epoch: u32,
+    /// The confirmed digest before the restart.
+    pub first_digest: String,
+    /// The epoch named by `epoch-store: restored` on the new boot.
+    pub store_epoch: Option<u32>,
+    /// The root's `mesh-join: local` epoch on the new boot.
+    pub local_epoch: Option<u32>,
+    /// The member's rejoin `last_epoch` after the root returned.
+    pub member_last_epoch: Option<u32>,
+    /// The root's confirmation epoch after the restart.
+    pub confirm_epoch: Option<u32>,
+    /// The member's converged epoch after the restart.
+    pub member_epoch: Option<u32>,
+    /// Whether either side logged `epoch-regression`.
+    pub epoch_regression: bool,
     /// Whether the epoch and digest are unchanged.
     pub same_epoch: bool,
 }
@@ -222,6 +291,8 @@ pub struct JoinEvidence {
     pub nodes: Vec<JoinNodeEvidence>,
     /// The member restart/rejoin evidence.
     pub restart: Option<RestartEvidence>,
+    /// The root restart evidence.
+    pub root_restart: Option<RootRestartEvidence>,
 }
 
 /// Facts gathered after restarting the member.
@@ -238,6 +309,30 @@ pub struct RestartInput {
     pub request_last_epoch: Option<u32>,
     /// The root's confirmation epoch after the rejoin.
     pub confirm_epoch: Option<u32>,
+    /// Whether the member restored its epoch from the signed store.
+    pub store_restored: bool,
+    /// The epoch named by the member's `epoch-store: restored` line.
+    pub store_epoch: Option<u32>,
+}
+
+/// Facts gathered after restarting the root.
+pub struct RootRestartInput {
+    /// The restarted root's first transcript.
+    pub boot1_log: PathBuf,
+    /// The converged line before the restart.
+    pub first: JoinLine,
+    /// The epoch in the root's new `mesh-join: local` line.
+    pub local_epoch: Option<u32>,
+    /// The epoch in the root's new `epoch-store: restored` line.
+    pub store_epoch: Option<u32>,
+    /// The member's newest `last_epoch`.
+    pub member_last_epoch: Option<u32>,
+    /// The root's newest confirmation epoch.
+    pub confirm_epoch: Option<u32>,
+    /// The member's newest converged/duplicate epoch.
+    pub member_epoch: Option<u32>,
+    /// Whether either side logged an epoch regression.
+    pub epoch_regression: bool,
 }
 
 /// Build the join evidence for one run.
@@ -247,6 +342,7 @@ pub fn evaluate(
     keys: &AuthorityKeys,
     fault: Fault,
     restart: Option<&RestartInput>,
+    root_restart: Option<&RootRestartInput>,
 ) -> JoinEvidence {
     let authority = nodes[0].node_id_string();
     let node_evidence: Vec<JoinNodeEvidence> = nodes
@@ -266,6 +362,7 @@ pub fn evaluate(
         expected_digest: None,
         nodes: node_evidence,
         restart: None,
+        root_restart: None,
     };
     let mut errors = Vec::new();
     match fault {
@@ -384,6 +481,12 @@ pub fn evaluate(
                     Err(error) => errors.push(error),
                 }
             }
+            if let Some(root_restart) = root_restart {
+                match check_root_restart(root_restart, &root, &member) {
+                    Ok(restart_evidence) => evidence.root_restart = Some(restart_evidence),
+                    Err(error) => errors.push(error),
+                }
+            }
             if errors.is_empty() {
                 evidence.message = format!(
                     "both kernels converged on epoch {} with {} members and digest {}",
@@ -466,6 +569,8 @@ pub fn check_restart(restart: &RestartInput, root: &JoinLine) -> Result<RestartE
         rejoin_digest: restart.rejoin.digest.clone(),
         request_last_epoch,
         confirm_epoch: restart.confirm_epoch,
+        store_restored: restart.store_restored,
+        store_epoch: restart.store_epoch,
         same_epoch: false,
     };
     let mut errors = Vec::new();
@@ -491,14 +596,25 @@ pub fn check_restart(restart: &RestartInput, root: &JoinLine) -> Result<RestartE
         errors.push("the root advanced its epoch across the member restart".into());
     }
     if let Some(last_epoch) = restart.request_last_epoch {
-        if last_epoch >= restart.rejoin.epoch {
+        if last_epoch != restart.rejoin.epoch {
             errors.push(format!(
-                "the rejoin request started at epoch {last_epoch}, not the seed below {}",
+                "the rejoin request started at epoch {last_epoch}, not the confirmed epoch {}",
                 restart.rejoin.epoch
             ));
         }
     } else {
         errors.push("no last_epoch in the rejoin request".into());
+    }
+    if !restart.store_restored {
+        errors.push("the member did not log a verified epoch-store restore".into());
+    }
+    match restart.store_epoch {
+        Some(epoch) if epoch == restart.rejoin.epoch => {}
+        Some(epoch) => errors.push(format!(
+            "the member restored epoch {epoch}, not {}",
+            restart.rejoin.epoch
+        )),
+        None => errors.push("the member restore line has no epoch".into()),
     }
     if let Some(confirm) = restart.confirm_epoch {
         if confirm != restart.first.epoch {
@@ -512,6 +628,85 @@ pub fn check_restart(restart: &RestartInput, root: &JoinLine) -> Result<RestartE
     }
     evidence.same_epoch = restart.first.epoch == restart.rejoin.epoch
         && restart.first.digest == restart.rejoin.digest;
+    if errors.is_empty() {
+        Ok(evidence)
+    } else {
+        Err(errors.join("; "))
+    }
+}
+
+/// Check the root restart evidence.
+///
+/// The root must resume the signed confirmed epoch from its store, and the
+/// live member must present that same epoch rather than a seed or a lower
+/// value.  A refusal with `epoch-regression` is the failure this closes.
+pub fn check_root_restart(
+    restart: &RootRestartInput,
+    root: &JoinLine,
+    member: &JoinLine,
+) -> Result<RootRestartEvidence, String> {
+    let mut evidence = RootRestartEvidence {
+        node: "n0".into(),
+        boot1_log: restart.boot1_log.clone(),
+        first_epoch: restart.first.epoch,
+        first_digest: restart.first.digest.clone(),
+        store_epoch: restart.store_epoch,
+        local_epoch: restart.local_epoch,
+        member_last_epoch: restart.member_last_epoch,
+        confirm_epoch: restart.confirm_epoch,
+        member_epoch: restart.member_epoch,
+        epoch_regression: restart.epoch_regression,
+        same_epoch: false,
+    };
+    let mut errors = Vec::new();
+    if restart.epoch_regression {
+        errors.push("the restarted root or the member logged epoch-regression".into());
+    }
+    match restart.store_epoch {
+        Some(epoch) if epoch == restart.first.epoch => {}
+        Some(epoch) => errors.push(format!(
+            "the root restored epoch {epoch}, not the confirmed {}",
+            restart.first.epoch
+        )),
+        None => errors.push("the root did not log a verified epoch-store restore".into()),
+    }
+    match restart.local_epoch {
+        Some(epoch) if epoch == restart.first.epoch => {}
+        Some(epoch) => errors.push(format!(
+            "the root started at epoch {epoch}, not the confirmed {}",
+            restart.first.epoch
+        )),
+        None => errors.push("the root has no post-restart local epoch".into()),
+    }
+    match restart.member_last_epoch {
+        Some(epoch) if epoch == restart.first.epoch => {}
+        Some(epoch) => errors.push(format!(
+            "the member re-presented epoch {epoch}, not the confirmed {}",
+            restart.first.epoch
+        )),
+        None => errors.push("no member join request after the root returned".into()),
+    }
+    match restart.confirm_epoch {
+        Some(epoch) if epoch == restart.first.epoch => {}
+        Some(epoch) => errors.push(format!(
+            "the restarted root confirmed epoch {epoch}, not {}",
+            restart.first.epoch
+        )),
+        None => errors.push("the restarted root sent no confirmation".into()),
+    }
+    if root.epoch != restart.first.epoch || root.digest != restart.first.digest {
+        errors.push("the post-restart root view changed".into());
+    }
+    if member.epoch != restart.first.epoch || member.digest != restart.first.digest {
+        errors.push("the member view changed across the root restart".into());
+    }
+    if root.epoch != member.epoch || root.digest != member.digest {
+        errors.push("the restarted root and the member disagree".into());
+    }
+    evidence.same_epoch = root.epoch == restart.first.epoch
+        && root.digest == restart.first.digest
+        && member.epoch == restart.first.epoch
+        && member.digest == restart.first.digest;
     if errors.is_empty() {
         Ok(evidence)
     } else {
@@ -593,18 +788,34 @@ mod tests {
             boot1_log: PathBuf::from("serial-n1-boot1.log"),
             first: first.clone(),
             rejoin: rejoin.clone(),
-            request_last_epoch: Some(1),
+            request_last_epoch: Some(2),
             confirm_epoch: Some(2),
+            store_restored: true,
+            store_epoch: Some(2),
         };
         assert!(check_restart(&input, &first).is_ok());
+        // The seed fallback is exactly the failure the store closes.
+        let seed_fallback = RestartInput {
+            node: "n1".into(),
+            boot1_log: PathBuf::from("serial-n1-boot1.log"),
+            first: first.clone(),
+            rejoin: rejoin.clone(),
+            request_last_epoch: Some(1),
+            confirm_epoch: Some(2),
+            store_restored: false,
+            store_epoch: None,
+        };
+        assert!(!check_restart(&seed_fallback, &first).is_ok());
         rejoin.epoch = 3;
         let input = RestartInput {
             node: "n1".into(),
             boot1_log: PathBuf::from("serial-n1-boot1.log"),
             first: first.clone(),
             rejoin,
-            request_last_epoch: Some(1),
+            request_last_epoch: Some(2),
             confirm_epoch: Some(2),
+            store_restored: true,
+            store_epoch: Some(2),
         };
         assert!(check_restart(&input, &first).is_err());
     }

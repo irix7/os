@@ -17,6 +17,8 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`rust-std-build-spike.md`](rust-std-build-spike.md) | The measured spike: build the `std` rlib for the native n32 target from a patched `rust-src` and libc, the exact method and patch set, the result, and the remaining runtime gaps. |
 | [`std-hello-bringup.md`](std-hello-bringup.md) | The first linked and running static `std` image: the 42-symbol shim, kernel syscall additions, loader fixes, output and remaining POSIX gaps. |
 | [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional (linked, not booted) IRIX PAL scaffold. |
+| [`m2-completion-audit.md`](m2-completion-audit.md) | The adversarial audit of M2 closure against issue #3, with the three remaining gaps. |
+| [`m2-remediation.md`](m2-remediation.md) | The remediation gate: signed persistent epoch, two-node CI, provenance, engineering review and the remaining limits. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.

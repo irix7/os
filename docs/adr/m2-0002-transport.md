@@ -82,7 +82,8 @@ is not M2 work.
 5. **Deadlines and cancellation are transport-visible.** M2-1 must define:
 
    - a connect deadline (M2: 5 s) and a bounded reconnect backoff;
-   - a per-record receive deadline (M2: 10 s) and a maximum record size;
+   - a per-record receive deadline (M2: 30 s, matching the heartbeat window because the
+     module is single-threaded) and a maximum record size;
    - a send deadline for backpressured streams;
    - a heartbeat or keepalive so an idle link is distinguishable from a dead peer;
    - cancellation as a fabric operation, not a TCP RST: a cancelled request is answered
@@ -134,8 +135,9 @@ is not M2 work.
 - Static peer configuration means a node restart does not need discovery, but a changed
   peer address needs a new NVRAM image. M2-2 can add a join handshake that exchanges
   addresses once a bootstrap link exists.
-- The 64 KiB record bound and the 10 s receive deadline are M2 starting points; large
-  payloads belong in CAS or shared memory, not in a mesh frame.
+- The 64 KiB record bound and the 30 s receive/send deadline are M2 starting points; large
+  payloads belong in CAS or shared memory, not in a mesh frame.  The deadline is not a
+  liveness check: a dead peer is still detected by the 30 s heartbeat timeout.
 
 ## Alternatives considered
 

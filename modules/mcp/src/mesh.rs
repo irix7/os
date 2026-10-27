@@ -50,7 +50,8 @@ use mesh_core::{
     MAX_NODES as MAX_MESH_NODES, SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
 };
 use mesh_join::{
-    JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role, Tick, MAX_BODY as JOIN_BODY_MAX,
+    EpochConfirmation, EpochRecord, JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role,
+    Tick, MAX_BODY as JOIN_BODY_MAX,
 };
 use mesh_migrate::{
     Event as MigrateEvent, MigrateNode, Signer as MigrateSigner, Step as MigrateStep,
@@ -95,6 +96,60 @@ const READS_PER_TICK: usize = 8;
 const PENDING_CAPACITY: u32 = 8;
 const LINE_CAP: usize = 384;
 
+/// SCSI target reserved for the persistent epoch store.
+///
+/// Target 2 is the MCP module's EROFS fixture (`FS_TARGET` in `main.rs`), so
+/// the store must not use it.  The M2 rig attaches a dedicated scratch volume
+/// at target 3; target 1 is the boot disk in the lab and is never written by
+/// this module.  A production image must provision the same reservation before
+/// persistence is claimed.
+const STORE_TARGET: u8 = 3;
+/// First LBA of the store.  LBA 0 is the volume header, so the record starts
+/// clear of anything the emulator or a volume tool writes there.
+const STORE_LBA: u32 = 8;
+/// Five sectors hold a 2,144-byte maximum epoch record plus the store header.
+const STORE_SECTORS: usize = 5;
+const STORE_BYTES: usize = STORE_SECTORS * 512;
+const STORE_HEADER: usize = 16;
+const STORE_MAGIC: &[u8; 8] = b"I7EPST01";
+const STORE_VERSION: u8 = 1;
+const STORE_KIND_RECORD: u8 = 1;
+const STORE_KIND_CONFIRM: u8 = 2;
+
+/// The last confirmed view, as recovered from or written to the epoch store.
+struct EpochStore {
+    /// Whether the scratch target answered.  A node without one logs the
+    /// absence and falls back to its seed; it does not claim persistence.
+    available: bool,
+    /// Last epoch known to be on disk.
+    epoch: u32,
+    /// Digest of the last record on disk.
+    digest: [u8; 16],
+    /// Role that owns the record: a root writes signed records, a member
+    /// writes the signed confirmation it installed.
+    root: bool,
+}
+
+impl EpochStore {
+    fn empty(root: bool, available: bool) -> Self {
+        Self {
+            available,
+            epoch: 0,
+            digest: [0u8; 16],
+            root,
+        }
+    }
+
+    fn matches(&self, epoch: u32, digest: &[u8; 16]) -> bool {
+        self.epoch == epoch && self.digest == *digest
+    }
+
+    fn remember(&mut self, epoch: u32, digest: [u8; 16]) {
+        self.epoch = epoch;
+        self.digest = digest;
+    }
+}
+
 enum Phase {
     Arm,
     Waiting,
@@ -129,6 +184,8 @@ struct Mesh {
     stats: Stats,
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
+    /// Signed confirmed-epoch record on the scratch volume, when present.
+    store: Option<EpochStore>,
     route: Option<RouteNode>,
     migrate: Option<MigrateNode>,
     /// Whether the M2-6 failure detector is enabled (`mesh.fail=1`).
@@ -147,6 +204,13 @@ struct Mesh {
 static mut JOIN_RX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 /// Encode buffer for one outgoing join body.
 static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
+/// Read/write buffer for the persistent epoch store.
+///
+/// The module is single-threaded and persistence runs outside the frame
+/// receive path, so one buffer is enough and it keeps 2.5 KiB off the stack.
+static mut STORE_BUF: [u8; STORE_BYTES] = [0; STORE_BYTES];
+/// Encode buffer for the store payload (a signed record or confirmation).
+static mut STORE_BODY: [u8; STORE_BYTES - STORE_HEADER] = [0; STORE_BYTES - STORE_HEADER];
 
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
@@ -180,15 +244,16 @@ pub unsafe fn init(services: *const Services) -> bool {
     let now = (services.clock_ms)();
     let home_count = home_object_count(services);
     let shard_count = shard_object_count(services);
-    let join = match join_config(services, self_id, now) {
-        Ok(join) => join,
+    let (join, store) = match join_config(services, self_id, now) {
+        Ok(Some((join, store))) => (Some(join), Some(store)),
+        Ok(None) => (None, None),
         Err(label) => {
             let mut line = Line::new();
             line.str("mesh-join: disabled reason=");
             line.str(label);
             line.push(b'\n');
             log(services, line.as_bytes());
-            None
+            (None, None)
         }
     };
     if join.is_some() {
@@ -231,6 +296,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         stats: Stats::default(),
         heartbeat,
         join,
+        store,
         route,
         migrate,
         failures,
@@ -1047,6 +1113,10 @@ impl Mesh {
         if let Some(snapshot) = removed {
             self.log_homes(services, &snapshot);
             self.on_route_snapshot(services, &snapshot, now);
+            // A removal advances the epoch without sending a confirmation to
+            // the removed node.  Persist the root's new signed view so a root
+            // restart resumes the post-removal epoch rather than the seed.
+            self.persist_root(services);
         }
     }
 
@@ -1447,10 +1517,28 @@ impl Mesh {
                     .map(|join| join.authority_current())
                     .unwrap_or(false);
                 let epoch_before = self.join.as_ref().map(|join| join.epoch()).unwrap_or(0);
+                let stored_confirmation = match &message {
+                    JoinMessage::Confirm(confirmation) => Some(confirmation.clone()),
+                    _ => None,
+                };
                 let outcome = match &mut self.join {
                     Some(join) => join.on_message(source, message, now),
                     None => return Ok(()),
                 };
+                if let Some(confirmation) = stored_confirmation {
+                    let accepted = match &outcome.event {
+                        JoinEvent::Converged(snapshot)
+                        | JoinEvent::Duplicate(snapshot)
+                        | JoinEvent::Refreshed(snapshot) => {
+                            snapshot.epoch == confirmation.epoch
+                                && snapshot.members == confirmation.members
+                        }
+                        _ => false,
+                    };
+                    if accepted {
+                        self.persist_confirmation(services, &confirmation);
+                    }
+                }
                 let full_view = self
                     .join
                     .as_ref()
@@ -1690,6 +1778,148 @@ impl Mesh {
         }
     }
 
+    /// Persist the root's confirmed view when it changes.
+    ///
+    /// The record is signed by the authority key, so a restart can verify it
+    /// before installing it.  Routine duplicate confirmations (the 5 s
+    /// refresh) are skipped: only an epoch or member-list change reaches the
+    /// disk.
+    fn persist_root(&mut self, services: &Services) {
+        let (Some(join), Some(store)) = (self.join.as_ref(), self.store.as_mut()) else {
+            return;
+        };
+        if !store.available || !store.root {
+            return;
+        }
+        let record = match join.epoch_record() {
+            Ok(record) => record,
+            Err(error) => {
+                let mut line = Line::new();
+                line.str("epoch-store: sign-failed reason=");
+                line.str(error.as_str());
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                return;
+            }
+        };
+        let snapshot = record.snapshot();
+        let digest = snapshot.digest();
+        if store.matches(record.epoch, &digest) {
+            return;
+        }
+        // Never overwrite a confirmed epoch with a same-epoch view that lost a
+        // failed-but-not-yet-removed member.  That transient view would make a
+        // restart equivocate with a member's stored confirmation.  A removal
+        // advances the epoch and is written normally.
+        if store.epoch != 0
+            && (record.epoch < store.epoch
+                || (record.epoch == store.epoch && digest != store.digest))
+        {
+            log(services, b"epoch-store: skip unstable same-epoch view\n");
+            return;
+        }
+        // SAFETY: single-threaded module; STORE_BODY is only used here and in
+        // the member persistence path, never concurrently.
+        let body = unsafe { &mut *core::ptr::addr_of_mut!(STORE_BODY) };
+        let length = match record.encode(body) {
+            Ok(length) => length,
+            Err(error) => {
+                let mut line = Line::new();
+                line.str("epoch-store: encode-failed reason=");
+                line.str(error.as_str());
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                return;
+            }
+        };
+        match write_epoch_store(services, STORE_KIND_RECORD, &body[..length]) {
+            Ok(()) => {
+                store.remember(record.epoch, digest);
+                let mut line = Line::new();
+                line.str("epoch-store: stored epoch=");
+                line.u64(record.epoch as u64);
+                line.str(" members=");
+                line.u64(snapshot.len() as u64);
+                line.str(" digest=");
+                line.digest(&digest);
+                line.str(" source=root-record\n");
+                log(services, line.as_bytes());
+            }
+            Err(reason) => {
+                let mut line = Line::new();
+                line.str("epoch-store: write-failed reason=");
+                line.str(reason);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+        }
+    }
+
+    /// Persist the signed confirmation a member installed.
+    ///
+    /// A member cannot sign its own epoch, so it stores the root's signed
+    /// confirmation body.  A restart verifies it with `mesh.pub` before
+    /// installing it and then presents the confirmed `last_epoch` to the
+    /// root.  Routine duplicate refreshes are skipped.
+    fn persist_confirmation(&mut self, services: &Services, confirmation: &EpochConfirmation) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        if !store.available || store.root {
+            return;
+        }
+        let snapshot = confirmation.snapshot();
+        let digest = snapshot.digest();
+        if store.matches(confirmation.epoch, &digest) {
+            return;
+        }
+        // The verifier already rejects a same-epoch different list; keep the
+        // disk guard anyway so a bug in the caller cannot overwrite a stable
+        // record with a transient view.
+        if store.epoch != 0
+            && (confirmation.epoch < store.epoch
+                || (confirmation.epoch == store.epoch && digest != store.digest))
+        {
+            log(services, b"epoch-store: skip unstable same-epoch view\n");
+            return;
+        }
+        // SAFETY: single-threaded module; STORE_BODY is only used here and in
+        // the root persistence path, never concurrently.
+        let body = unsafe { &mut *core::ptr::addr_of_mut!(STORE_BODY) };
+        let length = match confirmation.encode(body) {
+            Ok(length) => length,
+            Err(error) => {
+                let mut line = Line::new();
+                line.str("epoch-store: encode-failed reason=");
+                line.str(error.as_str());
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                return;
+            }
+        };
+        match write_epoch_store(services, STORE_KIND_CONFIRM, &body[..length]) {
+            Ok(()) => {
+                store.remember(confirmation.epoch, digest);
+                let mut line = Line::new();
+                line.str("epoch-store: stored epoch=");
+                line.u64(confirmation.epoch as u64);
+                line.str(" members=");
+                line.u64(snapshot.len() as u64);
+                line.str(" digest=");
+                line.digest(&digest);
+                line.str(" source=confirmation\n");
+                log(services, line.as_bytes());
+            }
+            Err(reason) => {
+                let mut line = Line::new();
+                line.str("epoch-store: write-failed reason=");
+                line.str(reason);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+        }
+    }
+
     fn log_snapshot(
         &self,
         services: &Services,
@@ -1907,6 +2137,13 @@ impl Mesh {
             _ => {}
         }
         let body = &buffer[..len];
+        // A confirmation is the root's epoch decision.  Persist the signed
+        // view **before** it reaches the wire, so a crash after the member
+        // installs it cannot leave the root one epoch behind.  A duplicate
+        // refresh is skipped by the epoch/digest comparison.
+        if matches!(&message, JoinMessage::Confirm(_)) {
+            self.persist_root(services);
+        }
         if !self.queue_hello(kind, destination, request_id, reply_to, body, now) {
             let mut line = Line::new();
             line.str("mesh-join: send-failed kind=");
@@ -2548,7 +2785,7 @@ fn join_config(
     services: &Services,
     self_id: NodeId,
     now: u64,
-) -> Result<Option<JoinNode>, &'static str> {
+) -> Result<Option<(JoinNode, EpochStore)>, &'static str> {
     let mut text = [0u8; 128];
     let Some(n) = config(services, b"mesh.authority", &mut text) else {
         return Ok(None);
@@ -2586,10 +2823,16 @@ fn join_config(
         };
         JoinNode::new_member(self_id, authority, key, seed_epoch, now)
     };
-    let join = match join {
+    let mut join = match join {
         Ok(join) => join,
         Err(error) => return Err(error.as_str()),
     };
+
+    // Restore the last confirmed view before logging the local state, so the
+    // `mesh-join: local` line and the first join request use the persisted
+    // epoch rather than the seed.  A corrupt record disables the join instead
+    // of silently lowering the node back to the seed.
+    let store = restore_epoch_store(services, &mut join, now)?;
 
     let role = join.role();
     let mut line = Line::new();
@@ -2625,7 +2868,199 @@ fn join_config(
         Role::Member => " state=pending\n",
     });
     log(services, line.as_bytes());
-    Ok(Some(join))
+    Ok(Some((join, store)))
+}
+
+/// A record read back from the scratch volume.
+enum StoredEpoch {
+    /// The volume exists but carries no epoch record yet.
+    Empty,
+    /// A root-signed record.
+    Record(EpochRecord),
+    /// A root-signed confirmation accepted by a member.
+    Confirmation(EpochConfirmation),
+}
+
+/// Why the store could not be read.
+enum StoreReadError {
+    /// No target answered.  Persistence is not configured; the caller logs
+    /// this and continues from the seed, but never claims a restored epoch.
+    Unavailable,
+    /// The target answered with bytes that are not a valid record.
+    Corrupt(&'static str),
+}
+
+/// Read and validate the epoch store without trusting it.
+fn read_epoch_store(services: &Services) -> Result<StoredEpoch, StoreReadError> {
+    // SAFETY: single-threaded module; STORE_BUF is the only store buffer and
+    // the sectors are contiguous.
+    let buffer = unsafe { &mut *core::ptr::addr_of_mut!(STORE_BUF) };
+    for sector in 0..STORE_SECTORS {
+        let offset = sector * 512;
+        let rc = unsafe {
+            (services.block_read)(
+                STORE_TARGET,
+                STORE_LBA + sector as u32,
+                buffer[offset..].as_mut_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err(StoreReadError::Unavailable);
+        }
+    }
+    if &buffer[..8] != STORE_MAGIC {
+        return Ok(StoredEpoch::Empty);
+    }
+    if buffer[8] != STORE_VERSION {
+        return Err(StoreReadError::Corrupt("version"));
+    }
+    if u16::from_le_bytes([buffer[10], buffer[11]]) != 0 {
+        return Err(StoreReadError::Corrupt("flags"));
+    }
+    let length = u32::from_le_bytes([buffer[12], buffer[13], buffer[14], buffer[15]]) as usize;
+    if length == 0 || length > STORE_BYTES - STORE_HEADER {
+        return Err(StoreReadError::Corrupt("length"));
+    }
+    let body = &buffer[STORE_HEADER..STORE_HEADER + length];
+    match buffer[9] {
+        STORE_KIND_RECORD => EpochRecord::decode(body)
+            .map(StoredEpoch::Record)
+            .map_err(|error| StoreReadError::Corrupt(error.as_str())),
+        STORE_KIND_CONFIRM => match JoinMessage::decode(body) {
+            Ok(JoinMessage::Confirm(confirmation)) => Ok(StoredEpoch::Confirmation(confirmation)),
+            Ok(_) => Err(StoreReadError::Corrupt("confirmation-kind")),
+            Err(error) => Err(StoreReadError::Corrupt(error.as_str())),
+        },
+        _ => Err(StoreReadError::Corrupt("kind")),
+    }
+}
+
+/// Write one record to the epoch store.  The caller has already bounded it.
+fn write_epoch_store(services: &Services, kind: u8, body: &[u8]) -> Result<(), &'static str> {
+    if body.is_empty() || body.len() > STORE_BYTES - STORE_HEADER {
+        return Err("length");
+    }
+    // SAFETY: single-threaded module; STORE_BUF is the only store buffer.
+    let buffer = unsafe { &mut *core::ptr::addr_of_mut!(STORE_BUF) };
+    buffer.fill(0);
+    buffer[..8].copy_from_slice(STORE_MAGIC);
+    buffer[8] = STORE_VERSION;
+    buffer[9] = kind;
+    buffer[12..16].copy_from_slice(&(body.len() as u32).to_le_bytes());
+    buffer[STORE_HEADER..STORE_HEADER + body.len()].copy_from_slice(body);
+    for sector in 0..STORE_SECTORS {
+        let offset = sector * 512;
+        let rc = unsafe {
+            (services.block_write)(
+                STORE_TARGET,
+                STORE_LBA + sector as u32,
+                buffer[offset..].as_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err("write");
+        }
+    }
+    Ok(())
+}
+
+/// Restore a signed confirmed view from the scratch volume.
+fn restore_epoch_store(
+    services: &Services,
+    join: &mut JoinNode,
+    now: u64,
+) -> Result<EpochStore, &'static str> {
+    let mut store = EpochStore::empty(join.role() == Role::Root, false);
+    if services.version < 11 {
+        log(
+            services,
+            b"epoch-store: unavailable reason=abi (block_write needs ABI 11)\n",
+        );
+        return Ok(store);
+    }
+    let stored = match read_epoch_store(services) {
+        Ok(stored) => stored,
+        Err(StoreReadError::Unavailable) => {
+            log(
+                services,
+                b"epoch-store: unavailable target=3 lba=8 (persistence not configured)\n",
+            );
+            return Ok(store);
+        }
+        Err(StoreReadError::Corrupt(reason)) => {
+            let mut line = Line::new();
+            line.str("epoch-store: corrupt reason=");
+            line.str(reason);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+            return Err("epoch-store");
+        }
+    };
+    store.available = true;
+    match stored {
+        StoredEpoch::Empty => {
+            log(services, b"epoch-store: empty target=3 lba=8\n");
+            Ok(store)
+        }
+        StoredEpoch::Record(record) => {
+            if join.role() != Role::Root {
+                log(services, b"epoch-store: corrupt reason=member-record\n");
+                return Err("epoch-store");
+            }
+            match join.restore_record(&record, now) {
+                Ok(snapshot) => {
+                    let mut line = Line::new();
+                    line.str("epoch-store: restored epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.str(" digest=");
+                    line.digest(&snapshot.digest());
+                    line.str(" source=root-record\n");
+                    log(services, line.as_bytes());
+                    store.remember(snapshot.epoch, snapshot.digest());
+                    Ok(store)
+                }
+                Err(error) => {
+                    let mut line = Line::new();
+                    line.str("epoch-store: corrupt reason=");
+                    line.str(error.as_str());
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    Err("epoch-store")
+                }
+            }
+        }
+        StoredEpoch::Confirmation(confirmation) => {
+            if join.role() != Role::Member {
+                log(services, b"epoch-store: corrupt reason=root-confirmation\n");
+                return Err("epoch-store");
+            }
+            match join.restore_confirmation(&confirmation, now) {
+                Ok(snapshot) => {
+                    let mut line = Line::new();
+                    line.str("epoch-store: restored epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.str(" digest=");
+                    line.digest(&snapshot.digest());
+                    line.str(" source=confirmation\n");
+                    log(services, line.as_bytes());
+                    store.remember(snapshot.epoch, snapshot.digest());
+                    Ok(store)
+                }
+                Err(error) => {
+                    let mut line = Line::new();
+                    line.str("epoch-store: corrupt reason=");
+                    line.str(error.as_str());
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    Err("epoch-store")
+                }
+            }
+        }
+    }
 }
 
 /// Read the configured M2 fixture object count.

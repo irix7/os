@@ -64,8 +64,14 @@ bounded suspect/failed/removed transition, the recomputed one-member homes, a fe
 a `stale-epoch` refusal of a replayed lease frame, a local commit without a quorum, and
 the isolated member's `no-authority` commit with a read from its unexpired lease, followed
 by a rejoin at a new epoch. L0 migration remains M2-5; failure/partition fencing is
-M2-6. The rig is a manual command until the M2-8 CI job wraps it; the
-evidence bundle under `target/m2-rig/evidence/` is the review artefact.
+M2-6. The signed epoch store is tested by `crates/mesh-join` for root/member restore,
+wrong-subject, foreign-root and tampered-record failures; the real-kernel rig restarts
+the member and then the root with a scratch target and requires the confirmed epoch to
+be restored, not the seed. The `.github/workflows/ci.yml` `mesh-real` job is the M2-8
+CI gate: it builds the two-node artefacts and runs `none`, `no-peer`, `kill-peer` and
+`partition` on two real kernels with unique ports and deterministic cleanup. The
+evidence bundle under `target/m2-rig/evidence/` (including `manifest.json`) is the
+review artefact.
 
 The fabric conformance tests are part of the canonical `cargo test -p fabric -p
 mesh-route` path. `crates/fabric/tests/` exercises cancellation-versus-completion

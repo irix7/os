@@ -21,7 +21,9 @@ use cap_engine::{KeyError, TrustStore};
 use mesh_service::{FailureDetector, MembershipError, MembershipTable, Observe, Transition};
 use sys_primitives::{NodeId, NodeKey};
 
-use crate::wire::{EpochConfirmation, JoinRequest, MembershipSnapshot, WireError, MAX_MEMBERS};
+use crate::wire::{
+    EpochConfirmation, EpochRecord, JoinRequest, MembershipSnapshot, WireError, MAX_MEMBERS,
+};
 
 /// An authority or membership failure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -36,6 +38,8 @@ pub enum AuthorityError {
     BadSeed,
     /// The subject is the root itself or the zero sentinel.
     WrongSubject,
+    /// The operation needs the authority root, but this node is a member.
+    NotRoot,
     /// The member's last epoch is above the root's own.
     EpochRegression {
         /// The local (root or member) epoch.
@@ -74,6 +78,7 @@ impl AuthorityError {
             Self::EpochZero => "epoch-zero",
             Self::BadSeed => "bad-seed",
             Self::WrongSubject => "wrong-subject",
+            Self::NotRoot => "not-root",
             Self::EpochRegression { .. } => "epoch-regression",
             Self::WrongRoot => "wrong-root",
             Self::UntrustedRoot => "untrusted-root",
@@ -246,6 +251,57 @@ impl AuthorityRoot {
     /// The root's current confirmed snapshot.
     pub fn snapshot(&self) -> Result<MembershipSnapshot, AuthorityError> {
         Ok(MembershipSnapshot::from_view(&self.table.snapshot())?)
+    }
+
+    /// Sign the current confirmed view as a persistent epoch record.
+    ///
+    /// The record is for the local epoch store, not for the wire.  The root is
+    /// the only node that can produce one; a member stores the signed
+    /// confirmation it installed instead.
+    pub fn record(&self) -> Result<EpochRecord, AuthorityError> {
+        let snapshot = self.snapshot()?;
+        let mut record = EpochRecord {
+            root: self.root,
+            epoch: snapshot.epoch,
+            members: snapshot.members,
+            signature: [0u8; 64],
+        };
+        record.signature = self.signing.sign(&record.signed_bytes());
+        Ok(record)
+    }
+
+    /// Restore the confirmed view from a signed epoch record.
+    ///
+    /// The signature is verified before any field is trusted, and the record
+    /// must name this root and contain it in the member list.  `install`
+    /// refuses a lower epoch, so a stale or replayed record cannot move the
+    /// root backwards.  Any failure leaves the seed view untouched.
+    pub fn restore_record(
+        &mut self,
+        record: &EpochRecord,
+        now_ns: u64,
+    ) -> Result<MembershipSnapshot, AuthorityError> {
+        if record.root != self.root {
+            return Err(AuthorityError::WrongRoot);
+        }
+        match cap_engine::verify(
+            &self.public_key(),
+            &record.signed_bytes(),
+            &record.signature,
+        ) {
+            Ok(()) => {}
+            Err(KeyError::Untrusted | KeyError::InvalidKey) => {
+                return Err(AuthorityError::UntrustedRoot);
+            }
+            Err(_) => return Err(AuthorityError::BadSignature),
+        }
+        let snapshot = MembershipSnapshot::new(record.epoch, &record.members)?;
+        if !snapshot.members.contains(&self.root) {
+            return Err(AuthorityError::RootNotMember);
+        }
+        self.table
+            .install(snapshot.epoch, &snapshot.members, now_ns)?;
+        Ok(snapshot)
     }
 
     /// Confirm a join request, or fail closed without changing the table.

@@ -360,6 +360,170 @@ impl EpochConfirmation {
     }
 }
 
+/// A root-signed epoch record for the persistent epoch store.
+///
+/// This is not a wire message and never crosses the mesh link.  It is the
+/// local record a node writes to a scratch volume so a restart can recover the
+/// authority-confirmed epoch and member list instead of falling back to the
+/// NVRAM seed.  The root signs it with the same authority key that signs
+/// [`EpochConfirmation`]; a member verifies it with `mesh.pub`.
+///
+/// The record deliberately carries the full member list, for the same reason
+/// the confirmation does: an epoch number alone cannot detect two nodes
+/// disagreeing about membership at that epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EpochRecord {
+    /// The configured authority root.
+    pub root: NodeId,
+    /// The confirmed membership epoch.
+    pub epoch: u32,
+    /// The full member list, strictly increasing.
+    pub members: Vec<NodeId>,
+    /// Ed25519 signature over [`Self::signed_bytes`].
+    pub signature: [u8; 64],
+}
+
+impl EpochRecord {
+    /// The domain separator covered by the signature.
+    pub const DOMAIN: &'static [u8] = b"IRIX7-M2-EPOCH-STORE-v1";
+    /// Store-record magic: `I7ER` in little-endian byte order.
+    pub const MAGIC: u32 = u32::from_le_bytes(*b"I7ER");
+    /// Store-record format version.
+    pub const VERSION: u8 = 1;
+    /// Store-record kind discriminant.
+    pub const KIND: u8 = 1;
+    /// Fixed prefix: magic, version, kind, flags.
+    const PREFIX: usize = 8;
+    /// Fixed body length without the member list and prefix.
+    const FIXED: usize = 16 + 4 + 2 + 2 + 64;
+
+    /// Encoded length for this member list.
+    pub fn encoded_len(&self) -> usize {
+        Self::PREFIX + Self::FIXED + 16 * self.members.len()
+    }
+
+    /// Encode into `out`.  Returns the number of bytes written.
+    pub fn encode(&self, out: &mut [u8]) -> Result<usize, WireError> {
+        let total = self.encoded_len();
+        if out.len() < total {
+            return Err(WireError::OutputTooSmall);
+        }
+        if self.members.len() > MAX_MEMBERS || self.members.is_empty() {
+            return Err(WireError::BadCount);
+        }
+        if self.root.is_zero() {
+            return Err(WireError::ZeroNode);
+        }
+        if self.epoch == 0 {
+            return Err(WireError::NonCanonical);
+        }
+        for pair in self.members.windows(2) {
+            if pair[0] >= pair[1] {
+                return Err(WireError::NonCanonicalMembers);
+            }
+        }
+        out[..4].copy_from_slice(&Self::MAGIC.to_le_bytes());
+        out[4] = Self::VERSION;
+        out[5] = Self::KIND;
+        out[6..8].copy_from_slice(&0u16.to_le_bytes());
+        let mut cursor = Self::PREFIX;
+        put_node(out, &mut cursor, &self.root);
+        put_u32(out, &mut cursor, self.epoch);
+        put_u16(out, &mut cursor, self.members.len() as u16);
+        put_u16(out, &mut cursor, 0);
+        for member in &self.members {
+            put_node(out, &mut cursor, member);
+        }
+        out[cursor..cursor + 64].copy_from_slice(&self.signature);
+        cursor += 64;
+        debug_assert_eq!(cursor, total);
+        Ok(total)
+    }
+
+    /// Decode exactly one record.  Trailing bytes are rejected.
+    pub fn decode(body: &[u8]) -> Result<Self, WireError> {
+        if body.len() < Self::PREFIX + Self::FIXED + 16 {
+            return Err(WireError::TooShort);
+        }
+        if u32::from_le_bytes([body[0], body[1], body[2], body[3]]) != Self::MAGIC {
+            return Err(WireError::BadMagic);
+        }
+        if body[4] != Self::VERSION {
+            return Err(WireError::BadVersion);
+        }
+        if body[5] != Self::KIND {
+            return Err(WireError::BadKind);
+        }
+        if u16::from_le_bytes([body[6], body[7]]) != 0 {
+            return Err(WireError::NonCanonical);
+        }
+        let mut reader = Reader::new(&body[Self::PREFIX..]);
+        let root = reader.node()?;
+        let epoch = reader.u32()?;
+        let count = reader.u16()? as usize;
+        reader.u16()?; // reserved
+        if count == 0 || count > MAX_MEMBERS {
+            return Err(WireError::BadCount);
+        }
+        let expected = Self::PREFIX + Self::FIXED + 16 * count;
+        if body.len() != expected {
+            return Err(WireError::LengthMismatch);
+        }
+        let mut members = Vec::with_capacity(count);
+        let mut previous: Option<NodeId> = None;
+        for _ in 0..count {
+            let member = reader.node()?;
+            if member.is_zero() {
+                return Err(WireError::ZeroNode);
+            }
+            if let Some(previous) = previous {
+                if member <= previous {
+                    return Err(WireError::NonCanonicalMembers);
+                }
+            }
+            previous = Some(member);
+            members.push(member);
+        }
+        let mut signature = [0u8; 64];
+        signature.copy_from_slice(reader.take(64)?);
+        if root.is_zero() {
+            return Err(WireError::ZeroNode);
+        }
+        if epoch == 0 {
+            return Err(WireError::NonCanonical);
+        }
+        Ok(Self {
+            root,
+            epoch,
+            members,
+            signature,
+        })
+    }
+
+    /// Canonical bytes covered by the Ed25519 signature.
+    pub fn signed_bytes(&self) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(Self::DOMAIN.len() + 1 + 16 + 4 + 2 + 16 * self.members.len());
+        out.extend_from_slice(Self::DOMAIN);
+        out.push(Self::VERSION);
+        out.extend_from_slice(self.root.as_bytes());
+        out.extend_from_slice(&self.epoch.to_le_bytes());
+        out.extend_from_slice(&(self.members.len() as u16).to_le_bytes());
+        for member in &self.members {
+            out.extend_from_slice(member.as_bytes());
+        }
+        out
+    }
+
+    /// The confirmed membership snapshot.
+    pub fn snapshot(&self) -> MembershipSnapshot {
+        MembershipSnapshot {
+            epoch: self.epoch,
+            members: self.members.clone(),
+        }
+    }
+}
+
 /// An authority refusal.  It is unsigned and only informational: a member
 /// logs it and keeps its last confirmed view.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -733,6 +897,69 @@ mod tests {
             incarnation: 0x99aa_bbcc_ddee_ff00,
             signature: [7u8; 64],
         }
+    }
+
+    fn sample_record() -> EpochRecord {
+        EpochRecord {
+            root: node(1),
+            epoch: 3,
+            members: vec![node(1), node(2)],
+            signature: [9u8; 64],
+        }
+    }
+
+    #[test]
+    fn epoch_record_round_trips_exactly() {
+        let record = sample_record();
+        let mut body = [0u8; MAX_BODY];
+        let len = record.encode(&mut body).unwrap();
+        assert_eq!(len, 96 + 16 * 2);
+        assert_eq!(EpochRecord::decode(&body[..len]), Ok(record));
+        // A truncated or extended record is corrupt, not a prefix match.
+        assert_eq!(
+            EpochRecord::decode(&body[..len - 1]),
+            Err(WireError::LengthMismatch)
+        );
+        assert_eq!(
+            EpochRecord::decode(&body[..len + 1]),
+            Err(WireError::LengthMismatch)
+        );
+    }
+
+    #[test]
+    fn epoch_record_rejects_noncanonical_fields() {
+        let mut record = sample_record();
+        record.members = vec![node(2), node(1)];
+        let mut body = [0u8; MAX_BODY];
+        assert_eq!(
+            record.encode(&mut body),
+            Err(WireError::NonCanonicalMembers)
+        );
+
+        let mut record = sample_record();
+        record.epoch = 0;
+        let mut body = [0u8; MAX_BODY];
+        assert_eq!(record.encode(&mut body), Err(WireError::NonCanonical));
+
+        let mut record = sample_record();
+        record.root = NodeId::ZERO;
+        let mut body = [0u8; MAX_BODY];
+        assert_eq!(record.encode(&mut body), Err(WireError::ZeroNode));
+    }
+
+    #[test]
+    fn epoch_record_signed_bytes_bind_epoch_and_members() {
+        let record = sample_record();
+        let mut other = record.clone();
+        other.epoch = 4;
+        assert_ne!(record.signed_bytes(), other.signed_bytes());
+        let mut other = record.clone();
+        other.members = vec![node(1), node(2), node(3)];
+        assert_ne!(record.signed_bytes(), other.signed_bytes());
+        let mut other = record;
+        other.signature = [0u8; 64];
+        // The signature is not part of the bytes it covers.
+        assert_eq!(sample_record().signed_bytes(), other.signed_bytes());
     }
 
     #[test]
