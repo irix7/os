@@ -442,8 +442,8 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=up mcp=listening' 30
           # No SCSI target is attached: the user loader must fail cleanly and
           # leave the network-backed sash at the console.
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 60
@@ -540,20 +540,9 @@ jobs:
           # complete line (the actor follows the marker) and poll the file
           # instead of asserting on it in the same instant.
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0 actor=' --timeout 120
-          wait_serial_log() {
-            pattern="$1"
-            for _ in $(seq 1 150); do
-              if grep -Eq "$pattern" "$work/serial.log"; then
-                return 0
-              fi
-              sleep 0.2
-            done
-            echo "serial log never contained: $pattern" >&2
-            return 1
-          }
-          wait_serial_log 'm1: .*mesh=0/0/0'
-          wait_serial_log 'm1-post: mesh=0/0/0 actor='
-          wait_serial_log 'BOOT-READY .*network=up mcp=listening'
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1-post: mesh=0/0/0 actor=' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=up mcp=listening' 30
           python3 - "$work/serial.log" <<'PY'
           import re
           import sys
@@ -719,10 +708,12 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'demo-root: dep=0x217' --timeout 120
           iris-ci --socket "$socket" serial-wait 'status=ok root=demo-root@1.0.0' --timeout 30
 
-          grep -Eq '^order=demo-dep@1.0.0,demo-root@1.0.0$' "$work/serial.log"
-          grep -Eq '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
-          grep -Eq '^demo-root@1.0.0 region=1 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
-          grep -q 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=136' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=demo-dep@1.0.0,demo-root@1.0.0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-root@1.0.0 region=1 handle=[0-9]+ entry=0 status=0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=136' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-dep: entered by runtime manager' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-root: dep=0x217' 30
           dep_line="$(grep -n 'demo-dep: entered by runtime manager' "$work/serial.log" | head -1 | cut -d: -f1)"
           root_line="$(grep -n 'demo-root: dep=0x217' "$work/serial.log" | head -1 | cut -d: -f1)"
           test "$dep_line" -lt "$root_line"
@@ -831,9 +822,9 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 60
-          grep -Eq '^m1: .* mesh=0/0/0 ' "$work/serial.log"
-          grep -Eq 'm1-post: mesh=0/0/0 ' "$work/serial.log"
-          grep -Eq 'BOOT-READY .* network=up mcp=listening mesh=single' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m1: .* mesh=0/0/0 ' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1-post: mesh=0/0/0 ' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .* network=up mcp=listening mesh=single' 30
 
           mcp_sha="$(sha256sum "$http/c" | awk '{print $1}')"
           manager_sha="$(sha256sum "$http/m" | awk '{print $1}')"
@@ -864,11 +855,13 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm2-root: dep=m2-mesh@1.0.0' --timeout 120
           iris-ci --socket "$socket" serial-wait 'status=ok root=m2-root@1.0.0' --timeout 30
 
-          grep -Eq '^order=m2-mesh@1\.0\.0,m2-root@1\.0\.0$' "$work/serial.log"
-          grep -Eq '^m2-mesh@1\.0\.0 region=2 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
-          grep -Eq '^m2-root@1\.0\.0 region=3 handle=[0-9]+ entry=0 status=0$' "$work/serial.log"
-          grep -Eq '^export=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 offset=[0-9]+$' "$work/serial.log"
-          grep -Eq '^m2-root: dep=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 owner=0x[0-9a-f]{8}00000002 result=ok magic=0x4d324d31 len=340 max=65536 bounds=0/-1/-2$' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=m2-mesh@1\.0\.0,m2-root@1\.0\.0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-mesh@1\.0\.0 region=2 handle=[0-9]+ entry=0 status=0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-root@1\.0\.0 region=3 handle=[0-9]+ entry=0 status=0$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^export=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 offset=[0-9]+$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-root: dep=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 owner=0x[0-9a-f]{8}00000002 result=ok magic=0x4d324d31 len=340 max=65536 bounds=0/-1/-2$' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-mesh: entered interface=irix7.mesh.transport' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-root: dep=m2-mesh@1.0.0' 30
           mesh_line="$(grep -n 'm2-mesh: entered interface=irix7.mesh.transport' "$work/serial.log" | head -1 | cut -d: -f1)"
           root_line="$(grep -n 'm2-root: dep=m2-mesh@1.0.0' "$work/serial.log" | head -1 | cut -d: -f1)"
           test "$mesh_line" -lt "$root_line"
@@ -950,8 +943,8 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'wasm: runtime=' --timeout 30
           iris-ci --socket "$socket" serial-wait 'autoload: wasm took' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
-          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -1007,8 +1000,8 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
           iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
@@ -1086,7 +1079,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'entry=hello.txt' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -1146,7 +1139,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'dev_null=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x00000000' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          grep -Eq 'BOOT-READY .*network=off mcp=disabled' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
 
@@ -1218,14 +1211,14 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
           iris-ci --socket "$socket" serial-wait 'pipe=ok' --timeout 30
           iris-ci --socket "$socket" serial-wait 'winsize=100x40' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
-          grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=local' 30
 
           # The local keyboard/display sash must also work with net=off.
           python3 - <<'PY'
@@ -1307,7 +1300,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          grep -Eq 'BOOT-READY .*network=off mcp=local' "$work/serial.log"
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=local' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
       - uses: actions/upload-artifact@v4
