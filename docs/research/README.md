@@ -25,3 +25,5 @@ The reports cite primary sources; they are kept verbatim (including their own sp
 traceability.
 
 - [Bulk buffers and batching](bulk-batching.md) — #247.
+
+- [Direct peer transport](direct-peer.md) — #245.

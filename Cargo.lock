@@ -431,7 +431,6 @@ dependencies = [
  "hkdf",
  "hmac",
  "p256",
- "p384",
  "portable-atomic",
  "rand_core",
  "rsa",
@@ -795,7 +794,7 @@ dependencies = [
 [[package]]
 name = "module-abi"
 version = "0.1.0"
-source = "git+https://github.com/irix7/os-sdk?tag=v0.7.0#801bd8340ba343d6f1c483b23798c127f268243f"
+source = "git+https://github.com/irix7/os-sdk?tag=v0.8.0#08fe612f4682f6397961209ea87835c65827d587"
 
 [[package]]
 name = "module-resolver"
@@ -883,18 +882,6 @@ name = "p256"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
-dependencies = [
- "ecdsa",
- "elliptic-curve",
- "primeorder",
- "sha2",
-]
-
-[[package]]
-name = "p384"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe42f1670a52a47d448f14b6a5c61dd78fce51856e68edaa38f7ae3a46b8d6b6"
 dependencies = [
  "ecdsa",
  "elliptic-curve",

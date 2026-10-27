@@ -138,6 +138,30 @@ impl Fault {
     }
 }
 
+/// Mesh transport selected by the rig.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Transport {
+    /// The host byte-pump relay (the current M2 path).
+    #[default]
+    Relay,
+    /// Direct guest-initiated TCP through each NAT's peer forward.
+    Direct,
+    /// Direct configuration with a dead target, to exercise the fallback.
+    DirectFail,
+}
+
+impl Transport {
+    /// Parse the command-line value.
+    pub fn parse(word: &str) -> Option<Self> {
+        Some(match word {
+            "relay" => Self::Relay,
+            "direct" => Self::Direct,
+            "direct-fail" => Self::DirectFail,
+            _ => return None,
+        })
+    }
+}
+
 /// Parsed command line.
 #[derive(Debug)]
 pub struct Options {
@@ -161,6 +185,8 @@ pub struct Options {
     pub nodes: u32,
     /// Use the experimental host hub for more than two real kernels.
     pub hub: bool,
+    /// Mesh transport for `run` and `bulk`.
+    pub transport: Transport,
     /// Boot deadline.
     pub timeout: Duration,
     /// Join-path fault mode.
@@ -231,6 +257,7 @@ where
     let mut base_port = 9100u16;
     let mut nodes = 2u32;
     let mut hub = false;
+    let mut transport = Transport::Relay;
     let mut timeout = Duration::from_secs(180);
     let mut fault = Fault::None;
     let mut keep = false;
@@ -261,6 +288,13 @@ where
                 }
             }
             "--hub" => hub = true,
+            "--transport" => {
+                let value = iter
+                    .next()
+                    .ok_or("--transport needs relay, direct or direct-fail")?;
+                transport = Transport::parse(&value)
+                    .ok_or_else(|| format!("unknown transport {value:?}"))?;
+            }
             "--timeout" => {
                 let seconds: u64 = next_value(&mut iter, "--timeout")?
                     .parse()
@@ -314,6 +348,7 @@ where
         base_port,
         nodes,
         hub,
+        transport,
         timeout,
         fault,
         keep,
@@ -430,11 +465,20 @@ impl Node {
             ("console".into(), "serial0".into()),
         ];
         if let Some(mesh) = mesh {
+            let direct = mesh.direct.is_some();
             if let Some(peer) = &mesh.peer {
-                env.push(("mesh.peer".into(), peer.clone()));
+                // A direct node is enabled by `mesh.direct`; the relay key
+                // would spend 31 bytes of the 298-byte environment for a path
+                // this boot does not use.
+                if !direct {
+                    env.push(("mesh.peer".into(), peer.clone()));
+                }
             }
             if let Some(authority) = &mesh.authority {
-                env.push(("mesh.authority".into(), authority.clone()));
+                env.push((
+                    if direct { "a" } else { "mesh.authority" }.into(),
+                    authority.clone(),
+                ));
             }
             // The module defaults the seed epoch to 1; the DS1386 environment
             // has 298 bytes before the MAC slot, so the M2-6 opt-in reuses the
@@ -462,10 +506,19 @@ impl Node {
                 env.push(("mesh.key".into(), key.clone()));
             }
             if let Some(route) = &mesh.route {
-                env.push(("mesh.route".into(), route.clone()));
+                env.push((
+                    if direct { "r" } else { "mesh.route" }.into(),
+                    route.clone(),
+                ));
             }
             if let Some(fail) = &mesh.fail {
                 env.push(("mesh.fail".into(), fail.clone()));
+            }
+            if let Some(direct) = &mesh.direct {
+                env.push(("d".into(), direct.clone()));
+            }
+            if let Some(peer_id) = &mesh.peer_id {
+                env.push(("p".into(), peer_id.clone()));
             }
         }
         env
@@ -496,6 +549,10 @@ pub struct MeshEnv {
     /// The M2-6 failure-detection opt-in (`mesh.fail`).  Absent keeps the
     /// M2-2 same-epoch rejoin behaviour.
     pub fail: Option<String>,
+    /// Direct peer target (`mesh.direct`), `a.b.c.d:port` through the gateway.
+    pub direct: Option<String>,
+    /// The peer's NodeId (`mesh.peer_id`), for the lower-id rule.
+    pub peer_id: Option<String>,
 }
 
 /// The deterministic lab authority key pair.
@@ -535,6 +592,7 @@ impl AuthorityKeys {
 pub fn mesh_environments(
     nodes: &[Node],
     fault: Fault,
+    transport: Transport,
 ) -> (Vec<Option<MeshEnv>>, AuthorityKeys, AuthorityKeys) {
     let authority = AuthorityKeys::lab();
     let wrong = AuthorityKeys::wrong();
@@ -545,7 +603,11 @@ pub fn mesh_environments(
     for (index, node) in nodes.iter().enumerate() {
         let peer = &nodes[1 - index];
         let mut env = MeshEnv {
-            peer: Some(format!("{}:{}", node.gateway, peer.mesh_port)),
+            peer: if transport == Transport::Relay {
+                Some(format!("{}:{}", node.gateway, peer.mesh_port))
+            } else {
+                None
+            },
             authority: Some(nodes[0].mac_string()),
             epoch: Some(1),
             objects: Some(crate::homes::OBJECT_COUNT),
@@ -563,6 +625,17 @@ pub fn mesh_environments(
                 Some("1".into())
             } else {
                 None
+            },
+            direct: match transport {
+                Transport::Direct => Some(format!("{}:{}", node.gateway, peer.mesh_port)),
+                Transport::DirectFail => Some(format!("{}:1", node.gateway)),
+                Transport::Relay => None,
+            },
+            peer_id: match transport {
+                Transport::Direct | Transport::DirectFail => {
+                    Some(crate::sha256::hex(&peer.node_id).to_ascii_uppercase())
+                }
+                Transport::Relay => None,
             },
         };
         if index == 0 {
@@ -617,6 +690,8 @@ pub fn shard_environments(
                     None
                 },
                 fail: None,
+                direct: None,
+                peer_id: None,
             };
             if index == 0 {
                 env.seed = Some(authority.seed_hex.clone());
@@ -1400,6 +1475,7 @@ mod tests {
             base_port: 9100,
             nodes: 2,
             hub: false,
+            transport: Transport::Relay,
             timeout: Duration::from_secs(1),
             fault: Fault::None,
             keep: false,
