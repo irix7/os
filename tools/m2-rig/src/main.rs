@@ -936,18 +936,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // and homes logging settles.  Give it the same 10 s the guest HTTP
             // probe uses before the first control-plane fetch.
             std::thread::sleep(Duration::from_secs(10));
-            // Probe on the stable initial pair before any restarts or
-            // failures, when both mesh links and HTTP servers are proven.
-            // Running the probe after a root/member restart is flaky because
-            // the member's mesh link has timed out and both links may be
-            // re-establishing.
-            match settle_and_probe(&nodes) {
-                Ok((value, value_relays)) => {
-                    probes = value;
-                    relays = value_relays;
-                }
-                Err(error) => probe_error = Some(error),
-            }
         } else if options.fault == Fault::WrongAuthority {
             wait_join_reject(&nodes, Duration::from_secs(30));
             std::thread::sleep(Duration::from_secs(10));
@@ -1031,6 +1019,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             }
         }
         if options.fault.failures() {
+            // Probe on the stable pair before the failure, while both mesh
+            // links and MCP HTTP servers are still responsive.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
             // The base M2-4 steps have already left a cached route and a
             // lease at the member.  Kill it (or cut the seam) and let the
             // bounded failure detector, not the socket close, drive the
@@ -1078,6 +1075,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Ok(input) => {
                     root_restart = Some(input);
                     facts = snapshot_facts(&nodes);
+                    // Probe on the stable pair after the root restart; the
+                    // member's mesh link has re-established and both MCP HTTP
+                    // servers are responsive.
+                    match settle_and_probe(&nodes) {
+                        Ok((value, value_relays)) => {
+                            probes = value;
+                            relays = value_relays;
+                        }
+                        Err(error) => probe_error = Some(error),
+                    }
                 }
                 Err(error) => join_error = Some(error),
             }
