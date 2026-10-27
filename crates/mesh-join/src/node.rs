@@ -595,8 +595,8 @@ impl JoinNode {
                 }
                 for removal in state.authority.remove_failed() {
                     state.converged = removal.snapshot.clone();
-                    events.push(JoinEvent::RemovedBatch {
-                        nodes: alloc::vec![removal.node],
+                    events.push(JoinEvent::Removed {
+                        node: removal.node,
                         snapshot: removal.snapshot,
                     });
                 }
