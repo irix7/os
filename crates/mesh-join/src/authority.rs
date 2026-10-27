@@ -262,9 +262,16 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        let snapshot = self.snapshot().ok()?;
+        let mut removed = alloc::vec::Vec::new();
+        let mut snapshot = None;
+        for node in failed {
+            let _ = self.table.leave(node);
+            removed.push(node);
+            snapshot = self.snapshot().ok();
+        }
+        let snapshot = snapshot?;
         Some(BatchRemoval {
-            nodes: failed,
+            nodes: removed,
             snapshot,
         })
     }
