@@ -264,18 +264,18 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        let changes: alloc::vec::Vec<mesh_service::Change> = failed
-            .iter()
-            .map(|node| mesh_service::Change::Remove { node: *node })
-            .collect();
-        // One change set, one epoch advance, however many members failed.
-        let set = self.table.apply(&changes, now_ms).ok()?;
-        if !set.changed {
-            return None;
+        let mut removed = alloc::vec::Vec::new();
+        let mut snapshot = None;
+        for node in failed {
+            if !self.table.leave(node).unwrap_or(false) {
+                continue;
+            }
+            snapshot = self.snapshot().ok();
+            removed.push(node);
         }
-        let snapshot = self.snapshot().ok()?;
+        let snapshot = snapshot?;
         Some(BatchRemoval {
-            nodes: set.removed,
+            nodes: removed,
             snapshot,
         })
     }
