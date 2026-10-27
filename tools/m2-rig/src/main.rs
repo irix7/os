@@ -1058,6 +1058,12 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             match restart_root(options, &nodes, &mut running, &facts, &mut mesh_relay) {
                 Ok(input) => {
                     root_restart = Some(input);
+                    // The root resumed from its epoch store and re-established
+                    # its mesh link.  Wait for both nodes' home tables to be
+                    # served again before probing; this confirms the MCP HTTP
+                    # servers are responsive after the restart and gives the
+                    # mesh link time to stabilise before the two-way probe.
+                    wait_homes_serial(&nodes, Duration::from_secs(60));
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
