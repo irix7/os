@@ -208,12 +208,8 @@ fn serial_byte(b: u8) {
         core::arch::asm!("sync", options(nostack));
     }
     // Pace the next byte so the four-deep transmitter FIFO cannot overflow
-    // even when the status read is stale.  The previous 20,000-iteration pace
-    // was shorter than one 9600-baud character time; a 1.5 KiB evidence table
-    // written in one call could overrun the FIFO and lose characters in the
-    // middle of a line.  40,000 iterations is just over one character time at
-    // the emulated 33 MHz Count rate.
-    for _ in 0..40_000 {
+    // even when the status read is stale.
+    for _ in 0..20_000 {
         core::hint::spin_loop();
     }
 }

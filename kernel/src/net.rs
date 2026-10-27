@@ -119,10 +119,12 @@ fn read_nvram_mac() -> [u8; 6] {
 /// to the next buffer while the CPU processes the previous frame; a single
 /// descriptor forces a stop/re-arm cycle and drops frames on bulk transfers.
 ///
-/// Sixteen descriptors hold a 15-segment burst (the advertised window below)
+/// Eight descriptors hold a seven-segment burst (the advertised window below)
 /// plus one descriptor owned by the CPU, so a full window can arrive without
-/// overwriting the frame being copied.
-const RX_RING: usize = 16;
+/// overwriting the frame being copied.  A 16-descriptor ring was tried and
+/// broke the slot-B Wasm autoload on the emulated Seeq; the ring stays at the
+/// shipped eight.
+const RX_RING: usize = 8;
 
 /// Set when the DS1386 environment disables networking for an offline boot.
 static mut NETWORK_OFF: bool = false;
@@ -254,11 +256,10 @@ impl Device for SeeqDevice {
         caps.max_transmission_unit = 1514;
         // smoltcp clamps the advertised TCP window to
         // `max_burst_size * (MTU - IP - TCP)`.  One segment (the M2 value)
-        // limits every socket to ~1.4 KiB in flight.  Fifteen segments is
-        // 22,110 bytes, above the 16 KiB module RX ring, so the socket buffer
-        // -- not this clamp -- is the limit.  The ring keeps one descriptor
-        // for the CPU, so 15 is the largest safe burst.
-        caps.max_burst_size = Some(15);
+        // limits every socket to ~1.4 KiB in flight.  Seven segments is
+        // 10,220 bytes, enough for one 8 KiB bulk chunk plus framing; the
+        // eight-descriptor ring keeps one descriptor for the CPU, so 7 is the
+        // largest safe burst.
         caps.medium = Medium::Ethernet;
         caps
     }

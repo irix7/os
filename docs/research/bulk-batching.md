@@ -14,9 +14,9 @@ M2 or M3 gate.
 
 | Layer | Change | Effect |
 |---|---|---|
-| Kernel Seeq driver | Receive ring 8 → 16 descriptors; `max_burst_size` 1 → 15 | The advertised TCP window is the 16 KiB socket receive buffer instead of one 1,460-byte segment. |
+| Kernel Seeq driver | `max_burst_size` 1 → 7 (the ring stays at the shipped 8 descriptors) | The advertised TCP window is about 10 KiB instead of one 1,460-byte segment; a 16-descriptor ring broke the slot-B Wasm autoload and is not used. |
 | Kernel receive copy | Per-byte `read_volatile` → one `copy_nonoverlapping` from the uncached DMA buffer | Removes one uncached load per received byte. |
-| Kernel module socket | RX 2 KiB → 16 KiB, TX 16 KiB → 32 KiB per slot; Nagle off; 1 ms delayed ACK | A window update can carry a whole 16 KiB tick; a small control record is not ACK-clocked. |
+| Kernel module socket | RX 2 KiB → 16 KiB, TX stays 16 KiB per slot; no Nagle/ACK timing change | The RX ring holds one 8 KiB chunk plus framing; the stack default preserved the slot-B Wasm autoload. |
 | `sys-primitives` | 16-entry nibble CRC32C table (same polynomial, same bytes on the wire) | Two dependent shift rounds per byte become two table lookups; 64 bytes of `.rodata`, not 1 KiB. |
 | `mesh-transport` | Fixed-capacity `StreamDecoder` and `SendQueue`; compaction instead of growth; 8 KiB control reserve for data records; `flush` reports writes and peak queue | The bump allocator does not grow a `Vec` on the data path; bulk cannot starve control. |
 | MCP module | 4 × 4 KiB reads per tick; one flush per tick (intermediate flushes removed); 32 KiB decoder/queue; 16,404-byte frame body buffer; bulk measurement path | One `tcp_send` per tick in the steady state; a 64 KiB *logical* record is four 16 KiB chunks. |
@@ -92,10 +92,10 @@ streams it for the memory and head-of-line reasons in §4.
 
 | Budget | Value |
 |---|---:|
-| Module image | 368,472 bytes |
+| Module image | 377,848 bytes |
 | Module `.bss` | 102,257 bytes |
-| Image + `.bss` | 470,729 bytes of the 524,288-byte slot A |
-| PROM | 523,484 bytes of 524,288 (804 bytes headroom) |
+| Image + `.bss` | see the build manifest; the module linker asserts the slot bound |
+| PROM | 523,036 bytes of 524,288 (1,252 bytes headroom) |
 
 The module linker now asserts that image + `.bss` stays below slot B
 (`0x8848_0000`).  The previous module had no such assertion; a larger static

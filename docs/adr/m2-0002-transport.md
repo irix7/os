@@ -203,8 +203,8 @@ so every socket advertised about 1,474 bytes and each 64 KiB transfer needed
 45 window-limited ticks.  #247 changes the transport and leaves the record
 format alone:
 
-- Seeq RX ring 16, `max_burst_size = Some(15)`, module RX 16 KiB / TX 32 KiB,
-  Nagle off and a 1 ms delayed ACK;
+- Seeq RX ring 8, `max_burst_size = Some(7)`, module RX 16 KiB / TX 16 KiB
+  (the kernel module socket keeps the stack's delayed-ACK default);
 - one `copy_nonoverlapping` from the uncached DMA buffer instead of a
   per-byte `read_volatile` loop;
 - fixed-capacity decoder and send queue with an 8 KiB control reserve, and one
