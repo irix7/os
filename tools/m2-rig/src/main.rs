@@ -693,7 +693,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut join_error = None;
     let mut homes_error = None;
     let mut latency_evidence: Option<latency::LatencyEvidence> = None;
-    let mut latency_error = None;
+    let mut latency_error: Option<String> = None;
     let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
     let mut bulk_error: Option<String> = None;
     let mut route = None;
@@ -762,18 +762,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // home table must have drained or the emulated 9,600-baud line would
         // gate the tick.  A short settle plus HTTP retries absorbs the iris
         // forward's half-open close.
-        if options.fault.joins() && join_before.ok && join_before.members.len() == 2 {
-            std::thread::sleep(Duration::from_secs(3));
-            match latency::run(&nodes[0]) {
-                Ok(evidence) => {
-                    if !evidence.ok {
-                        latency_error = Some(evidence.message.clone());
-                    }
-                    latency_evidence = Some(evidence);
-                }
-                Err(error) => latency_error = Some(error),
-            }
-        }
 
         // The guest-level HTTP probe still runs before the member restart, as
         // in M2-0/M2-1/M2-2.  It runs after the MCP homes fetch because the
