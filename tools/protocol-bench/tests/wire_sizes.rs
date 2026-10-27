@@ -179,3 +179,21 @@ fn framing_bound_is_64_kib_and_round_trips() {
     );
     assert!(encode_record(&envelope, &mut record[..65_535]).is_err());
 }
+
+#[test]
+fn bulk_chunks_are_bounded_and_pinned() {
+    // The module's #247 measurement path: a 20-byte bulk header plus one
+    // 16 KiB payload in a single MeshEnvelope.  Four chunks make the 64 KiB
+    // logical record; the wire record stays well under MAX_RECORD_LEN.
+    let chunk = 16 * 1024;
+    let body = OVERHEAD - 4 + 20 + chunk;
+    let record = 4 + body;
+    assert_eq!(record, 16_728);
+    assert!(record <= mesh_transport::MAX_RECORD_LEN);
+    assert_eq!(4 * chunk, 64 * 1024);
+
+    // A 64 KiB single wire record is still inside the transport bound, but the
+    // module deliberately streams it because its slot has ~50 KiB of BSS
+    // headroom, not 64 KiB.
+    assert_eq!(mesh_transport::MAX_RECORD_LEN, 65_536);
+}

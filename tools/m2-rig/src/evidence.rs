@@ -193,6 +193,8 @@ pub struct Evidence<'a> {
     pub route: Option<&'a RouteEvidence>,
     /// L0 actor-migration evidence, when that scenario ran.
     pub migration: Option<&'a MigrateEvidence>,
+    /// Bulk-transfer evidence, when that scenario ran.
+    pub bulk: Option<&'a crate::bulk::BulkEvidence>,
     /// Failure/partition evidence, when that fault mode ran.
     pub failure: Option<&'a crate::failure::FailureEvidence>,
     /// Module fixture, when the run started one.
@@ -483,6 +485,11 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         Some(migration) => out.push_str(&render_migration_json(migration)),
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"bulk\": ");
+    match evidence.bulk {
+        Some(bulk) => out.push_str(&render_bulk_json(bulk)),
+        None => out.push_str("null"),
+    }
     out.push_str(",\n  \"failure\": ");
     match evidence.failure {
         Some(failure) => out.push_str(&render_failure_json(failure)),
@@ -510,6 +517,49 @@ fn render_expected_view(view: &Option<crate::failure::ExpectedView>) -> String {
             json_escape(&row.home)
         ));
         if index + 1 < view.table.rows.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
+    out
+}
+
+fn render_bulk_json(bulk: &crate::bulk::BulkEvidence) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"ok\": {}, \"message\": \"{}\", ",
+        bulk.ok,
+        json_escape(&bulk.message)
+    ));
+    out.push_str("\"baseline\": ");
+    match &bulk.baseline {
+        Some(run) => out.push_str(&format!(
+            "{{\"from\": \"{}\", \"to\": \"{}\", \"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
+            json_escape(&run.from),
+            json_escape(&run.to),
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            run.mb_per_s,
+            json_escape(&run.raw)
+        )),
+        None => out.push_str("null"),
+    }
+    out.push_str(", \"runs\": [");
+    for (index, run) in bulk.runs.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"from\": \"{}\", \"to\": \"{}\", \"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
+            json_escape(&run.from),
+            json_escape(&run.to),
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            run.mb_per_s,
+            json_escape(&run.raw)
+        ));
+        if index + 1 < bulk.runs.len() {
             out.push(',');
         }
     }
@@ -1079,6 +1129,31 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
                 node.name,
                 node.listen.as_deref().unwrap_or("-"),
                 node.pass.as_deref().unwrap_or("-")
+            ));
+        }
+        out.push('\n');
+    }
+
+    if let Some(bulk) = evidence.bulk {
+        out.push_str("## Bulk transfer (#247)\n\n");
+        out.push_str(&format!(
+            "**Result:** {}  \n**Logical record:** {} bytes in {} byte chunks\n\n",
+            if bulk.ok { "pass" } else { "FAIL" },
+            crate::bulk::BULK_BYTES,
+            crate::bulk::BULK_CHUNK
+        ));
+        out.push_str(&format!("{}\n\n", bulk.message));
+        out.push_str("| From | To | Bytes | Chunks | Mesh ms | MiB/s | Raw |\n|---|---|---|---|---|---|---|\n");
+        if let Some(run) = &bulk.baseline {
+            out.push_str(&format!(
+                "| {} (baseline) | {} | {} | {} | {} | {:.3} | `{}` |\n",
+                run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s, run.raw.trim()
+            ));
+        }
+        for run in &bulk.runs {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {:.3} | `{}` |\n",
+                run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s, run.raw.trim()
             ));
         }
         out.push('\n');

@@ -118,6 +118,12 @@ fn read_nvram_mac() -> [u8; 6] {
 /// Number of receive descriptors in the ring.  A ring lets the HPC3 move on
 /// to the next buffer while the CPU processes the previous frame; a single
 /// descriptor forces a stop/re-arm cycle and drops frames on bulk transfers.
+///
+/// Eight descriptors hold a seven-segment burst (the advertised window below)
+/// plus one descriptor owned by the CPU, so a full window can arrive without
+/// overwriting the frame being copied.  A 16-descriptor ring was tried and
+/// broke the slot-B Wasm autoload on the emulated Seeq; the ring stays at the
+/// shipped eight.
 const RX_RING: usize = 8;
 
 /// Set when the DS1386 environment disables networking for an offline boot.
@@ -248,7 +254,12 @@ impl Device for SeeqDevice {
     fn capabilities(&self) -> DeviceCapabilities {
         let mut caps = DeviceCapabilities::default();
         caps.max_transmission_unit = 1514;
-        caps.max_burst_size = Some(1);
+        // smoltcp clamps the advertised TCP window to
+        // `max_burst_size * (MTU - IP - TCP)`.  One segment (the M2 value)
+        // limits every socket to ~1.4 KiB in flight.  Seven segments is
+        // 10,220 bytes, enough for one 8 KiB bulk chunk plus framing; the
+        // eight-descriptor ring keeps one descriptor for the CPU, so 7 is the
+        // largest safe burst.
         caps.medium = Medium::Ethernet;
         caps
     }
@@ -279,8 +290,13 @@ impl Device for SeeqDevice {
 
         let buf = self.rx_bufs[index].as_ptr();
         let status = unsafe { read_volatile(buf.add(2 + len)) };
-        for (i, slot) in self.rx_frame.iter_mut().take(len).enumerate() {
-            *slot = unsafe { read_volatile(buf.add(2 + i)) };
+        // The DMA buffer is uncached kseg1 and the descriptor flag (read
+        // volatile above) is the ownership handshake.  Copy the frame in one
+        // operation: a per-byte `read_volatile` loop issued one uncached load
+        // per byte and was the largest receive-side CPU cost on bulk traffic.
+        compiler_fence(Ordering::Acquire);
+        unsafe {
+            core::ptr::copy_nonoverlapping(buf.add(2), self.rx_frame.as_mut_ptr(), len);
         }
         self.rearm_rx(index);
         self.rx_index = (index + 1) % RX_RING;

@@ -64,8 +64,8 @@ use mesh_transport::{
 };
 use module_abi::Services;
 use sys_primitives::{
-    mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId, NodeKey, ObjectId,
-    OpCode, Status, StreamId, Tag, TraceContext,
+    flags as frame_flags, mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId,
+    NodeKey, ObjectId, OpCode, Status, StreamId, Tag, TraceContext,
 };
 
 // The authority write lease must expire before the membership failure window,
@@ -84,8 +84,34 @@ pub const MESH_PORT: u16 = 7000;
 /// Module TCP slot kept for the MCP HTTP server when the mesh is enabled.
 pub const HTTP_SLOT: u32 = 0;
 
-const READ_CHUNK: usize = 1024;
+/// Module read size and reads per tick.  8 x 4 KiB drains 32 KiB in one pass,
+/// enough for one 16 KiB bulk chunk plus framing and a following control
+/// record.  Four reads left a chunk just over the per-tick budget and cost an
+/// extra 10 ms tick per chunk; the buffer is static because the module runs on
+/// the kernel stack and a 32 KiB stack frame is not acceptable.
+const READ_CHUNK: usize = 4096;
 const READS_PER_TICK: usize = 8;
+
+/// Largest body a single received record may carry.
+///
+/// Join bodies are 4 KiB, bulk chunks are one 16 KiB payload plus a 20-byte
+/// header.  A larger body is rejected before dispatch.
+const FRAME_BODY_MAX: usize = BULK_HEADER_LEN + BULK_CHUNK_MAX;
+
+/// Bulk measurement path.
+///
+/// This is the reproducible two-kernel workload for #247: the rig starts a
+/// `Read` request on one node and the peer streams fixed-size chunks back on
+/// one logical record.  It is test/benchmark traffic, not a general data plane
+/// or a second file service.  The same path is reused by the multiplexed
+/// stream tests in #246.
+const BULK_MAGIC: u32 = u32::from_le_bytes(*b"I7B1");
+const BULK_HEADER_LEN: usize = 20;
+const BULK_CHUNK_MAX: usize = 16 * 1024;
+const BULK_CHUNK_DEFAULT: usize = 8 * 1024;
+const BULK_RECORD_MAX: usize = 64 * 1024;
+const BULK_DEADLINE_MS: u64 = 6_000;
+
 /// Live MCP pending-tag capacity.
 ///
 /// M2 keeps at most one route operation plus a few link-control frames in
@@ -94,7 +120,7 @@ const READS_PER_TICK: usize = 8;
 /// 10,000 outstanding tags, and that result must not be read as a claim that
 /// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
-const LINE_CAP: usize = 384;
+const LINE_CAP: usize = 768;
 /// Routine join-view and ack logging interval.
 ///
 /// The 5 s member refresh is a protocol liveness check, not evidence: logging
@@ -208,11 +234,59 @@ struct Mesh {
     pass_logged: bool,
     listen_logged: bool,
     last_rx_ms: u64,
+    /// Outbound bulk measurement transfer, if one is active.
+    bulk: Option<BulkTransfer>,
+    /// Inbound bulk request being served, if one is active.
+    bulk_reply: Option<BulkReply>,
+    /// Epoch whose routine join confirmation was last logged.
+    logged_join_epoch: u32,
+    /// Epoch whose routine ack was last logged.
+    logged_ack_epoch: u32,
+    /// Incremented for every accepted link.
+    link_generation: u64,
+    /// Link generation whose confirmed home table was last logged.
+    homes_logged_generation: u64,
+}
+
+/// State of the origin side of the #247 bulk measurement.
+struct BulkTransfer {
+    nonce: u32,
+    total: u32,
+    chunk: u32,
+    state: BulkState,
+    started_ms: u64,
+    request_queued_ms: u64,
+    first_chunk_ms: u64,
+    finished_ms: u64,
+    received: u32,
+    chunks: u32,
+    expected_offset: u32,
+    error: Option<&'static str>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BulkState {
+    /// The request has not been queued yet.
+    Start,
+    /// The request is queued or waiting for the first chunk.
+    Running,
+    Done,
+    Failed,
+}
+
+/// State of the peer side of the #247 bulk measurement.
+struct BulkReply {
+    node: NodeId,
+    nonce: u32,
+    total: u32,
+    chunk: u32,
+    offset: u32,
+    started_ms: u64,
 }
 
 /// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
 /// the frame loop's stack frame; the module is single-threaded.
-static mut JOIN_RX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
+static mut FRAME_RX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
 /// Encode buffer for one outgoing join body.
 static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 /// Read/write buffer for the persistent epoch store.
@@ -222,6 +296,10 @@ static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 static mut STORE_BUF: [u8; STORE_BYTES] = [0; STORE_BYTES];
 /// Encode buffer for the store payload (a signed record or confirmation).
 static mut STORE_BODY: [u8; STORE_BYTES - STORE_HEADER] = [0; STORE_BYTES - STORE_HEADER];
+/// Encode buffer for one outgoing bulk chunk (payload follows the header).
+static mut BULK_TX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
+/// One receive scratch buffer reused by every socket read in a tick.
+static mut READ_BUF: [u8; READ_CHUNK] = [0; READ_CHUNK];
 
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
@@ -327,6 +405,12 @@ pub unsafe fn init(services: *const Services) -> bool {
         pass_logged: false,
         listen_logged: false,
         last_rx_ms: now,
+        bulk: None,
+        bulk_reply: None,
+        logged_join_epoch: 0,
+        logged_ack_epoch: 0,
+        link_generation: 0,
+        homes_logged_generation: 0,
     };
     unsafe {
         MESH = Some(mesh);
@@ -362,6 +446,138 @@ pub fn tick(services: &Services) {
         return;
     };
     mesh.tick(services);
+}
+
+/// Render or start `GET /mesh/bulk`, the reproducible bulk measurement path.
+///
+/// `?start=1&bytes=N&chunk=M` queues one `Read` request to the current peer.
+/// `?status=1` (or no query) returns the bounded state.  The peer streams
+/// `M`-byte chunks back; the origin records the mesh start/finish timestamps,
+/// so the reported elapsed time does not include the MCP HTTP phase machine.
+#[inline(never)]
+pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    let mut start = false;
+    let mut bytes = BULK_CHUNK_DEFAULT as u32;
+    let mut chunk = BULK_CHUNK_DEFAULT as u32;
+    if let Some(question) = path.iter().position(|byte| *byte == b'?') {
+        for part in path[question + 1..].split(|byte| *byte == b'&') {
+            if part.is_empty() {
+                continue;
+            }
+            let mut pieces = part.splitn(2, |byte| *byte == b'=');
+            let key = pieces.next().unwrap_or(b"");
+            let value = pieces.next().unwrap_or(b"");
+            match key {
+                b"start" => start = value == b"1",
+                b"status" => {}
+                b"bytes" => match parse_u32(value) {
+                    Some(parsed) => bytes = parsed,
+                    None => return bulk_line(out, 400, "bad-request reason=bytes"),
+                },
+                b"chunk" => match parse_u32(value) {
+                    Some(parsed) => chunk = parsed,
+                    None => return bulk_line(out, 400, "bad-request reason=chunk"),
+                },
+                _ => return bulk_line(out, 400, "bad-request reason=query"),
+            }
+        }
+    }
+    // SAFETY: the module is single-threaded and `MESH` is written once at
+    // entry; no mutable reference to it is live here.
+    let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
+        return bulk_line(out, 404, "disabled reason=peer");
+    };
+    if start {
+        let now = (services.clock_ms)();
+        if mesh
+            .bulk
+            .as_ref()
+            .is_some_and(|transfer| matches!(transfer.state, BulkState::Start | BulkState::Running))
+        {
+            return bulk_line(out, 409, "busy");
+        }
+        if !matches!(mesh.phase, Phase::Connected) {
+            return bulk_line(out, 409, "not-connected");
+        }
+        if mesh.peer.is_none() {
+            return bulk_line(out, 409, "no-peer");
+        }
+        if !mesh.start_bulk(services, bytes, chunk, now) {
+            return bulk_line(out, 400, "bad-request reason=range");
+        }
+        return bulk_line(out, 202, "started");
+    }
+    let mut body = Body::new(out);
+    body.str("mesh-bulk:");
+    match mesh.bulk.as_ref() {
+        None => body.str(" state=idle"),
+        Some(transfer) => {
+            body.str(" state=");
+            body.str(match transfer.state {
+                BulkState::Start | BulkState::Running => "running",
+                BulkState::Done => "done",
+                BulkState::Failed => "failed",
+            });
+            body.str(" bytes=");
+            body.u64(transfer.total as u64);
+            body.str(" chunk=");
+            body.u64(transfer.chunk as u64);
+            body.str(" received=");
+            body.u64(transfer.received as u64);
+            body.str(" chunks=");
+            body.u64(transfer.chunks as u64);
+            body.str(" elapsed_ms=");
+            body.u64(transfer.finished_ms.saturating_sub(transfer.started_ms));
+            body.str(" queue_ms=");
+            body.u64(
+                transfer
+                    .request_queued_ms
+                    .saturating_sub(transfer.started_ms),
+            );
+            body.str(" first_ms=");
+            body.u64(
+                transfer
+                    .first_chunk_ms
+                    .saturating_sub(transfer.request_queued_ms),
+            );
+            body.str(" body_ms=");
+            body.u64(transfer.finished_ms.saturating_sub(transfer.first_chunk_ms));
+            if let Some(error) = transfer.error {
+                body.str(" error=");
+                body.str(error);
+            }
+        }
+    }
+    body.str(" writes=");
+    body.u64(mesh.stats.writes);
+    body.str(" batched=");
+    body.u64(mesh.stats.batched_flushes);
+    body.str(" peak_queue=");
+    body.u64(mesh.stats.peak_queued_bytes as u64);
+    body.str(" peak_decoder=");
+    body.u64(mesh.stats.peak_decoder_bytes as u64);
+    body.str(" bulk_rx=");
+    body.u64(mesh.stats.bulk_chunks_received);
+    body.str(" bulk_tx=");
+    body.u64(mesh.stats.bulk_chunks_sent);
+    body.str(" bulk_abort=");
+    body.u64(mesh.stats.bulk_aborts);
+    body.push(b'\n');
+    let state = match mesh.bulk.as_ref().map(|transfer| transfer.state) {
+        Some(BulkState::Done) => 200,
+        Some(BulkState::Failed) => 502,
+        Some(_) => 409,
+        None => 200,
+    };
+    (state, body.len())
+}
+
+fn bulk_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
+    let mut body = Body::new(out);
+    body.str("mesh-bulk: ");
+    body.str(state);
+    body.push(b'\n');
+    (status, body.len())
 }
 
 /// Render `GET /mesh/homes` for the MCP HTTP server.
@@ -1183,6 +1399,7 @@ impl Mesh {
         match (services.tcp_state)(MESH_SLOT) {
             2 => {
                 self.stats.connects = self.stats.connects.saturating_add(1);
+                self.link_generation = self.link_generation.wrapping_add(1);
                 self.decoder.reset();
                 self.queue.clear();
                 self.pending = PendingTable::new(PENDING_CAPACITY);
@@ -1244,7 +1461,7 @@ impl Mesh {
         // deadline is evidence of silence, not of time spent processing the
         // previous record, so the socket must be drained first.  This is the
         // multi-member convergence defect the eight-node host hub exposed.
-        let mut buffer = [0u8; READ_CHUNK];
+        let buffer = unsafe { &mut *core::ptr::addr_of_mut!(READ_BUF) };
         for _ in 0..READS_PER_TICK {
             let read = unsafe { (services.tcp_recv)(MESH_SLOT, buffer.as_mut_ptr(), buffer.len()) };
             if read <= 0 {
@@ -1282,6 +1499,12 @@ impl Mesh {
             .as_mut()
             .map(|join| (join.poll(now), join.attempts()));
         match tick {
+            // Do not start or answer a routine epoch refresh while a bulk
+            // measurement is in flight.  The M2 refresh signs a full member
+            // list with Ed25519; on the emulated guest that work lands in the
+            // middle of the transfer and was the 200-600 ms tail in the first
+            // #247 runs.  Retries and timeouts are not suppressed.
+            Some((Tick::Refresh(_), _)) if self.bulk_active() => {}
             Some((Tick::Send(request), attempts)) => {
                 self.send_join(
                     services,
@@ -1333,6 +1556,11 @@ impl Mesh {
         if let Some(step) = migrate_step {
             self.dispatch_migrate(services, step, now);
         }
+
+        // Bulk measurement traffic is data-class: it can use the send-queue
+        // space above the control reserve, one chunk per tick.  Control work
+        // above has already been queued, so a chunk cannot delay it.
+        self.bulk_tick(services, now);
 
         if self.heartbeat.due(now) {
             let destination = self.peer.unwrap_or(NodeId::ZERO);
@@ -1390,10 +1618,10 @@ impl Mesh {
                     if body.len() > limit {
                         return Err(TransportError::Envelope(sys_primitives::Error::BadLength));
                     }
-                    // SAFETY: single-threaded module; JOIN_RX is the only
+                    // SAFETY: single-threaded module; FRAME_RX is the only
                     // frame-body buffer and the copied slice is read before
                     // the next record is decoded.
-                    let storage = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_RX) };
+                    let storage = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_RX) };
                     storage[..body.len()].copy_from_slice(body);
                     let frame_header = envelope.frame.header;
                     let trace = if frame_header.flags & sys_primitives::flags::TRACE != 0 {
@@ -1484,6 +1712,7 @@ impl Mesh {
                     return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
                 }
             }
+            (MessageKind::Request, OpCode::Read) | (MessageKind::Response, OpCode::Read) => {}
             _ => {
                 self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
                 return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
@@ -1682,6 +1911,12 @@ impl Mesh {
                     self.dispatch_migrate(services, step, now);
                 }
             }
+            (MessageKind::Request, OpCode::Read) => {
+                self.on_bulk_request(services, source, body, now);
+            }
+            (MessageKind::Response, OpCode::Read) => {
+                self.on_bulk_chunk(services, source, body, now);
+            }
             _ => {}
         }
         Ok(())
@@ -1699,7 +1934,6 @@ impl Mesh {
                 log(services, b"mesh-route: send-failed\n");
             }
         }
-        self.flush(services, now);
     }
 
     fn queue_route(&mut self, wire: RouteWire, now: u64) -> bool {
@@ -1728,7 +1962,6 @@ impl Mesh {
                 log(services, b"mesh-migrate: send-failed\n");
             }
         }
-        self.flush(services, now);
     }
 
     fn queue_migrate(&mut self, wire: MigrateWire, now: u64) -> bool {
@@ -1764,20 +1997,28 @@ impl Mesh {
         match &outcome.event {
             JoinEvent::Confirmed(snapshot) => {
                 // A routine refresh from an existing member does not advance
-                // the epoch.  The two-node M2 transcript keeps the signed
-                // confirmation line.  Above two members it is suppressed:
-                // every member refreshes every five seconds, and the emulated
-                // serial line writes at roughly 50 bytes/s.  Logging each
-                // confirmation starves the module tick and eventually trips a
-                // heartbeat deadline on a healthy link.  The current view is
-                // still served by `/mesh/homes` and `/mesh/shard`.
+                // the epoch.  The M2 transcript keeps the signed confirmation
+                // line; tables are logged on a new link, an epoch change or
+                // the 30 s rate-limited refresh so the ~50 byte/s serial line
+                // cannot starve the receive path.
+                let new_link = self.link_generation != self.homes_logged_generation;
                 if full_view {
                     self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
                     self.last_join_log_ms = now;
-                    // The M2 transcript (no `mesh.shard` key) keeps the full
-                    // two-node evidence.  An M3 shard run reads the tables from
-                    // `/mesh/homes` and `/mesh/shard`; writing 1.5 KiB of rows
-                    // to a ~50 byte/s serial line starves the receive path.
+                    self.logged_join_epoch = snapshot.epoch;
+                    self.homes_logged_generation = self.link_generation;
+                    if !self.m3_quiet() && snapshot.len() <= 2 {
+                        self.log_snapshot(services, "mesh-join: confirm", snapshot);
+                        self.log_homes(services, snapshot, true);
+                        self.log_shard(services, snapshot, false);
+                    }
+                } else if self.bulk_active() {
+                    // Keep the serial console out of a bulk measurement; the
+                    // confirmation itself is still sent by the join machine.
+                } else if new_link {
+                    self.last_join_log_ms = now;
+                    self.logged_join_epoch = snapshot.epoch;
+                    self.homes_logged_generation = self.link_generation;
                     if !self.m3_quiet() && snapshot.len() <= 2 {
                         self.log_snapshot(services, "mesh-join: confirm", snapshot);
                         self.log_homes(services, snapshot, true);
@@ -1785,13 +2026,13 @@ impl Mesh {
                     }
                 } else if !self.m3_quiet()
                     && snapshot.len() <= 2
-                    && now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS
+                    && (snapshot.epoch != self.logged_join_epoch
+                        || now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS)
                 {
                     self.last_join_log_ms = now;
+                    self.logged_join_epoch = snapshot.epoch;
                     self.log_snapshot(services, "mesh-join: confirm", snapshot);
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
-                    self.log_homes(services, snapshot, true);
-                    self.log_shard(services, snapshot, false);
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
@@ -1803,6 +2044,8 @@ impl Mesh {
                     self.log_homes(services, snapshot, true);
                     self.log_shard(services, snapshot, false);
                 }
+                self.logged_join_epoch = snapshot.epoch;
+                self.homes_logged_generation = self.link_generation;
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
@@ -1812,8 +2055,7 @@ impl Mesh {
                 {
                     self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
-                    self.log_homes(services, snapshot, true);
-                    self.log_shard(services, snapshot, false);
+                    self.logged_join_epoch = snapshot.epoch;
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
@@ -1865,6 +2107,8 @@ impl Mesh {
                 line.digest(digest);
                 line.push(b'\n');
                 log(services, line.as_bytes());
+                self.logged_ack_epoch = *epoch;
+                self.last_ack_log_ms = now;
             }
             JoinEvent::Rejected(label) if self.verbose_join_log() => {
                 // The envelope and frame were well formed; the membership
@@ -2323,7 +2567,6 @@ impl Mesh {
             line.push(b'\n');
             log(services, line.as_bytes());
         }
-        self.flush(services, now);
     }
 
     fn queue_hello(
@@ -2422,6 +2665,277 @@ impl Mesh {
         self.queue.push_record(&envelope, now).is_ok()
     }
 
+    /// Whether a bulk transfer is queued or in flight in either direction.
+    fn bulk_active(&self) -> bool {
+        self.bulk
+            .as_ref()
+            .is_some_and(|transfer| matches!(transfer.state, BulkState::Start | BulkState::Running))
+            || self.bulk_reply.is_some()
+    }
+
+    /// Start one bulk measurement transfer to the current peer.
+    fn start_bulk(&mut self, services: &Services, total: u32, chunk: u32, now: u64) -> bool {
+        if !matches!(self.phase, Phase::Connected) || self.peer.is_none() {
+            return false;
+        }
+        if total == 0
+            || total as usize > BULK_RECORD_MAX
+            || chunk == 0
+            || chunk as usize > BULK_CHUNK_MAX
+            || !total.is_multiple_of(chunk)
+        {
+            return false;
+        }
+        let nonce = (now as u32) ^ self.stats.frames_sent as u32 ^ 0x4952_4237;
+        self.bulk = Some(BulkTransfer {
+            nonce,
+            total,
+            chunk,
+            state: BulkState::Start,
+            started_ms: now,
+            request_queued_ms: 0,
+            first_chunk_ms: 0,
+            finished_ms: 0,
+            received: 0,
+            chunks: 0,
+            expected_offset: 0,
+            error: None,
+        });
+        // No serial line here: the emulated console is synchronous inside the
+        // module tick, and one 70-byte line delayed the bulk request by ~600 ms
+        // in the first #247 measurement.  `/mesh/bulk` is the evidence surface.
+        let _ = services;
+        true
+    }
+
+    fn on_bulk_request(&mut self, services: &Services, source: NodeId, body: &[u8], now: u64) {
+        if body.len() != BULK_HEADER_LEN {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return;
+        }
+        let magic = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        let total = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+        let chunk = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
+        let nonce = u32::from_le_bytes([body[12], body[13], body[14], body[15]]);
+        if magic != BULK_MAGIC
+            || total == 0
+            || total as usize > BULK_RECORD_MAX
+            || chunk == 0
+            || chunk as usize > BULK_CHUNK_MAX
+            || !total.is_multiple_of(chunk)
+        {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return;
+        }
+        self.bulk_reply = Some(BulkReply {
+            node: source,
+            nonce,
+            total,
+            chunk,
+            offset: 0,
+            started_ms: now,
+        });
+        // The peer-side counters are reported by the origin's `/mesh/bulk`
+        // raw line; do not block this tick on the emulated serial console.
+        let _ = services;
+    }
+
+    fn on_bulk_chunk(&mut self, services: &Services, source: NodeId, body: &[u8], now: u64) {
+        if body.len() < BULK_HEADER_LEN {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return;
+        }
+        let magic = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        let nonce = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
+        let total = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
+        let offset = u32::from_le_bytes([body[12], body[13], body[14], body[15]]);
+        let payload = u32::from_le_bytes([body[16], body[17], body[18], body[19]]) as usize;
+        let Some(transfer) = self.bulk.as_mut() else {
+            return;
+        };
+        if magic != BULK_MAGIC
+            || nonce != transfer.nonce
+            || total != transfer.total
+            || payload != body.len() - BULK_HEADER_LEN
+            || offset != transfer.expected_offset
+            || transfer.received.saturating_add(payload as u32) > transfer.total
+            || Some(source) != self.peer
+        {
+            transfer.state = BulkState::Failed;
+            transfer.error = Some("chunk");
+            transfer.finished_ms = now;
+            self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
+            return;
+        }
+        if transfer.received == 0 {
+            transfer.first_chunk_ms = now;
+        }
+        transfer.received = transfer.received.saturating_add(payload as u32);
+        transfer.expected_offset = transfer.expected_offset.saturating_add(payload as u32);
+        transfer.chunks = transfer.chunks.saturating_add(1);
+        self.stats.bulk_chunks_received = self.stats.bulk_chunks_received.saturating_add(1);
+        if transfer.received == transfer.total {
+            transfer.state = BulkState::Done;
+            transfer.finished_ms = now;
+            let elapsed = now.saturating_sub(transfer.started_ms);
+            let mut line = Line::new();
+            line.str("mesh-bulk: complete bytes=");
+            line.u64(transfer.total as u64);
+            line.str(" chunks=");
+            line.u64(transfer.chunks as u64);
+            line.str(" elapsed_ms=");
+            line.u64(elapsed);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+        }
+    }
+
+    /// Queue one outbound bulk request or reply chunk.  Called once per tick,
+    /// after control work and before the single flush.
+    fn bulk_tick(&mut self, services: &Services, now: u64) {
+        let start = match self.bulk.as_ref() {
+            Some(transfer) if transfer.state == BulkState::Start => {
+                Some((transfer.total, transfer.chunk, transfer.nonce))
+            }
+            Some(transfer)
+                if transfer.state == BulkState::Running
+                    && now.saturating_sub(transfer.started_ms) >= BULK_DEADLINE_MS =>
+            {
+                let received = transfer.received;
+                let total = transfer.total;
+                if let Some(transfer) = self.bulk.as_mut() {
+                    transfer.state = BulkState::Failed;
+                    transfer.error = Some("timeout");
+                    transfer.finished_ms = now;
+                }
+                self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
+                let mut line = Line::new();
+                line.str("mesh-bulk: failed reason=timeout received=");
+                line.u64(received as u64);
+                line.str("/");
+                line.u64(total as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                None
+            }
+            _ => None,
+        };
+        if let Some((total, chunk, nonce)) = start {
+            if self.queue_bulk_request(total, chunk, nonce, now) {
+                if let Some(transfer) = self.bulk.as_mut() {
+                    transfer.state = BulkState::Running;
+                    transfer.request_queued_ms = now;
+                }
+            } else if let Some(transfer) = self.bulk.as_mut() {
+                transfer.state = BulkState::Failed;
+                transfer.error = Some("queue");
+                transfer.finished_ms = now;
+            }
+        }
+        let Some(reply) = self.bulk_reply.as_ref() else {
+            return;
+        };
+        if now.saturating_sub(reply.started_ms) >= BULK_DEADLINE_MS {
+            self.bulk_reply = None;
+            self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
+            return;
+        }
+        let (node, nonce, total, chunk, offset) = (
+            reply.node,
+            reply.nonce,
+            reply.total,
+            reply.chunk,
+            reply.offset,
+        );
+        if self.queue_bulk_chunk(node, nonce, total, chunk, offset, now) {
+            self.stats.bulk_chunks_sent = self.stats.bulk_chunks_sent.saturating_add(1);
+            if let Some(reply) = self.bulk_reply.as_mut() {
+                reply.offset = reply.offset.saturating_add(chunk);
+                if reply.offset >= reply.total {
+                    self.bulk_reply = None;
+                }
+            }
+        }
+    }
+
+    fn queue_bulk_request(&mut self, total: u32, chunk: u32, nonce: u32, now: u64) -> bool {
+        let Some(destination) = self.peer else {
+            return false;
+        };
+        let mut body = [0u8; BULK_HEADER_LEN];
+        body[0..4].copy_from_slice(&BULK_MAGIC.to_le_bytes());
+        body[4..8].copy_from_slice(&total.to_le_bytes());
+        body[8..12].copy_from_slice(&chunk.to_le_bytes());
+        body[12..16].copy_from_slice(&nonce.to_le_bytes());
+        let Ok(frame) = MessageFrame::inline(
+            MessageKind::Request,
+            OpCode::Read,
+            StreamId(5),
+            Tag(0),
+            &body,
+        ) else {
+            return false;
+        };
+        let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
+        header.flags = mesh_flags::PROBE;
+        header.ttl = MeshHeader::MAX_HOPS;
+        header.request_id = u64::from(nonce);
+        self.queue
+            .push_record(&MeshEnvelope { header, frame }, now)
+            .is_ok()
+    }
+
+    fn queue_bulk_chunk(
+        &mut self,
+        destination: NodeId,
+        nonce: u32,
+        total: u32,
+        chunk: u32,
+        offset: u32,
+        now: u64,
+    ) -> bool {
+        let payload = chunk as usize;
+        let body_len = BULK_HEADER_LEN + payload;
+        if body_len > FRAME_BODY_MAX {
+            return false;
+        }
+        // SAFETY: single-threaded module; BULK_TX is only used here and the
+        // record is encoded into the send queue before the next call.
+        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(BULK_TX))[..body_len] };
+        body[0..4].copy_from_slice(&BULK_MAGIC.to_le_bytes());
+        body[4..8].copy_from_slice(&nonce.to_le_bytes());
+        body[8..12].copy_from_slice(&total.to_le_bytes());
+        body[12..16].copy_from_slice(&offset.to_le_bytes());
+        body[16..20].copy_from_slice(&(chunk).to_le_bytes());
+        for byte in &mut body[BULK_HEADER_LEN..] {
+            *byte = 0;
+        }
+        let final_chunk = offset.saturating_add(chunk) >= total;
+        let Ok(mut frame) = MessageFrame::inline(
+            MessageKind::Response,
+            OpCode::Read,
+            StreamId(5),
+            Tag(0),
+            body,
+        ) else {
+            return false;
+        };
+        frame.header.flags |= if final_chunk {
+            frame_flags::EOS
+        } else {
+            frame_flags::MORE
+        };
+        frame.header.offset = u64::from(offset);
+        frame.header.length = total;
+        let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
+        header.flags = mesh_flags::PROBE | mesh_flags::REPLY;
+        header.ttl = MeshHeader::MAX_HOPS;
+        header.request_id = u64::from(nonce);
+        self.queue
+            .push_data_record(&MeshEnvelope { header, frame }, now)
+            .is_ok()
+    }
+
     fn flush(&mut self, services: &Services, now: u64) {
         let mut sink = ServiceSink {
             services,
@@ -2436,6 +2950,15 @@ impl Mesh {
             .stats
             .frames_sent
             .saturating_add(report.frames_written as u64);
+        self.stats.writes = self.stats.writes.saturating_add(report.writes as u64);
+        if report.frames_written > 1 && report.writes == 1 {
+            self.stats.batched_flushes = self.stats.batched_flushes.saturating_add(1);
+        }
+        self.stats.peak_queued_bytes = self.stats.peak_queued_bytes.max(self.queue.peak_pending());
+        self.stats.peak_decoder_bytes = self
+            .stats
+            .peak_decoder_bytes
+            .max(self.decoder.buffered_len());
         if report.blocked {
             self.stats.short_writes = self.stats.short_writes.saturating_add(1);
         }
@@ -2476,6 +2999,20 @@ impl Mesh {
         );
         line.str(" connects=");
         line.u64(self.stats.connects);
+        line.str(" writes=");
+        line.u64(self.stats.writes);
+        line.str(" batched=");
+        line.u64(self.stats.batched_flushes);
+        line.str(" peak_queue=");
+        line.u64(self.stats.peak_queued_bytes as u64);
+        line.str(" peak_decoder=");
+        line.u64(self.stats.peak_decoder_bytes as u64);
+        line.str(" bulk_rx=");
+        line.u64(self.stats.bulk_chunks_received);
+        line.str(" bulk_tx=");
+        line.u64(self.stats.bulk_chunks_sent);
+        line.str(" bulk_abort=");
+        line.u64(self.stats.bulk_aborts);
         line.push(b'\n');
         log(services, line.as_bytes());
         self.pass_logged = true;
@@ -2615,14 +3152,18 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         (MessageKind::Request, OpCode::Migrate)
         | (MessageKind::Response, OpCode::Migrate)
         | (MessageKind::Completion, OpCode::Migrate) => MIGRATE_BODY_MAX,
+        (MessageKind::Request, OpCode::Read)
+        | (MessageKind::Response, OpCode::Read)
+        | (MessageKind::Request, OpCode::Write)
+        | (MessageKind::Response, OpCode::Write) => FRAME_BODY_MAX,
         _ => 16,
     }
 }
 
 fn body_bytes(len: usize) -> &'static [u8] {
-    // SAFETY: single-threaded module; JOIN_RX holds the current frame body and
+    // SAFETY: single-threaded module; FRAME_RX holds the current frame body and
     // the slice is consumed before the next record is decoded.
-    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(JOIN_RX) as *const u8, len) }
+    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FRAME_RX) as *const u8, len) }
 }
 
 /// Read the M2-6 failure-detection opt-in.
