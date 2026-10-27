@@ -2340,6 +2340,14 @@ impl Mesh {
                     self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                     self.logged_join_epoch = snapshot.epoch;
+                    // After a restart the member gets Duplicate (not Converged)
+                    // because the epoch already matches. Log homes so the
+                    // restart gate can verify the home table survived.
+                    if self.link_generation != self.homes_logged_generation {
+                        self.log_homes(services, snapshot, true);
+                        self.log_shard(services, snapshot, false);
+                        self.homes_logged_generation = self.link_generation;
+                    }
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
