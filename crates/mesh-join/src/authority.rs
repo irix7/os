@@ -255,7 +255,7 @@ impl AuthorityRoot {
             .table
             .records()
             .filter(|(node, record)| {
-                *node != self.root && record.state == mesh_service::NodeState::Failed
+                *node != self.root && record.state != mesh_service::NodeState::Alive
             })
             .map(|(node, _)| node)
             .collect();
