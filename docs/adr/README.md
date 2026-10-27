@@ -38,3 +38,5 @@ proposal, not an ADR.
 - [M2-ADR-0010 — direct peer transport](m2-0010-direct-peer-transport.md)
 
 - [M3-ADR-0003 — bounded mesh streams](m3-0003-multiplexed-streams.md)
+
+- [M3-ADR-0004 — readiness-driven module I/O](m3-0004-event-driven-io.md)
