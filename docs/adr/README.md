@@ -36,3 +36,5 @@ decision, consequences, alternatives and evidence. A decision without evidence i
 proposal, not an ADR.
 
 - [M2-ADR-0010 — direct peer transport](m2-0010-direct-peer-transport.md)
+
+- [M3-ADR-0003 — bounded mesh streams](m3-0003-multiplexed-streams.md)

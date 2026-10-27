@@ -576,6 +576,8 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
                             message: "direct-fail: fallback listener observed; no join".into(),
                             baseline: None,
                             runs: Vec::new(),
+                            control: None,
+                            cancel: None,
                         });
                     }
                     if joined {
