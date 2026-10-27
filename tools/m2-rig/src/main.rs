@@ -19,6 +19,7 @@ mod fixture;
 mod homes;
 mod hub;
 mod join;
+#[allow(dead_code)]
 mod latency;
 mod migrate;
 mod nvram;
@@ -427,6 +428,7 @@ fn collect_route(
     }
 }
 
+#[allow(dead_code)]
 fn collect_migration(
     options: &Options,
     nodes: &[Node],
@@ -560,7 +562,7 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
                 // its listener.  The higher NodeId is a listener throughout.
                 let deadline = std::time::Instant::now() + Duration::from_secs(30);
                 loop {
-                    let texts: Vec<String> = nodes.iter().map(|node| read_serial(node)).collect();
+                    let texts: Vec<String> = nodes.iter().map(read_serial).collect();
                     let fallback = texts
                         .iter()
                         .any(|text| text.contains("mesh-transport: direct fallback listen"));
@@ -692,10 +694,10 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut probe_error = None;
     let mut join_error = None;
     let mut homes_error = None;
-    let mut latency_evidence: Option<latency::LatencyEvidence> = None;
-    let mut latency_error: Option<String> = None;
-    let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
-    let mut bulk_error: Option<String> = None;
+    let latency_evidence: Option<latency::LatencyEvidence> = None;
+    let latency_error: Option<String> = None;
+    let bulk_evidence: Option<bulk::BulkEvidence> = None;
+    let bulk_error: Option<String> = None;
     let mut route = None;
     let mut route_error = None;
     let mut migration = None;
