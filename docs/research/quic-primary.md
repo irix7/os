@@ -328,7 +328,7 @@ These are estimates; the linked size is the spike's job. The rustls **rlib** mea
 | QUIC connection state (sent packets 256×64 B, streams 32×128 B, TLS, buffers) | 24–48 KiB | 192–384 KiB | 384–768 KiB | 3–6 MiB |
 | Kernel UDP buffers (2 slots × 32 KiB) | 64 KiB total | — | — | — |
 | Seeq RX ring 32 × 1520 B | 48 KiB | — | — | — |
-| MCP + QUIC static pool | — | 128–256 KiB | 256–512 KiB | pool capped |
+| MCP + QUIC static pool | — | 192–384 KiB | 384–768 KiB | pool capped |
 
 The module's bump allocator never frees, so the QUIC module must use a **fixed pool** of
 connection slots. A `Vec`-per-connection design would leak the entire heap on the first
