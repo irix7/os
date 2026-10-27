@@ -1077,7 +1077,11 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     facts = snapshot_facts(&nodes);
                     // Probe on the stable pair after the root restart; the
                     // member's mesh link has re-established and both MCP HTTP
-                    // servers are responsive.
+                    // servers are responsive.  Wait for homes first so the
+                    // MCP HTTP server has time to come back up after the
+                    // restart before the probe opens the socket.
+                    wait_homes_serial(&nodes, Duration::from_secs(60));
+                    facts = snapshot_facts(&nodes);
                     match settle_and_probe(&nodes) {
                         Ok((value, value_relays)) => {
                             probes = value;
