@@ -60,7 +60,9 @@ impl JoinLine {
             epoch: epoch?,
             members: members?,
             digest: digest?,
-            snapshot: snapshot?,
+            // Above two members the guest writes a compact epoch line and the
+            // rig reads the table over HTTP, so an absent snapshot is valid.
+            snapshot: snapshot.unwrap_or_default(),
             raw: line.trim().to_string(),
         })
     }
@@ -542,6 +544,18 @@ mod tests {
         assert_eq!(parsed.members, 2);
         assert_eq!(parsed.digest, "50D2F9696E00259437DF3A5ACCEB0BEF");
         assert_eq!(parsed.snapshot.len(), 2);
+    }
+
+    #[test]
+    fn parses_a_compact_converged_line() {
+        let line = "mesh-join: converged role=root epoch=8 members=8 \
+                    digest=50D2F9696E00259437DF3A5ACCEB0BEF compact=1";
+        let parsed = JoinLine::parse(line).expect("compact line");
+        assert_eq!(parsed.role, "root");
+        assert_eq!(parsed.epoch, 8);
+        assert_eq!(parsed.members, 8);
+        assert_eq!(parsed.digest, "50D2F9696E00259437DF3A5ACCEB0BEF");
+        assert!(parsed.snapshot.is_empty());
     }
 
     #[test]

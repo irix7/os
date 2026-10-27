@@ -681,7 +681,15 @@ extern "C" fn service_poll() {
 const MODULE_TCP_SLOTS: usize = 2;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
-static mut MODULE_TCP_RX: [[u8; 2048]; MODULE_TCP_SLOTS] = [[0; 2048]; MODULE_TCP_SLOTS];
+/// The receive buffer is deliberately larger than the two-node case needs.
+///
+/// Under the M3 host hub several member records share the root's single mesh
+/// slot while the module writes a bounded serial burst.  A 2 KiB buffer fills
+/// during that burst, advertises a tiny window, and then trickles the rest of
+/// a 388-byte record through the host forward's zero-window probe; the 10 s
+/// receive deadline fires on a healthy link.  16 KiB holds a full eight-member
+/// join/refresh burst, so the window never collapses during logging.
+static mut MODULE_TCP_RX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
 static mut MODULE_TCP_TX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
 
 fn module_handle(slot: u32) -> Option<SocketHandle> {
