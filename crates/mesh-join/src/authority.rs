@@ -256,7 +256,7 @@ impl AuthorityRoot {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
-            .filter(|(node, record)| *node != self.root && record.state != NodeState::Alive)
+            .filter(|(node, record)| *node != self.root && record.state == NodeState::Failed)
             .map(|(node, _)| node)
             .collect();
         let mut removals = alloc::vec::Vec::new();
