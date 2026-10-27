@@ -262,6 +262,9 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return alloc::vec::Vec::new();
         }
+        for node in &failed {
+            let _ = self.table.leave(*node);
+        }
         let snapshot = match self.snapshot() {
             Ok(s) => s,
             Err(_) => return alloc::vec::Vec::new(),
