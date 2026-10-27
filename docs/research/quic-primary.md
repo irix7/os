@@ -1255,8 +1255,9 @@ and dates from crates.io/GitHub on the same date.
 - Rustls MIPS: `rustls 0.23.46`, `default-features = false`,
   `features = ["custom-provider"]`, `opt-level=z`, `-Z build-std=core,alloc`.
   `size -t` on the rlib: **482,113 B** text. This is an rlib, before link-time dead-code
-  elimination; the final linked subset will be smaller, but the order of magnitude is the
-  point.
+  elimination, and it has **no crypto provider**, so it excludes the cipher code; it is a
+  lower bound for a real TLS stack. The final linked subset will be smaller, but the order
+  of magnitude is the point.
 - quinn-proto: `quinn-proto 0.11.19` default features (rustls-ring), host release; rlib
   `.text` **678,549 B**. Full host binary with rustls: **2,136,938 B** text vs a 267,053 B
   baseline.
