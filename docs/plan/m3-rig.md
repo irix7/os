@@ -1,7 +1,8 @@
 # M3 multi-member runbook — bounded hub and real kernels
 
-**Status:** working for the largest real cluster recorded in the evidence; the 128-node
-shard policy remains host-only
+**Status:** four real kernels have converged on one epoch; the full shard/route bundle is
+recorded for three kernels because the fourth member's HTTP slot stalled.  The 128-node
+shard policy remains host-only and eight real kernels are not claimed.
 **Scope:** the multi-member transport slice: bounded per-peer hub sessions, the guest
 receive-path ordering fixes, a real multi-kernel convergence run, one remote route across
 the shard boundary, stale-epoch refusal and absence evidence
@@ -145,6 +146,17 @@ The full eight-node member environment fits below the DS1386 298-byte limit befo
 MAC slot; the host test `eight_node_shard_environment_fits_the_ds1386_image` asserts it.
 The route key is written only to the two nodes that use it.
 
+## Preserved surfaces
+
+- `shard --nodes 2` uses the proven direct relay (no hub) and passes the first
+  M3 shard surface: epoch 2, digest `2EDA13C5AC6F726132E0479DFE6045B7`, owners
+  14 / 18, one remote stat at `n1`, stale `409` with no rows.
+- `run --fault no-peer` passes the M1 markers (`BOOT-READY ... mesh=single`,
+  `/mesh/homes` disabled, route/migration disabled with `reason=peer`).
+- The full M2 default run was not re-run while four other iris instances shared
+  the host; its code path is unchanged except the join reply ordering, and the
+  two-node shard exercises the same join/route surfaces.
+
 ## Host policy gate
 
 ```sh
@@ -160,8 +172,16 @@ and clean shutdown.  The rig tests cover the eight-node port block and NVRAM bud
 
 ## Exact limits
 
-- Real-kernel convergence: the node count recorded in the evidence; the 128-node shard
-  policy is host-only.
+- **Real-kernel convergence: four kernels on one epoch** (serial transcripts); the
+  **full ownership/route bundle is three kernels** because the iris host forward stalled a
+  member's inbound HTTP slot after convergence.  The rig now falls back to the member's
+  serial epoch/digest and the root's verified owner row (`source=root-shard+serial`) for
+  that case.
+- **Eight real kernels are not achieved.**  The iris host forward's guest-facing TCP
+  window stalls under the eight-member burst even though the host TCP connection is
+  healthy; the rig reconnects a silent session and the module uses compact M3 transcripts,
+  but this is a harness workaround, not a production multi-peer transport.
+- The 128-node shard policy is host-only.
 - No GPU path, two-node simultaneous failure, general home migration, real-kernel
   membership churn, CAS fetch-by-OID, persistent directory or full M3 gate.
 - The only kernel change is the 16 KiB module TCP receive buffer; the ROM source is

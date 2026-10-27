@@ -832,7 +832,9 @@ fn serial_converged(node: &Node, expected: &Expected) -> Result<join::JoinLine, 
         .ok_or_else(|| {
             format!(
                 "{}: no converged serial line for epoch {} members {}",
-                node.name, expected.epoch, expected.members.len()
+                node.name,
+                expected.epoch,
+                expected.members.len()
             )
         })
 }
@@ -1152,11 +1154,7 @@ fn run_started(
                         table.owned.unwrap_or(0)
                     ));
                     serial_members += 1;
-                    (
-                        table,
-                        fallback_homes(&expected),
-                        fallback_stale(&expected),
-                    )
+                    (table, fallback_homes(&expected), fallback_stale(&expected))
                 }
             }
         };
@@ -1170,9 +1168,7 @@ fn run_started(
         "stale: root refused an older epoch with no rows; {serial_members} members were \
          not queried because their HTTP slot stalled"
     ));
-    checks.push(
-        "M2: /mesh/homes remains current on the root and every HTTP member".into(),
-    );
+    checks.push("M2: /mesh/homes remains current on the root and every HTTP member".into());
     checks.push(
         "absence: every reported table omitted every object it does not own, every stale \
          response carried 0 rows, and no node consulted a directory"
@@ -1195,7 +1191,8 @@ fn run_started(
     }
     let deadline = Instant::now() + Duration::from_secs(30);
     let root_report = loop {
-        if let Ok((_, root_report)) = crate::route::fetch_ready(&nodes[0], Duration::from_secs(10)) {
+        if let Ok((_, root_report)) = crate::route::fetch_ready(&nodes[0], Duration::from_secs(10))
+        {
             let done = root_report.results.iter().any(|row| {
                 row.object == wire_object
                     && row.home == nodes[first_member].node_id_string()
@@ -1425,7 +1422,12 @@ fn run_started(
     let _ = writeln!(
         json,
         "    \"member_report\": \"{}\"",
-        json_escape(member_report.as_ref().map(|r| r.raw.as_str()).unwrap_or("unavailable"))
+        json_escape(
+            member_report
+                .as_ref()
+                .map(|r| r.raw.as_str())
+                .unwrap_or("unavailable")
+        )
     );
     let _ = writeln!(json, "  }},");
     let _ = writeln!(json, "  \"absence\": {{");

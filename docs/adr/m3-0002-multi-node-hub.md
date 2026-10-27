@@ -139,12 +139,52 @@ eight-node port block and the DS1386 environment budget are host tests.
 
 ## Evidence
 
-The runbook [`../plan/m3-rig.md`](../plan/m3-rig.md) records the commands,
-kernel and module digests, the node count, the epoch/digest, the ownership
-table, the remote route, the stale/absence checks and the host tests.  The
-`run.json` bundle is the machine-readable record; its `hub` object carries the
-per-source counters and its `nodes_detail` carries each node's epoch, digest,
-owner counts and foreign/stale row counts.
+The recorded full bundle is the **three-kernel** run at commit `b54467d`:
+
+- epoch **3**, membership digest `0D7F87ECAA89D45A412C0EEB554E7239`;
+- owners **7 / 12 / 13**, min 7, max 13; every node reported only its own rows
+  and zero foreign rows;
+- root `/mesh/shard`, `/mesh/homes` and the stale negation were HTTP-current;
+  one member's HTTP slot stalled and its epoch/digest came from its serial
+  transcript with its owned count from the root's verified owner table
+  (`source=root-shard+serial` in `run.json`);
+- the root served the stale negative with zero rows; the member stale negation
+  was not queried in that run (recorded as `not-queried`, not as a pass);
+- one remote stat: object `BEB6D1C7D3D6204050933044057A4B31417ACE296D6666B5EAB98F42A538D2A6`,
+  home `n1`, epoch 3, one attempt, no `MOVED`, value
+  `692A42AA61F7193B1397E73A00A73336EC90792C6CED0B2BECF83C4231A3D258`;
+- hub: 86 frames, 33,208 bytes, 85 forwarded, one self-drop, one total drop,
+  zero backpressure/truncation/receive-deadline events; zero link recoveries;
+- ROM 523,204 bytes, SHA-256 `9fce9804…`; module 357,800 bytes, SHA-256
+  `3d719785…`; both inside their fixed windows.
+
+A **four-kernel** run reached one confirmed epoch **4**
+(`EF943AF5E45ED3002E636DED56AE2F83`) and every member logged the compact
+converged line.  Its formal shard/route bundle did not complete because a
+member's inbound HTTP slot stalled after convergence; that is the limitation
+recorded below, not a second membership model.
+
+Eight real kernels are **not claimed**.  The iris host forward's guest-facing
+TCP window can stall while its host TCP connection is healthy; the same stall
+that blocks the fourth member under a contended host is the reason the
+eight-node target is left to the next transport slice.  The rig's
+silence-based session recovery and the compact transcript make the three- and
+four-kernel runs reproducible, but they are a harness workaround, not a
+production multi-peer transport.
+
+The preserved M3/M2 surfaces were re-run with the same module:
+
+- `shard --nodes 2` (the direct M2 relay, no hub): epoch 2, digest
+  `2EDA13C5AC6F726132E0479DFE6045B7`, owners 14 / 18, one remote stat at
+  `n1` (one attempt, no `MOVED`).
+- `run --fault no-peer`: `BOOT-READY ... mesh=single`, `/mesh/homes` disabled,
+  the route and migration surfaces disabled with `reason=peer`, and the
+  M1/M2-1..3 markers present on both kernels.
+
+The full M2 default run was not re-run under the contended workspace (four
+other iris instances were active); its code path is unchanged except the
+join reply ordering, and the two-node shard exercises the same join and route
+surfaces.  This is recorded as an environment limit, not a pass.
 
 The host gate is:
 
@@ -155,7 +195,8 @@ cargo test --manifest-path tools/m2-rig/Cargo.toml
 
 The hub tests cover routing, duplicate and truncated records, malformed
 headers, backpressure with every frame preserved, late joiners, leave,
-connect ordering, queue bounds, receive deadlines and clean shutdown.
+connect ordering, queue bounds, receive deadlines and clean shutdown.  The rig
+tests cover the eight-node port block and the DS1386 environment budget.
 
 ## What this is not
 
