@@ -2000,6 +2000,8 @@ impl Mesh {
                 log(services, line.as_bytes());
             }
         }
+    }
+
     fn verbose_join_log(&self) -> bool {
         if self.m3_quiet() {
             return false;
