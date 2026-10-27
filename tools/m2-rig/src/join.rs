@@ -433,15 +433,20 @@ pub fn evaluate(
                 JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
             }) {
                 Some(line) => line,
-                None => {
-                    errors.push("n1: no mesh-join converged line".into());
-                    JoinLine {
-                        role: String::new(),
-                        epoch: 0,
-                        members: 0,
-                        digest: String::new(),
-                        snapshot: Vec::new(),
-                        raw: String::new(),
+                None => match evidence.nodes[1].mesh_join_duplicate.as_deref().and_then(|line| {
+                    JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
+                }) {
+                    Some(line) => line,
+                    None => {
+                        errors.push("n1: no mesh-join converged or duplicate line".into());
+                        JoinLine {
+                            role: String::new(),
+                            epoch: 0,
+                            members: 0,
+                            digest: String::new(),
+                            snapshot: Vec::new(),
+                            raw: String::new(),
+                        }
                     }
                 }
             };
