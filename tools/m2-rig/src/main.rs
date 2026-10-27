@@ -2051,7 +2051,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
     // case the first attempt lands while a link is still re-establishing.
     let mut attempt = None;
     for retry in 0..3 {
-        std::thread::sleep(Duration::from_secs(20));
+        std::thread::sleep(Duration::from_secs(30));
         attempt = Some(probe_two_way(nodes));
         if matches!(
             attempt.as_ref(),
@@ -2060,7 +2060,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
             break;
         }
         if retry < 2 {
-            std::thread::sleep(Duration::from_secs(20));
+            std::thread::sleep(Duration::from_secs(30));
         }
     }
     attempt.unwrap_or_else(|| {
