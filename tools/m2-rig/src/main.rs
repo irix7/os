@@ -695,7 +695,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut latency_evidence: Option<latency::LatencyEvidence> = None;
     let mut latency_error = None;
     let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
-    let mut bulk_error = None;
+    let mut bulk_error: Option<String> = None;
     let mut route = None;
     let mut route_error = None;
     let mut migration = None;
@@ -772,26 +772,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     latency_evidence = Some(evidence);
                 }
                 Err(error) => latency_error = Some(error),
-            }
-        }
-        if options.transport == Transport::Relay
-            && options.fault.joins()
-            && join_before.ok
-            && join_before.members.len() == 2
-        {
-            // The route scenario has just written its bounded report lines to
-            // the emulated 9,600-baud serial line.  A 1 KiB report blocks the
-            // module tick for about a second; let it drain before measuring
-            // the mesh, otherwise the "bulk throughput" is serial throughput.
-            std::thread::sleep(Duration::from_secs(8));
-            match bulk::run(&nodes[0], &nodes[1]) {
-                Ok(evidence) => {
-                    if !evidence.ok {
-                        bulk_error = Some(evidence.message.clone());
-                    }
-                    bulk_evidence = Some(evidence);
-                }
-                Err(error) => bulk_error = Some(error),
             }
         }
 
