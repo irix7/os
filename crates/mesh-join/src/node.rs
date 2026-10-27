@@ -947,7 +947,11 @@ impl MemberState {
                 if duplicate {
                     // The same epoch and list are already installed.  This is
                     // the terminal answer for a reconnect/rejoin; do not keep
-                    // retrying the request.
+                    // retrying the request.  After a restart the restored epoch
+                    // may not yet be marked converged, so install it now.
+                    if self.converged.is_none() {
+                        self.converged = Some(snapshot.clone());
+                    }
                     self.outstanding = None;
                     self.attempts = 0;
                     self.timed_out = false;
