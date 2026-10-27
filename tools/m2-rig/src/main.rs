@@ -1059,10 +1059,10 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Ok(input) => {
                     root_restart = Some(input);
                     // The root resumed from its epoch store and re-established
-                    # its mesh link.  Wait for both nodes' home tables to be
-                    # served again before probing; this confirms the MCP HTTP
-                    # servers are responsive after the restart and gives the
-                    # mesh link time to stabilise before the two-way probe.
+                    // its mesh link. Wait for both nodes' home tables to be
+                    // served again before probing; this confirms the MCP HTTP
+                    // servers are responsive after the restart and gives the
+                    // mesh link time to stabilise before the two-way probe.
                     wait_homes_serial(&nodes, Duration::from_secs(60));
                     facts = snapshot_facts(&nodes);
                 }
@@ -2032,17 +2032,28 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
 /// absorbs the iris forward's half-open connection without weakening the
 /// check.
 fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
-    std::thread::sleep(Duration::from_secs(12));
-    let mut attempt = probe_two_way(nodes);
-    if !attempt
-        .as_ref()
-        .map(|(value, _)| value.iter().all(|probe| probe.ok))
-        .unwrap_or(false)
-    {
-        std::thread::sleep(Duration::from_secs(12));
-        attempt = probe_two_way(nodes);
+    // After a root restart the member's mesh link has timed out and both
+    // nodes' mesh links may close again after the confirm/ack exchange.  Give
+    // the system time to stabilise before probing, and retry a few times in
+    // case the first attempt lands while a link is still re-establishing.
+    let mut attempt = None;
+    for retry in 0..3 {
+        std::thread::sleep(Duration::from_secs(20));
+        attempt = Some(probe_two_way(nodes));
+        if attempt
+            .as_ref()
+            .and_then(|(value, _)| value.iter().all(|probe| probe.ok).then_some(()))
+            .is_some()
+        {
+            break;
+        }
+        if retry < 2 {
+            std::thread::sleep(Duration::from_secs(20));
+        }
     }
-    attempt
+    attempt.unwrap_or_else(|| {
+        Err("settle_and_probe: all retries failed".into())
+    })
 }
 
 fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
