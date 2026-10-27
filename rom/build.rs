@@ -26,9 +26,12 @@ const PAYLOAD_MAGIC: u32 = 0x184D_2204;
 /// LZ4 block format constants.
 const MIN_MATCH: usize = 4;
 const LAST_LITERALS: usize = 5;
-const MF_LIMIT: usize = 12;
 const HASH_LOG: u32 = 16;
 const HASH_SIZE: usize = 1 << HASH_LOG;
+/// Candidates walked in one hash chain before the match search gives up.
+const CHAIN_MAX: usize = 64;
+/// LZ4's 16-bit offset field.
+const MAX_DIST: usize = 0xFFFF;
 
 /// Hash a 4-byte sequence.
 fn hash4(v: u32) -> usize {
@@ -47,43 +50,91 @@ fn write_len(out: &mut Vec<u8>, mut len: usize) {
 
 /// Compress `src` into an LZ4 block.
 ///
-/// A single hash chain: the table holds the most recent position for each
-/// 4-byte hash, and a candidate match is accepted when it is long enough and
-/// close enough to be addressable by the 16-bit offset field.
+/// This is a hash-chain match finder with lazy matching, not the one-candidate
+/// greedy scan the first encoder used.  The block format is unchanged, so the
+/// assembly decompressor in `src/boot` needs no new code; the encoder only
+/// spends host build time to leave more of the fixed 512 KiB PROM window for
+/// the kernel.  A round-trip check below proves the emitted block decodes to
+/// the exact input before the image is written.
 fn lz4_compress(src: &[u8]) -> Vec<u8> {
-    let mut out: Vec<u8> = Vec::with_capacity(src.len() + src.len() / 200 + 32);
-    let mut table = vec![u32::MAX; HASH_SIZE];
+    let mut out: Vec<u8> = Vec::with_capacity(src.len() / 2 + 32);
     let n = src.len();
-
-    let mut anchor = 0usize; // start of the pending literal run
+    let mut head = vec![u32::MAX; HASH_SIZE];
+    let mut prev = vec![u32::MAX; n];
+    let mut anchor = 0usize;
     let mut pos = 0usize;
 
-    while pos + MIN_MATCH <= n {
+    /// Record one position in the hash chain.
+    fn insert(src: &[u8], head: &mut [u32], prev: &mut [u32], pos: usize) {
+        if pos + MIN_MATCH > src.len() {
+            return;
+        }
         let seq = u32::from_le_bytes([src[pos], src[pos + 1], src[pos + 2], src[pos + 3]]);
         let h = hash4(seq);
-        let cand = table[h] as usize;
-        table[h] = pos as u32;
+        prev[pos] = head[h];
+        head[h] = pos as u32;
+    }
 
-        if cand == u32::MAX as usize || pos - cand > 0xFFFF {
-            pos += 1;
-            continue;
+    /// Longest match for `pos`, bounded by the hash chain and the LZ4 limits.
+    fn find_best(src: &[u8], head: &[u32], prev: &[u32], pos: usize) -> (usize, usize) {
+        if pos + MIN_MATCH > src.len() {
+            return (0, 0);
         }
+        let n = src.len();
+        // The last five bytes of a block must be literals, so a match may not
+        // extend into them.
+        let max = (n - LAST_LITERALS).saturating_sub(pos).min(0x7FFF);
+        if max < MIN_MATCH {
+            return (0, 0);
+        }
+        let seq = u32::from_le_bytes([src[pos], src[pos + 1], src[pos + 2], src[pos + 3]]);
+        let mut cand = head[hash4(seq)] as usize;
+        let mut best_len = 0usize;
+        let mut best_cand = 0usize;
+        let mut tries = 0usize;
+        while cand != u32::MAX as usize && pos > cand && pos - cand <= MAX_DIST && tries < CHAIN_MAX
+        {
+            // Cheap rejection before the byte loop.  `best_len < max`, so the
+            // probe stays inside the match window and inside `src`.
+            if src[cand + best_len] == src[pos + best_len] {
+                let mut len = 0usize;
+                while len < max && src[cand + len] == src[pos + len] {
+                    len += 1;
+                }
+                if len > best_len {
+                    best_len = len;
+                    best_cand = cand;
+                    if len == max {
+                        break;
+                    }
+                }
+            }
+            cand = prev[cand] as usize;
+            tries += 1;
+        }
+        (best_len, best_cand)
+    }
 
-        // How far does the match run?
-        let max = (n - pos).min(0x7FFF);
-        let mut len = 0usize;
-        while len < max && src[cand + len] == src[pos + len] {
-            len += 1;
-        }
+    while pos + MIN_MATCH <= n {
+        let (mut len, mut cand) = find_best(src, &head, &prev, pos);
+        insert(src, &mut head, &mut prev, pos);
         if len < MIN_MATCH {
             pos += 1;
             continue;
         }
-
-        // The last sequence must be literals only, and the last five bytes of
-        // the block are always literals, so stop the match short of the end.
+        // Lazy matching: if the next position has a strictly longer match,
+        // leave the current byte as a literal instead of taking a short match
+        // that hides a better one.
+        if pos + 1 + MIN_MATCH <= n {
+            let (next_len, _) = find_best(src, &head, &prev, pos + 1);
+            if next_len > len + 1 {
+                pos += 1;
+                continue;
+            }
+        }
+        // A match that runs into the final literal tail must be shortened.
         if pos + len > n - LAST_LITERALS {
-            len = n.saturating_sub(LAST_LITERALS).saturating_sub(pos);
+            len = n - LAST_LITERALS - pos;
             if len < MIN_MATCH {
                 pos += 1;
                 continue;
@@ -92,7 +143,7 @@ fn lz4_compress(src: &[u8]) -> Vec<u8> {
 
         let lit_len = pos - anchor;
         let mlen = len - MIN_MATCH;
-        let mut token = ((lit_len.min(15) as u8) << 4) | (mlen.min(15) as u8);
+        let token = ((lit_len.min(15) as u8) << 4) | (mlen.min(15) as u8);
         out.push(token);
         if lit_len >= 15 {
             write_len(&mut out, lit_len - 15);
@@ -106,21 +157,18 @@ fn lz4_compress(src: &[u8]) -> Vec<u8> {
             write_len(&mut out, mlen - 15);
         }
 
-        // Index the positions the match covered so later matches can find
-        // them.
+        // Index the positions the match covered so later matches can use them.
         for i in (pos + 1)..(pos + len) {
-            if i + MIN_MATCH <= n {
-                let s = u32::from_le_bytes([src[i], src[i + 1], src[i + 2], src[i + 3]]);
-                table[hash4(s)] = i as u32;
-            }
+            insert(src, &mut head, &mut prev, i);
         }
         pos += len;
         anchor = pos;
+        let _ = &mut cand;
     }
 
     // The final sequence: literals only.
     let lit_len = n - anchor;
-    let mut token = (lit_len.min(15) as u8) << 4;
+    let token = (lit_len.min(15) as u8) << 4;
     out.push(token);
     if lit_len >= 15 {
         write_len(&mut out, lit_len - 15);
@@ -129,9 +177,67 @@ fn lz4_compress(src: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Decode an LZ4 block.  Used only by the build-time round-trip check.
+fn lz4_decompress(src: &[u8], expected: usize) -> Option<Vec<u8>> {
+    let mut out: Vec<u8> = Vec::with_capacity(expected);
+    let mut at = 0usize;
+    while at < src.len() {
+        let token = src[at];
+        at += 1;
+        let mut literals = (token >> 4) as usize;
+        if literals == 15 {
+            loop {
+                let byte = *src.get(at)?;
+                at += 1;
+                literals += byte as usize;
+                if byte != 255 {
+                    break;
+                }
+            }
+        }
+        let end = at.checked_add(literals)?;
+        if end > src.len() {
+            return None;
+        }
+        out.extend_from_slice(&src[at..end]);
+        at = end;
+        if at == src.len() {
+            break;
+        }
+        let offset = u16::from_le_bytes([*src.get(at)?, *src.get(at + 1)?]) as usize;
+        at += 2;
+        if offset == 0 || offset > out.len() {
+            return None;
+        }
+        let mut match_len = (token & 0x0F) as usize;
+        if match_len == 15 {
+            loop {
+                let byte = *src.get(at)?;
+                at += 1;
+                match_len += byte as usize;
+                if byte != 255 {
+                    break;
+                }
+            }
+        }
+        match_len += MIN_MATCH;
+        let start = out.len() - offset;
+        for index in 0..match_len {
+            let byte = out[start + index];
+            out.push(byte);
+        }
+    }
+    (out.len() == expected).then_some(out)
+}
+
 /// Build the compressed payload: magic, uncompressed size, LZ4 block.
 fn build_payload(image: &[u8]) -> Vec<u8> {
     let block = lz4_compress(image);
+    // An encoder bug must fail the build, not produce a ROM that cannot boot.
+    match lz4_decompress(&block, image.len()) {
+        Some(decoded) if decoded == image => {}
+        _ => panic!("rom: LZ4 payload does not round-trip to the kernel image"),
+    }
     let mut out = Vec::with_capacity(block.len() + 8);
     out.extend_from_slice(&PAYLOAD_MAGIC.to_be_bytes());
     out.extend_from_slice(&(image.len() as u32).to_be_bytes());
