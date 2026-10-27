@@ -938,6 +938,12 @@ fn handle_request(services: &Services, slot: u32) {
         send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
+    if !is_post && (path == b"/mesh/latency" || path.starts_with(b"/mesh/latency?")) {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::latency_response(services, path, response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
+        return;
+    }
     if !is_post && (path == b"/mesh/bulk" || path.starts_with(b"/mesh/bulk?")) {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let (status, n) = mesh::bulk_response(services, path, response);

@@ -34,3 +34,5 @@ runbook is [`../plan/m3-rig.md`](../plan/m3-rig.md). The harness is
 Use the template in [`../plan/risks.md`](../plan/risks.md) §5. Every ADR records context,
 decision, consequences, alternatives and evidence. A decision without evidence is a
 proposal, not an ADR.
+
+- [M2-ADR-0010 — direct peer transport](m2-0010-direct-peer-transport.md)

@@ -795,7 +795,7 @@ dependencies = [
 [[package]]
 name = "module-abi"
 version = "0.1.0"
-source = "git+https://github.com/irix7/os-sdk?tag=v0.7.0#801bd8340ba343d6f1c483b23798c127f268243f"
+source = "git+https://github.com/irix7/os-sdk?tag=v0.8.0#08fe612f4682f6397961209ea87835c65827d587"
 
 [[package]]
 name = "module-resolver"

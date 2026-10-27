@@ -186,6 +186,7 @@ impl EpochStore {
 enum Phase {
     Arm,
     Waiting,
+    Connect,
     Connected,
 }
 
@@ -246,6 +247,39 @@ struct Mesh {
     link_generation: u64,
     /// Link generation whose confirmed home table was last logged.
     homes_logged_generation: u64,
+    /// Optional direct peer target (`mesh.direct`).
+    direct: Option<DirectPeer>,
+    /// Whether this node is the lower NodeId and therefore initiates.
+    direct_initiator: bool,
+    /// Whether a failed direct connect has fallen back to the listener.
+    direct_fallback: bool,
+    /// Next direct connect attempt.
+    connect_at_ms: u64,
+    /// Direct connect attempts in this session.
+    connect_attempts: u32,
+    /// First direct connect attempt.
+    connect_started_ms: u64,
+    /// Last successful connect time, for the pass line.
+    last_connect_ms: u64,
+    /// Active latency measurement.
+    latency: Option<LatencyProbe>,
+}
+
+struct LatencyProbe {
+    count: u32,
+    sent: u32,
+    received: u32,
+    outstanding: bool,
+    pending_send_ms: u32,
+    next_ms: u64,
+    samples: [u64; 64],
+    peak_ms: u64,
+}
+
+#[derive(Clone, Copy)]
+struct DirectPeer {
+    address: [u8; 4],
+    port: u16,
 }
 
 /// State of the origin side of the #247 bulk measurement.
@@ -323,13 +357,22 @@ pub unsafe fn init(services: *const Services) -> bool {
         return false;
     };
     let mut peer = [0u8; 96];
-    if config(services, b"mesh.peer", &mut peer).is_none() {
+    let relay_configured = config_any(services, &[b"mesh.peer", b"peer"], &mut peer).is_some();
+    let mut direct_value = [0u8; 96];
+    let direct = config_any(services, &[b"mesh.direct", b"d"], &mut direct_value)
+        .and_then(|len| parse_direct(&direct_value[..len]));
+    if !relay_configured && direct.is_none() {
         return false;
     }
     let Some(self_id) = identity(services) else {
         log(services, b"mesh-transport: identity unavailable\n");
         return false;
     };
+    let mut peer_id_value = [0u8; 40];
+    let direct_peer = config_any(services, &[b"mesh.peer_id", b"p"], &mut peer_id_value)
+        .and_then(|len| parse_node_hex(&peer_id_value[..len]));
+    let direct_initiator = direct.is_some()
+        && direct_peer.is_some_and(|peer_id| self_id.as_bytes() < peer_id.as_bytes());
     let now = (services.clock_ms)();
     let home_count = home_object_count(services);
     let shard_count = shard_object_count(services);
@@ -379,8 +422,13 @@ pub unsafe fn init(services: *const Services) -> bool {
     } else {
         Heartbeat::m2()
     };
+    let phase = if direct_initiator {
+        Phase::Connect
+    } else {
+        Phase::Arm
+    };
     let mesh = Mesh {
-        phase: Phase::Arm,
+        phase,
         self_id,
         peer: None,
         peers: [NodeId::ZERO; MAX_MESH_NODES],
@@ -411,12 +459,50 @@ pub unsafe fn init(services: *const Services) -> bool {
         logged_ack_epoch: 0,
         link_generation: 0,
         homes_logged_generation: 0,
+        direct,
+        direct_initiator,
+        direct_fallback: false,
+        connect_at_ms: if direct_initiator {
+            now.saturating_add(3_000)
+        } else {
+            now
+        },
+        connect_attempts: 0,
+        connect_started_ms: now,
+        last_connect_ms: 0,
+        latency: None,
     };
     unsafe {
         MESH = Some(mesh);
         ENABLED = true;
     }
     log(services, b"mesh-transport: enabled\n");
+    if let Some(target) = direct {
+        let mut line = Line::new();
+        line.str("mesh-transport: direct role=");
+        line.str(if direct_initiator {
+            "initiator"
+        } else {
+            "listener"
+        });
+        line.str(" peer=");
+        match direct_peer {
+            Some(node) => line.node(&node),
+            None => line.push(b'-'),
+        }
+        line.str(" target=");
+        line.u64(target.address[0] as u64);
+        line.push(b'.');
+        line.u64(target.address[1] as u64);
+        line.push(b'.');
+        line.u64(target.address[2] as u64);
+        line.push(b'.');
+        line.u64(target.address[3] as u64);
+        line.push(b':');
+        line.u64(target.port as u64);
+        line.push(b'\n');
+        log(services, line.as_bytes());
+    }
     true
 }
 
@@ -446,6 +532,90 @@ pub fn tick(services: &Services) {
         return;
     };
     mesh.tick(services);
+}
+
+/// Render or start `GET /mesh/latency`, a bounded mesh round-trip probe.
+///
+/// `?start=1&count=N` sends `N` sequential `Request/Latency` records to the
+/// current peer and records the mesh round trip.  `?status=1` returns p50/p95
+/// from the recorded samples.  The MCP HTTP phase machine is outside the
+/// measured interval.
+#[inline(never)]
+pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
+    let mut start = false;
+    let mut count = 32u32;
+    if let Some(question) = path.iter().position(|byte| *byte == b'?') {
+        for part in path[question + 1..].split(|byte| *byte == b'&') {
+            if part.is_empty() {
+                continue;
+            }
+            let mut pieces = part.splitn(2, |byte| *byte == b'=');
+            let key = pieces.next().unwrap_or(b"");
+            let value = pieces.next().unwrap_or(b"");
+            match key {
+                b"start" => start = value == b"1",
+                b"status" => {}
+                b"count" => match parse_u32(value) {
+                    Some(parsed) => count = parsed,
+                    None => return bulk_line(out, 400, "bad-request reason=count"),
+                },
+                _ => return bulk_line(out, 400, "bad-request reason=query"),
+            }
+        }
+    }
+    let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
+        return bulk_line(out, 404, "disabled reason=peer");
+    };
+    let now = (services.clock_ms)();
+    if start {
+        if !mesh.start_latency(count, now) {
+            return bulk_line(out, 409, "not-connected");
+        }
+        return bulk_line(out, 202, "started");
+    }
+    let mut body = Body::new(out);
+    body.str("mesh-latency:");
+    match mesh.latency.as_ref() {
+        None => body.str(" state=idle"),
+        Some(probe) => {
+            body.str(" state=");
+            if probe.received >= probe.count {
+                body.str("done");
+            } else {
+                body.str("running");
+            }
+            body.str(" sent=");
+            body.u64(probe.sent as u64);
+            body.str(" received=");
+            body.u64(probe.received as u64);
+            body.str(" count=");
+            body.u64(probe.count as u64);
+            let mut samples = probe.samples;
+            let used = (probe.received as usize).min(samples.len());
+            samples[..used].sort_unstable();
+            if used > 0 {
+                body.str(" p50=");
+                body.u64(samples[used / 2]);
+                body.str(" p95=");
+                body.u64(samples[(used * 95 / 100).min(used - 1)]);
+                body.str(" min=");
+                body.u64(samples[0]);
+                body.str(" max=");
+                body.u64(samples[used - 1]);
+            }
+        }
+    }
+    body.push(b'\n');
+    let state = match mesh
+        .latency
+        .as_ref()
+        .map(|probe| probe.received >= probe.count)
+    {
+        Some(true) => 200,
+        Some(false) => 409,
+        None => 200,
+    };
+    (state, body.len())
 }
 
 /// Render or start `GET /mesh/bulk`, the reproducible bulk measurement path.
@@ -1280,6 +1450,7 @@ impl Mesh {
         match self.phase {
             Phase::Arm => self.arm(services, now),
             Phase::Waiting => self.waiting(services, now),
+            Phase::Connect => self.connecting(services, now),
             Phase::Connected => self.connected(services, now),
         }
     }
@@ -1397,35 +1568,7 @@ impl Mesh {
 
     fn waiting(&mut self, services: &Services, now: u64) {
         match (services.tcp_state)(MESH_SLOT) {
-            2 => {
-                self.stats.connects = self.stats.connects.saturating_add(1);
-                self.link_generation = self.link_generation.wrapping_add(1);
-                self.decoder.reset();
-                self.queue.clear();
-                self.pending = PendingTable::new(PENDING_CAPACITY);
-                self.peer = None;
-                self.peers = [NodeId::ZERO; MAX_MESH_NODES];
-                self.peer_count = 0;
-                self.peer_confirmed = false;
-                self.pass_logged = false;
-                self.join_timeout_logged = false;
-                self.last_rx_ms = now;
-                self.heartbeat.reset(now);
-                self.phase = Phase::Connected;
-                log(services, b"mesh-transport: connected\n");
-                self.send_handshake(now);
-                let request = self.join.as_mut().and_then(|join| join.on_link_up(now));
-                if let Some(request) = request {
-                    self.send_join(
-                        services,
-                        JoinMessage::Request(request),
-                        NodeId::ZERO,
-                        now,
-                        self.verbose_join_log(),
-                    );
-                }
-                self.flush(services, now);
-            }
+            2 => self.on_connected(services, now),
             3 => {
                 (services.tcp_close)(MESH_SLOT);
                 self.phase = Phase::Arm;
@@ -1433,6 +1576,81 @@ impl Mesh {
             0 => self.phase = Phase::Arm,
             _ => {}
         }
+    }
+
+    /// Drive the lower-NodeId side of a direct peer link.
+    fn connecting(&mut self, services: &Services, now: u64) {
+        if (services.tcp_state)(MESH_SLOT) == 2 {
+            self.on_connected(services, now);
+            return;
+        }
+        let Some(target) = self.direct else {
+            self.phase = Phase::Arm;
+            return;
+        };
+        if now >= self.connect_at_ms && (services.tcp_state)(MESH_SLOT) == 0 {
+            if self.connect_attempts == 0 {
+                self.connect_started_ms = now;
+            }
+            let address = u32::from_be_bytes(target.address);
+            let code = unsafe { (services.tcp_connect)(MESH_SLOT, address, target.port) };
+            self.connect_attempts = self.connect_attempts.saturating_add(1);
+            self.connect_at_ms = now.saturating_add(500);
+            if code != 0 {
+                let mut line = Line::new();
+                line.str("mesh-transport: direct connect failed attempt=");
+                line.u64(self.connect_attempts as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+            }
+        }
+        if self.connect_attempts >= 5 || now.saturating_sub(self.connect_started_ms) >= 5_000 {
+            self.direct_fallback = true;
+            self.phase = Phase::Arm;
+            log(services, b"mesh-transport: direct fallback listen\n");
+        }
+    }
+
+    /// Enter the connected state after either a listener accept or a direct
+    /// connect succeeds.
+    fn on_connected(&mut self, services: &Services, now: u64) {
+        self.stats.connects = self.stats.connects.saturating_add(1);
+        self.link_generation = self.link_generation.wrapping_add(1);
+        self.decoder.reset();
+        self.queue.clear();
+        self.pending = PendingTable::new(PENDING_CAPACITY);
+        self.peer = None;
+        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
+        self.peer_count = 0;
+        self.peer_confirmed = false;
+        self.pass_logged = false;
+        self.join_timeout_logged = false;
+        self.last_rx_ms = now;
+        self.heartbeat.reset(now);
+        self.phase = Phase::Connected;
+        self.connect_attempts = 0;
+        self.last_connect_ms = if self.direct_initiator {
+            now.saturating_sub(self.connect_started_ms)
+        } else {
+            0
+        };
+        let mut line = Line::new();
+        line.str("mesh-transport: connected connect_ms=");
+        line.u64(self.last_connect_ms);
+        line.push(b'\n');
+        log(services, line.as_bytes());
+        self.send_handshake(now);
+        let request = self.join.as_mut().and_then(|join| join.on_link_up(now));
+        if let Some(request) = request {
+            self.send_join(
+                services,
+                JoinMessage::Request(request),
+                NodeId::ZERO,
+                now,
+                self.verbose_join_log(),
+            );
+        }
+        self.flush(services, now);
     }
 
     fn connected(&mut self, services: &Services, now: u64) {
@@ -1556,6 +1774,8 @@ impl Mesh {
         if let Some(step) = migrate_step {
             self.dispatch_migrate(services, step, now);
         }
+
+        self.latency_tick(services, now);
 
         // Bulk measurement traffic is data-class: it can use the send-queue
         // space above the control reserve, one chunk per tick.  Control work
@@ -1773,9 +1993,11 @@ impl Mesh {
                 );
             }
             (MessageKind::Response, OpCode::Ping) => {
-                let tag = Tag(incoming.header.reply_to as u32);
+                let reply_to = incoming.header.reply_to as u32;
+                let tag = Tag(reply_to);
                 let _ = self.pending.complete(tag);
                 self.peer_confirmed = true;
+                self.on_latency(reply_to, now);
             }
             (MessageKind::Control, OpCode::Ping) => {}
             (MessageKind::Request, OpCode::Hello)
@@ -2665,6 +2887,69 @@ impl Mesh {
         self.queue.push_record(&envelope, now).is_ok()
     }
 
+    fn start_latency(&mut self, count: u32, now: u64) -> bool {
+        if !matches!(self.phase, Phase::Connected) || self.peer.is_none() {
+            return false;
+        }
+        let count = count.clamp(1, 64);
+        self.latency = Some(LatencyProbe {
+            count,
+            sent: 0,
+            received: 0,
+            outstanding: false,
+            pending_send_ms: 0,
+            next_ms: now,
+            samples: [0; 64],
+            peak_ms: 0,
+        });
+        true
+    }
+
+    fn latency_tick(&mut self, _services: &Services, now: u64) {
+        let Some(probe) = self.latency.as_ref() else {
+            return;
+        };
+        if probe.received >= probe.count || probe.outstanding || now < probe.next_ms {
+            return;
+        }
+        let send_ms = now as u32;
+        let Some(destination) = self.peer else {
+            return;
+        };
+        if self.queue_ping(
+            now,
+            MessageKind::Request,
+            OpCode::Ping,
+            destination,
+            u64::from(send_ms),
+            0,
+            Tag(0),
+        ) {
+            if let Some(probe) = self.latency.as_mut() {
+                probe.sent = probe.sent.saturating_add(1);
+                probe.outstanding = true;
+                probe.pending_send_ms = send_ms;
+            }
+        }
+    }
+
+    fn on_latency(&mut self, reply_to: u32, now: u64) {
+        let Some(probe) = self.latency.as_mut() else {
+            return;
+        };
+        if !probe.outstanding || reply_to != probe.pending_send_ms {
+            return;
+        }
+        let elapsed = (now as u32).wrapping_sub(probe.pending_send_ms) as u64;
+        if probe.received < 64 {
+            probe.samples[probe.received as usize] = elapsed;
+        }
+        probe.received = probe.received.saturating_add(1);
+        probe.outstanding = false;
+        probe.peak_ms = probe.peak_ms.max(elapsed);
+        probe.next_ms = now.saturating_add(20);
+    }
+
     /// Whether a bulk transfer is queued or in flight in either direction.
     fn bulk_active(&self) -> bool {
         self.bulk
@@ -2999,6 +3284,8 @@ impl Mesh {
         );
         line.str(" connects=");
         line.u64(self.stats.connects);
+        line.str(" connect_ms=");
+        line.u64(self.last_connect_ms);
         line.str(" writes=");
         line.u64(self.stats.writes);
         line.str(" batched=");
@@ -3062,7 +3349,15 @@ impl Mesh {
         self.pass_logged = false;
         self.join_timeout_logged = false;
         self.last_rx_ms = now;
-        self.phase = Phase::Arm;
+        if self.direct_initiator && self.direct.is_some() {
+            self.phase = Phase::Connect;
+            self.connect_attempts = 0;
+            self.connect_started_ms = now;
+            self.connect_at_ms = now.saturating_add(500);
+            self.last_connect_ms = 0;
+        } else {
+            self.phase = Phase::Arm;
+        }
         if let Some(join) = &mut self.join {
             join.on_link_down();
         }
@@ -3198,7 +3493,7 @@ fn route_config(
     home_count: u32,
 ) -> Option<RouteNode> {
     let mut text = [0u8; 32];
-    let Some(len) = config(services, b"mesh.route", &mut text) else {
+    let Some(len) = config_any(services, &[b"mesh.route", b"r"], &mut text) else {
         log(services, b"mesh-route: disabled reason=config\n");
         return None;
     };
@@ -3435,7 +3730,7 @@ fn migrate_config(
     join: Option<&JoinNode>,
 ) -> Option<MigrateNode> {
     let mut text = [0u8; 32];
-    let Some(len) = config(services, b"mesh.route", &mut text) else {
+    let Some(len) = config_any(services, &[b"mesh.route", b"r"], &mut text) else {
         log(services, b"mesh-migrate: disabled reason=config\n");
         return None;
     };
@@ -3500,7 +3795,7 @@ fn join_config(
     now: u64,
 ) -> Result<Option<(JoinNode, EpochStore)>, &'static str> {
     let mut text = [0u8; 128];
-    let Some(n) = config(services, b"mesh.authority", &mut text) else {
+    let Some(n) = config_any(services, &[b"mesh.authority", b"a"], &mut text) else {
         return Ok(None);
     };
     let Some(authority) = parse_node_id(&text[..n]) else {
@@ -3819,6 +4114,12 @@ fn config(services: &Services, key: &[u8], out: &mut [u8]) -> Option<usize> {
     }
 }
 
+/// Read the first present key.  Direct-transport boots use the short `a`,
+/// `d`, `p` and `r` names so the DS1386 298-byte environment fits.
+fn config_any(services: &Services, keys: &[&[u8]], out: &mut [u8]) -> Option<usize> {
+    keys.iter().find_map(|key| config(services, key, out))
+}
+
 fn identity(services: &Services) -> Option<NodeId> {
     let mut text = [0u8; 256];
     let n = unsafe { (services.info)(0, text.as_mut_ptr(), text.len()) };
@@ -3883,6 +4184,34 @@ fn parse_hex(text: &[u8], out: &mut [u8]) -> Option<()> {
         *byte = (high << 4) | low;
     }
     Some(())
+}
+
+/// Parse `a.b.c.d:port` from the `mesh.direct` value.
+fn parse_direct(text: &[u8]) -> Option<DirectPeer> {
+    let colon = text.iter().position(|byte| *byte == b':')?;
+    let (ip, port) = (&text[..colon], &text[colon + 1..]);
+    let mut address = [0u8; 4];
+    let mut parts = ip.split(|byte| *byte == b'.');
+    for slot in &mut address {
+        *slot = parse_u32(parts.next()?).filter(|value| *value <= 255)? as u8;
+    }
+    if parts.next().is_some() {
+        return None;
+    }
+    let port = parse_u32(port).filter(|value| *value > 0 && *value <= 65535)? as u16;
+    Some(DirectPeer { address, port })
+}
+
+/// Parse a 32-character upper- or lower-case NodeId.
+fn parse_node_hex(text: &[u8]) -> Option<NodeId> {
+    if text.len() != 32 {
+        return None;
+    }
+    let mut node = [0u8; 16];
+    for (index, slot) in node.iter_mut().enumerate() {
+        *slot = hex(&text[index * 2])? << 4 | hex(&text[index * 2 + 1])?;
+    }
+    Some(NodeId(node))
 }
 
 fn parse_u32(text: &[u8]) -> Option<u32> {

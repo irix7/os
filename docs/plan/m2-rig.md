@@ -931,3 +931,15 @@ linearisable writes across a partition.
   `mesh.peer` was absent; a `state=stale` response is the expected answer for
   `?epoch=1` after the epoch advanced. Compare the `mesh-home:` rows with
   `summary.md`; the rig's independent table is in `run.json` under `homes`.
+
+## Direct transport modes (#245)
+
+`--transport relay` is the default M2 byte-pump path.  `--transport direct` writes
+`mesh.direct` and `mesh.peer_id`; the lower `NodeId` calls the ABI 13 `tcp_connect`
+service through its own NAT gateway and the higher `NodeId` listens.  No host relay is
+started.  `--transport direct-fail` points the initiator at `gateway:1` and asserts the
+`mesh-transport: direct fallback listen` line with no join.
+
+The direct run records `mesh-transport: direct role=…`, the pass line `connect_ms`, and
+`/mesh/latency` p50/p95.  The bulk command is `m2-rig bulk --transport direct`; it uses
+the same direct link and a 1 KiB same-host baseline.

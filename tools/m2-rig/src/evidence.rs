@@ -193,6 +193,8 @@ pub struct Evidence<'a> {
     pub route: Option<&'a RouteEvidence>,
     /// L0 actor-migration evidence, when that scenario ran.
     pub migration: Option<&'a MigrateEvidence>,
+    /// Mesh round-trip latency evidence, when that scenario ran.
+    pub latency: Option<&'a crate::latency::LatencyEvidence>,
     /// Bulk-transfer evidence, when that scenario ran.
     pub bulk: Option<&'a crate::bulk::BulkEvidence>,
     /// Failure/partition evidence, when that fault mode ran.
@@ -483,6 +485,21 @@ fn render_json(evidence: &Evidence<'_>) -> String {
     out.push_str(",\n  \"migration\": ");
     match evidence.migration {
         Some(migration) => out.push_str(&render_migration_json(migration)),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n  \"latency\": ");
+    match evidence.latency {
+        Some(latency) => out.push_str(&format!(
+            "{{\"ok\": {}, \"sent\": {}, \"received\": {}, \"p50_ms\": {}, \"p95_ms\": {}, \"min_ms\": {}, \"max_ms\": {}, \"raw\": \"{}\"}}",
+            latency.ok,
+            latency.sent,
+            latency.received,
+            latency.p50_ms,
+            latency.p95_ms,
+            latency.min_ms,
+            latency.max_ms,
+            json_escape(&latency.raw)
+        )),
         None => out.push_str("null"),
     }
     out.push_str(",\n  \"bulk\": ");
@@ -1132,6 +1149,20 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             ));
         }
         out.push('\n');
+    }
+
+    if let Some(latency) = evidence.latency {
+        out.push_str("## Mesh round-trip latency\n\n");
+        out.push_str(&format!(
+            "| Sent | Received | p50 ms | p95 ms | min ms | max ms | Raw |\n|---|---|---|---|---|---|---|\n| {} | {} | {} | {} | {} | {} | `{}` |\n\n",
+            latency.sent,
+            latency.received,
+            latency.p50_ms,
+            latency.p95_ms,
+            latency.min_ms,
+            latency.max_ms,
+            latency.raw
+        ));
     }
 
     if let Some(bulk) = evidence.bulk {
