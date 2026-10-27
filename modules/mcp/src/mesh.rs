@@ -3663,6 +3663,7 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         | (MessageKind::Request, OpCode::Write)
         | (MessageKind::Response, OpCode::Write) => FRAME_BODY_MAX,
         (MessageKind::Control, OpCode::WindowUpdate) => 16,
+        (MessageKind::Control, OpCode::Hello) => JOIN_BODY_MAX,
         (MessageKind::Cancel, OpCode::Cancel) => 8,
         _ => 16,
     }
