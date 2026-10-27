@@ -128,20 +128,6 @@ pub struct AuthorityRoot {
     failures: FailureDetector,
 }
 
-/// A member removed from the confirmed view after a confirmed failure.
-///
-/// The removal is the root's membership change; it advances the epoch exactly
-/// once and carries the full remaining member list.  The root installs it
-/// locally.  A live member installs it only through a signed confirmation when
-/// it next joins, so a partition cannot create a second authoritative view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Removal {
-    /// The removed node.
-    pub node: NodeId,
-    /// The confirmed view after the removal.
-    pub snapshot: MembershipSnapshot,
-}
-
 impl AuthorityRoot {
     /// Create the root at its configured seed epoch with itself as the only
     /// member.
@@ -252,7 +238,7 @@ impl AuthorityRoot {
     /// Each removal is a separate authority-confirmed epoch advance, exactly
     /// as a clean leave would be.  The root is never removed.  A node that is
     /// merely suspect stays in the routing snapshot.
-    pub fn remove_failed(&mut self) -> alloc::vec::Vec<Removal> {
+    pub fn remove_failed(&mut self, now_ms: u64) -> Option<BatchRemoval> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
@@ -261,17 +247,23 @@ impl AuthorityRoot {
             })
             .map(|(node, _)| node)
             .collect();
-        let mut removals = alloc::vec::Vec::new();
-        for node in failed {
-            if !self.table.leave(node).unwrap_or(false) {
-                continue;
-            }
-            let Ok(snapshot) = self.snapshot() else {
-                continue;
-            };
-            removals.push(Removal { node, snapshot });
+        if failed.is_empty() {
+            return None;
         }
-        removals
+        let changes: alloc::vec::Vec<mesh_service::Change> = failed
+            .iter()
+            .map(|node| mesh_service::Change::Remove { node: *node })
+            .collect();
+        // One change set, one epoch advance, however many members failed.
+        let set = self.table.apply(&changes, now_ms).ok()?;
+        if !set.changed {
+            return None;
+        }
+        let snapshot = self.snapshot().ok()?;
+        Some(BatchRemoval {
+            nodes: set.removed,
+            snapshot,
+        })
     }
 
     /// The root's public key.  A member hears the same key through
