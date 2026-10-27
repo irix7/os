@@ -18,7 +18,9 @@ use core::fmt;
 
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
-use mesh_service::{FailureDetector, MembershipError, MembershipTable, Observe, Transition};
+use mesh_service::{
+    FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
+};
 use sys_primitives::{NodeId, NodeKey};
 
 use crate::wire::{
@@ -262,7 +264,7 @@ impl AuthorityRoot {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
-            .filter(|(node, _)| self.failures.state(node) == Some(NodeState::Failed))
+            .filter(|(node, record)| *node != self.root && record.state != NodeState::Alive)
             .map(|(node, _)| node)
             .collect();
         let mut removals = alloc::vec::Vec::new();
