@@ -130,18 +130,6 @@ pub struct AuthorityRoot {
     failures: FailureDetector,
 }
 
-/// The removal is the root's membership change; it advances the epoch exactly
-/// once and carries the full remaining member list.  The root installs it
-/// locally.  A live member installs it only through a signed confirmation when
-/// it next joins, so a partition cannot create a second authoritative view.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Removal {
-    /// The removed node.
-    pub node: NodeId,
-    /// The confirmed view after the removal.
-    pub snapshot: MembershipSnapshot,
-}
-
 impl AuthorityRoot {
     /// Create the root at its configured seed epoch with itself as the only
     /// member.
@@ -252,7 +240,7 @@ impl AuthorityRoot {
     /// Each removal is a separate authority-confirmed epoch advance, exactly
     /// as a clean leave would be.  The root is never removed.  A node that is
     /// merely suspect stays in the routing snapshot.
-    pub fn remove_failed(&mut self) -> alloc::vec::Vec<Removal> {
+    pub fn remove_failed(&mut self) -> Option<BatchRemoval> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
@@ -260,22 +248,19 @@ impl AuthorityRoot {
             .map(|(node, _)| node)
             .collect();
         if failed.is_empty() {
-            return alloc::vec::Vec::new();
+            return None;
         }
         for node in &failed {
             let _ = self.table.leave(*node);
         }
         let snapshot = match self.snapshot() {
             Ok(s) => s,
-            Err(_) => return alloc::vec::Vec::new(),
+            Err(_) => return None,
         };
-        failed
-            .into_iter()
-            .map(|node| Removal {
-                node,
-                snapshot: snapshot.clone(),
-            })
-            .collect()
+        Some(BatchRemoval {
+            nodes: failed,
+            snapshot,
+        })
     }
 
     /// The root's public key.  A member hears the same key through
