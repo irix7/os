@@ -142,14 +142,6 @@ pub struct Removal {
     pub snapshot: MembershipSnapshot,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BatchRemoval {
-    /// Every member removed in this change set.
-    pub nodes: alloc::vec::Vec<NodeId>,
-    /// The confirmed view after the set.
-    pub snapshot: crate::wire::MembershipSnapshot,
-}
-
 impl AuthorityRoot {
     /// Create the root at its configured seed epoch with itself as the only
     /// member.
