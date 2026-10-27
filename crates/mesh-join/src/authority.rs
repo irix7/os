@@ -262,7 +262,7 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        let snapshot = self.snapshot()?;
+        let snapshot = self.snapshot().ok()?;
         Some(BatchRemoval {
             nodes: failed,
             snapshot,
