@@ -20,6 +20,7 @@ opt-level = 2
 loader-abi = { path = "../../crates/loader-abi" }
 module-abi.workspace = true
 mesh-transport = { path = "../../crates/mesh-transport" }
+mesh-stream = { path = "../../crates/mesh-stream" }
 sys-primitives = { path = "../../crates/sys-primitives" }
 erofs = { path = "../../crates/erofs" }
 block-cache = { path = "../../crates/block-cache" }

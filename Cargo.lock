@@ -711,6 +711,7 @@ dependencies = [
  "mesh-join",
  "mesh-migrate",
  "mesh-route",
+ "mesh-stream",
  "mesh-transport",
  "module-abi",
  "overlay",
@@ -784,6 +785,10 @@ dependencies = [
  "mesh-service",
  "sys-primitives",
 ]
+
+[[package]]
+name = "mesh-stream"
+version = "0.1.0"
 
 [[package]]
 name = "mesh-transport"

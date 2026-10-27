@@ -1,0 +1,9 @@
+[package]
+name = "mesh-stream"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Bounded stream multiplexing and credit policy for the IRIX 7 mesh"
+publish = false
+
+[dependencies]

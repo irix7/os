@@ -58,6 +58,7 @@ use mesh_migrate::{
     Wire as MigrateWire, MAX_BODY as MIGRATE_BODY_MAX,
 };
 use mesh_route::{RouteNode, RouteSigner, Step as RouteStep, Wire as RouteWire};
+use mesh_stream::{Side, StreamTable};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
     StreamDecoder, WriteOutcome, HEARTBEAT_INTERVAL_MS, RECEIVE_DEADLINE_MS,
@@ -108,9 +109,12 @@ const FRAME_BODY_MAX: usize = BULK_HEADER_LEN + BULK_CHUNK_MAX;
 const BULK_MAGIC: u32 = u32::from_le_bytes(*b"I7B1");
 const BULK_HEADER_LEN: usize = 20;
 const BULK_CHUNK_MAX: usize = 16 * 1024;
-const BULK_CHUNK_DEFAULT: usize = 8 * 1024;
-const BULK_RECORD_MAX: usize = 64 * 1024;
+const BULK_CHUNK_DEFAULT: usize = 4 * 1024;
+const BULK_RECORD_MAX: usize = 1024 * 1024;
 const BULK_DEADLINE_MS: u64 = 6_000;
+/// Initial chunk credit and the grant after two consumed chunks.
+const BULK_INITIAL_CREDIT: u32 = 2;
+const BULK_CREDIT_GRANT: u32 = 2;
 
 /// Live MCP pending-tag capacity.
 ///
@@ -263,6 +267,8 @@ struct Mesh {
     last_connect_ms: u64,
     /// Active latency measurement.
     latency: Option<LatencyProbe>,
+    /// Version 1 stream table for the measurement streams.
+    streams: StreamTable,
 }
 
 struct LatencyProbe {
@@ -316,6 +322,8 @@ struct BulkReply {
     chunk: u32,
     offset: u32,
     started_ms: u64,
+    /// Chunks the origin has granted; zero means wait for WindowUpdate.
+    credit: u32,
 }
 
 /// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
@@ -471,6 +479,12 @@ pub unsafe fn init(services: *const Services) -> bool {
         connect_started_ms: now,
         last_connect_ms: 0,
         latency: None,
+        streams: {
+            let mut streams = StreamTable::new(Side::Initiator);
+            let _ = streams.insert(5, false);
+            let _ = streams.insert(6, true);
+            streams
+        },
     };
     unsafe {
         MESH = Some(mesh);
@@ -627,6 +641,7 @@ pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u1
 #[inline(never)]
 pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
     let mut start = false;
+    let mut cancel = false;
     let mut bytes = BULK_CHUNK_DEFAULT as u32;
     let mut chunk = BULK_CHUNK_DEFAULT as u32;
     if let Some(question) = path.iter().position(|byte| *byte == b'?') {
@@ -639,6 +654,7 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
             let value = pieces.next().unwrap_or(b"");
             match key {
                 b"start" => start = value == b"1",
+                b"cancel" => cancel = value == b"1",
                 b"status" => {}
                 b"bytes" => match parse_u32(value) {
                     Some(parsed) => bytes = parsed,
@@ -657,6 +673,33 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
     let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
         return bulk_line(out, 404, "disabled reason=peer");
     };
+    if cancel {
+        let now = (services.clock_ms)();
+        let destination = mesh.peer.unwrap_or(NodeId::ZERO);
+        if let Some(transfer) = mesh.bulk.as_mut() {
+            transfer.state = BulkState::Failed;
+            transfer.error = Some("cancel");
+            transfer.finished_ms = now;
+        }
+        let _ = mesh.streams.reset(5);
+        let _ = mesh.streams.insert(5, false);
+        mesh.stats.stream_resets = mesh.stats.stream_resets.saturating_add(1);
+        let mut body = [0u8; 4];
+        body[0..4].copy_from_slice(&5u32.to_le_bytes());
+        if let Ok(frame) = MessageFrame::inline(
+            MessageKind::Cancel,
+            OpCode::Cancel,
+            StreamId(5),
+            Tag(0),
+            &body,
+        ) {
+            let mut header = MeshHeader::new(mesh.self_id, destination, mesh.self_id);
+            header.flags = mesh_flags::PROBE;
+            header.ttl = MeshHeader::MAX_HOPS;
+            let _ = mesh.queue.push_record(&MeshEnvelope { header, frame }, now);
+        }
+        return bulk_line(out, 200, "cancelled");
+    }
     if start {
         let now = (services.clock_ms)();
         if mesh
@@ -1932,7 +1975,10 @@ impl Mesh {
                     return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
                 }
             }
-            (MessageKind::Request, OpCode::Read) | (MessageKind::Response, OpCode::Read) => {}
+            (MessageKind::Request, OpCode::Read)
+            | (MessageKind::Response, OpCode::Read)
+            | (MessageKind::Control, OpCode::WindowUpdate)
+            | (MessageKind::Cancel, OpCode::Cancel) => {}
             _ => {
                 self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
                 return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
@@ -2138,6 +2184,12 @@ impl Mesh {
             }
             (MessageKind::Response, OpCode::Read) => {
                 self.on_bulk_chunk(services, source, body, now);
+            }
+            (MessageKind::Control, OpCode::WindowUpdate) => {
+                self.on_window_update(body);
+            }
+            (MessageKind::Cancel, OpCode::Cancel) => {
+                self.on_cancel(body);
             }
             _ => {}
         }
@@ -2950,6 +3002,53 @@ impl Mesh {
         probe.next_ms = now.saturating_add(20);
     }
 
+    fn queue_window_update(&mut self, destination: NodeId, nonce: u32, credit: u32, now: u64) {
+        let mut body = [0u8; 16];
+        body[0..4].copy_from_slice(&5u32.to_le_bytes());
+        body[4..8].copy_from_slice(&credit.to_le_bytes());
+        body[8..12].copy_from_slice(&nonce.to_le_bytes());
+        let Ok(frame) = MessageFrame::inline(
+            MessageKind::Control,
+            OpCode::WindowUpdate,
+            StreamId(5),
+            Tag(0),
+            &body,
+        ) else {
+            return;
+        };
+        let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
+        header.flags = mesh_flags::PROBE;
+        header.ttl = MeshHeader::MAX_HOPS;
+        let _ = self.queue.push_record(&MeshEnvelope { header, frame }, now);
+    }
+
+    fn on_window_update(&mut self, body: &[u8]) {
+        if body.len() < 8 {
+            return;
+        }
+        let stream = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        let credit = u32::from_le_bytes([body[4], body[5], body[6], body[7]]).clamp(1, 8);
+        let _ = self.streams.grant(stream, credit * BULK_CHUNK_MAX as u32);
+        if stream == 5 {
+            if let Some(reply) = self.bulk_reply.as_mut() {
+                reply.credit = reply.credit.saturating_add(credit);
+            }
+        }
+    }
+
+    fn on_cancel(&mut self, body: &[u8]) {
+        if body.len() < 4 {
+            return;
+        }
+        let stream = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
+        if stream == 5 {
+            self.bulk_reply = None;
+            let _ = self.streams.reset(5);
+            let _ = self.streams.insert(5, false);
+            self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
+        }
+    }
+
     /// Whether a bulk transfer is queued or in flight in either direction.
     fn bulk_active(&self) -> bool {
         self.bulk
@@ -3002,6 +3101,7 @@ impl Mesh {
         let total = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
         let chunk = u32::from_le_bytes([body[8], body[9], body[10], body[11]]);
         let nonce = u32::from_le_bytes([body[12], body[13], body[14], body[15]]);
+        let credit = u32::from_le_bytes([body[16], body[17], body[18], body[19]]).clamp(1, 8);
         if magic != BULK_MAGIC
             || total == 0
             || total as usize > BULK_RECORD_MAX
@@ -3019,6 +3119,7 @@ impl Mesh {
             chunk,
             offset: 0,
             started_ms: now,
+            credit,
         });
         // The peer-side counters are reported by the origin's `/mesh/bulk`
         // raw line; do not block this tick on the emulated serial console.
@@ -3059,15 +3160,32 @@ impl Mesh {
         transfer.expected_offset = transfer.expected_offset.saturating_add(payload as u32);
         transfer.chunks = transfer.chunks.saturating_add(1);
         self.stats.bulk_chunks_received = self.stats.bulk_chunks_received.saturating_add(1);
-        if transfer.received == transfer.total {
+        let (received, total, chunk, nonce, started_ms) = (
+            transfer.received,
+            transfer.total,
+            transfer.chunk,
+            transfer.nonce,
+            transfer.started_ms,
+        );
+        let grant = received % (BULK_CREDIT_GRANT * chunk.max(1)) == 0 && received != total;
+        if received == total {
             transfer.state = BulkState::Done;
             transfer.finished_ms = now;
-            let elapsed = now.saturating_sub(transfer.started_ms);
+        }
+        let elapsed = now.saturating_sub(started_ms);
+        let chunks = transfer.chunks;
+        if grant {
+            // The origin grants the next pair of chunks only after it has
+            // consumed the previous pair.
+            self.queue_window_update(source, nonce, BULK_CREDIT_GRANT, now);
+            self.stats.credit_grants = self.stats.credit_grants.saturating_add(1);
+        }
+        if received == total {
             let mut line = Line::new();
             line.str("mesh-bulk: complete bytes=");
-            line.u64(transfer.total as u64);
+            line.u64(total as u64);
             line.str(" chunks=");
-            line.u64(transfer.chunks as u64);
+            line.u64(chunks as u64);
             line.str(" elapsed_ms=");
             line.u64(elapsed);
             line.push(b'\n');
@@ -3152,6 +3270,7 @@ impl Mesh {
         body[4..8].copy_from_slice(&total.to_le_bytes());
         body[8..12].copy_from_slice(&chunk.to_le_bytes());
         body[12..16].copy_from_slice(&nonce.to_le_bytes());
+        body[16..20].copy_from_slice(&BULK_INITIAL_CREDIT.to_le_bytes());
         let Ok(frame) = MessageFrame::inline(
             MessageKind::Request,
             OpCode::Read,
@@ -3300,6 +3419,12 @@ impl Mesh {
         line.u64(self.stats.bulk_chunks_sent);
         line.str(" bulk_abort=");
         line.u64(self.stats.bulk_aborts);
+        line.str(" credit_stall=");
+        line.u64(self.stats.credit_stalls);
+        line.str(" credit_grant=");
+        line.u64(self.stats.credit_grants);
+        line.str(" stream_reset=");
+        line.u64(self.stats.stream_resets);
         line.push(b'\n');
         log(services, line.as_bytes());
         self.pass_logged = true;
@@ -3451,6 +3576,8 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         | (MessageKind::Response, OpCode::Read)
         | (MessageKind::Request, OpCode::Write)
         | (MessageKind::Response, OpCode::Write) => FRAME_BODY_MAX,
+        (MessageKind::Control, OpCode::WindowUpdate) => 16,
+        (MessageKind::Cancel, OpCode::Cancel) => 8,
         _ => 16,
     }
 }

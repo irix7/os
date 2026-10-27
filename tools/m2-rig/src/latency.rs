@@ -88,7 +88,12 @@ fn fetch_retry(node: &Node, path: &str) -> Result<HttpResponse, String> {
 
 /// Run one latency series against the live mesh on `node`.
 pub fn run(node: &Node) -> Result<LatencyEvidence, String> {
-    let start = format!("/mesh/latency?start=1&count={COUNT}");
+    run_with(node, COUNT)
+}
+
+/// Run `count` samples against the live mesh on `node`.
+pub fn run_with(node: &Node, count: u32) -> Result<LatencyEvidence, String> {
+    let start = format!("/mesh/latency?start=1&count={count}");
     let response = fetch_retry(node, &start)?;
     if response.status != 202 {
         return Err(format!(
@@ -101,7 +106,7 @@ pub fn run(node: &Node) -> Result<LatencyEvidence, String> {
         std::thread::sleep(Duration::from_millis(250));
         let response = fetch_retry(node, "/mesh/latency?status=1")?;
         let mut evidence = parse(&response.body)?;
-        if evidence.ok && evidence.received >= COUNT {
+        if evidence.ok && evidence.received >= count {
             evidence.message = format!(
                 "{} samples: p50 {} ms, p95 {} ms, min {} ms, max {} ms",
                 evidence.received, evidence.p50_ms, evidence.p95_ms, evidence.min_ms, evidence.max_ms
