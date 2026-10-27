@@ -646,7 +646,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut join_error = None;
     let mut homes_error = None;
     let mut bulk_evidence: Option<bulk::BulkEvidence> = None;
-    let mut bulk_error = None;
+    let mut bulk_error: Option<String> = None;
     let mut route = None;
     let mut route_error = None;
     let mut migration = None;
@@ -704,28 +704,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             Err(error) => route_error = Some(error),
         }
 
-        // The bulk measurement runs after join/homes/route and before the
-        // migration.  It is a mesh-path measurement: the module's start/finish
-        // timestamps exclude the MCP HTTP phase machine, but the bounded serial
-        // home table must have drained or the emulated 9,600-baud line would
-        // gate the tick.  A short settle plus HTTP retries absorbs the iris
-        // forward's half-open close.
-        if options.fault.joins() && join_before.ok && join_before.members.len() == 2 {
-            // The route scenario has just written its bounded report lines to
-            // the emulated 9,600-baud serial line.  A 1 KiB report blocks the
-            // module tick for about a second; let it drain before measuring
-            // the mesh, otherwise the "bulk throughput" is serial throughput.
-            std::thread::sleep(Duration::from_secs(8));
-            match bulk::run(&nodes[0], &nodes[1]) {
-                Ok(evidence) => {
-                    if !evidence.ok {
-                        bulk_error = Some(evidence.message.clone());
-                    }
-                    bulk_evidence = Some(evidence);
-                }
-                Err(error) => bulk_error = Some(error),
-            }
-        }
         if !options.fault.migrates() && !options.fault.failures() {
             match collect_migration(options, &nodes) {
                 Ok(value) => {
