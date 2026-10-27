@@ -606,6 +606,8 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
                             message: "direct-fail: fallback listener observed; no join".into(),
                             baseline: None,
                             runs: Vec::new(),
+                            control: None,
+                            cancel: None,
                         });
                     }
                     if joined {
@@ -641,6 +643,24 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
             }
         );
     }
+    if let Some(control) = &evidence.control {
+        println!(
+            "control during bulk: {} B in {} chunks, bulk {} ms, p50 {} ms, p95 {} ms",
+            control.bytes,
+            control.chunks,
+            control.bulk_ms,
+            control.control_p50_ms,
+            control.control_p95_ms
+        );
+    }
+    if let Some(cancel) = &evidence.cancel {
+        println!(
+            "cancel: state={} error={} chunks={}",
+            cancel.state,
+            cancel.error.as_deref().unwrap_or("-"),
+            cancel.chunks
+        );
+    }
     println!("bulk: {}", evidence.message);
     let commit = git(&options.repo, &["rev-parse", "HEAD"]);
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -663,6 +683,28 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
             run.elapsed_ms,
             run.mb_per_s,
             evidence::json_escape(&run.raw)
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n  \"control\": ");
+    match &evidence.control {
+        Some(control) => json.push_str(&format!(
+            "{{\"bytes\": {}, \"chunks\": {}, \"bulk_ms\": {}, \"control_p50_ms\": {}, \"control_p95_ms\": {}}}",
+            control.bytes, control.chunks, control.bulk_ms, control.control_p50_ms, control.control_p95_ms
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n  \"cancel\": ");
+    match &evidence.cancel {
+        Some(cancel) => json.push_str(&format!(
+            "{{\"state\": \"{}\", \"error\": {}, \"chunks\": {}}}",
+            evidence::json_escape(&cancel.state),
+            cancel
+                .error
+                .as_deref()
+                .map(|value| format!("\"{}\"", evidence::json_escape(value)))
+                .unwrap_or_else(|| "null".into()),
+            cancel.chunks
         )),
         None => json.push_str("null"),
     }

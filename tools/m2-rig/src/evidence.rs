@@ -563,7 +563,29 @@ fn render_bulk_json(bulk: &crate::bulk::BulkEvidence) -> String {
         )),
         None => out.push_str("null"),
     }
-    out.push_str(", \"runs\": [");
+    out.push_str(",\n  \"control\": ");
+    match &bulk.control {
+        Some(control) => out.push_str(&format!(
+            "{{\"bytes\": {}, \"chunks\": {}, \"bulk_ms\": {}, \"control_p50_ms\": {}, \"control_p95_ms\": {}}}",
+            control.bytes, control.chunks, control.bulk_ms, control.control_p50_ms, control.control_p95_ms
+        )),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n  \"cancel\": ");
+    match &bulk.cancel {
+        Some(cancel) => out.push_str(&format!(
+            "{{\"state\": \"{}\", \"error\": {}, \"chunks\": {}}}",
+            json_escape(&cancel.state),
+            cancel
+                .error
+                .as_deref()
+                .map(|value| format!("\"{}\"", json_escape(value)))
+                .unwrap_or_else(|| "null".into()),
+            cancel.chunks
+        )),
+        None => out.push_str("null"),
+    }
+    out.push_str(",\n  \"runs\": [");
     for (index, run) in bulk.runs.iter().enumerate() {
         out.push_str(&format!(
             "{{\"from\": \"{}\", \"to\": \"{}\", \"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
@@ -1185,6 +1207,20 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {:.3} | `{}` |\n",
                 run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s, run.raw.trim()
+            ));
+        }
+        if let Some(control) = &bulk.control {
+            out.push_str(&format!(
+                "\nControl during bulk: {} B in {} chunks, bulk {} ms, probe p50 {} ms, p95 {} ms.\n\n",
+                control.bytes, control.chunks, control.bulk_ms, control.control_p50_ms, control.control_p95_ms
+            ));
+        }
+        if let Some(cancel) = &bulk.cancel {
+            out.push_str(&format!(
+                "Cancel: state `{}`, error `{}`, {} chunks sent before the reset.\n\n",
+                cancel.state,
+                cancel.error.as_deref().unwrap_or("-"),
+                cancel.chunks
             ));
         }
         out.push('\n');
