@@ -163,10 +163,12 @@ The path is correct and measured, but it has four properties that matter for QUI
    study was fixed; the current limit is the 1,474 B window, not the ring.
 4. **The Seeq driver is synchronous.** `SeeqTxToken::consume` spins up to 10,000,000
    iterations until `ENET_CTRL.ACTIVE` clears (`kernel/src/net.rs:357`), and `receive`
-   copies each frame byte by byte with `read_volatile` (`kernel/src/net.rs:283`). At
-   10 Mbit a 1,514-byte frame occupies the wire for ~1.21 ms; the CPU is *inside the spin*
-   for that whole time. No protocol — TCP or QUIC — can exceed ~1.25 MB/s, and the CPU has
-   no time left for crypto while a frame is being serialised.
+   copies each frame byte by byte with `read_volatile` (`kernel/src/net.rs:283`). The wire
+   study estimated **13 ms of spin per 16 KiB burst** on a 10 Mbit wire. Even if the HPC3
+   clears `ACTIVE` when the Seeq FIFO accepts a frame rather than when the wire drains it,
+   the FIFO is only a frame or two deep, so the steady-state send rate is still
+   wire-limited and the CPU cannot encrypt the next packet while the previous one is being
+   accepted. Measure the actual `ACTIVE` timing on hardware; do not assume the spin is free.
 
 Point 4 is the single most important hardware constraint in this study, and it is not in
 the current issue plans.
@@ -396,8 +398,9 @@ QUIC cannot be primary on the current kernel. The prerequisites, in order:
 
 1. **Non-blocking Seeq TX.** Replace the per-frame spin (`kernel/src/net.rs:357`) with a
    descriptor ring and completion (interrupt or a bounded poll), so the CPU can encrypt the
-   next packet while the wire drains. Without this, the CPU is 100 % busy at 1 packet/ms
-   and QUIC crypto has nowhere to run.
+   next packet while the wire drains. Without this, the CPU can spend the whole inter-packet
+   interval waiting for the descriptor, leaving no time for crypto; the wire itself caps
+   throughput at 1.25 MB/s regardless.
 2. **Bulk RX copy.** Replace the per-byte `read_volatile` loop (`kernel/src/net.rs:283`)
    with word copies; keep the uncached alias.
 3. **RX ring 32.** At 10 Mbit and 1,200-byte packets, 8 descriptors hold 7.7 ms; a 10 ms
