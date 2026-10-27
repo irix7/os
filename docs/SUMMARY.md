@@ -17,6 +17,7 @@
 - [Native capability ABI](spec/native-abi.md)
 - [Native libc ABI](spec/native-libc.md)
 - [Driver interface](spec/driver-interface.md)
+- [Pre-release compatibility policy](spec/pre-release.md)
 
 ## Architecture decisions
 
@@ -31,6 +32,7 @@
 - [M2-ADR-0008 — failure, fencing and partition](adr/m2-0008-failure-fence.md)
 - [M2-ADR-0009 — L0 actor migration](adr/m2-0009-actor-migration.md)
 - [M3-ADR-0001 — first shard slice](adr/m3-0001-shard-slice.md)
+- [M3-ADR-0002 — multi-member hub](adr/m3-0002-multi-node-hub.md)
 
 ## Plan
 

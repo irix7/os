@@ -280,6 +280,13 @@ pub unsafe fn init(services: *const Services) -> bool {
     // connection carry the rejoin when the seam returns.
     let heartbeat = if failures {
         Heartbeat::new(HEARTBEAT_INTERVAL_MS, 300_000)
+    } else if shard_count > 0 {
+        // An M3 shard run can pause on the iris forward's guest-facing window
+        // while the host TCP connection is healthy.  The M2 30 s liveness
+        // timeout would tear down the authority link before the forward can
+        // recover; the shard run does not enable the M2 failure detector, so a
+        // longer bounded backstop is correct here.
+        Heartbeat::new(HEARTBEAT_INTERVAL_MS, 120_000)
     } else {
         Heartbeat::m2()
     };
@@ -1111,7 +1118,7 @@ impl Mesh {
             }
         }
         if let Some(snapshot) = removed {
-            self.log_homes(services, &snapshot);
+            self.log_homes(services, &snapshot, true);
             self.on_route_snapshot(services, &snapshot, now);
             // A removal advances the epoch without sending a confirmation to
             // the removed node.  Persist the root's new signed view so a root
@@ -1161,7 +1168,13 @@ impl Mesh {
                 self.send_handshake(now);
                 let request = self.join.as_mut().and_then(|join| join.on_link_up(now));
                 if let Some(request) = request {
-                    self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                    self.send_join(
+                        services,
+                        JoinMessage::Request(request),
+                        NodeId::ZERO,
+                        now,
+                        self.verbose_join_log(),
+                    );
                 }
                 self.flush(services, now);
             }
@@ -1193,24 +1206,13 @@ impl Mesh {
             return;
         }
 
-        if self.decoder.buffered_len() > 0
-            && now.saturating_sub(self.last_rx_ms) >= RECEIVE_DEADLINE_MS
-        {
-            self.stats.receive_deadlines = self.stats.receive_deadlines.saturating_add(1);
-            self.disconnect(services, now, "receive-deadline");
-            return;
-        }
-        if self.queue.send_deadline_expired(now) {
-            self.stats.send_deadlines = self.stats.send_deadlines.saturating_add(1);
-            self.disconnect(services, now, "send-deadline");
-            return;
-        }
-        if self.heartbeat.timed_out(now) {
-            self.stats.heartbeat_timeouts = self.stats.heartbeat_timeouts.saturating_add(1);
-            self.disconnect(services, now, "heartbeat-timeout");
-            return;
-        }
-
+        // Read before evaluating the receive and heartbeat deadlines.  A
+        // bounded serial burst (the root logs its confirmed home table) can
+        // keep this tick busy for longer than the deadline; bytes for the
+        // next member are already queued in the socket when it returns.  A
+        // deadline is evidence of silence, not of time spent processing the
+        // previous record, so the socket must be drained first.  This is the
+        // multi-member convergence defect the eight-node host hub exposed.
         let mut buffer = [0u8; READ_CHUNK];
         for _ in 0..READS_PER_TICK {
             let read = unsafe { (services.tcp_recv)(MESH_SLOT, buffer.as_mut_ptr(), buffer.len()) };
@@ -1227,13 +1229,36 @@ impl Mesh {
             }
         }
 
+        if self.decoder.buffered_len() > 0
+            && now.saturating_sub(self.last_rx_ms) >= self.receive_deadline_ms()
+        {
+            self.stats.receive_deadlines = self.stats.receive_deadlines.saturating_add(1);
+            self.disconnect(services, now, "receive-deadline");
+            return;
+        }
+        if self.queue.send_deadline_expired(now) {
+            self.stats.send_deadlines = self.stats.send_deadlines.saturating_add(1);
+            self.disconnect(services, now, "send-deadline");
+            return;
+        }
+        if self.heartbeat.timed_out(now) {
+            self.stats.heartbeat_timeouts = self.stats.heartbeat_timeouts.saturating_add(1);
+            self.disconnect(services, now, "heartbeat-timeout");
+            return;
+        }
         let tick = self
             .join
             .as_mut()
             .map(|join| (join.poll(now), join.attempts()));
         match tick {
             Some((Tick::Send(request), attempts)) => {
-                self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                self.send_join(
+                    services,
+                    JoinMessage::Request(request),
+                    NodeId::ZERO,
+                    now,
+                    self.verbose_join_log(),
+                );
                 let mut line = Line::new();
                 line.str("mesh-join: retry attempt=");
                 line.u64(attempts as u64);
@@ -1241,7 +1266,13 @@ impl Mesh {
                 log(services, line.as_bytes());
             }
             Some((Tick::Refresh(request), _)) => {
-                self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+                self.send_join(
+                    services,
+                    JoinMessage::Request(request),
+                    NodeId::ZERO,
+                    now,
+                    self.verbose_join_log(),
+                );
                 let mut line = Line::new();
                 line.str("mesh-join: refresh epoch=");
                 line.u64(request.last_epoch as u64);
@@ -1462,7 +1493,13 @@ impl Mesh {
             None
         };
         if let Some(request) = rejoin {
-            self.send_join(services, JoinMessage::Request(request), NodeId::ZERO, now);
+            self.send_join(
+                services,
+                JoinMessage::Request(request),
+                NodeId::ZERO,
+                now,
+                self.verbose_join_log(),
+            );
         }
 
         match (incoming.kind, incoming.opcode) {
@@ -1686,19 +1723,38 @@ impl Mesh {
         now: u64,
         full_view: bool,
     ) {
+        // Reply before writing the bounded serial evidence.  The root confirms
+        // each member before it logs the resulting home table; otherwise the
+        // confirm waits behind a serial burst, and a late member can exhaust
+        // its retry budget before the root has finished logging the previous
+        // epoch.  That ordering was the multi-member join defect the host hub
+        // exposed.  The wire message and the log lines are unchanged.
+        if let Some(reply) = outcome.reply {
+            self.send_join(services, reply, source, now, self.verbose_join_log());
+        }
         match &outcome.event {
             JoinEvent::Confirmed(snapshot) => {
                 // A routine refresh from an existing member does not advance
-                // the epoch.  Still log the signed confirmation epoch (the M2
-                // restart oracle reads it), but do not repeat the full home
-                // and shard tables every five seconds: that serial volume can
-                // starve the module tick on the emulated MIPS target.
-                self.log_snapshot(services, "mesh-join: confirm", snapshot);
+                // the epoch.  The two-node M2 transcript keeps the signed
+                // confirmation line.  Above two members it is suppressed:
+                // every member refreshes every five seconds, and the emulated
+                // serial line writes at roughly 50 bytes/s.  Logging each
+                // confirmation starves the module tick and eventually trips a
+                // heartbeat deadline on a healthy link.  The current view is
+                // still served by `/mesh/homes` and `/mesh/shard`.
                 if full_view {
                     self.log_snapshot(services, "mesh-join: converged role=root", snapshot);
-                    self.log_homes(services, snapshot);
-                    self.log_shard(services, snapshot, false);
-                } else {
+                    // The M2 transcript (no `mesh.shard` key) keeps the full
+                    // two-node evidence.  An M3 shard run reads the tables from
+                    // `/mesh/homes` and `/mesh/shard`; writing 1.5 KiB of rows
+                    // to a ~50 byte/s serial line starves the receive path.
+                    if !self.m3_quiet() && snapshot.len() <= 2 {
+                        self.log_snapshot(services, "mesh-join: confirm", snapshot);
+                        self.log_homes(services, snapshot, true);
+                        self.log_shard(services, snapshot, false);
+                    }
+                } else if !self.m3_quiet() && snapshot.len() <= 2 {
+                    self.log_snapshot(services, "mesh-join: confirm", snapshot);
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                 }
                 self.on_route_snapshot(services, snapshot, now);
@@ -1706,20 +1762,24 @@ impl Mesh {
             JoinEvent::Converged(snapshot) => {
                 self.join_timeout_logged = false;
                 self.log_snapshot(services, "mesh-join: converged role=member", snapshot);
-                self.log_homes(services, snapshot);
-                self.log_shard(services, snapshot, false);
+                if !self.m3_quiet() && snapshot.len() <= 2 {
+                    self.log_homes(services, snapshot, true);
+                    self.log_shard(services, snapshot, false);
+                }
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
-                self.log_snapshot(services, "mesh-join: duplicate", snapshot);
-                self.log_homes(services, snapshot);
-                self.log_shard(services, snapshot, false);
+                if !self.m3_quiet() && snapshot.len() <= 2 {
+                    self.log_snapshot(services, "mesh-join: duplicate", snapshot);
+                    self.log_homes(services, snapshot, true);
+                    self.log_shard(services, snapshot, false);
+                }
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Refreshed(snapshot) => {
                 // Routine M3 refresh: another member joined and advanced the
-                // epoch.  The full table is available at `/mesh/homes` and
-                // `/mesh/shard`; the serial line only records convergence.
+                // epoch.  Above two members the serial line is compact and
+                // the table is read over HTTP.
                 let mut line = Line::new();
                 line.str("mesh-join: refreshed epoch=");
                 line.u64(snapshot.epoch as u64);
@@ -1729,7 +1789,9 @@ impl Mesh {
                 line.digest(&snapshot.digest());
                 line.push(b'\n');
                 log(services, line.as_bytes());
-                self.log_shard(services, snapshot, false);
+                if !self.m3_quiet() && snapshot.len() <= 2 {
+                    self.log_shard(services, snapshot, false);
+                }
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Refused { reason, epoch } => {
@@ -1745,7 +1807,7 @@ impl Mesh {
                 node,
                 epoch,
                 digest,
-            } => {
+            } if self.verbose_join_log() => {
                 let mut line = Line::new();
                 line.str("mesh-join: ack from=");
                 line.node(node);
@@ -1756,7 +1818,7 @@ impl Mesh {
                 line.push(b'\n');
                 log(services, line.as_bytes());
             }
-            JoinEvent::Rejected(label) => {
+            JoinEvent::Rejected(label) if self.verbose_join_log() => {
                 // The envelope and frame were well formed; the membership
                 // policy rejected the body.  Keep this out of the transport
                 // reject counter, which the M2-1 pass line reports.
@@ -1766,6 +1828,9 @@ impl Mesh {
                 line.push(b'\n');
                 log(services, line.as_bytes());
             }
+            // A compact multi-member view suppresses per-ack and per-reject
+            // lines; the protocol handling above is unchanged.
+            JoinEvent::Acked { .. } | JoinEvent::Rejected(_) => {}
             JoinEvent::Suspect { .. }
             | JoinEvent::Failed { .. }
             | JoinEvent::Recovered { .. }
@@ -1773,8 +1838,25 @@ impl Mesh {
             | JoinEvent::AuthorityLost { .. }
             | JoinEvent::None => {}
         }
-        if let Some(reply) = outcome.reply {
-            self.send_join(services, reply, source, now);
+    }
+
+    /// Whether the detailed M2 transcript is affordable for this view.
+    ///
+    /// Two members keep every line the M2 runbook reads.  Above two members
+    /// the emulated serial line is the bottleneck, so only compact epoch
+    /// lines are written and the tables are read from the MCP HTTP surface.
+    /// The receive deadline for a partial record.
+    ///
+    /// The iris host forward can trickle the tail of a record through its
+    /// zero-window probe when the guest's receive window shrinks to a few
+    /// bytes.  The M2 10 s deadline is correct for a direct two-node relay;
+    /// an M3 shard run uses a longer bounded deadline so an 18-byte trickle
+    /// can finish instead of tearing down a healthy link.
+    fn receive_deadline_ms(&self) -> u64 {
+        if self.shard_count > 0 {
+            120_000
+        } else {
+            RECEIVE_DEADLINE_MS
         }
     }
 
@@ -1918,6 +2000,25 @@ impl Mesh {
                 log(services, line.as_bytes());
             }
         }
+    fn verbose_join_log(&self) -> bool {
+        if self.m3_quiet() {
+            return false;
+        }
+        self.join
+            .as_ref()
+            .and_then(|join| join.converged())
+            .map(|snapshot| snapshot.len() <= 2)
+            .unwrap_or(true)
+    }
+
+    /// Whether this boot is the opt-in M3 shard surface.
+    ///
+    /// An M3 shard run asks for a 32-object `/mesh/shard` view and fetches the
+    /// full tables over HTTP.  Its serial transcript is compact so the
+    /// emulated line cannot starve the receive path.  The M2 run (no
+    /// `mesh.shard` key) keeps the detailed transcript.
+    fn m3_quiet(&self) -> bool {
+        self.shard_count > 0
     }
 
     fn log_snapshot(
@@ -1934,20 +2035,30 @@ impl Mesh {
         line.u64(snapshot.len() as u64);
         line.str(" digest=");
         line.digest(&snapshot.digest());
-        line.str(" snapshot=");
-        line.nodes(&snapshot.members);
+        if self.m3_quiet() || snapshot.len() > 2 {
+            line.str(" compact=1");
+        } else {
+            line.str(" snapshot=");
+            line.nodes(&snapshot.members);
+        }
         line.push(b'\n');
         log(services, line.as_bytes());
     }
 
     fn on_route_snapshot(&mut self, services: &Services, snapshot: &MembershipSnapshot, now: u64) {
+        let verbose = self.verbose_join_log();
         if let Some(route) = self.route.as_mut() {
             if let Some(step) =
                 route.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest(), now)
             {
                 for event in &step.events {
                     route.note_event(event);
-                    log_route_event(services, event);
+                    // The route report is served by `/mesh/route`; above two
+                    // members the serial fence rows would compete with the
+                    // receive path for the same slow line.
+                    if verbose {
+                        log_route_event(services, event);
+                    }
                 }
             }
         }
@@ -1956,14 +2067,16 @@ impl Mesh {
                 migrate.on_snapshot(snapshot.epoch, &snapshot.members, snapshot.digest())
             {
                 for event in &step.events {
-                    log_migrate_event(services, event);
+                    if verbose {
+                        log_migrate_event(services, event);
+                    }
                 }
                 migrate.build_report();
             }
         }
     }
 
-    fn log_homes(&self, services: &Services, snapshot: &MembershipSnapshot) {
+    fn log_homes(&self, services: &Services, snapshot: &MembershipSnapshot, rows: bool) {
         let objects = fixture_objects(self.home_count);
         let Some(table) = HomeTable::new(&snapshot.view(), snapshot.digest(), &objects) else {
             return;
@@ -1979,6 +2092,9 @@ impl Mesh {
         header.u64(table.len() as u64);
         header.push(b'\n');
         log(services, header.as_bytes());
+        if !rows {
+            return;
+        }
         for entry in &table.entries {
             let mut line = Line::new();
             line.str("mesh-home: object=");
@@ -2063,6 +2179,7 @@ impl Mesh {
         message: JoinMessage,
         reply_to_source: NodeId,
         now: u64,
+        verbose: bool,
     ) {
         // SAFETY: single-threaded module; JOIN_TX is the only encode buffer and
         // the bytes are copied into the send queue before the next message.
@@ -2106,35 +2223,37 @@ impl Mesh {
                 ack.request_nonce,
             ),
         };
-        match &message {
-            JoinMessage::Request(request) => {
-                let attempts = self.join.as_ref().map(|join| join.attempts()).unwrap_or(0);
-                let mut line = Line::new();
-                line.str("mesh-join: request from=");
-                line.node(&self.self_id);
-                line.str(" incarnation=");
-                line.u64(request.incarnation);
-                line.str(" last_epoch=");
-                line.u64(request.last_epoch as u64);
-                line.str(" last_digest=");
-                line.digest(&request.last_digest);
-                line.str(" nonce=");
-                line.u64(request.nonce);
-                line.str(" attempt=");
-                line.u64(attempts as u64);
-                line.push(b'\n');
-                log(services, line.as_bytes());
+        if verbose {
+            match &message {
+                JoinMessage::Request(request) => {
+                    let attempts = self.join.as_ref().map(|join| join.attempts()).unwrap_or(0);
+                    let mut line = Line::new();
+                    line.str("mesh-join: request from=");
+                    line.node(&self.self_id);
+                    line.str(" incarnation=");
+                    line.u64(request.incarnation);
+                    line.str(" last_epoch=");
+                    line.u64(request.last_epoch as u64);
+                    line.str(" last_digest=");
+                    line.digest(&request.last_digest);
+                    line.str(" nonce=");
+                    line.u64(request.nonce);
+                    line.str(" attempt=");
+                    line.u64(attempts as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinMessage::Ack(ack) => {
+                    let mut line = Line::new();
+                    line.str("mesh-join: ack-sent epoch=");
+                    line.u64(ack.epoch as u64);
+                    line.str(" digest=");
+                    line.digest(&ack.digest);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                _ => {}
             }
-            JoinMessage::Ack(ack) => {
-                let mut line = Line::new();
-                line.str("mesh-join: ack-sent epoch=");
-                line.u64(ack.epoch as u64);
-                line.str(" digest=");
-                line.digest(&ack.digest);
-                line.push(b'\n');
-                log(services, line.as_bytes());
-            }
-            _ => {}
         }
         let body = &buffer[..len];
         // A confirmation is the root's epoch decision.  Persist the signed

@@ -37,6 +37,15 @@ cargo test
 The emulator is `irix7/iris`; the rig scripts are in `irix7/project/scripts/rig/`.
 The MCP development loop is described in [`docs/spec/mcp.md`](docs/spec/mcp.md).
 
+## Pre-release compatibility
+
+IRIX 7 has no stable base or deployed users. Internal interfaces are Version 1 and may be
+replaced without compatibility shims, dual-stack paths or migration code. Update every
+in-tree caller and delete the old path; keep only safety/security invariants, explicit
+external standards and M1/M2/M3 marker evidence. See
+[`docs/spec/pre-release.md`](docs/spec/pre-release.md) before adding any compatibility or
+version-negotiation code.
+
 ## Clean-room rules
 
 IRIX 7 is a clean-room project. The private `irix7/irix6` repository contains SGI-derived
