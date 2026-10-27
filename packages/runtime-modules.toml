@@ -20,6 +20,7 @@ trust_epoch = 1
 # policy in packages/release-trust.conf mirrors this release policy.
 revoked = []
 root = "demo-root@1.0.0"
+host_abi = "13.0"
 
 [[module]]
 name = "demo-dep"
