@@ -64,3 +64,4 @@
 - [Rust OS design survey](research/rust-os-design-research.md)
 - [First Rust std image](research/std-hello-bringup.md)
 - [relibc n32 bring-up](research/relibc-n32-bringup.md)
+- [QUIC as the primary transport](research/quic-primary.md)
