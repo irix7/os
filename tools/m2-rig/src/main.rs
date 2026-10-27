@@ -2026,8 +2026,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
         attempt = Some(probe_two_way(nodes));
         if attempt
             .as_ref()
-            .and_then(|(value, _)| value.iter().all(|probe| probe.ok).then_some(()))
-            .is_some()
+            .is_some_and(|(value, _)| value.iter().all(|probe| probe.ok))
         {
             break;
         }
