@@ -53,10 +53,21 @@ counters advance and the control class is not blocked.
 ## 4. Control and cancel
 
 The rig has `control_during_bulk` (start a 64 KiB bulk, start an 8-sample latency probe,
-then finish both) and `cancel_bulk` (start a 64 KiB bulk, cancel after 50 ms, require
-`state=failed error=cancel` with fewer chunks than the full record).  The host policy is
-tested; a clean end-to-end run was not captured before the reporting cut-off because the
-shared host repeatedly failed the two-kernel boot or stalled a large record.
+then finish both) and `cancel_bulk` (start a 1 MiB bulk, cancel after 50 ms, require
+`state=failed error=cancel`).
+
+Real direct two-kernel run after the rebase onto `206d19a`:
+
+```text
+control during bulk: 65536 B in 16 chunks, bulk 191 ms, p50 30 ms, p95 31 ms
+cancel: state=failed error=cancel
+```
+
+The control probe is unchanged from the idle p50/p95 on this branch (30/31 ms; the 2 ms
+readiness path is #248).  The cancel response cleared the transfer and reset stream 5 on
+both sides.  A later run hit the MCP HTTP close race during a status poll, so the final
+bundle keeps the earlier successful control/cancel transcript and records the poll failure
+rather than hiding it.
 
 ## 5. What is not claimed
 
@@ -64,4 +75,6 @@ shared host repeatedly failed the two-kernel boot or stalled a large record.
 - One TCP link per peer; TCP-level head-of-line blocking remains between peers sharing a
   hub link.
 - No TLS/peer authentication.
-- The control/cancel real-kernel bundle is an explicit open evidence item, not a pass.
+- The cancel happened after a 64 KiB transfer had already completed in the first run; the
+  1 MiB cancel variant exists but a later poll hit the HTTP close race.  The cancellation
+  state machine is exercised, not a partial-transfer byte count.

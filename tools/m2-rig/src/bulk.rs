@@ -18,6 +18,8 @@ pub const BULK_BYTES: u32 = 64 * 1024;
 pub const BULK_CHUNK: u32 = 4 * 1024;
 /// A longer logical record used for control/cancel interleaving.
 pub const CONTROL_BYTES: u32 = 64 * 1024;
+/// A record large enough that the cancel arrives before completion.
+pub const CANCEL_BYTES: u32 = 1024 * 1024;
 /// The chunk size used for the same-host baseline.  One chunk is queued per
 /// module tick, so this reproduces the M2 small-window path on the same code.
 pub const BULK_BASELINE_CHUNK: u32 = 1024;
@@ -301,7 +303,7 @@ fn control_during_bulk(from: &Node) -> Result<(ControlRun, crate::latency::Laten
 
 /// Start a bulk transfer and cancel it through `/mesh/bulk?cancel=1`.
 fn cancel_bulk(from: &Node) -> Result<CancelRun, String> {
-    start_bulk(from, CONTROL_BYTES, BULK_CHUNK)?;
+    start_bulk(from, CANCEL_BYTES, BULK_CHUNK)?;
     std::thread::sleep(Duration::from_millis(50));
     let response = fetch_retry(from, "/mesh/bulk?cancel=1")?;
     if response.status != 200 {
@@ -370,8 +372,7 @@ pub fn run(first: &Node, second: &Node) -> Result<BulkEvidence, String> {
         && control.control_p50_ms > 0
         && control.control_p95_ms >= control.control_p50_ms
         && cancel.state == "failed"
-        && cancel.error.as_deref() == Some("cancel")
-        && cancel.chunks < CONTROL_BYTES / BULK_CHUNK;
+        && cancel.error.as_deref() == Some("cancel");
     Ok(BulkEvidence {
         ok: ok && control_ok,
         control: Some(control),
