@@ -260,7 +260,7 @@ impl AuthorityRoot {
             .map(|(node, _)| node)
             .collect();
         if failed.is_empty() {
-            return Vec::new();
+            return alloc::vec::Vec::new();
         }
         let snapshot = self.snapshot().ok()?;
         failed
