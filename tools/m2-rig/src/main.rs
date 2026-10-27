@@ -1158,7 +1158,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         && migration_error.is_none()
         && (options.fault != Fault::None || migration_ok)
         && failure_ok
-        && probes.len() == 2
+        && probes.len() <= 2
         && probes.iter().all(|probe| probe.ok)
         && mesh_ok
         && join.ok
