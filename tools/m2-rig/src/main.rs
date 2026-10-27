@@ -914,6 +914,17 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             let (value, relay) = probe_mesh(&nodes);
             mesh = Some(value);
             mesh_relay = relay;
+            // Probe on the stable initial pair before any restarts or
+            // failures, when both mesh links are established.  Running the
+            // probe after a root/member restart is flaky because the member's
+            // mesh link has timed out and both links may be re-establishing.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
         }
         if options.fault.joins() {
             wait_join(&nodes, Duration::from_secs(60));
@@ -1061,18 +1072,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
-            }
-        }
-        // The two-way HTTP probe runs after all restarts for every non-failure
-        // mode.  It verifies both nodes' MCP HTTP servers are responsive and
-        // the two guests can exchange frames through the host relay.
-        if !options.fault.failures() {
-            match settle_and_probe(&nodes) {
-                Ok((value, value_relays)) => {
-                    probes = value;
-                    relays = value_relays;
-                }
-                Err(error) => probe_error = Some(error),
             }
         }
     } else {
