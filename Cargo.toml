@@ -39,7 +39,7 @@ default-members = [
 ]
 
 [workspace.dependencies]
-module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.8.0", package = "module-abi" }
+module-abi = { git = "https://github.com/irix7/os-sdk", tag = "v0.9.0", package = "module-abi" }
 
 [profile.dev]
 panic = "abort"

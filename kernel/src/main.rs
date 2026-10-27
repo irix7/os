@@ -688,9 +688,11 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         // Drive the network stack, module callbacks and telnet console.
         graphics_console::flush();
         net::poll();
-        module::poll();
+        let module_ran = module::poll();
         telnet::poll();
         telnet::poll_local();
+        // Flush replies queued by the module and telnet before parking.
+        net::poll();
         // Report once after the first full service pass, so MCP/telnet
         // traffic and the optional Wasm probe are inside the smoke window.
         static mut POST_REPORTED: bool = false;
@@ -717,8 +719,14 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         }
 
         // Park until the next timer tick; iris releases the host core while
-        // wait is outstanding and interrupts are enabled.
-        idle::wait();
+        // wait is outstanding and interrupts are enabled.  A ready module
+        // socket or recent module work uses one 0.5 ms observation; the 10 ms
+        // tick remains the deadline fallback.
+        if module::tcp_ready() || module_ran || module::recently_active() {
+            idle::wait_short();
+        } else {
+            idle::wait();
+        }
     }
 }
 
