@@ -37,15 +37,15 @@ CPU without removing the poll.
 
 ## Evidence
 
-Two real `iris` kernels, direct transport, 50-sample `/mesh/latency` probe:
+Two real `iris` kernels, direct transport, 50-sample `/mesh/latency` probe
+(after the rebase onto `206d19a`):
 
 | Path | p50 | p95 | min | max |
 |---|---:|---:|---:|---:|
 | 10 ms tick only (before) | 30 ms | 31–32 ms | 30 ms | 282 ms |
-| readiness + 0.5 ms observation | 2 ms | 2 ms | 1 ms | 269 ms |
+| readiness + 0.5 ms observation (rebased `206d19a`) | 2 ms | 3 ms | 1 ms | 11 ms |
 
-The p50 improvement is about 15×.  The single 269 ms sample is a host-scheduling tail,
-not a protocol path; it is recorded rather than hidden.  M1/M2 markers are unchanged
+The p50 improvement is about 15× on the rebased stack; the worst sample was 11 ms.  M1/M2 markers are unchanged
 (`mesh=single`, `m1-post: mesh=0/0/0`, join epoch 2, homes, route, migration).
 
 ## Consequences
