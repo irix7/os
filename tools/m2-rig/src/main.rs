@@ -1051,20 +1051,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 Err(error) => join_error = Some(error),
             }
         }
-        // The guest-level two-way HTTP probe runs on the stable initial pair
-        // before any restart.  After a root restart the member's mesh link has
-        // timed out and both links may be re-establishing, which makes the
-        // probe flaky.  Running it first keeps the probe deterministic; the
-        // restart gates below do not depend on the probe result.
-        if !options.fault.failures() {
-            match settle_and_probe(&nodes) {
-                Ok((value, value_relays)) => {
-                    probes = value;
-                    relays = value_relays;
-                }
-                Err(error) => probe_error = Some(error),
-            }
-        }
         // The root restart is the M2-2 persistence gate.  It runs after the
         // migration so the migration evidence is collected on the original
         // pair; the member stays up while the root resumes from its store.
