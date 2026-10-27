@@ -7,11 +7,13 @@ two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, 
 the M2-2 signed join until both nodes report the same membership epoch and snapshot. It
 then fetches the M2-3 rendezvous home table from both kernels, checks the stale-epoch
 negative, drives the M2-4 remote capability route and its one-`MOVED` retry in both
-directions, restarts the member and requires it to rejoin at the same epoch with the same
-table, and then drives the M2-5 L0 actor migration n0→n1→n0 with the same canonical state
-hash at each boundary. `--fault kill-peer` and `--fault partition` replace the
-restart with the M2-6 failure scenario: a bounded suspect/failed/removal transition,
-locally recomputed homes, lease fencing and the mutable-object partition rule.
+directions, restarts the member and requires it to restore its signed confirmed epoch from
+a dedicated scratch volume and rejoin at the same epoch with the same table, drives the
+M2-5 L0 actor migration n0→n1→n0 with the same canonical state hash at each boundary, and
+finally restarts the root while the member stays up to prove root epoch recovery.
+`--fault kill-peer` and `--fault partition` replace the restarts with the M2-6 failure
+scenario: a bounded suspect/failed/removal transition, locally recomputed homes, lease
+fencing and the mutable-object partition rule.
 
 The `shard` command is the first M3 slice: two real kernels converge on the same
 rendezvous table and serve `/mesh/shard`, while the 1/2/8/128-node shard policy is a host
@@ -45,7 +47,7 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 
 | Command | Purpose |
 |---|---|
-| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member (default), drive the eleven migration steps, stop, write evidence. In `kill-peer`/`partition` it runs the failure scenario instead of the restart and does not drive migration. |
+| `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member (default), drive the eleven migration steps, restart the root, stop, write evidence. In `kill-peer`/`partition` it runs the failure scenario instead of the restarts and does not drive migration. |
 | `shard` | Start `--nodes` kernels (two by default), join them through the M2 relay, verify `/mesh/shard`, `/mesh/homes`, the stale-epoch negative and one remote stat, stop, write the M3 evidence bundle. `--hub` enables the experimental multi-node link switch; see [`../../docs/plan/m3-rig.md`](../../docs/plan/m3-rig.md). |
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
@@ -63,7 +65,7 @@ the eight-node monitor block (`base+600`) cannot collide.
 
 | Mode | What changes | Expected result |
 |---|---|---|
-| `none` (default) | Full `mesh.*` configuration with `mesh.route=2`. | The join converges at epoch 2; both kernels serve the same homes; the member restarts and rejoins at the same epoch with the same table; `?epoch=1` is `409 stale` with no rows; the actor moves n0→n1→n0 with the same state hash, the queued message resumes, stale old homes are refused and duplicates are idempotent. |
+| `none` (default) | Full `mesh.*` configuration with `mesh.route=2` and a scratch epoch-store target. | The join converges at epoch 2; both kernels serve the same homes; the member restores its signed confirmation and rejoins at the same epoch with the same table; `?epoch=1` is `409 stale` with no rows; the actor moves n0→n1→n0 with the same state hash, the queued message resumes, stale old homes are refused and duplicates are idempotent; the root restarts, restores the signed epoch record and re-confirms the same epoch with the live member. |
 | `no-peer` | No `mesh.*` key at all. | No mesh listener and no join; `/mesh/homes` is `404 disabled`; the HTTP probe passes and the M1 `mesh=single` / `mesh=0/0/0` markers are preserved. |
 | `wrong-authority` | n1 has a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, keeps its seed view and serves `409 pending` with no homes. |
 | `no-route` | The join/homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both nodes log `mesh-route: disabled reason=config` and `mesh-migrate: disabled reason=config`, `/mesh/route` and `/mesh/migrate` are `404 disabled`, and no route step, `MOVED` or migration runs. |
@@ -87,8 +89,14 @@ the eight-node monitor block (`base+600`) cannot collide.
   member list and epoch signed with Ed25519; the member installs it and acknowledges. Both
   nodes print `mesh-join: converged` with the same two member IDs, epoch and digest, and
   the rig recomputes that digest independently.
-- A clean member restart: n1 stops, restarts from the seed epoch, and the root re-confirms
-  the same epoch and snapshot; the rig checks the first and rejoin transcripts.
+- A signed epoch restore on member restart: n1 stops, verifies the stored root-signed
+  confirmation, presents `last_epoch=2` rather than the seed, and the root re-confirms the
+  same epoch and snapshot.  The rig resets the live root's mesh link (`mesh.reconnect`)
+  so the iris forward cannot keep the old guest-side socket, then starts the relay.  It
+  fails the run if the restore line is missing or the presented epoch is the seed.
+- A signed epoch restore on root restart: n0 stops while n1 stays up, verifies its stored
+  signed epoch record, resumes epoch 2, and confirms the live member's `last_epoch=2`
+  without `epoch-regression`.  The live member gets the same link reset.
 - A real rendezvous mapping: both kernels compute the same object-to-home rows from the
   confirmed snapshot with `mesh-core`; the rig recomputes the fixture IDs, winners and
   digest independently, compares the MCP body with the serial group, and checks the same
@@ -151,6 +159,11 @@ The DS1386 environment has 298 bytes before the MAC slot, so the root stores onl
 seed and derives its public key, and the rig omits `mesh.obj` at its default of eight so
 the `mesh.route=1` opt-in fits. `--fault no-peer` omits every `mesh.*` key.
 
+The confirmed epoch is **not** an NVRAM key.  Each node gets a dedicated 4 MiB scratch
+volume at SCSI target 3 (target 2 is the module's EROFS fixture); the module writes/reads the signed record through the ABI v11
+`block_write`/`block_read` service at LBA 8.  A fresh `up`/`run` deletes the scratch image;
+the restart paths keep it.  `manifest.json` records the artefacts and source provenance.
+
 ## Tests
 
 ```sh
@@ -176,7 +189,7 @@ and the actor state/migration/duplicate/capability tests are in `crates/mesh-mig
 
 | File | Role |
 |---|---|
-| `src/main.rs` | Commands, probes, member restart, evidence wiring. |
+| `src/main.rs` | Commands, probes, member/root restart, evidence wiring. |
 | `src/rig.rs` | Instance derivation, NVRAM, process control, serial facts. |
 | `src/join.rs` | Join/epoch oracle, independent snapshot digest, restart checks. |
 | `src/homes.rs` | Home-table codec, independent fixture/rendezvous oracle and checks. |
@@ -184,7 +197,7 @@ and the actor state/migration/duplicate/capability tests are in `crates/mesh-mig
 | `src/migrate.rs` | Migration report codec, independent actor/hash oracle and eleven-step driver. |
 | `src/failure.rs` | M2-6 kill-peer/partition scenario, expected views and checks. |
 | `src/relay.rs` | HTTP relay and the persistent mesh relay. |
-| `src/evidence.rs` | `summary.md` and `run.json`. |
+| `src/evidence.rs` | `summary.md`, `run.json` and the deterministic `manifest.json`. |
 | `src/fixture.rs` | Loopback HTTP module fixture. |
 | `src/nvram.rs` | DS1386 image layout. |
 | `src/probe.rs` | Telnet/HTTP transcript probe. |

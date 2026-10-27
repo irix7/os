@@ -23,8 +23,9 @@ The existing pieces are:
   deterministic snapshot over `mesh-core::MembershipView`.
 - `cap-engine` owns Ed25519 verification, a trust store and `SigningAuthority`.  It does
   not own a key store or a threshold root yet.
-- The module ABI has `config_get` only.  A module cannot write NVRAM, so a confirmed
-  epoch cannot be persisted by this slice without a kernel/ABI change.
+- The module ABI has `config_get` only; it cannot write NVRAM.  ABI 11 does expose
+  `block_read`/`block_write`, so a module can persist a signed record on a dedicated SCSI
+  scratch target without a kernel change.
 
 ## Decision
 
@@ -105,20 +106,37 @@ The DS1386 environment has 298 bytes before the MAC slot.  The two 64-hex keys d
 fit on the root, so the root stores only `mesh.key` and derives its public key; the member
 stores only `mesh.pub`.  This is why the keys have short names.
 
-### 4. Restart rules, given no persisted epoch store
+### 4. Restart rules and the signed epoch store
 
-The module cannot write NVRAM.  The confirmed epoch is therefore in memory for one boot.
-The rules are explicit:
+The module cannot write NVRAM.  A confirmed epoch is instead written to the ABI v11
+`block_write` / `block_read` service on a dedicated SCSI scratch target (target 3, starting
+at LBA 8).  The record is signed by the authority root and verified on the next boot:
+
+- the root writes an `EpochRecord` signed over `IRIX7-M2-EPOCH-STORE-v1`, the epoch and the
+  full member list;
+- a member writes the exact Ed25519-signed `EpochConfirmation` it installed;
+- a restore verifies the signature, root, subject (member only), epoch and canonical member
+  list before installing anything;
+- a corrupt, foreign or role-mismatched record **disables the join** rather than silently
+  starting from the seed.
 
 | Event | M2 outcome |
 |---|---|
-| Member restarts, root still up | The member starts at the seed epoch and sends `last_epoch=1`.  The root sees an existing member and re-confirms its current epoch and list.  The member installs the same epoch.  The rig proves this on real kernels. |
-| Root restarts, member still up | The root starts at the seed.  The member presents its higher epoch; the root refuses with `epoch-regression` instead of lowering the member's view.  The member keeps its last confirmed view, does not advance the epoch and does not accept a new membership change.  Recovery needs an operator to re-seed both NVRAM images.  A host test covers the refusal. |
-| Both restart | The same seed and the same join sequence reproduce the same epoch and snapshot.  Runs are deterministic: the two-node epoch is 2 and the digest is `2EDA13C5AC6F726132E0479DFE6045B7`. |
+| Member restarts, root still up | The member verifies its stored confirmation, starts at the confirmed epoch and sends `last_epoch=E`.  The root re-confirms the same epoch and list.  The rig requires the restore line and `last_epoch` equal to the confirmed epoch; a seed fallback fails the gate. |
+| Root restarts, member still up | The root verifies its stored `EpochRecord`, resumes epoch `E`, and the live member presents `last_epoch=E`.  The root confirms the same epoch; no `epoch-regression` is allowed.  The rig restarts the root while the member stays up and requires both views to remain at `E`. |
+| Both restart | Each verifies its own signed record and resumes the same epoch.  If the scratch volume is absent both fall back to the seed, log `epoch-store: unavailable`, and the join still converges, but that run does not claim persistence.  Runs with the store are deterministic: the two-node epoch is 2 and the digest is `2EDA13C5AC6F726132E0479DFE6045B7`. |
 
-The missing persistent epoch store is a **documented ABI gap**, not a silent assumption.
-A future `config_set` or a module-owned writable record can persist the confirmed epoch
-without changing this handshake.
+The store is deliberately **not** NVRAM: the DS1386 environment has no write service, and
+the 298-byte environment is already full at the M2 route/failure configuration.  It is a
+local scratch record, not a replicated log; a node with a lost or reformatted scratch
+volume logs the absence and fails back to the seed.  The store is enabled automatically
+whenever the join is enabled and an ABI 11 kernel exposes target 3; the M2 rig provisions
+that target on every node.  The root writes its record before sending the confirmation,
+but there is no fsync or write-ahead log: a power loss can lose the newest record.  If the
+member kept a newer confirmation the root refuses with `epoch-regression` rather than move
+backwards; if both nodes lost it the epoch can regress.  The rig proves clean process
+restarts, not power-loss durability.  A future `config_set` service or a replicated log
+can replace the scratch volume without changing the handshake or the fail-closed rules.
 
 ### 5. What this slice is not
 
@@ -128,8 +146,10 @@ without changing this handshake.
 - No epoch push to members that did not ask.  A two-node mesh converges because the member
   asks.  A third node's join would advance the root's epoch without telling node 1; that
   is M3 gossip and is not claimed here.
-- No persisted epoch, no threshold root, no key rotation, no revocation, no TLS and no
-  cross-restart replay window.  These are the same limitations recorded in
+- No *replicated* epoch store, no threshold root, no key rotation, no revocation, no TLS
+  and no cross-restart replay window.  The local signed record survives a process restart
+  on a provisioned scratch target; it is not a consensus log and does not recover a node
+  whose scratch volume is lost.  These are the same limitations recorded in
   M2-ADR-0002/0003, not new claims.
 - `mesh-sim` is not evidence.  The gate is the two-kernel rig.
 
@@ -140,13 +160,15 @@ without changing this handshake.
 - The root's membership table is the only authority for the epoch; a member cannot
   self-confirm, and a partition leaves it on its last confirmed view.
 - The 1-of-1 root remains a single point of failure for **membership changes**, not for
-  the normal data path.  The root-restart rule fails closed instead of inventing a new
-  epoch.
+  the normal data path.  A restart with a valid signed record resumes the confirmed view;
+  a corrupt or missing record fails closed instead of inventing a new epoch or silently
+  lowering a member.
 - The join body is bounded at 4 KiB.  A 128-member confirmation fits (2,176 bytes), but
   the module logs at most two member IDs on a 256-byte line; the digest is always logged.
 - The MCP module grew from 104,840 bytes (M2-1) to 198,264 bytes because it now links
   `mesh-join`, `mesh-service`, `mesh-core`, `cap-engine`, `ed25519-dalek` and `blake3`.
-  It remains well inside the 2 MiB slot.
+  The signed epoch store adds a few hundred bytes of code and one 2.5 KiB static buffer;
+  it remains well inside the 512 KiB slot A.
 
 ## Alternatives considered
 
@@ -154,7 +176,7 @@ without changing this handshake.
 |---|---|
 | Trust `mesh.authority` as a claimed NodeId without a signature | Any peer on the loopback path could install an epoch.  M2 must fail closed; a names-only proof is not a proof. |
 | A shared-secret MAC keyed by an NVRAM value | Smaller, but it is not the `cap-engine` authority seam, gives no public verification and would be replaced by Ed25519 anyway.  A second crypto path is worse than one. |
-| Persist the epoch in NVRAM now | The module ABI has no write service.  Adding one is a kernel/ABI change and expands the frozen bootstrap; the task is a join slice, so the rule is documented and the gap is handed off. |
+| Persist the epoch in NVRAM now | The module ABI has no NVRAM write service, and the 298-byte environment is already full at the route/failure configuration.  ABI 11 `block_write` on a dedicated scratch target closes the gap without expanding the frozen bootstrap. |
 | Self-confirm on the member | Produces two authoritative views after a partition, which M2-ADR-0003 forbids. |
 | A central membership broker | Contradicts the "no central directory" M2 criterion; the root is already the authority. |
 | Gossip the epoch now | M3 work; a two-node join does not need it. |
@@ -192,9 +214,20 @@ n0: mesh-join: ack from=08006969B60100000000000000000000 epoch=2 digest=2EDA13C5
 rejoin n1: epoch 2 -> 2 digest 2EDA13C5AC6F726132E0479DFE6045B7 -> 2EDA13C5AC6F726132E0479DFE6045B7 same=true
 ```
 
-with the member's rejoin request starting at `last_epoch=1` and the root re-confirming
-`epoch=2`.  The rig recomputes the digest from the documented canonical bytes and requires
-it to match both nodes.  The `wrong-authority` mode rejects with
-`mesh-join: reject reason=bad-signature` and leaves the member at epoch 1.  The `no-peer`
-mode has no mesh listener and no join, and keeps the M1 `mesh=single` and `mesh=0/0/0`
-markers.
+The persisted-epoch run additionally records:
+
+```text
+n0: epoch-store: stored epoch=2 members=2 digest=2EDA13C5AC6F726132E0479DFE6045B7 source=root-record
+n1: epoch-store: stored epoch=2 members=2 digest=2EDA13C5AC6F726132E0479DFE6045B7 source=confirmation
+n1 (restart): epoch-store: restored epoch=2 members=2 digest=2EDA13C5AC6F726132E0479DFE6045B7 source=confirmation
+n1 (restart): mesh-join: request from=... last_epoch=2 last_digest=2EDA13C5...
+n0 (restart): epoch-store: restored epoch=2 members=2 digest=2EDA13C5... source=root-record
+n0 (restart): mesh-join: local role=root epoch=2 members=2 ...
+```
+
+The rig recomputes the digest from the documented canonical bytes, requires it to match
+both nodes, requires the member's rejoin `last_epoch` to equal the confirmed epoch, and
+requires the root restart to recover the same epoch with no `epoch-regression`.  The
+`wrong-authority` mode rejects with `mesh-join: reject reason=bad-signature` and leaves the
+member at epoch 1.  The `no-peer` mode has no mesh listener and no join, and keeps the M1
+`mesh=single` and `mesh=0/0/0` markers.

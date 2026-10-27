@@ -28,14 +28,15 @@ mod sha256;
 mod shard;
 
 use std::fs;
-use std::net::Ipv4Addr;
+use std::io::{Read, Write};
+use std::net::{Ipv4Addr, TcpStream};
 use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
 use failure::FailureEvidence;
 use fixture::Fixture;
 use homes::HomesEvidence;
-use join::{JoinEvidence, RestartInput};
+use join::{JoinEvidence, RestartInput, RootRestartInput};
 use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
 use rig::{
@@ -244,7 +245,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     if options.fault.joins() {
         wait_join(&nodes, Duration::from_secs(60));
         wait_join_ack(&nodes, Duration::from_secs(20));
-        wait_homes_serial(&nodes, Duration::from_secs(20));
+        wait_homes_serial(&nodes, Duration::from_secs(60));
         std::thread::sleep(Duration::from_secs(10));
     } else if options.fault == Fault::WrongAuthority {
         wait_join_reject(&nodes, Duration::from_secs(30));
@@ -252,7 +253,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
     }
     let facts = snapshot_facts(&nodes);
     let keys = AuthorityKeys::lab();
-    let join = join::evaluate(&nodes, &facts, &keys, options.fault, None);
+    let join = join::evaluate(&nodes, &facts, &keys, options.fault, None, None);
     let home_inputs = collect_homes(options, &nodes, &facts, &join);
     let route = match collect_route(options, &nodes, &join) {
         Ok(value) => Some(value),
@@ -546,6 +547,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut migration = None;
     let mut migration_error = None;
     let mut restart = None;
+    let mut root_restart = None;
     let mut failure_evidence: Option<FailureEvidence> = None;
     let mut failure_error = None;
     let mut join_before_evidence: Option<JoinEvidence> = None;
@@ -571,7 +573,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // member is restarted; otherwise the restart can truncate it and
             // there is no evidence that B installed what A signed.
             wait_join_ack(&nodes, Duration::from_secs(20));
-            wait_homes_serial(&nodes, Duration::from_secs(20));
+            wait_homes_serial(&nodes, Duration::from_secs(60));
             // The MCP HTTP slot is armed by the module tick after the join
             // and homes logging settles.  Give it the same 10 s the guest HTTP
             // probe uses before the first control-plane fetch.
@@ -582,7 +584,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         }
         facts = snapshot_facts(&nodes);
 
-        let join_before = join::evaluate(&nodes, &facts, &keys, options.fault, None);
+        let join_before = join::evaluate(&nodes, &facts, &keys, options.fault, None, None);
         home_inputs = collect_homes(options, &nodes, &facts, &join_before);
         if let Some(error) = home_inputs.error.take() {
             homes_error = Some(error);
@@ -612,28 +614,51 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // in M2-0/M2-1/M2-2.  It runs after the MCP homes fetch because the
         // iris host forward can hold a half-open guest connection after the
         // probe; the control-plane evidence is collected on the clean path.
-        // The MCP server has one HTTP slot while the mesh is enabled, so let
-        // the last control-plane connection finish its close handshake before
-        // the peer's guest HTTP client arrives.  A single retry absorbs the
-        // iris forward's half-open connection without weakening the check.
-        std::thread::sleep(Duration::from_secs(12));
-        let mut probe_attempt = probe_two_way(&nodes);
-        if !probe_attempt
-            .as_ref()
-            .map(|(value, _)| value.iter().all(|probe| probe.ok))
-            .unwrap_or(false)
-        {
-            std::thread::sleep(Duration::from_secs(12));
-            probe_attempt = probe_two_way(&nodes);
-        }
-        match probe_attempt {
-            Ok((value, value_relays)) => {
-                probes = value;
-                relays = value_relays;
+        // Failure modes must probe while both guests are still alive.  The
+        // clean modes probe after the restart gates: the guest HTTP client
+        // can leave the single MCP HTTP slot in a close handshake, and the
+        // restart path needs that slot for `mesh.reconnect`.
+        if options.fault.failures() {
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
             }
-            Err(error) => probe_error = Some(error),
         }
 
+        // Run the migration on the stable initial pair.  Driving it after a
+        // member restart puts a stateful 11-step exchange on a just-reopened
+        // iris forward; the restart gates below do not depend on migration
+        // state, so this order is both valid and more reliable.
+        if options.fault.migrates() && join_error.is_none() {
+            if let (Some(epoch), Some(digest)) = (join_before.epoch, join_before.digest.clone()) {
+                if join_before.members.len() == 2 {
+                    let evidence = migrate::run(
+                        &nodes[0],
+                        &nodes[1],
+                        &join_before.members,
+                        epoch,
+                        &digest,
+                        Duration::from_secs(240),
+                    );
+                    if !evidence.ok {
+                        migration_error = Some(evidence.message.clone());
+                    }
+                    migration = Some(evidence);
+                    facts = snapshot_facts(&nodes);
+                } else {
+                    migration_error = Some(format!(
+                        "the migration scenario needs two members, got {}",
+                        join_before.members.len()
+                    ));
+                }
+            } else {
+                migration_error =
+                    Some("the migration scenario needs a converged epoch/digest".into());
+            }
+        }
         if options.fault.failures() {
             // The base M2-4 steps have already left a cached route and a
             // lease at the member.  Kill it (or cut the seam) and let the
@@ -664,37 +689,32 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     restart = Some(input);
                     // The root's transcript gained a confirmation and the
                     // member's transcript is now the rejoin boot.
-                    wait_homes_serial(&nodes, Duration::from_secs(20));
+                    wait_homes_serial(&nodes, Duration::from_secs(60));
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
             }
         }
-        if options.fault.migrates() && join_error.is_none() {
-            if let (Some(epoch), Some(digest)) = (join_before.epoch, join_before.digest.clone()) {
-                if join_before.members.len() == 2 {
-                    let evidence = migrate::run(
-                        &nodes[0],
-                        &nodes[1],
-                        &join_before.members,
-                        epoch,
-                        &digest,
-                        Duration::from_secs(240),
-                    );
-                    if !evidence.ok {
-                        migration_error = Some(evidence.message.clone());
-                    }
-                    migration = Some(evidence);
+        // The root restart is the M2-2 persistence gate.  It runs after the
+        // migration so the migration evidence is collected on the original
+        // pair; the member stays up while the root resumes from its store.
+        if options.fault == Fault::None && join_error.is_none() && migration_error.is_none() {
+            match restart_root(options, &nodes, &mut running, &facts, &mut mesh_relay) {
+                Ok(input) => {
+                    root_restart = Some(input);
                     facts = snapshot_facts(&nodes);
-                } else {
-                    migration_error = Some(format!(
-                        "the migration scenario needs two members, got {}",
-                        join_before.members.len()
-                    ));
                 }
-            } else {
-                migration_error =
-                    Some("the migration scenario needs a converged epoch/digest".into());
+                Err(error) => join_error = Some(error),
+            }
+        }
+
+        if !options.fault.failures() {
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
             }
         }
     } else {
@@ -709,9 +729,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // evidence, not by the M2-2 restart oracle.
         join_before_evidence
             .clone()
-            .unwrap_or_else(|| join::evaluate(&nodes, &facts, &keys, options.fault, None))
+            .unwrap_or_else(|| join::evaluate(&nodes, &facts, &keys, options.fault, None, None))
     } else {
-        join::evaluate(&nodes, &facts, &keys, options.fault, restart.as_ref())
+        join::evaluate(
+            &nodes,
+            &facts,
+            &keys,
+            options.fault,
+            restart.as_ref(),
+            root_restart.as_ref(),
+        )
     };
     if matches!(options.fault, Fault::None | Fault::NoRoute) && join_error.is_none() {
         if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
@@ -853,6 +880,14 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     }
 }
 
+/// The last raw line containing `needle`, including a final partial line.
+///
+/// `str::lines()` yields the last line even when the UART has not written its
+/// newline yet; `BootFacts` deliberately ignores such a partial tail.
+fn raw_line<'a>(text: &'a str, needle: &str) -> Option<&'a str> {
+    text.lines().rev().find(|line| line.contains(needle))
+}
+
 /// Re-read both transcripts.
 fn snapshot_facts(nodes: &[Node]) -> Vec<BootFacts> {
     nodes
@@ -907,6 +942,11 @@ fn wait_join_ack(nodes: &[Node], timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+}
+
+/// Count raw lines containing `needle`.
+fn raw_count(text: &str, needle: &str) -> usize {
+    text.lines().filter(|line| line.contains(needle)).count()
 }
 
 /// Wait until both transcripts carry a complete home group.
@@ -1037,6 +1077,55 @@ fn print_homes_result(homes: &HomesEvidence) {
     }
 }
 
+/// Call one MCP tool on a guest through its host HTTP forward.
+fn mcp_tool(node: &Node, name: &str) -> Result<(), String> {
+    let body = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{{\"name\":\"{name}\"}}}}"
+    );
+    let request = format!(
+        "POST /mcp HTTP/1.0\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let mut last = String::new();
+    for attempt in 1..=6 {
+        let result = (|| -> Result<(), String> {
+            let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, node.http_port))
+                .map_err(|error| format!("connect {}:{}: {error}", node.name, node.http_port))?;
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| format!("timeout {}: {error}", node.name))?;
+            stream
+                .set_write_timeout(Some(Duration::from_secs(10)))
+                .map_err(|error| format!("timeout {}: {error}", node.name))?;
+            stream
+                .write_all(request.as_bytes())
+                .and_then(|_| stream.write_all(body.as_bytes()))
+                .map_err(|error| format!("write {}: {error}", node.name))?;
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            if response.contains(" 200 ") && response.contains("\"result\"") {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{} {name} response was not 200/result: {}",
+                    node.name,
+                    response.lines().next().unwrap_or("-")
+                ))
+            }
+        })();
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last = error;
+                if attempt < 6 {
+                    std::thread::sleep(Duration::from_secs(2));
+                }
+            }
+        }
+    }
+    Err(last)
+}
+
 /// Stop and restart the member, then wait for it to rejoin.
 ///
 /// The root's listener and the host mesh relay stay up, so this is the
@@ -1061,16 +1150,27 @@ fn restart_member(
     // repeatedly connects to the live root's forward and drops the connection,
     // which leaves the iris forward holding half-open guest attempts.  The log
     // is reused so the evidence keeps the pre-restart history.
-    let disconnects_before = BootFacts::from_serial(&read_serial(&nodes[0]))
-        .mesh_transport_disconnects
-        .len();
+    // Count raw lines, not `BootFacts`: the heartbeat disconnect is often the
+    // last line in the transcript and has no trailing newline yet.  A fact
+    // parser that ignores a partial tail would never see it.
+    let root_before = read_serial(&nodes[0]);
+    let disconnects_before = raw_count(&root_before, "mesh-transport: disconnected");
+    let connected_before = raw_count(&root_before, "mesh-transport: connected");
+    let already_down = connected_before <= disconnects_before;
     let relay_log = mesh_relay.take().map(|relay| {
         let log = relay.log.clone();
         drop(relay);
         log
     });
     std::thread::sleep(Duration::from_secs(1));
+    let stopped_at = Instant::now();
     rig::stop_node(options, &mut running[1])?;
+    if options.verbose {
+        eprintln!(
+            "m2-rig: n1 stopped at {:?}; waiting for n0 to leave the link",
+            stopped_at.elapsed()
+        );
+    }
     fs::copy(&node.serial_log, &boot1_log)
         .map_err(|error| format!("copy {}: {error}", node.serial_log.display()))?;
     // Wait until the root has left its old connection and re-armed its
@@ -1079,10 +1179,36 @@ fn restart_member(
     // connecting to its forward before that leaves half-open guest attempts in
     // the forward and the restart never converges.
     let deadline = Instant::now() + Duration::from_secs(60);
+    let mut last_note = Instant::now();
+    if already_down && options.verbose {
+        eprintln!(
+            "m2-rig: n0 was already between links before n1 stopped (connected={connected_before}, disconnected={disconnects_before})"
+        );
+    }
     loop {
-        let facts = BootFacts::from_serial(&read_serial(&nodes[0]));
-        if facts.mesh_transport_disconnects.len() > disconnects_before {
+        let text = read_serial(&nodes[0]);
+        let disconnects = raw_count(&text, "mesh-transport: disconnected");
+        // If the root was already between links when the member stopped, a
+        // further disconnect will never be logged; its listener is already
+        // re-armed and ready for the new relay.
+        if already_down || disconnects > disconnects_before {
+            if options.verbose {
+                eprintln!(
+                    "m2-rig: n0 left the old link at {:?} (disconnects {})",
+                    stopped_at.elapsed(),
+                    disconnects
+                );
+            }
             break;
+        }
+        if options.verbose && last_note.elapsed() >= Duration::from_secs(5) {
+            last_note = Instant::now();
+            eprintln!(
+                "m2-rig: waiting for n0 disconnect at {:?} (lines={}, disconnects={})",
+                stopped_at.elapsed(),
+                text.lines().count(),
+                disconnects
+            );
         }
         if Instant::now() >= deadline {
             return Err(format!(
@@ -1107,6 +1233,16 @@ fn restart_member(
         "mesh-transport: listening",
         Duration::from_secs(60),
     )?;
+    // The root kept its old guest-side mesh socket while the member was down.
+    // The iris forward can keep delivering the new requests to that socket,
+    // so the root's replies never reach the new relay.  Reset the live root's
+    // link; it keeps the confirmed view and re-arms the listener.
+    mcp_tool(&nodes[0], "mesh.reconnect")?;
+    std::thread::sleep(Duration::from_secs(1));
+    // Let the restarted forward settle before the relay connects to it; the
+    // guest listener is armed, but the host forward can otherwise accept the
+    // relay before its guest-side path is ready.
+    std::thread::sleep(Duration::from_secs(2));
     if let Some(log) = relay_log {
         let relay = MeshRelay::start_with_log(
             (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
@@ -1125,8 +1261,17 @@ fn restart_member(
     }
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
-        let fact = BootFacts::from_serial(&read_serial(node));
-        if fact.mesh_join_converged.is_some() {
+        let text = read_serial(node);
+        if text
+            .lines()
+            .any(|line| line.contains("mesh-join: converged "))
+            || text
+                .lines()
+                .any(|line| line.contains("mesh-join: duplicate "))
+            || text
+                .lines()
+                .any(|line| line.contains("mesh-join: refreshed "))
+        {
             break;
         }
         if Instant::now() >= deadline {
@@ -1137,20 +1282,29 @@ fn restart_member(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    let rejoin = BootFacts::from_serial(&read_serial(node))
-        .mesh_join_converged
-        .as_deref()
+    let text = read_serial(node);
+    let rejoin = raw_line(&text, "mesh-join: converged ")
         .and_then(join::JoinLine::parse)
+        .or_else(|| {
+            raw_line(&text, "mesh-join: duplicate ")
+                .and_then(|line| join::JoinLine::parse_with_role(line, "member"))
+        })
+        .or_else(|| {
+            raw_line(&text, "mesh-join: local ")
+                .and_then(|line| join::JoinLine::parse_with_role(line, "member"))
+        })
+        .or_else(|| {
+            raw_line(&text, "mesh-join: refreshed ")
+                .and_then(|line| join::JoinLine::parse_with_role(line, "member"))
+        })
         .ok_or_else(|| "n1 rejoin line is malformed".to_string())?;
-    let fact = BootFacts::from_serial(&read_serial(node));
-    let request_last_epoch = fact
-        .mesh_join_request
-        .as_deref()
-        .and_then(join::request_last_epoch);
-    let root_facts = BootFacts::from_serial(&read_serial(&nodes[0]));
-    let confirm_epoch = root_facts
-        .mesh_join_confirms
-        .last()
+    let request_last_epoch =
+        raw_line(&text, "mesh-join: request ").and_then(join::request_last_epoch);
+    let store_epoch = raw_line(&text, "epoch-store: restored")
+        .filter(|line| line.contains("source=confirmation"))
+        .and_then(|line| join::field_u32(line, "epoch="));
+    let root_text = read_serial(&nodes[0]);
+    let confirm_epoch = raw_line(&root_text, "mesh-join: confirm ")
         .and_then(|line| join::field_u32(line, "epoch="));
     Ok(RestartInput {
         node: node.name.clone(),
@@ -1159,9 +1313,165 @@ fn restart_member(
         rejoin,
         request_last_epoch,
         confirm_epoch,
+        store_restored: store_epoch.is_some(),
+        store_epoch,
     })
 }
 
+/// Stop and restart the root while the member stays up.
+///
+/// The root must recover the signed confirmed epoch from its scratch store,
+/// and the live member must present that epoch rather than the seed.  This is
+/// the case the M2-ADR-0005 seed fallback could not survive.
+fn restart_root(
+    options: &Options,
+    nodes: &[Node],
+    running: &mut [RunningNode],
+    facts_before: &[BootFacts],
+    mesh_relay: &mut Option<MeshRelay>,
+) -> Result<RootRestartInput, String> {
+    let root = &nodes[0];
+    let first = join::node_line(&facts_before[0], "root")
+        .ok_or_else(|| "n0 did not converge before the root restart".to_string())?;
+    let boot1_log = options.work.join("serial-n0-boot1.log");
+    let member_before = read_serial(&nodes[1]);
+    let member_offset = member_before.len();
+    // Raw line count: the final disconnect may not have a trailing newline.
+    let disconnects_before = raw_count(&member_before, "mesh-transport: disconnected");
+    let connected_before = raw_count(&member_before, "mesh-transport: connected");
+    let member_already_down = connected_before <= disconnects_before;
+    let relay_log = mesh_relay.take().map(|relay| {
+        let log = relay.log.clone();
+        drop(relay);
+        log
+    });
+    std::thread::sleep(Duration::from_secs(1));
+    rig::stop_node(options, &mut running[0])?;
+    fs::copy(&root.serial_log, &boot1_log)
+        .map_err(|error| format!("copy {}: {error}", root.serial_log.display()))?;
+
+    // Wait until the live member has observed the old link close and re-armed
+    // its session.  The iris forward does not reliably propagate a peer close;
+    // the heartbeat timeout is the member's only signal.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        let text = read_serial(&nodes[1]);
+        let tail = text.get(member_offset..).unwrap_or("");
+        if member_already_down
+            || raw_count(tail, "mesh-transport: disconnected") > disconnects_before
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "n1 did not leave the old mesh link before the root restart\n--- serial tail ---\n{}",
+                rig::tail(&text, 40)
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::thread::sleep(Duration::from_secs(1));
+    let _ = fs::remove_file(&root.ci_socket);
+    let child = start_node(options, root)?;
+    running[0] = child;
+    wait_ci_ready(options, root, Duration::from_secs(20))?;
+    start_cpu(options, root)?;
+    rig::wait_serial(options, &mut running[0], "BOOT-READY", options.timeout)?;
+    rig::wait_serial(
+        options,
+        &mut running[0],
+        "mesh-transport: listening",
+        Duration::from_secs(60),
+    )?;
+    // The member kept its old socket while the root was down; reset it for the
+    // same reason as the member-restart path.
+    mcp_tool(&nodes[1], "mesh.reconnect")?;
+    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_secs(2));
+    if let Some(log) = relay_log {
+        let relay = MeshRelay::start_with_log(
+            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+            log,
+        )
+        .map_err(|error| format!("restart mesh relay: {error}"))?;
+        *mesh_relay = Some(relay);
+    } else {
+        let relay = MeshRelay::start(
+            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+        )
+        .map_err(|error| format!("restart mesh relay: {error}"))?;
+        *mesh_relay = Some(relay);
+    }
+
+    // Wait for the restored root view, the member's re-presentation of the
+    // confirmed epoch, and a fresh confirmation.  A seed fallback shows up as
+    // a missing restore line or as `epoch-regression`.
+    let deadline = Instant::now() + Duration::from_secs(120);
+    loop {
+        let root_text = read_serial(root);
+        let member_text = read_serial(&nodes[1]);
+        let member_tail = member_text.get(member_offset..).unwrap_or("");
+        let restored = raw_line(&root_text, "epoch-store: restored")
+            .is_some_and(|line| line.contains("source=root-record"));
+        let presented = member_tail
+            .lines()
+            .filter(|line| line.contains("mesh-join: request "))
+            .filter_map(join::request_last_epoch)
+            .any(|epoch| epoch == first.epoch);
+        if restored
+            && presented
+            && raw_line(&root_text, "mesh-join: confirm ").is_some()
+            && raw_line(&root_text, "mesh-join: ack from").is_some()
+        {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "n0 did not restore epoch {} before the deadline\n--- n0 serial ---\n{}\n--- n1 tail ---\n{}",
+                first.epoch,
+                rig::tail(&root_text, 40),
+                rig::tail(member_tail, 40)
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    let root_text = read_serial(root);
+    let local_epoch =
+        raw_line(&root_text, "mesh-join: local ").and_then(|line| join::field_u32(line, "epoch="));
+    let store_epoch = raw_line(&root_text, "epoch-store: restored")
+        .filter(|line| line.contains("source=root-record"))
+        .and_then(|line| join::field_u32(line, "epoch="));
+    let confirm_epoch = raw_line(&root_text, "mesh-join: confirm ")
+        .and_then(|line| join::field_u32(line, "epoch="));
+    let member_text = read_serial(&nodes[1]);
+    let member_tail = member_text.get(member_offset..).unwrap_or("");
+    let member_last_epoch = member_tail
+        .lines()
+        .filter(|line| line.contains("mesh-join: request "))
+        .filter_map(join::request_last_epoch)
+        .next_back();
+    let member_epoch = raw_line(member_tail, "mesh-join: duplicate ")
+        .and_then(|line| join::field_u32(line, "epoch="))
+        .or_else(|| {
+            raw_line(member_tail, "mesh-join: local ")
+                .and_then(|line| join::field_u32(line, "epoch="))
+        });
+    let epoch_regression =
+        root_text.contains("epoch-regression") || member_tail.contains("epoch-regression");
+    Ok(RootRestartInput {
+        boot1_log,
+        first,
+        local_epoch,
+        store_epoch,
+        member_last_epoch,
+        confirm_epoch,
+        member_epoch,
+        epoch_regression,
+    })
+}
 fn print_join_result(join: &JoinEvidence) {
     println!(
         "join [{}]: {} ({})",
@@ -1179,12 +1489,37 @@ fn print_join_result(join: &JoinEvidence) {
     }
     if let Some(restart) = &join.restart {
         println!(
-            "  rejoin {}: epoch {} -> {} digest {} -> {} same={}",
+            "  rejoin {}: epoch {} -> {} digest {} -> {} store_restored={} same={}",
             restart.node,
             restart.first_epoch,
             restart.rejoin_epoch,
             restart.first_digest,
             restart.rejoin_digest,
+            restart.store_restored,
+            restart.same_epoch
+        );
+    }
+    if let Some(restart) = &join.root_restart {
+        println!(
+            "  root restart {}: epoch {} -> store {} local {} confirm {} member_last {} same={}",
+            restart.node,
+            restart.first_epoch,
+            restart
+                .store_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+            restart
+                .local_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+            restart
+                .confirm_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
+            restart
+                .member_last_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".into()),
             restart.same_epoch
         );
     }
@@ -1218,6 +1553,9 @@ fn start_all_with(
 ) -> Result<(), String> {
     if environments.len() != nodes.len() {
         return Err("environment count does not match the node count".into());
+    }
+    if options.action != rig::Action::Shard {
+        rig::reset_scratch(nodes)?;
     }
     for (node, environment) in nodes.iter().zip(environments.iter()) {
         write_nvram(node, fixture_port, module_sha256, environment.as_ref())?;
@@ -1266,6 +1604,25 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
         }
     };
     Ok((fixture, running, facts))
+}
+
+/// Let the last control-plane connection close, then run the two-way probe.
+///
+/// The MCP server has one HTTP slot while the mesh is enabled.  A single retry
+/// absorbs the iris forward's half-open connection without weakening the
+/// check.
+fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
+    std::thread::sleep(Duration::from_secs(12));
+    let mut attempt = probe_two_way(nodes);
+    if !attempt
+        .as_ref()
+        .map(|(value, _)| value.iter().all(|probe| probe.ok))
+        .unwrap_or(false)
+    {
+        std::thread::sleep(Duration::from_secs(12));
+        attempt = probe_two_way(nodes);
+    }
+    attempt
 }
 
 fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
@@ -1603,6 +1960,13 @@ fn clean(options: &Options) -> Result<i32, String> {
     Ok(0)
 }
 
+/// Read one artifact and return its size and SHA-256.
+fn artifact(path: &std::path::Path, label: &str) -> Result<(u64, String), String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("read {label} {}: {error}", path.display()))?;
+    Ok((bytes.len() as u64, sha256::hex(&sha256::digest(&bytes))))
+}
+
 /// Build and write the evidence bundle.
 #[allow(clippy::too_many_arguments)]
 fn write_evidence(
@@ -1634,14 +1998,21 @@ fn write_evidence(
             NodeEvidence::capture(node, facts)
         })
         .collect();
-    let rom_sha = sha256::hex(&sha256::digest(
-        &fs::read(&options.rom).map_err(|error| format!("read PROM: {error}"))?,
-    ));
-    let module_sha = sha256::hex(&sha256::digest(
-        &fs::read(&options.module).map_err(|error| format!("read module: {error}"))?,
-    ));
+    let (rom_size, rom_sha) = artifact(&options.rom, "PROM")?;
+    let (module_size, module_sha) = artifact(&options.module, "module")?;
+    let (iris_size, iris_sha) = artifact(&options.iris, "iris")?;
+    let (iris_ci_size, iris_ci_sha) = artifact(&options.iris_ci, "iris-ci")?;
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let commit = git(&options.repo, &["rev-parse", "HEAD"]);
+    let describe = git(
+        &options.repo,
+        &["describe", "--always", "--dirty", "--tags"],
+    );
+    // `git status --porcelain` is empty only for a clean tree.  A git failure
+    // returns "unknown"; treat anything but an empty clean result as dirty so
+    // an unattributable run cannot be presented as a clean commit.
+    let status = git(&options.repo, &["status", "--porcelain"]);
+    let dirty = !status.is_empty();
     let mut relay_logs: Vec<(String, relay::SharedLog)> = relays
         .iter()
         .map(|(name, relay)| (name.clone(), relay.log.clone()))
@@ -1655,10 +2026,20 @@ fn write_evidence(
         repo: &options.repo,
         branch: &branch,
         commit: &commit,
+        describe: &describe,
+        dirty,
         rom: &options.rom,
         rom_sha256: &rom_sha,
+        rom_size,
         module: &options.module,
         module_sha256: &module_sha,
+        module_size,
+        iris: &options.iris,
+        iris_sha256: &iris_sha,
+        iris_size,
+        iris_ci: &options.iris_ci,
+        iris_ci_sha256: &iris_ci_sha,
+        iris_ci_size,
         nodes: &node_evidence,
         probes,
         mesh,

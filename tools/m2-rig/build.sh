@@ -90,3 +90,22 @@ echo "m2-rig: module $module_size bytes"
   sha256sum irix7-rom.bin mcp.module >SHA256SUMS
   cat SHA256SUMS
 )
+
+# Record the build provenance next to the artefacts.  A feature branch or an
+# uncommitted edit must be visible: a bare `HEAD` is not a reproducible claim.
+commit="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
+describe="$(git -C "$REPO" describe --always --dirty --tags 2>/dev/null || echo unknown)"
+if [ -z "$(git -C "$REPO" status --porcelain 2>/dev/null)" ]; then
+  dirty=false
+else
+  dirty=true
+fi
+{
+  echo "commit=$commit"
+  echo "describe=$describe"
+  echo "dirty=$dirty"
+  echo "rustc=$(rustc -vV | sed -n '1p')"
+  echo "rom=$(stat -c%s "$WORK/irix7-rom.bin") bytes"
+  echo "module=$(stat -c%s "$WORK/mcp.module") bytes"
+} >"$WORK/BUILD-PROVENANCE.txt"
+cat "$WORK/BUILD-PROVENANCE.txt"

@@ -174,10 +174,12 @@ capability routing. Keep 9P2000.L as an edge gateway.
 implemented in `crates/mesh-join` and run between two independent iris kernels in
 `tools/m2-rig`. Both nodes converge on the same epoch and full member snapshot; the
 member restarts and rejoins at the same epoch; a wrong authority key fails closed. The
-confirmed epoch is not persisted because the module ABI has `config_get` only, so the
-member-restart, root-restart and both-restart rules are explicit in M2-ADR-0005. This is
-one M2 gate, not the full gate: homes, a remote capability route, L0 migration and
-failure/partition with lease fencing remain.
+confirmed epoch is persisted as a root-signed record on a dedicated SCSI scratch target
+through the ABI v11 `block_read`/`block_write` services, so both member and root restarts
+restore the confirmed epoch instead of the seed; a corrupt or missing record fails closed
+or logs the absence. The rules are explicit in M2-ADR-0005. This is one M2 gate, not the
+full gate: homes, a remote capability route, L0 migration and failure/partition with lease
+fencing remain.
 
 **M2-3 status (2026-10-27):** both kernels now compute rendezvous homes from the
 confirmed membership snapshot with the existing `mesh-core` policy. The MCP module serves
@@ -240,8 +242,9 @@ locally, and the survivor's data path continues without a quorum.  A 6 s authori
 lease, shorter than the 12 s failure window, stops an isolated home committing before the
 root can re-home the object; reads remain available only under the existing unexpired home
 lease.  `--fault kill-peer` and `--fault partition` are the real-kernel evidence.  L0
-migration (M2-5) is implemented above; gossip/epoch push, a persisted epoch, a general
-actor scheduler and linearisable write handover remain open.
+migration (M2-5) is implemented above; the signed epoch store now survives member and root
+restarts on a provisioned scratch target; gossip/epoch push, a *replicated* epoch log, a
+general actor scheduler and linearisable write handover remain open.
 
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.

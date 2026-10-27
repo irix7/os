@@ -5,24 +5,27 @@
 //! membership policy.  It is deliberately synchronous and clock-injected so a
 //! host test can drive timeouts, retries and replays without sleeping.
 //!
-//! ## Restart rules (M2, no persisted epoch store)
+//! ## Restart rules and the signed epoch record
 //!
-//! * **Member restart, root still up.** The member starts from the configured
-//!   seed epoch and asks to join.  The root recognises an existing member and
-//!   re-confirms its current epoch and full list; the member installs the same
-//!   epoch.  This is the clean rejoin the rig exercises.
-//! * **Root restart, member still up.** The root starts from the seed epoch.
-//!   The member presents its higher confirmed epoch; the root refuses with
-//!   `epoch-regression` rather than lower the member's view.  The member keeps
-//!   its last view, does not advance the epoch, and waits for an operator to
-//!   re-seed both NVRAM images.  Failing closed is the M2 rule; a persisted
-//!   epoch store would let the root resume instead.
-//! * **Both restart.** The same seed and the same join sequence reproduce the
-//!   same epoch and snapshot deterministically.
+//! The module cannot write NVRAM, but ABI 11 exposes `block_read`/`block_write`.
+//! A root can sign an [`EpochRecord`](crate::EpochRecord) and a member can
+//! persist the signed confirmation it installed; both are verified again
+//! before use.
 //!
-//! The module cannot write NVRAM (the ABI has `config_get` only), so the
-//! confirmed epoch is in memory for one boot.  That is a documented M2 limit,
-//! not a silent assumption.
+//! * **Member restart, root still up.** The member restores the signed
+//!   confirmation, starts at the confirmed epoch and asks to join with that
+//!   `last_epoch`.  The root recognises an existing member and re-confirms the
+//!   same epoch and full list.
+//! * **Root restart, member still up.** The root restores a signed
+//!   [`EpochRecord`](crate::EpochRecord) and resumes the confirmed epoch.  A live member presents
+//!   the same epoch; the root confirms it.  Without a valid record the old rule
+//!   applies: the root starts at the seed, refuses a higher member epoch with
+//!   `epoch-regression`, and the member keeps its last view.
+//! * **Both restart.** Each verifies its own signed record and resumes the same
+//!   epoch.  A missing store logs the absence and falls back to the seed; a
+//!   corrupt or foreign record is refused rather than installed.
+//!
+//! [`EpochRecord`]: crate::wire::EpochRecord
 
 use mesh_service::{FailureDetector, MembershipError, MembershipTable, NodeState};
 use sys_primitives::{NodeId, NodeKey};
@@ -31,7 +34,8 @@ use crate::authority::{
     AuthorityError, AuthorityRoot, AuthorityVerifier, Expectation, SigningAuthority,
 };
 use crate::wire::{
-    EpochRefusal, JoinAck, JoinMessage, JoinRequest, MembershipSnapshot, RefusalReason,
+    EpochConfirmation, EpochRecord, EpochRefusal, JoinAck, JoinMessage, JoinRequest,
+    MembershipSnapshot, RefusalReason,
 };
 
 /// Interval between retries of the same join request.
@@ -355,6 +359,79 @@ impl JoinNode {
         match &self.engine {
             Engine::Root(state) => Some(state.authority.sign(message)),
             Engine::Member(_) => None,
+        }
+    }
+
+    /// Sign the current confirmed view as a persistent epoch record.
+    ///
+    /// Only the authority root can produce this record; a member returns
+    /// [`AuthorityError::NotRoot`].  The caller writes the record to a
+    /// persistent store and verifies it through [`Self::restore_record`] on the
+    /// next boot.
+    pub fn epoch_record(&self) -> Result<EpochRecord, AuthorityError> {
+        match &self.engine {
+            Engine::Root(state) => state.authority.record(),
+            Engine::Member(_) => Err(AuthorityError::NotRoot),
+        }
+    }
+
+    /// Restore a root's confirmed view from a signed epoch record.
+    ///
+    /// The signature is checked by [`AuthorityRoot::restore_record`] before
+    /// any membership field is used, and a lower epoch is refused.  This is
+    /// the root restart path: the root resumes the epoch it had confirmed
+    /// instead of starting from the NVRAM seed.
+    pub fn restore_record(
+        &mut self,
+        record: &EpochRecord,
+        now_ms: u64,
+    ) -> Result<MembershipSnapshot, AuthorityError> {
+        match &mut self.engine {
+            Engine::Root(state) => {
+                let snapshot = state.authority.restore_record(record, now_ms)?;
+                state.converged = snapshot.clone();
+                Ok(snapshot)
+            }
+            Engine::Member(_) => Err(AuthorityError::NotRoot),
+        }
+    }
+
+    /// Restore a member's confirmed view from a signed confirmation.
+    ///
+    /// The member stores the last confirmation it accepted, so a restart can
+    /// present `last_epoch` = the confirmed epoch rather than falling back to
+    /// the seed.  The signature, root, subject and epoch are verified with the
+    /// same [`AuthorityVerifier`] used on the live path.  The restored view is
+    /// **not** authority-current: reads may use the existing lease, but a
+    /// mutable commit and a membership change still need a fresh signed
+    /// confirmation from the root.
+    pub fn restore_confirmation(
+        &mut self,
+        confirmation: &EpochConfirmation,
+        now_ms: u64,
+    ) -> Result<MembershipSnapshot, AuthorityError> {
+        match &mut self.engine {
+            Engine::Member(state) => {
+                let expectation = Expectation {
+                    subject: self.self_id,
+                    nonce: confirmation.request_nonce,
+                    incarnation: confirmation.incarnation,
+                    minimum_epoch: self.seed_epoch,
+                    previous: None,
+                };
+                let snapshot = state.verifier.verify(confirmation, &expectation)?;
+                state
+                    .table
+                    .install(snapshot.epoch, &snapshot.members, now_ms)?;
+                state.converged = Some(snapshot.clone());
+                state.outstanding = None;
+                state.attempts = 0;
+                state.timed_out = false;
+                state.authority_current = false;
+                state.refresh_at_ms = None;
+                Ok(snapshot)
+            }
+            Engine::Root(_) => Err(AuthorityError::NotRoot),
         }
     }
 

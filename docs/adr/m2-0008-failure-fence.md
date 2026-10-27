@@ -25,8 +25,9 @@ exist are:
 - `mesh-route` owns the `HomeLease`, `DRAINING`/`MOVED`, capability verification and the
   bounded `I7R1` bodies.
 - The M2-1 transport already exchanges `Control/Ping` every 5 s on an idle link.
-- The kernel has no process model, no pre-emption and no persisted epoch store. The module
-  cannot write NVRAM.
+- The kernel has no process model and no pre-emption.  The module cannot write NVRAM; the
+  signed epoch store is a separate ABI v11 SCSI scratch record (M2-ADR-0005 §4), not part
+  of the failure path.
 
 What was missing was a bounded failure transition, a fence for the dead node's homes, a
 partition rule that cannot produce two authoritative homes, and real-kernel evidence for
@@ -237,8 +238,8 @@ module TCP slots. The MCP module stays inside its 512 KiB slot A.
   monotonic clocks advance at the same rate (true for two `iris` instances on one host;
   a shared time service is later work).
 - The removed member is re-admitted by a join at a new epoch. There is no automatic
-  epoch push and no persisted epoch; a root restart still fails closed as M2-ADR-0005
-  records.
+  epoch push.  A root restart resumes from the signed epoch store when it is present; a
+  node without the store still fails closed as M2-ADR-0005 records.
 - `mesh-sim` is not evidence. The gate is two real kernels.
 
 ## Limits
@@ -251,9 +252,10 @@ module TCP slots. The MCP module stays inside its 512 KiB slot A.
 - **No gossip.** With more than two nodes, a removal reaches a member only when that
   member rejoins; a third node that stays connected to the root would need the M3 epoch
   push. This slice is the two-node gate.
-- **No persisted epoch and no home renewal service.** Read leases at a member are not
-  renewed by the root; a partition longer than `HOME_LEASE_MS` makes its objects
-  unavailable even if the member is still alive.
+- **No home renewal service.** Read leases at a member are not renewed by the root; a
+  partition longer than `HOME_LEASE_MS` makes its objects unavailable even if the member
+  is still alive.  (The confirmed epoch itself is persisted by the M2-ADR-0005 store, so
+  this is not an epoch-loss limit.)
 - **No central directory.** A fence is computed from the confirmed view. There is no
   lookup service to ask and no trusted redirector other than a home holding the old lease.
 - **No L0 migration.** Actor state transfer is M2-5 and is not touched here.

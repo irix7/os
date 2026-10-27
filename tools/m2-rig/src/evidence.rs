@@ -151,14 +151,34 @@ pub struct Evidence<'a> {
     pub branch: &'a str,
     /// Commit.
     pub commit: &'a str,
+    /// `git describe --always --dirty --tags`.
+    pub describe: &'a str,
+    /// Whether the working tree was dirty when the run was recorded.
+    pub dirty: bool,
     /// PROM path.
     pub rom: &'a Path,
     /// PROM digest.
     pub rom_sha256: &'a str,
+    /// PROM size in bytes.
+    pub rom_size: u64,
     /// Module path.
     pub module: &'a Path,
     /// Module digest.
     pub module_sha256: &'a str,
+    /// Module size in bytes.
+    pub module_size: u64,
+    /// `iris` binary path.
+    pub iris: &'a Path,
+    /// `iris` binary digest.
+    pub iris_sha256: &'a str,
+    /// `iris` binary size.
+    pub iris_size: u64,
+    /// `iris-ci` binary path.
+    pub iris_ci: &'a Path,
+    /// `iris-ci` binary digest.
+    pub iris_ci_sha256: &'a str,
+    /// `iris-ci` binary size.
+    pub iris_ci_size: u64,
     /// Node facts.
     pub nodes: &'a [NodeEvidence],
     /// Probe results.
@@ -240,12 +260,50 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
         )
         .map_err(|error| format!("copy first-boot serial log: {error}"))?;
     }
+    if let Some(restart) = evidence.join.and_then(|join| join.root_restart.as_ref()) {
+        copy_if_present(
+            &restart.boot1_log,
+            &directory.join(format!("serial-{}-boot1.log", restart.node)),
+        )
+        .map_err(|error| format!("copy root first-boot serial log: {error}"))?;
+    }
 
     let json = render_json(evidence);
     write_text(&directory.join("run.json"), &json)?;
     let summary = render_summary(evidence);
     write_text(&directory.join("summary.md"), &summary)?;
+    let manifest = render_manifest(evidence);
+    write_text(&directory.join("manifest.json"), &manifest)?;
     Ok(directory)
+}
+
+/// A deterministic source/artefact manifest.
+///
+/// No timestamp or host name is included, so two clean runs of the same tree
+/// with the same toolchain produce the same manifest.  The dirty flag and the
+/// binary digests make an uncommitted or locally patched run visible instead
+/// of silently attributing it to `HEAD`.
+fn render_manifest(evidence: &Evidence<'_>) -> String {
+    format!(
+        "{{\n  \"schema\": \"irix7-m2-artifact-manifest-v1\",\n  \"repo\": \"{}\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"describe\": \"{}\",\n  \"dirty\": {},\n  \"artifacts\": {{\n    \"rom\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"module\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris_ci\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}}\n  }}\n}}\n",
+        json_escape(&evidence.repo.display().to_string()),
+        json_escape(evidence.branch),
+        json_escape(evidence.commit),
+        json_escape(evidence.describe),
+        evidence.dirty,
+        json_escape(&evidence.rom.display().to_string()),
+        evidence.rom_size,
+        json_escape(evidence.rom_sha256),
+        json_escape(&evidence.module.display().to_string()),
+        evidence.module_size,
+        json_escape(evidence.module_sha256),
+        json_escape(&evidence.iris.display().to_string()),
+        evidence.iris_size,
+        json_escape(evidence.iris_sha256),
+        json_escape(&evidence.iris_ci.display().to_string()),
+        evidence.iris_ci_size,
+        json_escape(evidence.iris_ci_sha256)
+    )
 }
 
 fn render_json(evidence: &Evidence<'_>) -> String {
@@ -263,20 +321,36 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         out.push_str(&format!("  \"error\": \"{}\",\n", json_escape(error)));
     }
     out.push_str(&format!(
-        "  \"repo\": \"{}\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n",
+        "  \"repo\": \"{}\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"describe\": \"{}\",\n  \"dirty\": {},\n",
         json_escape(&evidence.repo.display().to_string()),
         json_escape(evidence.branch),
-        json_escape(evidence.commit)
+        json_escape(evidence.commit),
+        json_escape(evidence.describe),
+        evidence.dirty
     ));
     out.push_str(&format!(
-        "  \"rom\": {{\"path\": \"{}\", \"sha256\": \"{}\"}},\n",
+        "  \"rom\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
         json_escape(&evidence.rom.display().to_string()),
+        evidence.rom_size,
         json_escape(evidence.rom_sha256)
     ));
     out.push_str(&format!(
-        "  \"module\": {{\"path\": \"{}\", \"sha256\": \"{}\"}},\n",
+        "  \"module\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
         json_escape(&evidence.module.display().to_string()),
+        evidence.module_size,
         json_escape(evidence.module_sha256)
+    ));
+    out.push_str(&format!(
+        "  \"iris\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
+        json_escape(&evidence.iris.display().to_string()),
+        evidence.iris_size,
+        json_escape(evidence.iris_sha256)
+    ));
+    out.push_str(&format!(
+        "  \"iris_ci\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
+        json_escape(&evidence.iris_ci.display().to_string()),
+        evidence.iris_ci_size,
+        json_escape(evidence.iris_ci_sha256)
     ));
     out.push_str("  \"nodes\": [\n");
     for (index, node) in evidence.nodes.iter().enumerate() {
@@ -686,7 +760,7 @@ fn render_join_json(join: &JoinEvidence) -> String {
     out.push_str("], \"restart\": ");
     match &join.restart {
         Some(restart) => out.push_str(&format!(
-            "{{\"node\": \"{}\", \"boot1_log\": \"serial-{}-boot1.log\", \"first_epoch\": {}, \"rejoin_epoch\": {}, \"first_digest\": \"{}\", \"rejoin_digest\": \"{}\", \"request_last_epoch\": {}, \"confirm_epoch\": {}, \"same_epoch\": {}}}",
+            "{{\"node\": \"{}\", \"boot1_log\": \"serial-{}-boot1.log\", \"first_epoch\": {}, \"rejoin_epoch\": {}, \"first_digest\": \"{}\", \"rejoin_digest\": \"{}\", \"request_last_epoch\": {}, \"confirm_epoch\": {}, \"store_restored\": {}, \"store_epoch\": {}, \"same_epoch\": {}}}",
             json_escape(&restart.node),
             json_escape(&restart.node),
             restart.first_epoch,
@@ -701,6 +775,44 @@ fn render_join_json(join: &JoinEvidence) -> String {
                 .confirm_epoch
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "null".into()),
+            restart.store_restored,
+            restart
+                .store_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart.same_epoch
+        )),
+        None => out.push_str("null"),
+    }
+    out.push_str(", \"root_restart\": ");
+    match &join.root_restart {
+        Some(restart) => out.push_str(&format!(
+            "{{\"node\": \"{}\", \"boot1_log\": \"serial-{}-boot1.log\", \"first_epoch\": {}, \"first_digest\": \"{}\", \"store_epoch\": {}, \"local_epoch\": {}, \"member_last_epoch\": {}, \"confirm_epoch\": {}, \"member_epoch\": {}, \"epoch_regression\": {}, \"same_epoch\": {}}}",
+            json_escape(&restart.node),
+            json_escape(&restart.node),
+            restart.first_epoch,
+            json_escape(&restart.first_digest),
+            restart
+                .store_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart
+                .local_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart
+                .member_last_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart
+                .confirm_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart
+                .member_epoch
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "null".into()),
+            restart.epoch_regression,
             restart.same_epoch
         )),
         None => out.push_str("null"),
@@ -832,17 +944,25 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
     out.push_str("# M2 two-node rig evidence\n\n");
     out.push_str(&format!("**Verdict:** `{}`\n\n", evidence.verdict));
     out.push_str(&format!(
-        "**Repository:** `{}`  \n**Branch:** `{}`  \n**Commit:** `{}`\n\n",
+        "**Repository:** `{}`  \n**Branch:** `{}`  \n**Commit:** `{}`  \n**Describe:** `{}`  \n**Dirty:** `{}`\n\n",
         evidence.repo.display(),
         evidence.branch,
-        evidence.commit
+        evidence.commit,
+        evidence.describe,
+        evidence.dirty
     ));
     out.push_str(&format!(
-        "**PROM:** `{}`  \n**PROM SHA-256:** `{}`\n\n**Module:** `{}`  \n**Module SHA-256:** `{}`\n\n",
+        "**PROM:** `{}`  \n**PROM bytes:** {}  \n**PROM SHA-256:** `{}`\n\n**Module:** `{}`  \n**Module bytes:** {}  \n**Module SHA-256:** `{}`\n\n**iris:** `{}`  \n**iris SHA-256:** `{}`  \n**iris-ci:** `{}`  \n**iris-ci SHA-256:** `{}`\n\n**Artifact manifest:** `manifest.json`\n\n",
         evidence.rom.display(),
+        evidence.rom_size,
         evidence.rom_sha256,
         evidence.module.display(),
-        evidence.module_sha256
+        evidence.module_size,
+        evidence.module_sha256,
+        evidence.iris.display(),
+        evidence.iris_sha256,
+        evidence.iris_ci.display(),
+        evidence.iris_ci_sha256
     ));
     if let Some(error) = evidence.error {
         out.push_str(&format!("**Error:** {error}\n\n"));
@@ -1003,10 +1123,10 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         if let Some(restart) = &join.restart {
             out.push_str("### Member restart and rejoin\n\n");
             out.push_str(
-                "| Node | First epoch | Rejoin epoch | First digest | Rejoin digest | Request last epoch | Root confirm epoch | Same |\n|---|---|---|---|---|---|---|---|\n",
+                "| Node | First epoch | Rejoin epoch | First digest | Rejoin digest | Request last epoch | Root confirm epoch | Store restored | Store epoch | Same |\n|---|---|---|---|---|---|---|---|---|---|\n",
             );
             out.push_str(&format!(
-                "| {} | {} | {} | `{}` | `{}` | {} | {} | {} |\n\n",
+                "| {} | {} | {} | `{}` | `{}` | {} | {} | {} | {} | {} |\n\n",
                 restart.node,
                 restart.first_epoch,
                 restart.rejoin_epoch,
@@ -1020,10 +1140,52 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
                     .confirm_epoch
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "-".into()),
+                restart.store_restored,
+                restart
+                    .store_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
                 restart.same_epoch
             ));
             out.push_str(&format!(
-                "The first transcript is `serial-{}-boot1.log`; the current transcript is the rejoin boot.\n\n",
+                "The first transcript is `serial-{}-boot1.log`; the current transcript is the rejoin boot. The member restored the signed confirmation from its scratch epoch store and presented the confirmed `last_epoch`.\n\n",
+                restart.node
+            ));
+        }
+        if let Some(restart) = &join.root_restart {
+            out.push_str("### Root restart and epoch recovery\n\n");
+            out.push_str(
+                "| Node | First epoch | Store epoch | Local epoch | Member last epoch | Confirm epoch | Member epoch | Epoch regression | Same |\n|---|---|---|---|---|---|---|---|---|\n",
+            );
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n\n",
+                restart.node,
+                restart.first_epoch,
+                restart
+                    .store_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart
+                    .local_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart
+                    .member_last_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart
+                    .confirm_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart
+                    .member_epoch
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                restart.epoch_regression,
+                restart.same_epoch
+            ));
+            out.push_str(&format!(
+                "The root transcript before the restart is `serial-{}-boot1.log`. The restarted root verified the signed epoch record from its scratch store, and the live member presented the same confirmed epoch instead of the seed.\n\n",
                 restart.node
             ));
         }

@@ -73,6 +73,8 @@ jobs:
             cargo clippy --workspace --all-targets -- -D warnings
             cargo clippy --manifest-path tools/module-release/Cargo.toml \
               --all-targets -- -D warnings
+            cargo clippy --manifest-path tools/m2-rig/Cargo.toml \
+              --all-targets -- -D warnings
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -90,12 +92,14 @@ jobs:
             cargo test -p kernel -p kernel-test -p boot-protocol-tests \
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-join \
-              -p mesh-route -p mesh-service -p mesh-sim -p fabric -p guest-abi -p cas-core \
+              -p mesh-route -p mesh-service -p mesh-sim -p mesh-transport \
+              -p mesh-migrate -p fabric -p guest-abi -p cas-core \
               -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
               -p wasm-policy-host -p module-resolver -p module-trust \
               -p runtime-m2-mesh-module -p runtime-m2-root-module
             cargo test --manifest-path tools/module-release/Cargo.toml
+            cargo test --manifest-path tools/m2-rig/Cargo.toml
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -1315,6 +1319,134 @@ jobs:
             ${{ runner.temp }}/iris-std-native/iris.out
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
+
+  mesh-real:
+    name: Mesh two-kernel (M2 gate)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install pinned nightly + rust-src + llvm-tools
+        run: |
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
+          rustup default nightly-2026-10-03
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "mesh-real"
+      - name: Setup IRIS
+        id: iris
+        uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
+        with:
+          version: v0.1.10+irix7
+      - name: Build the two-node artefacts
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/m2-build"
+          tools/m2-rig/build.sh "$work"
+          sha256sum "$work/irix7-rom.bin" "$work/mcp.module" | tee "$work/SHA256SUMS"
+          test "$(stat -c%s "$work/irix7-rom.bin")" -le 524288
+          test "$(stat -c%s "$work/mcp.module")" -le 524288
+      - name: Host harness tests
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo test --manifest-path tools/m2-rig/Cargo.toml
+      - name: Run two real kernels
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          iris_bin="$(command -v iris)"
+          iris_ci="$(command -v iris-ci)"
+          build="$RUNNER_TEMP/m2-build"
+          harness="$RUNNER_TEMP/m2-rig-harness"
+          cargo build --release --manifest-path tools/m2-rig/Cargo.toml \
+            --target-dir "$harness"
+          bin="$harness/release/m2-rig"
+
+          # Every mode gets its own work directory and port block.  The rig
+          # stops both guests itself; cleanup only runs `down` on a failed
+          # scenario and never masks the run's exit status.
+          run_mode() {
+            mode="$1"
+            base="$2"
+            work="$RUNNER_TEMP/m2-run-$mode"
+            echo "::group::m2-rig $mode (base port $base)"
+            "$bin" run \
+              --work "$work" \
+              --rom "$build/irix7-rom.bin" \
+              --module "$build/mcp.module" \
+              --iris "$iris_bin" --iris-ci "$iris_ci" \
+              --base-port "$base" --timeout 240 --fault "$mode"
+            echo "::endgroup::"
+          }
+          cleanup() {
+            status=$?
+            trap - EXIT
+            for mode in none no-peer kill-peer partition; do
+              work="$RUNNER_TEMP/m2-run-$mode"
+              if [ -d "$work" ]; then
+                "$bin" down --work "$work" \
+                  --rom "$build/irix7-rom.bin" \
+                  --module "$build/mcp.module" \
+                  --iris "$iris_bin" --iris-ci "$iris_ci" >/dev/null 2>&1 || true
+              fi
+            done
+            exit "$status"
+          }
+          trap cleanup EXIT
+
+          # The default mode proves join, homes, route/MOVED, L0 migration,
+          # the member restart, the signed epoch restore and the root restart.
+          run_mode none 9700
+          # The no-peer mode preserves the M1 `mesh=single`/`mesh=0/0/0` path.
+          run_mode no-peer 9800
+          # The two failure modes prove removal/fencing and the partition rule.
+          run_mode kill-peer 9900
+          run_mode partition 10000
+      - name: Collect evidence
+        if: always()
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/m2-evidence"
+          mkdir -p "$out"
+          for mode in none no-peer kill-peer partition; do
+            work="$RUNNER_TEMP/m2-run-$mode"
+            if [ -d "$work/evidence" ]; then
+              cp -a "$work/evidence" "$out/$mode"
+            fi
+            if [ -d "$work" ]; then
+              for node in n0 n1; do
+                mkdir -p "$out/$mode/$node"
+                for file in iris-serial.log stdout stderr; do
+                  if [ -f "$work/$node/$file" ]; then
+                    cp "$work/$node/$file" "$out/$mode/$node/$file"
+                  fi
+                done
+              done
+            fi
+          done
+          cp "$RUNNER_TEMP/m2-build/SHA256SUMS" "$out/"
+          find "$out" -type f | sort
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mesh-real-evidence
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/m2-evidence
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mesh-real-artifacts
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/m2-build/SHA256SUMS
+            ${{ runner.temp }}/m2-build/irix7-rom.bin
+            ${{ runner.temp }}/m2-build/mcp.module
 
   modules:
     name: Modules (flat images, 2 MiB limit)

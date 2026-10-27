@@ -58,19 +58,28 @@ pub const MAX_QUEUED_BYTES: usize = MAX_RECORD_LEN + LENGTH_PREFIX_LEN;
 pub const CONNECT_DEADLINE_MS: u64 = 5_000;
 
 /// Deadline for one record once its first byte has arrived.
-pub const RECEIVE_DEADLINE_MS: u64 = 10_000;
+///
+/// The M2 module is single-threaded: while it is signing a confirmation or
+/// writing an MCP HTTP response, the mesh receive path can be idle for longer
+/// than the old 10 s deadline.  A 388-byte confirmation with 8 bytes buffered
+/// was observed closing a healthy link.  The record deadline now matches the
+/// heartbeat window; a truly dead peer is still detected by
+/// [`HEARTBEAT_TIMEOUT_MS`].
+pub const RECEIVE_DEADLINE_MS: u64 = 30_000;
 
 /// Deadline for making progress on a non-empty send queue.
-pub const SEND_DEADLINE_MS: u64 = 10_000;
+///
+/// Same rationale as [`RECEIVE_DEADLINE_MS`]: the peer may be busy in a
+/// single-threaded tick, so backpressure is allowed the heartbeat window.
+pub const SEND_DEADLINE_MS: u64 = 30_000;
 
 /// Interval between mesh heartbeats on an otherwise idle link.
 pub const HEARTBEAT_INTERVAL_MS: u64 = 5_000;
 
 /// A link with no traffic at all for this long is treated as dead.
 ///
-/// This is deliberately longer than [`RECEIVE_DEADLINE_MS`]: a partial record
-/// is a record deadline, while a silent established link is a heartbeat
-/// timeout.
+/// This is not shorter than [`RECEIVE_DEADLINE_MS`]: a partial record is a
+/// record deadline, while a silent established link is a heartbeat timeout.
 pub const HEARTBEAT_TIMEOUT_MS: u64 = 30_000;
 
 /// First reconnect delay.

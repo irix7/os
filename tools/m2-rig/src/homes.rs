@@ -33,6 +33,9 @@ const OBJECT_MAX: u32 = 32;
 const OBJECT_DOMAIN: &[u8] = b"IRIX7-M2-HOME-OBJECT-v1";
 const HOME_DOMAIN: &[u8] = b"IRIX7-HOME-v1";
 const HEADER_PREFIX: &str = "mesh-homes: ";
+/// A real table header.  The boot line `mesh-homes: configured ...` is not a
+/// table and must not be selected as the last group.
+const TABLE_PREFIX: &str = "mesh-homes: state=";
 const ROW_PREFIX: &str = "mesh-home: ";
 
 /// One parsed `mesh-home:` row.
@@ -97,7 +100,7 @@ impl HomeTable {
         let lines: Vec<&str> = text.lines().collect();
         let header_index = lines
             .iter()
-            .rposition(|line| line.contains(HEADER_PREFIX))
+            .rposition(|line| line.contains(TABLE_PREFIX))
             .ok_or_else(|| "no mesh-homes header".to_string())?;
         let header_line = lines[header_index].trim();
         let header_start = header_line

@@ -127,8 +127,10 @@ In particular, a home in this table is not yet a capability route.
   MCP response buffer.
 - The module grows by the `mesh-core` link it already carried transitively through
   `mesh-join`; it remains well inside the 2 MiB slot.
-- The missing persisted epoch still limits restart behaviour: a member rejoin at the
-  same epoch is demonstrated; a root restart fails closed as M2-ADR-0005 records.
+- Restart behaviour is now backed by the signed epoch store in M2-ADR-0005: a member
+  restores the confirmation and a root restores its signed record, so both rejoin at the
+  confirmed epoch when the scratch target is present.  A node without the store still
+  follows the fail-closed seed rule.
 - The root serves its one-node seed table before any member joins.  That is a confirmed
   local view, not a two-node claim; the rig only compares after convergence.
 - `mesh.obj` consumes 11 bytes of the 298-byte environment at the default count.  The

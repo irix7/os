@@ -179,6 +179,7 @@ recovery path.
 | `system.info` | — | `version`, `uptime_ms`, `memory`, `cpu`, `devices`, `load` |
 | `system.reset` | `mode` (`reboot`/`poweroff`/`warm`), `delay_ms?` | `ok` (the connection drops) |
 | `system.watchdog` | `action` (`arm`/`disarm`/`feed`), `timeout_ms?` | `ok` |
+| `mesh.reconnect` | — | `ok` (mesh link aborted; listener re-arms; confirmed view kept) |
 
 ### 5.6 Debug
 

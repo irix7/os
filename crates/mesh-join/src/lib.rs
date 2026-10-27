@@ -62,8 +62,10 @@
 //!   the epoch again.
 //!
 //! The clock is injected and the boundaries are exact, so a host test can
-//! drive every boundary without sleeping.  There is no gossip and no persisted
-//! epoch store; the restart rules are in [`node`] and in M2-ADR-0005/M2-ADR-0008.
+//! drive every boundary without sleeping.  There is no gossip.  A root can
+//! sign an [`EpochRecord`] and a member can verify a persisted
+//! [`EpochConfirmation`]; the module owns the bytes, not the disk.  The restart
+//! rules are in [`node`] and in M2-ADR-0005/M2-ADR-0008.
 
 #![no_std]
 #![forbid(unsafe_code)]
@@ -83,8 +85,8 @@ pub use mesh_service::{
 };
 pub use node::{JoinEvent, JoinNode, Outcome, Role, Tick, MAX_ATTEMPTS, RETRY_INTERVAL_MS};
 pub use wire::{
-    EpochConfirmation, EpochRefusal, JoinAck, JoinMessage, JoinRequest, MembershipSnapshot,
-    RefusalReason, WireError, MAX_BODY, MAX_MEMBERS, SNAPSHOT_VERSION, VERSION,
+    EpochConfirmation, EpochRecord, EpochRefusal, JoinAck, JoinMessage, JoinRequest,
+    MembershipSnapshot, RefusalReason, WireError, MAX_BODY, MAX_MEMBERS, SNAPSHOT_VERSION, VERSION,
 };
 
 pub use mesh_core::MembershipView;

@@ -483,7 +483,7 @@ static mut PHASE: u32 = ARM;
 /// mesh listener owning slot 1, HTTP has only one slot; a client that keeps
 /// its side open must not wedge the control plane forever.
 static mut CLOSE_START_MS: u64 = 0;
-const CLOSE_TIMEOUT_MS: u64 = 5_000;
+const CLOSE_TIMEOUT_MS: u64 = 2_000;
 static mut SCREEN_ROW: u32 = 0;
 static mut SCREEN_OFF: usize = 0;
 static mut SCREEN_STREAMING: bool = false;
@@ -689,10 +689,16 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                                 }
                             }
                         }
+                        // The response is already in the TCP send buffer.
+                        // Close our side now rather than waiting for a
+                        // possibly half-open iris forward to send FIN; the
+                        // single HTTP slot is needed by the next control
+                        // request.  CLOSING drains or aborts after 2 s.
+                        (services.tcp_close)(slot);
                         unsafe {
                             IN_CONN = false;
                             CLOSE_START_MS = (services.clock_ms)();
-                            PHASE = WAIT_CLOSE;
+                            PHASE = CLOSING;
                         }
                     }
                 } else if state == 3 {
@@ -1258,7 +1264,7 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
         Some(b"tools/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
             w.push(id);
-            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.stat\",\"description\":\"Stat a file, directory or symlink in the EROFS fixture and RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.readlink\",\"description\":\"Read a symbolic link target from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.write\",\"description\":\"Write a file to the RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}}}},{\"name\":\"fs.remove\",\"description\":\"Remove an overlay file or lower file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
+            w.push(b",\"result\":{\"tools\":[{\"name\":\"status\",\"description\":\"Guest status\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"echo\",\"description\":\"Echo text\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"console\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"serial.read\",\"description\":\"Read the serial console ring\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"offset\":{\"type\":\"integer\"},\"length\":{\"type\":\"integer\"}}}},{\"name\":\"serial.write\",\"description\":\"Write a line to the guest console\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\"}}}},{\"name\":\"system.reset\",\"description\":\"Restart the guest from the PROM\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"system.poweroff\",\"description\":\"Halt the guest\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"mesh.reconnect\",\"description\":\"Reset the mesh link and re-arm the listener (M2 restart harness)\",\"inputSchema\":{\"type\":\"object\"}},{\"name\":\"shell.exec\",\"description\":\"Run a small guest shell command\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}}}},{\"name\":\"block.read\",\"description\":\"Read a 512-byte SCSI sector\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"target\":{\"type\":\"integer\"},\"lba\":{\"type\":\"integer\"}}}},{\"name\":\"fs.read\",\"description\":\"Read a file from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.list\",\"description\":\"List a directory from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.stat\",\"description\":\"Stat a file, directory or symlink in the EROFS fixture and RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.readlink\",\"description\":\"Read a symbolic link target from the EROFS fixture\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"fs.write\",\"description\":\"Write a file to the RAM overlay\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"},\"data\":{\"type\":\"string\"}}}},{\"name\":\"fs.remove\",\"description\":\"Remove an overlay file or lower file\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\"}}}},{\"name\":\"screen.capture\",\"description\":\"Capture a PNG thumbnail and the BMP URL\",\"inputSchema\":{\"type\":\"object\"}}]}}");
         }
         Some(b"resources/list") => {
             w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
@@ -1352,6 +1358,16 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                     w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
                     w.push(id);
                     w.push(b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"powering off\"}]}}");
+                }
+                Some(b"mesh.reconnect") => {
+                    let ok = mesh::admin_reconnect(services);
+                    w.push(b"{\"jsonrpc\":\"2.0\",\"id\":");
+                    w.push(id);
+                    w.push(if ok {
+                        b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"mesh reconnect requested\"}]}}"
+                    } else {
+                        b",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"mesh unavailable\"}]}}"
+                    });
                 }
                 Some(b"fs.write") => {
                     let path = json_string(body, b"\"path\"").unwrap_or(b"/tmp/motd");

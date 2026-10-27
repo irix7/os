@@ -365,6 +365,121 @@ fn member_restart_rejoins_at_the_same_epoch() {
 }
 
 #[test]
+fn stored_root_record_restores_the_confirmed_epoch() {
+    let mut pair = pair();
+    let confirmation = join(&mut pair, 1_000);
+    let epoch = pair.root.epoch();
+    let snapshot = pair.root.snapshot();
+    assert_eq!(epoch, 2);
+
+    // The root signs its confirmed view and restarts.  The record restores the
+    // exact epoch and member list instead of the NVRAM seed.
+    let record = pair.root.epoch_record().expect("root record");
+    assert_eq!(record.epoch, epoch);
+    assert_eq!(record.members, snapshot.members);
+    let mut restarted = JoinNode::new_root(pair.root_id, signing(9), 1, 4_000).expect("root");
+    assert_eq!(restarted.epoch(), 1);
+    let restored = restarted
+        .restore_record(&record, 4_000)
+        .expect("restore record");
+    assert_eq!(restored, snapshot);
+    assert_eq!(restarted.epoch(), epoch);
+    assert_eq!(restarted.snapshot(), snapshot);
+
+    // The member also restarts from its stored signed confirmation.  It must
+    // present the confirmed epoch, not the seed.
+    let mut member =
+        JoinNode::new_member(pair.member_id, pair.root_id, key(9), 1, 4_000).expect("member");
+    member
+        .restore_confirmation(&confirmation, 4_000)
+        .expect("restore confirmation");
+    assert_eq!(member.epoch(), epoch);
+    assert_eq!(member.snapshot(), snapshot);
+    assert!(!member.authority_current(), "restore is not live authority");
+    let request = member.on_link_up(4_100).expect("rejoin request");
+    assert_eq!(request.last_epoch, epoch);
+    let outcome = restarted.on_message(pair.member_id, JoinMessage::Request(request), 4_100);
+    let confirmation = match outcome.reply {
+        Some(JoinMessage::Confirm(confirmation)) => confirmation,
+        other => panic!("expected confirmation, got {other:?}"),
+    };
+    assert_eq!(confirmation.epoch, epoch);
+    let outcome = member.on_message(pair.root_id, JoinMessage::Confirm(confirmation), 4_100);
+    assert!(matches!(outcome.event, JoinEvent::Duplicate(_)));
+    assert_eq!(member.epoch(), epoch);
+    assert_eq!(member.snapshot(), snapshot);
+    assert!(member.authority_current());
+    assert_eq!(member.snapshot(), restarted.snapshot());
+}
+
+#[test]
+fn corrupt_or_foreign_epoch_records_fail_closed() {
+    let mut pair = pair();
+    let confirmation = join(&mut pair, 1_000);
+    let record = pair.root.epoch_record().expect("root record");
+
+    // A tampered member list no longer matches the signature.
+    let mut forged = record.clone();
+    forged.members = vec![node(1), node(2), node(3)];
+    // Keep the list sorted as the encoder requires; the signature is stale.
+    let mut restarted = JoinNode::new_root(pair.root_id, signing(9), 1, 4_000).expect("root");
+    assert_eq!(
+        restarted.restore_record(&forged, 4_000),
+        Err(AuthorityError::BadSignature)
+    );
+    assert_eq!(restarted.epoch(), 1);
+    assert_eq!(restarted.snapshot().members, vec![pair.root_id]);
+
+    // A record signed by another key is not this root's view.
+    let mut wrong = JoinNode::new_root(pair.root_id, signing(8), 1, 4_000).expect("root");
+    assert_eq!(
+        wrong.restore_record(&record, 4_000),
+        Err(AuthorityError::BadSignature)
+    );
+    assert_eq!(wrong.epoch(), 1);
+
+    // A record whose root is a different NodeId is refused before the
+    // signature is trusted.
+    let mut foreign = record.clone();
+    foreign.root = node(7);
+    let mut restarted = JoinNode::new_root(pair.root_id, signing(9), 1, 4_000).expect("root");
+    assert_eq!(
+        restarted.restore_record(&foreign, 4_000),
+        Err(AuthorityError::WrongRoot)
+    );
+
+    // A tampered confirmation does not verify.  The real confirmation came
+    // from the live handshake above; changing a signed field is enough.
+    let mut tampered = confirmation.clone();
+    tampered.epoch = 7;
+    let mut member =
+        JoinNode::new_member(pair.member_id, pair.root_id, key(9), 1, 4_000).expect("member");
+    assert_eq!(
+        member.restore_confirmation(&tampered, 4_000),
+        Err(AuthorityError::BadSignature)
+    );
+    assert_eq!(member.epoch(), 1);
+    assert!(member.converged().is_none());
+
+    // A member cannot restore a confirmation addressed to another node.
+    let mut other = JoinNode::new_member(node(3), pair.root_id, key(9), 1, 4_000).expect("member");
+    assert_eq!(
+        other.restore_confirmation(&confirmation, 4_000),
+        Err(AuthorityError::WrongSubject)
+    );
+    assert_eq!(other.epoch(), 1);
+    assert!(other.converged().is_none());
+
+    // A root record cannot be restored by a member, and a member cannot
+    // produce one.
+    assert_eq!(
+        member.restore_record(&record, 4_000),
+        Err(AuthorityError::NotRoot)
+    );
+    assert_eq!(pair.member.epoch_record(), Err(AuthorityError::NotRoot));
+}
+
+#[test]
 fn root_restart_refuses_to_lower_a_member_epoch() {
     let mut pair = pair();
     join(&mut pair, 1_000);

@@ -208,6 +208,6 @@ migration endpoint returns `404 disabled` with `reason=peer|config`.
 
 - No general actor scheduler or placement policy; the rig chooses the hosts and messages.
 - No live resources, no L2 safepoints, no persistent state or migration directory.
-- One actor and two nodes. Multi-actor/multi-hop migration, gossip and a persisted epoch
-  remain M3 work.
+- One actor and two nodes. Multi-actor/multi-hop migration and gossip remain M3 work; the
+  local signed epoch store is M2-ADR-0005 and is not a replicated epoch log.
 - The lab authority and transport limitations of M2-ADR-0002/0003 still apply.

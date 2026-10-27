@@ -1,7 +1,8 @@
 # M2 two-node rig — runbook
 
-**Status:** working; M2-1 transport, M2-2 join/epoch, M2-3 rendezvous homes, the M2-4
-remote capability route, M2-5 L0 actor migration and the M2-6 failure/fence/partition slice
+**Status:** working and in CI; M2-1 transport, M2-2 join/epoch with a signed persistent
+epoch store, M2-3 rendezvous homes, the M2-4 remote capability route, M2-5 L0 actor
+migration and the M2-6 failure/fence/partition slice
 **Scope:** M2-0 foundation, the M2-1 framed mesh transport, the M2-2 join, the M2-3
 rendezvous homes, the M2-4 remote capability route, the M2-5 two-way L0 stackless-actor
 migration and the M2-6 failure, lease-fencing and partition modes. The rig starts two independent kernels, proves both reach `BOOT-READY`
@@ -40,8 +41,8 @@ The decisions behind the rig are [M2-ADR-0001](../adr/m2-0001-two-node-rig.md),
 
 - The pinned Rust nightly with `rust-src` (see `rust-toolchain.toml`).
 - An `iris` binary with instance support (`--instance`, `--print-instance`; the
-  `0.1.7+irix7` tree has it).
-- The matching `iris-ci` binary.
+  `0.1.7+irix7` tree has it, and CI pins `v0.1.10+irix7`).
+- The matching `iris-ci` binary from the same release.
 - The repository's `targets/mips3-sgi-irix7-n32.json` and the kernel/ROM/MCP sources.
 - No root, no `CAP_NET_RAW` and no pcap feature are required.
 
@@ -61,8 +62,13 @@ override it. It writes:
 | Artefact | Purpose |
 |---|---|
 | `target/m2-rig/irix7-rom.bin` | PROM with the kernel embedded (must be ≤ 524288 bytes). |
-| `target/m2-rig/mcp.module` | Fresh MCP+mesh module (must be ≤ 2 MiB). |
+| `target/m2-rig/mcp.module` | Fresh MCP+mesh module (must be ≤ 512 KiB slot A). |
 | `target/m2-rig/SHA256SUMS` | Digests of both. |
+| `target/m2-rig/BUILD-PROVENANCE.txt` | Source commit, `git describe --dirty`, tree dirty flag and rustc version. |
+
+Each run also writes `evidence/manifest.json` with the source commit/`describe`/dirty flag
+and the sizes and SHA-256 digests of the PROM, module, `iris` and `iris-ci` binaries.  A
+dirty tree is recorded explicitly; it is never presented as the clean commit.
 
 If the host `cc` wrapper is stale (a Nix store path that no longer exists), point `CC`
 or `PATH` at a working compiler before running `build.sh`. The kernel/ROM target uses
@@ -83,11 +89,18 @@ cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
 `run` starts both nodes, waits for readiness, probes both HTTP directions, runs the mesh
 framing probe, waits for the join and the member's acknowledgement, fetches the rendezvous
 home table from both kernels and checks the stale-epoch negative, drives the five route
-steps (`/mesh/route?step=1..5`) and fetches the route report from both kernels, stops and
-restarts **only n1** (the default), then drives the eleven migration steps
-(`/mesh/migrate?step=1..11`) and fetches both migration reports. It stops both nodes and
-writes `target/m2-rig/evidence/`. In `kill-peer` and `partition` it runs the failure
-scenario instead of the member restart; migration is not driven in those modes.
+steps (`/mesh/route?step=1..5`) and fetches the route report from both kernels.  In the
+default mode it drives the eleven migration steps (`/mesh/migrate?step=1..11`) and
+fetches both migration reports on the stable initial pair, then stops and restarts
+**n1** (the member) to prove the signed epoch restore and same-epoch rejoin, and finally
+stops and restarts **n0** (the root) while the member stays up to prove root epoch
+recovery.  It stops both nodes and writes
+`target/m2-rig/evidence/`.  In `kill-peer` and `partition` it runs the failure scenario
+instead of the restarts; migration and the restart gates are not driven in those modes.
+
+A fresh `up`/`run` deletes each node's scratch image so an earlier run cannot leak a
+record into a new one.  The restart paths call `start_node` directly and therefore keep
+the image across the restart under test.
 
 The lifecycle commands:
 
@@ -210,23 +223,60 @@ requires the two node IDs in the snapshot, requires the root's `mesh-join: ack f
 and the member's `mesh-join: ack-sent ...`, and requires `rejects=0` in the M2-1 pass
 line. The epoch must advance past the seed (2 in the two-node case).
 
-### Restart and rejoin
+### Signed epoch store and restart
 
-`run` stops n1 (the member), copies its transcript to `serial-n1-boot1.log`, waits for n0
-to notice the dead link and re-arm its listener, restarts n1 with the same NVRAM image,
-and starts a fresh mesh relay. The member starts at the seed epoch, sends
-`last_epoch=1`, and the root re-confirms its current epoch and list. The rig requires:
+Each node has a dedicated 4 MiB SCSI scratch volume at target 3 (`[scsi.3]` with
+`scratch = true`).  The module writes at LBA 8:
 
+- the root writes an `EpochRecord` signed over `IRIX7-M2-EPOCH-STORE-v1`, the epoch and
+  the full member list;
+- the member writes the exact root-signed `EpochConfirmation` it installed.
+
+The record is written only when the epoch or digest changes, so the 5 s refresh does not
+hammer the disk.  A restore verifies the signature, root, subject (member), epoch and
+canonical member list before installing.  A corrupt, foreign or role-mismatched record
+disables the join with `mesh-join: disabled reason=epoch-store`; it never silently starts
+from the seed.  A missing target logs `epoch-store: unavailable` and continues from the
+seed without claiming persistence.
+
+`run` stops n1 (the member), copies its transcript to `serial-n1-boot1.log`, drops the
+old relay, and waits for n0 to be between links.  The wait accepts either a new
+`mesh-transport: disconnected` or a root that was already between links (`connected`
+count not greater than `disconnected`); a root already waiting for a peer will never log
+a second disconnect.  It reads raw serial lines, because the disconnect is often the
+final line without a trailing newline.  It then restarts n1 with the same NVRAM image and
+scratch volume, asks the live root (through the MCP tool `mesh.reconnect`) to abort its
+old guest-side mesh socket and re-arm, and starts a fresh mesh relay.  The root keeps its
+confirmed epoch, route and migration state; only the link is reset.  This is required
+because the iris host forward can keep delivering the member's new requests to the old
+root socket, so the root's replies never reach the new relay.  The rig requires:
+
+- `epoch-store: restored epoch=<first> ... source=confirmation` in the member's new boot;
 - the rejoin epoch and digest equal the first epoch and digest;
 - the root's epoch did not advance across the member restart;
-- the rejoin request's `last_epoch` is below the confirmed epoch (the member was
-  promoted by the root, not self-confirmed);
+- the rejoin request's `last_epoch` equals the confirmed epoch (the member restored its
+  own signed confirmation instead of falling back to the seed);
 - the root logged a second `mesh-join: confirm epoch=2`.
 
-A **root** restart is different: the root would start at the seed and the member's higher
-epoch would be refused with `epoch-regression`, because the module cannot persist the
-confirmed epoch (the ABI has `config_get` only). Failing closed is deliberate; see
-M2-ADR-0005 §4 and the host test `root_restart_refuses_to_lower_a_member_epoch`.
+It then stops n0 (the root) while n1 stays up, copies the root transcript to
+`serial-n0-boot1.log`, restarts n0 with the same NVRAM image and scratch volume, and starts
+a fresh relay.  The rig requires:
+
+- `epoch-store: restored epoch=<first> ... source=root-record` in the root's new boot;
+- the root's `mesh-join: local` epoch equals the confirmed epoch;
+- the live member's next request carries `last_epoch=<confirmed>`;
+- the root confirms the same epoch and the member duplicate-installs it;
+- neither transcript logs `epoch-regression`.
+
+After the root restart the rig asks the live member to `mesh.reconnect` for the same
+reason: the member's old guest-side socket must be aborted before the new relay connects.
+Neither reset advances the epoch or discards the confirmed view; they are link controls,
+not membership changes.
+
+The host tests cover the corrupt/foreign record and wrong-subject cases directly.  The
+older no-store rule (`root restart refuses to lower a member epoch`, host test
+`root_restart_refuses_to_lower_a_member_epoch`) remains the correct failure for a node
+whose store is missing or corrupt.
 
 ## Rendezvous homes (M2-3)
 
@@ -529,6 +579,12 @@ The rig writes a DS1386 image per node. The keys are:
 | `mesh.key` | The root's 32-byte Ed25519 seed (64 hex characters). Written only to the root; a lab fixture, redacted in the evidence bundle. |
 | `console` | `serial0`. |
 
+There is **no new NVRAM key** for the epoch store: enabling the join is enough, and the
+298-byte environment is already full at the route/failure configuration.  Persistence is a
+separate SCSI scratch target (`[scsi.3]`, LBA 8), not an NVRAM value.  Target 2 is the MCP module's EROFS fixture, so it is deliberately not used.  The `epoch-store:`
+serial lines and `manifest.json` record whether the store was available and which epoch it
+restored.
+
 The image is 8 KiB; the environment starts at byte `0x10`, the MAC is at byte `314`, and
 the environment must end before the MAC. The harness checks the bound and records the
 parsed environment in the evidence bundle. The environment limit is 298 bytes; the root
@@ -583,6 +639,12 @@ mesh-join: refused reason=... root_epoch=N
 mesh-join: reject reason=bad-signature|wrong-root|epoch-regression|...
 mesh-join: retry attempt=N
 mesh-join: timeout attempts=N state=pending
+epoch-store: unavailable target=2 lba=8 (persistence not configured)
+epoch-store: empty target=2 lba=8
+epoch-store: stored epoch=2 members=2 digest=<32 hex> source=root-record|confirmation
+epoch-store: restored epoch=2 members=2 digest=<32 hex> source=root-record|confirmation
+epoch-store: corrupt reason=<wire/reason label>
+epoch-store: write-failed reason=write
 ```
 
 The M2-3 homes surface adds:
@@ -642,8 +704,10 @@ The evidence bundle contains:
 |---|---|
 | `summary.md` | Human-readable results, node table, boot lines, NVRAM, probes, join, rendezvous homes, remote capability route, relay logs. |
 | `run.json` | Machine-readable version of the same, including every home table and the route reports. |
+| `manifest.json` | Deterministic source commit/`describe`/dirty flag and the PROM, module, `iris` and `iris-ci` sizes and SHA-256 digests. |
 | `serial-n0.log`, `serial-n1.log` | Final serial transcripts. |
-| `serial-n1-boot1.log` | The member's transcript before the restart (when `run` restarted it). |
+| `serial-n1-boot1.log` | The member's transcript before the member restart. |
+| `serial-n0-boot1.log` | The root's transcript before the root restart. |
 | `stdout-n0.log`, `stderr-n0.log`, etc. | Emulator output. |
 | `probe-n0-to-n1.{txt,raw}`, `probe-n1-to-n0.{txt,raw}` | Telnet transcripts, clean and raw. |
 | `relay-n0-to-n1.log`, `relay-n1-to-n0.log` | HTTP probe connection and byte counts. |
@@ -690,9 +754,15 @@ digest changes with the uptime; the status and byte count are the pass criteria.
   module.
 - **Fixed ports.** Another rig run can collide. Use `--base-port` and stop the previous
   run.
-- **No persisted epoch.** A module cannot write NVRAM. A member restart rejoins at the
-  same epoch while the root is up; a root restart fails closed on a higher member epoch;
-  both restart deterministically. See M2-ADR-0005.
+- **The epoch store is a local scratch record, not a replicated log.** The module writes
+  at most 2.5 KiB to SCSI target 3; a node whose scratch volume is missing or corrupt
+  logs `epoch-store: unavailable` or `corrupt` and either falls back to the seed or
+  disables the join. A lost scratch volume is therefore still an operator event. There is
+  no NVRAM write service and no cross-node epoch replication. The root writes before it
+  sends a confirmation, but there is no fsync or write-ahead log: a power loss can still
+  lose the newest record, in which case a member with a newer confirmation makes the root
+  fail closed with `epoch-regression` rather than move backwards. The rig proves clean
+  process restarts, not crash/power-loss durability. See M2-ADR-0005 §4.
 - **1-of-1 authority.** No threshold, no key rotation, no revocation and no production
   key custody. The key is a lab fixture.
 - **Failure removal is root-initiated and two-node.** The root removes a failed member
@@ -807,10 +877,14 @@ M2-6 (failure, lease fencing and partition) is implemented in `crates/mesh-servi
   the fence, the stale-frame refusal and the mutable-object rule on two real kernels, and
   the partition mode heals and requires a rejoin at epoch 4.
 
-The M2 gate is now covered end to end by this run: join, membership epoch, rendezvous
-homes, remote capability route, L0 migration both ways and one-node failure/partition.
+The M2 gate is now covered end to end by this run: join, membership epoch, signed epoch
+restore for both roles, rendezvous homes, remote capability route, L0 migration both ways
+and one-node failure/partition.  The `.github/workflows/ci.yml` `mesh-real` job builds the
+same artefacts and runs the `none`, `no-peer`, `kill-peer` and `partition` modes on two
+real `iris` kernels, with evidence uploads on failure and success.
+
 The run does not claim live TLS/socket/fd migration, L2 safepoint migration, a general
-actor scheduler, gossip, a persisted epoch, a persistent route/migration directory or
+actor scheduler, gossip, a replicated epoch log, a persistent route/migration directory or
 linearisable writes across a partition.
 
 ## Troubleshooting
@@ -829,6 +903,11 @@ linearisable writes across a partition.
   `mesh-transport:` lines. No `listening` line means `mesh.peer` was absent or the module
   did not tick; no `pass` line means the peer `NodeId`/frame exchange did not complete;
   `rejects=` above zero means a framing or header check failed and the link was reset.
+  A `receive-deadline` with a partial `buffered=N expected=M` means the module did not
+  get the rest of a record within 30 s; check host CPU load and whether an HTTP response
+  is monopolising the single-threaded tick.  A `disconnected` line followed by a
+  reconnect is normal after a restart; the restart gate counts raw lines rather than
+  requiring a single session.
 - If the join does not converge, look for `mesh-join: enabled`, `local`, `request`,
   `confirm` and `reject` lines. `disabled reason=...` means the authority/key NVRAM keys
   are missing or malformed. `reject reason=bad-signature` means the member's `mesh.pub`
