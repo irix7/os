@@ -405,11 +405,9 @@ pub fn evaluate(
             }
         }
         Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
-            let root = match evidence.nodes[0]
-                .converged
-                .as_deref()
-                .and_then(JoinLine::parse)
-            {
+            let root = match evidence.nodes[0].converged.as_deref().and_then(|line| {
+                JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "root"))
+            }) {
                 Some(line) => line,
                 None => {
                     errors.push("n0: no mesh-join converged line".into());
@@ -423,11 +421,9 @@ pub fn evaluate(
                     }
                 }
             };
-            let member = match evidence.nodes[1]
-                .converged
-                .as_deref()
-                .and_then(JoinLine::parse)
-            {
+            let member = match evidence.nodes[1].converged.as_deref().and_then(|line| {
+                JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
+            }) {
                 Some(line) => line,
                 None => {
                     errors.push("n1: no mesh-join converged line".into());

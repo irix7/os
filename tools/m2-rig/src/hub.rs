@@ -172,7 +172,10 @@ impl MeshHub {
             .map(|(name, counters)| {
                 (
                     name.clone(),
-                    counters.lock().map(|counters| counters.clone()).unwrap_or_default(),
+                    counters
+                        .lock()
+                        .map(|counters| counters.clone())
+                        .unwrap_or_default(),
                 )
             })
             .collect();

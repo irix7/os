@@ -20,6 +20,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::check_prerequisites;
 use crate::evidence::json_escape;
 use crate::fixture::Fixture;
 use crate::homes;
@@ -27,10 +28,9 @@ use crate::hub::MeshHub;
 use crate::join;
 use crate::relay::MeshRelay;
 use crate::rig::{
-    derive_nodes, git, read_serial, shard_environments, wait_boot, write_text, AuthorityKeys,
-    Node, Options, RunningNode,
+    derive_nodes, git, read_serial, shard_environments, wait_boot, write_text, AuthorityKeys, Node,
+    Options, RunningNode,
 };
-use crate::check_prerequisites;
 
 /// The M3 shard-evidence fixture count.  It is a test set, not a directory.
 pub const SHARD_OBJECT_COUNT: u32 = 32;
@@ -218,8 +218,7 @@ fn parse_u32(text: &str) -> Result<u32, String> {
 }
 
 fn parse_usize(text: &str) -> Result<usize, String> {
-    text.parse()
-        .map_err(|_| format!("{text:?} is not a count"))
+    text.parse().map_err(|_| format!("{text:?} is not a count"))
 }
 
 fn shard_fixture_object(index: u32) -> [u8; 32] {
@@ -637,8 +636,8 @@ pub fn run(options: &Options) -> Result<i32, String> {
     }
     let (module, rom_sha, module_sha) = check_prerequisites(options)?;
     let module_sha_text = crate::sha256::hex(&module_sha);
-    let fixture = Fixture::start(module)
-        .map_err(|error| format!("start module fixture: {error}"))?;
+    let fixture =
+        Fixture::start(module).map_err(|error| format!("start module fixture: {error}"))?;
     let nodes = derive_nodes(options)?;
     let mut members: Vec<String> = nodes.iter().map(Node::node_id_string).collect();
     members.sort();
@@ -647,8 +646,7 @@ pub fn run(options: &Options) -> Result<i32, String> {
             crate::route::first_object_for(&members, &nodes[*index].node_id_string()).is_some()
         })
         .ok_or_else(|| "no member owns an M2 route object".to_string())?;
-    let (environments, authority) =
-        shard_environments(&nodes, SHARD_OBJECT_COUNT, first_member);
+    let (environments, authority) = shard_environments(&nodes, SHARD_OBJECT_COUNT, first_member);
     let environment_options: Vec<Option<_>> = environments.into_iter().map(Some).collect();
     let mut running = Vec::new();
     for (node, environment) in nodes.iter().zip(environment_options.iter()) {
@@ -794,8 +792,7 @@ fn run_started(
 
         let stale_epoch = expected.epoch.saturating_sub(1).max(1);
         let stale_path = format!("/mesh/shard?epoch={stale_epoch}");
-        let (stale_status, stale_table) =
-            fetch_shard(node, &stale_path, Duration::from_secs(10))?;
+        let (stale_status, stale_table) = fetch_shard(node, &stale_path, Duration::from_secs(10))?;
         verify_stale(
             node,
             &stale_path,
@@ -826,11 +823,9 @@ fn run_started(
 
     // One remote route across the shard boundary.  The member is the home;
     // the root is a different node that only knows the confirmed view.
-    let wire_object = crate::route::first_object_for(
-        &expected.members,
-        &nodes[first_member].node_id_string(),
-    )
-    .ok_or_else(|| "no route object for the chosen member".to_string())?;
+    let wire_object =
+        crate::route::first_object_for(&expected.members, &nodes[first_member].node_id_string())
+            .ok_or_else(|| "no route object for the chosen member".to_string())?;
     std::thread::sleep(Duration::from_secs(6));
     let (command_status, command_body) =
         crate::route::command(&nodes[0], 1, Duration::from_secs(10))?;
@@ -887,8 +882,7 @@ fn run_started(
     // Collect the hub counters after the route, then write the bundle.
     let hub_stats = hub.as_ref().map(MeshHub::stats).unwrap_or_default();
     let dir = shard_dir(options);
-    std::fs::create_dir_all(&dir)
-        .map_err(|error| format!("create {}: {error}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|error| format!("create {}: {error}", dir.display()))?;
     for node in nodes {
         let _ = crate::rig::copy_if_present(
             &node.serial_log,
@@ -917,9 +911,13 @@ fn run_started(
     );
     let _ = writeln!(
         json,
-        "  \"host_policy\": \"cargo test -p mesh-core -p mesh-join -p mesh-sim\"," 
+        "  \"host_policy\": \"cargo test -p mesh-core -p mesh-join -p mesh-sim\","
     );
-    let _ = writeln!(json, "  \"rom_sha256\": \"{}\",", crate::sha256::hex(rom_sha));
+    let _ = writeln!(
+        json,
+        "  \"rom_sha256\": \"{}\",",
+        crate::sha256::hex(rom_sha)
+    );
     let _ = writeln!(json, "  \"module_sha256\": \"{}\",", module_sha);
     let _ = writeln!(
         json,
@@ -978,11 +976,7 @@ fn run_started(
     );
     let _ = writeln!(json, "  \"route\": {{");
     let _ = writeln!(json, "    \"object\": \"{}\",", wire_object);
-    let _ = writeln!(
-        json,
-        "    \"root\": \"{}\",",
-        nodes[0].node_id_string()
-    );
+    let _ = writeln!(json, "    \"root\": \"{}\",", nodes[0].node_id_string());
     let _ = writeln!(
         json,
         "    \"home\": \"{}\",",

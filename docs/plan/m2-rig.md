@@ -90,11 +90,11 @@ cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
 framing probe, waits for the join and the member's acknowledgement, fetches the rendezvous
 home table from both kernels and checks the stale-epoch negative, drives the five route
 steps (`/mesh/route?step=1..5`) and fetches the route report from both kernels.  In the
-default mode it first stops and restarts **n1** (the member) to prove the signed epoch
-restore and same-epoch rejoin, then drives the eleven migration steps
-(`/mesh/migrate?step=1..11`) and fetches both migration reports, and finally stops and
-restarts **n0** (the root) while the member stays up to prove root epoch recovery.  It
-stops both nodes and writes
+default mode it drives the eleven migration steps (`/mesh/migrate?step=1..11`) and
+fetches both migration reports on the stable initial pair, then stops and restarts
+**n1** (the member) to prove the signed epoch restore and same-epoch rejoin, and finally
+stops and restarts **n0** (the root) while the member stays up to prove root epoch
+recovery.  It stops both nodes and writes
 `target/m2-rig/evidence/`.  In `kill-peer` and `partition` it runs the failure scenario
 instead of the restarts; migration and the restart gates are not driven in those modes.
 

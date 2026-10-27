@@ -635,6 +635,37 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             Err(error) => probe_error = Some(error),
         }
 
+        // Run the migration on the stable initial pair.  Driving it after a
+        // member restart puts a stateful 11-step exchange on a just-reopened
+        // iris forward; the restart gates below do not depend on migration
+        // state, so this order is both valid and more reliable.
+        if options.fault.migrates() && join_error.is_none() {
+            if let (Some(epoch), Some(digest)) = (join_before.epoch, join_before.digest.clone()) {
+                if join_before.members.len() == 2 {
+                    let evidence = migrate::run(
+                        &nodes[0],
+                        &nodes[1],
+                        &join_before.members,
+                        epoch,
+                        &digest,
+                        Duration::from_secs(240),
+                    );
+                    if !evidence.ok {
+                        migration_error = Some(evidence.message.clone());
+                    }
+                    migration = Some(evidence);
+                    facts = snapshot_facts(&nodes);
+                } else {
+                    migration_error = Some(format!(
+                        "the migration scenario needs two members, got {}",
+                        join_before.members.len()
+                    ));
+                }
+            } else {
+                migration_error =
+                    Some("the migration scenario needs a converged epoch/digest".into());
+            }
+        }
         if options.fault.failures() {
             // The base M2-4 steps have already left a cached route and a
             // lease at the member.  Kill it (or cut the seam) and let the
@@ -669,33 +700,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
-            }
-        }
-        if options.fault.migrates() && join_error.is_none() {
-            if let (Some(epoch), Some(digest)) = (join_before.epoch, join_before.digest.clone()) {
-                if join_before.members.len() == 2 {
-                    let evidence = migrate::run(
-                        &nodes[0],
-                        &nodes[1],
-                        &join_before.members,
-                        epoch,
-                        &digest,
-                        Duration::from_secs(240),
-                    );
-                    if !evidence.ok {
-                        migration_error = Some(evidence.message.clone());
-                    }
-                    migration = Some(evidence);
-                    facts = snapshot_facts(&nodes);
-                } else {
-                    migration_error = Some(format!(
-                        "the migration scenario needs two members, got {}",
-                        join_before.members.len()
-                    ));
-                }
-            } else {
-                migration_error =
-                    Some("the migration scenario needs a converged epoch/digest".into());
             }
         }
         // The root restart is the M2-2 persistence gate.  It runs after the
