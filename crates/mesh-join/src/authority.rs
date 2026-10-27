@@ -252,7 +252,7 @@ impl AuthorityRoot {
     /// Each removal is a separate authority-confirmed epoch advance, exactly
     /// as a clean leave would be.  The root is never removed.  A node that is
     /// merely suspect stays in the routing snapshot.
-    pub fn remove_failed(&mut self, now_ms: u64) -> Option<BatchRemoval> {
+    pub fn remove_failed(&mut self) -> Option<BatchRemoval> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()

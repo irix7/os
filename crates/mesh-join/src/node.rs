@@ -593,7 +593,7 @@ impl JoinNode {
                     };
                     events.push(event);
                 }
-                if let Some(removal) = state.authority.remove_failed(now_ms) {
+                if let Some(removal) = state.authority.remove_failed() {
                     state.converged = removal.snapshot.clone();
                     events.push(JoinEvent::RemovedBatch {
                         nodes: removal.nodes,
