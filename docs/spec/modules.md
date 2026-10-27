@@ -106,7 +106,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 14 |
+| 0x00 | `version` | 15 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x0C | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -130,10 +130,11 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x54..0x6C | loader/arena | ABI v12 services, see §8.5 |
 | 0x70 | `tcp_connect` | `int32_t (*)(uint32_t slot, uint32_t address, uint16_t port)` — IPv4 in network byte order; 0 or -1 |
 | 0x74 | `tcp_events` | `uint32_t (*)(uint32_t slot)` — level-triggered RX/TX/CLOSED/LISTEN/ESTAB bits; bit 31 = no socket |
+| 0x78 | `tcp_slots` | `uint32_t (*)(void)` — number of module TCP slots the kernel provides |
 
-The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.9.0`.  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.10.0`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
-the v11 prefix is 0x54 bytes, the ABI v12 table was 0x70 bytes, ABI v13 was 0x74 bytes and the ABI v14 table is 0x78 bytes.
+the v11 prefix is 0x54 bytes, the ABI v12 table was 0x70 bytes, ABI v13 was 0x74 bytes, ABI v14 was 0x78 bytes and the ABI v15 table is 0x7c bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`. ABI v12 appends
@@ -142,22 +143,25 @@ the five arena regions; a bounded download queue remains future work.
 
 ### TCP slots
 
-There are two slots (0 and 1), each with a 2 KiB receive and transmit buffer in the core.
-`tcp_listen` closes and replaces any socket already in the slot. `tcp_recv` returns 0 when
-the connection is open but no data is queued, and -1 when the slot has no socket. `tcp_send`
-may accept fewer bytes than requested; loop until the whole response is sent. `tcp_close`
-sends a FIN; once the socket reaches the closed state the module can call `tcp_listen`
-again.
+`tcp_slots()` returns eight. Slots are `0..8`; each owns one socket, a 16 KiB receive
+ring and a 16 KiB transmit ring in the kernel. `tcp_listen` and `tcp_connect` close and
+replace any socket already in the slot. `tcp_recv` returns 0 when the connection is open
+but no data is queued, and -1 when the slot has no socket. `tcp_send` may accept fewer
+bytes than requested; loop until the whole response is sent. `tcp_close` sends a FIN; once
+the socket reaches the closed state the module can call `tcp_listen` again.
 
-A server can arm the second slot while the first connection is closing. smoltcp permits
-two listening sockets on the same port, and the mcp module uses that to avoid a re-arm
-gap between back-to-back clients.
+Every `tcp_connect` slot gets its own ephemeral local port (`49152 + slot`), so a module
+can hold several peer connections at once; a fixed local port would collide on the second
+connect. Listening slots can use different ports; smoltcp permits two listening sockets on
+the same port, but the kernel does not require that trick.
 
-M2-1 adds the mesh listener to the same module. When NVRAM contains `mesh.peer`, the mesh
-owns module TCP slot 1 for guest port 7000 and MCP uses only slot 0 for HTTP, so the
-two-slot pre-arm is disabled. Without `mesh.peer`, the mesh listener is disabled and MCP
-keeps the two-slot behaviour. This is a fixed share, not a module slot manager; general
-runtime module dependencies remain issue #217.
+A server can arm one slot while another connection is closing. MCP still uses slot 0 for
+HTTP and slot 1 for the mesh listener. The remaining slots are free for a multi-peer
+transport: eight slots are enough for a star of seven peers plus the control plane, which
+is the Version 1 transport prerequisite for the four-to-eight-node membership work tracked
+in issue #249. This is a fixed slot pool, not a module slot manager; general runtime module
+dependencies remain issue #217. The kernel's socket set has 20 entries, so eight module
+sockets coexist with DHCP, telnet, the MCP listener and the userland client.
 
 The entry returns a pointer to a vtable, or null for "initialised, no callback":
 

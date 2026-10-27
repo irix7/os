@@ -115,12 +115,31 @@ The lifecycle commands:
 | `probe` | Probe both directions (HTTP, mesh framing, join) against running nodes and write evidence. It does not restart a node. |
 | `down` | Send `iris-ci quit` to both and wait for the processes. |
 | `run` | `up` + probe + member restart/rejoin (or the failure/partition scenario) + `down` + evidence. |
+| `ports` | Boot one node running `modules/ports`, open one socket per kernel slot, echo one line on each, and write `evidence/ports.json`. Transport prerequisite for #249; no membership traffic. |
 | `print-config` | Print the derived instance/port table and the NVRAM keys without starting. |
 | `clean` | Remove the work directory. Stop the nodes first. |
 
 Useful options: `--work DIR`, `--base-port N`, `--timeout SECS`, `--keep` (with `run`,
 leave the nodes running), `--verbose`, and
 `--fault none|no-peer|wrong-authority|no-route|kill-peer|partition`.
+
+### Module slot probe
+
+`ports` is the transport prerequisite for the multi-node membership work (#249).  It boots
+one node with `modules/ports` as the autoloaded module, starts eight echo listeners on
+`base-port + 2000` (12600 for the CI block), and requires `tcp_slots()` >= 8.  The module
+opens one socket per slot to `192.168.0.1:(base + slot)`, sends `p=slot\n` and checks the
+echo.  All eight sockets are connected at the same time; only the handshakes and echoes are
+paced, because the eight-descriptor Seeq receive ring cannot absorb a twelve-frame burst.
+The fixture records every line, so the pass is not taken from the guest's own log.  The
+command needs only the PROM and the probe module:
+
+```sh
+cargo run --manifest-path tools/m2-rig/Cargo.toml -- ports \
+  --work /tmp/ports --rom target/m2-rig/irix7-rom.bin \
+  --module target/module-ports/ports.module \
+  --iris /path/to/iris --iris-ci /path/to/iris-ci --base-port 10600 --timeout 240
+```
 
 ### Fault modes
 
@@ -133,7 +152,7 @@ The fault modes are negative evidence, not extra features:
 | `wrong-authority` | n1 gets a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, stays at its seed view and serves `409 pending` with no homes. |
 | `no-route` | The join and homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both kernels log `mesh-route: disabled reason=config` and `mesh-migrate: disabled reason=config`, `/mesh/route` and `/mesh/migrate` are `404 disabled`, and no route step, `MOVED` or migration runs. |
 | `kill-peer` | The full route configuration (`mesh.route=1`); n1 is `SIGKILL`ed after steps 1–5. | n0 logs `mesh-fail: suspect`, `failed` and `removed`; the epoch advances 2→3 with a one-member table; every object is recomputed to n0; a fence row names n1 as the stale home; step 6 completes at n0 with one attempt, no send and no timeout; step 7 is `stale-epoch`; step 8 commits; step 9 reads. |
-| `partition` | The full route configuration (`mesh.route=1`); the mesh relay is paused (frames dropped, sessions kept). | The root follows the same removal path; the live member keeps epoch 2 and two members, reports `authority state=lost mutable=0 reads=lease`, refuses step 8 with `no-authority` and reports a remote home in step 6 as `no-authority`. Resuming the seam rejoins it at epoch 4 with the two-member table; the root then commits a peer-homed object (step 10) and the recovered member serves it. |
+| `partition` | The full route configuration (`mesh.route=1`); the mesh relay is paused (frames dropped, sessions kept). | The root follows the same removal path; the live member keeps epoch 2 and two members, reports `authority state=lost mutable=0 reads=lease`, refuses step 8 with `no-authority` and reports a remote home in step 6 as `no-authority`. Resuming the seam resets both guest links through the link-only `mesh.reconnect` control and starts a fresh relay; the member rejoins at epoch 4 with the two-member table; the root then commits a peer-homed object (step 10) and the recovered member serves it. |
 
 `run --fault no-peer` deliberately skips the M2-1 mesh probe (there is no listener) and
 passes on the HTTP probe plus the M1/M2-0 markers. `probe` and `run` write the mode into
