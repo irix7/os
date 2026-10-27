@@ -35,6 +35,7 @@
 - [M3-ADR-0002 — multi-member hub](adr/m3-0002-multi-node-hub.md)
 - [M2-ADR-0010 — direct peer transport](adr/m2-0010-direct-peer-transport.md)
 - [M3-ADR-0003 — bounded mesh streams](adr/m3-0003-multiplexed-streams.md)
+- [M3-ADR-0004 — readiness-driven module I/O](adr/m3-0004-event-driven-io.md)
 
 ## Plan
 

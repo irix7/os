@@ -113,6 +113,7 @@ static SERVICES: Services = Services {
     module_query: service_module_query,
     module_unload: service_module_unload,
     tcp_connect: service_tcp_connect,
+    tcp_events: service_tcp_events,
 };
 
 /// Periodic callbacks for every multiplexer region.
@@ -210,8 +211,33 @@ pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
 }
 
 /// Run the periodic callbacks of every registered multiplexer region.
-pub fn poll() {
+/// Whether any module TCP slot has data, a closed connection or recovered
+/// transmit space.  Used by the idle loop to shorten the next wait.
+pub fn tcp_ready() -> bool {
+    for slot in 0..MODULE_TCP_SLOTS as u32 {
+        let mask = service_tcp_events(slot);
+        if mask & ((1 << 0) | (1 << 1) | (1 << 2)) != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+/// Last time any module tick ran, for the short-wait decision.
+static mut LAST_ACTIVITY_MS: u64 = 0;
+
+/// Whether a module did work recently enough that a short wait can catch the
+/// peer's next record.  This is a wake hint, not a work queue.
+pub fn recently_active() -> bool {
     let now = service_clock_ms();
+    // SAFETY: single-threaded kernel.
+    unsafe { now.saturating_sub(LAST_ACTIVITY_MS) < 50 }
+}
+
+pub fn poll() -> bool {
+    let now = service_clock_ms();
+    let ready = tcp_ready();
+    let mut ran = false;
     for index in 0..MODULE_REGION_COUNT {
         // SAFETY: single-threaded kernel; the arrays are only written here
         // and by load/execute/unload on the same thread.
@@ -220,17 +246,27 @@ pub fn poll() {
             continue;
         };
         let last = unsafe { LAST_TICKS[index] };
-        if now.saturating_sub(last) < 10 {
+        // Readiness wakes the region immediately; the 10 ms gate remains the
+        // deadline/fallback cadence for retries, leases and heartbeats.
+        if !ready && now.saturating_sub(last) < 10 {
             continue;
         }
         unsafe {
             LAST_TICKS[index] = now;
         }
         let status = unsafe { tick(&SERVICES) };
+        ran = true;
         if status != 0 {
             clear_tick(index);
         }
     }
+    if ran {
+        // SAFETY: single-threaded kernel.
+        unsafe {
+            LAST_ACTIVITY_MS = now;
+        }
+    }
+    ran
 }
 
 const REGION_SIZE: usize = ARENA_REGION_SIZE;
@@ -682,6 +718,10 @@ extern "C" fn service_poll() {
 const MODULE_TCP_SLOTS: usize = 2;
 
 static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
+/// Set when the last `tcp_send` accepted fewer bytes than requested.
+static mut MODULE_TX_BLOCKED: [bool; MODULE_TCP_SLOTS] = [false; MODULE_TCP_SLOTS];
+/// Set when a close has been reported once for the slot.
+static mut MODULE_CLOSED_REPORTED: [bool; MODULE_TCP_SLOTS] = [false; MODULE_TCP_SLOTS];
 /// The receive buffer is deliberately larger than the two-node case needs.
 ///
 /// Under the M3 host hub several member records share the root's single mesh
@@ -727,6 +767,8 @@ fn clear_module_slot(slot: usize) {
         // SAFETY: single-threaded; the old socket has been removed.
         unsafe {
             MODULE_TCP[slot] = None;
+            MODULE_TX_BLOCKED[slot] = false;
+            MODULE_CLOSED_REPORTED[slot] = false;
         }
     }
 }
@@ -748,6 +790,8 @@ unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
         // SAFETY: single-threaded.
         unsafe {
             MODULE_TCP[slot_usize] = Some(handle);
+            MODULE_TX_BLOCKED[slot_usize] = false;
+            MODULE_CLOSED_REPORTED[slot_usize] = false;
         }
         0
     } else {
@@ -784,6 +828,8 @@ unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> 
             // SAFETY: single-threaded.
             unsafe {
                 MODULE_TCP[slot_usize] = Some(handle);
+                MODULE_TX_BLOCKED[slot_usize] = false;
+                MODULE_CLOSED_REPORTED[slot_usize] = false;
             }
             0
         }
@@ -793,6 +839,43 @@ unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> 
         }
         None => -1,
     }
+}
+
+/// Level-triggered readiness for one module TCP slot.
+///
+/// The module uses this to distinguish "no data yet" from "the peer closed"
+/// and to avoid a blind retry after a short send.  The bits are recomputed
+/// from the live socket; there is no event queue and no lost edge.
+extern "C" fn service_tcp_events(slot: u32) -> u32 {
+    const RX: u32 = 1 << 0;
+    const TX: u32 = 1 << 1;
+    const CLOSED: u32 = 1 << 2;
+    const LISTEN: u32 = 1 << 3;
+    const ESTAB: u32 = 1 << 4;
+    const NO_SOCKET: u32 = 1 << 31;
+    let Some(handle) = module_handle(slot) else {
+        return NO_SOCKET;
+    };
+    use smoltcp::socket::tcp::State;
+    let result = crate::net::sockets_with(|sockets| {
+        let socket = sockets.get_mut::<TcpSocket>(handle);
+        let state = socket.state();
+        let mut mask = 0u32;
+        if socket.can_recv() {
+            mask |= RX;
+        }
+        if unsafe { MODULE_TX_BLOCKED[slot as usize] } && socket.can_send() {
+            mask |= TX;
+        }
+        match state {
+            State::Listen => mask |= LISTEN,
+            State::Established => mask |= ESTAB,
+            State::Closed | State::TimeWait => mask |= CLOSED,
+            _ => {}
+        }
+        mask
+    });
+    result.unwrap_or(NO_SOCKET)
 }
 
 extern "C" fn service_tcp_state(slot: u32) -> u32 {
@@ -838,8 +921,16 @@ unsafe extern "C" fn service_tcp_send(slot: u32, ptr: *const u8, len: usize) -> 
     };
     // SAFETY: the module owns the source buffer for the duration.
     let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
-    match crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).send_slice(buf)) {
-        Some(Ok(n)) => n as isize,
+    let result =
+        crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).send_slice(buf));
+    match result {
+        Some(Ok(n)) => {
+            // SAFETY: single-threaded kernel.
+            unsafe {
+                MODULE_TX_BLOCKED[slot as usize] = n < len;
+            }
+            n as isize
+        }
         _ => -1,
     }
 }

@@ -54,3 +54,14 @@ pub fn wait() {
         core::arch::asm!("wait", options(nomem, nostack));
     }
 }
+
+/// Park for at most about 0.5 ms.
+///
+/// The timer fast path re-arms the normal 10 ms interval after this wake, so
+/// the short wait is one early observation, not a new polling cadence.  It is
+/// used only while a module TCP socket has readiness or has just done work.
+pub fn wait_short() {
+    let count = traps::count_read();
+    traps::compare_write(count.wrapping_add(16_500));
+    wait();
+}
