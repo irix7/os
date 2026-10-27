@@ -908,8 +908,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // probe; collecting homes on the clean control plane first keeps the
         // evidence independent of the forward's close behaviour.
         if options.fault == Fault::NoPeer {
-            // No mesh listener and no join: the M2-1 probe is skipped by
-            // design and the evidence says so.
+            // No mesh listener and no join: probe over HTTP directly since
+            // there is no mesh link, but the MCP HTTP server is listening.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
         } else if options.transport == Transport::Relay {
             let (value, relay) = probe_mesh(&nodes);
             mesh = Some(value);
