@@ -783,6 +783,8 @@ pub enum OpCode {
     MigrateCommit = 0x65,
     /// Abort an actor migration.
     MigrateAbort = 0x66,
+    /// Measure a request/response round trip on the mesh.
+    Latency = 0x72,
     /// Submit an offscreen GPU job.
     GpuSubmit = 0x70,
     /// Poll or await a GPU fence.
@@ -820,6 +822,7 @@ impl OpCode {
             0x64 => Ok(Self::MigratePrepare),
             0x65 => Ok(Self::MigrateCommit),
             0x66 => Ok(Self::MigrateAbort),
+            0x72 => Ok(Self::Latency),
             0x70 => Ok(Self::GpuSubmit),
             0x71 => Ok(Self::GpuFence),
             _ => Err(Error::BadKind),

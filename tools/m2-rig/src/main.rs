@@ -19,6 +19,8 @@ mod fixture;
 mod homes;
 mod hub;
 mod join;
+#[allow(dead_code)]
+mod latency;
 mod migrate;
 mod nvram;
 mod probe;
@@ -43,7 +45,7 @@ use relay::{MeshRelay, Relay};
 use rig::{
     derive_nodes, git, mesh_environments, read_serial, run_ci, start_cpu, start_node, wait_boot,
     wait_ci_ready, write_nvram, Action, AuthorityKeys, BootFacts, Fault, MeshEnv, Node, Options,
-    RunningNode,
+    RunningNode, Transport,
 };
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
@@ -72,6 +74,12 @@ fn run() -> Result<i32, String> {
 
     if options.action != Action::Shard && options.nodes != 2 {
         return Err("--nodes applies to the shard command; the M2 run is two-node".into());
+    }
+    if options.transport != Transport::Relay
+        && options.action == Action::Run
+        && !matches!(options.fault, Fault::None | Fault::NoRoute)
+    {
+        return Err("--transport direct is supported for run --fault none/no-route".into());
     }
     match options.action {
         Action::Run => run_and_probe(&options),
@@ -114,6 +122,7 @@ Options:
   --base-port N    first monitor port block (default: 9100)
   --nodes N        shard kernels, 2..=8 (default: 2)
   --hub            shard: use the experimental multi-node host link switch
+  --transport M    relay (default), direct, or direct-fail (bulk/run)
   --timeout SECS   boot deadline (default: 180)
   --fault MODE     none (default), no-peer, wrong-authority, no-route,
                    kill-peer or partition
@@ -316,6 +325,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         None,
         None,
         None,
+        None,
         "probe",
         if passed { "pass" } else { "fail" },
         error.as_deref(),
@@ -418,6 +428,7 @@ fn collect_route(
     }
 }
 
+#[allow(dead_code)]
 fn collect_migration(
     options: &Options,
     nodes: &[Node],
@@ -536,9 +547,47 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
         // a host connection before the guest socket exists, so start the hub
         // only after both listeners are armed.
         std::thread::sleep(Duration::from_secs(10));
-        let _hub = hub::MeshHub::start_with(&nodes, 1, hub::HubConfig::default())?;
-        wait_join(&nodes, Duration::from_secs(60));
-        wait_join_ack(&nodes, Duration::from_secs(20));
+        match options.transport {
+            Transport::Relay => {
+                let _hub = hub::MeshHub::start_with(&nodes, 1, hub::HubConfig::default())?;
+                wait_join(&nodes, Duration::from_secs(60));
+                wait_join_ack(&nodes, Duration::from_secs(20));
+            }
+            Transport::Direct => {
+                wait_join(&nodes, Duration::from_secs(60));
+                wait_join_ack(&nodes, Duration::from_secs(20));
+            }
+            Transport::DirectFail => {
+                // The lower NodeId dials the dead port and must fall back to
+                // its listener.  The higher NodeId is a listener throughout.
+                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                loop {
+                    let texts: Vec<String> = nodes.iter().map(read_serial).collect();
+                    let fallback = texts
+                        .iter()
+                        .any(|text| text.contains("mesh-transport: direct fallback listen"));
+                    let joined = texts
+                        .iter()
+                        .any(|text| text.contains("mesh-join: converged"));
+                    if fallback && !joined {
+                        println!("direct-fail: fallback listener observed; no join, as expected");
+                        return Ok(bulk::BulkEvidence {
+                            ok: true,
+                            message: "direct-fail: fallback listener observed; no join".into(),
+                            baseline: None,
+                            runs: Vec::new(),
+                        });
+                    }
+                    if joined {
+                        return Err("direct-fail joined a dead direct target".into());
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err("direct-fail did not log the fallback listener".into());
+                    }
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
         // Let the first home-table serial burst drain before measuring.
         std::thread::sleep(Duration::from_secs(10));
         bulk::run(&nodes[0], &nodes[1])
@@ -645,6 +694,8 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     let mut probe_error = None;
     let mut join_error = None;
     let mut homes_error = None;
+    let latency_evidence: Option<latency::LatencyEvidence> = None;
+    let latency_error: Option<String> = None;
     let bulk_evidence: Option<bulk::BulkEvidence> = None;
     let bulk_error: Option<String> = None;
     let mut route = None;
@@ -667,17 +718,20 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         if options.fault == Fault::NoPeer {
             // No mesh listener and no join: the M2-1 probe is skipped by
             // design and the evidence says so.
-        } else {
+        } else if options.transport == Transport::Relay {
             let (value, relay) = probe_mesh(&nodes);
             mesh = Some(value);
             mesh_relay = relay;
         }
         if options.fault.joins() {
             wait_join(&nodes, Duration::from_secs(60));
-            // The terminal acknowledgement must cross the relay before the
+            // The terminal acknowledgement must cross the link before the
             // member is restarted; otherwise the restart can truncate it and
             // there is no evidence that B installed what A signed.
             wait_join_ack(&nodes, Duration::from_secs(20));
+            if options.transport == Transport::Direct {
+                mesh = Some(direct_probe(&nodes));
+            }
             wait_homes_serial(&nodes, Duration::from_secs(60));
             // The MCP HTTP slot is armed by the module tick after the join
             // and homes logging settles.  Give it the same 10 s the guest HTTP
@@ -885,6 +939,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         && join_error.is_none()
         && homes_error.is_none()
         && route_error.is_none()
+        && latency_error.is_none()
         && bulk_error.is_none()
         && migration_error.is_none()
         && (options.fault != Fault::None || migration_ok)
@@ -945,6 +1000,12 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     if let Some(route) = &route {
         print_route_result(route);
     }
+    if let Some(latency) = &latency_evidence {
+        println!("latency: {}", latency.message);
+    }
+    if let Some(error) = &latency_error {
+        println!("latency [FAIL]: {error}");
+    }
     if let Some(bulk) = &bulk_evidence {
         println!("bulk [{}]: {}", if bulk.ok { "pass" } else { "FAIL" }, bulk.message);
         for run in &bulk.runs {
@@ -983,6 +1044,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         Some(&homes),
         route.as_ref(),
         migration.as_ref(),
+        latency_evidence.as_ref(),
         bulk_evidence.as_ref(),
         failure_evidence.as_ref(),
         Some(&fixture),
@@ -1036,6 +1098,39 @@ fn wait_mesh_listen(nodes: &[Node], timeout: Duration) {
 }
 
 /// Wait until both nodes print a converged join view, or the deadline passes.
+/// Build the mesh-probe evidence for a direct link from the serial transcript.
+fn direct_probe(nodes: &[Node]) -> MeshProbeEvidence {
+    let mut rows = Vec::new();
+    let mut ok = true;
+    for node in nodes {
+        let text = read_serial(node);
+        let listen = text
+            .lines()
+            .find(|line| line.contains("mesh-transport: direct role="))
+            .map(str::to_string);
+        let pass = text
+            .lines()
+            .find(|line| line.contains("mesh-transport: pass peer="))
+            .map(str::to_string);
+        ok &= listen.is_some() && pass.is_some();
+        rows.push(MeshNodeProbe {
+            name: node.name.clone(),
+            listen,
+            pass,
+        });
+    }
+    MeshProbeEvidence {
+        ok,
+        message: if ok {
+            "both kernels connected directly, with no host relay in the path".into()
+        } else {
+            "a direct link did not reach the pass marker".into()
+        },
+        relay: "direct: guest-initiated TCP through each NAT peer forward".into(),
+        nodes: rows,
+    }
+}
+
 fn wait_join(nodes: &[Node], timeout: Duration) {
     let deadline = Instant::now() + timeout;
     loop {
@@ -1348,37 +1443,35 @@ fn restart_member(
     wait_ci_ready(options, node, Duration::from_secs(20))?;
     start_cpu(options, node)?;
     rig::wait_serial(options, &mut running[1], "BOOT-READY", options.timeout)?;
-    rig::wait_serial(
-        options,
-        &mut running[1],
-        "mesh-transport: listening",
-        Duration::from_secs(60),
-    )?;
-    // The root kept its old guest-side mesh socket while the member was down.
-    // The iris forward can keep delivering the new requests to that socket,
-    // so the root's replies never reach the new relay.  Reset the live root's
-    // link; it keeps the confirmed view and re-arms the listener.
-    mcp_tool(&nodes[0], "mesh.reconnect")?;
-    std::thread::sleep(Duration::from_secs(1));
-    // Let the restarted forward settle before the relay connects to it; the
-    // guest listener is armed, but the host forward can otherwise accept the
-    // relay before its guest-side path is ready.
-    std::thread::sleep(Duration::from_secs(2));
-    if let Some(log) = relay_log {
-        let relay = MeshRelay::start_with_log(
-            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-            log,
-        )
-        .map_err(|error| format!("restart mesh relay: {error}"))?;
-        *mesh_relay = Some(relay);
+    let marker = if options.transport == Transport::Direct {
+        "mesh-transport: direct role="
     } else {
-        let relay = MeshRelay::start(
-            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-        )
-        .map_err(|error| format!("restart mesh relay: {error}"))?;
-        *mesh_relay = Some(relay);
+        "mesh-transport: listening"
+    };
+    rig::wait_serial(options, &mut running[1], marker, Duration::from_secs(60))?;
+    if options.transport == Transport::Relay {
+        // Reset the live root's old guest-side socket; the forward can keep
+        // delivering new requests to it, so the new relay would never reach
+        // the listener.
+        mcp_tool(&nodes[0], "mesh.reconnect")?;
+        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_secs(2));
+        if let Some(log) = relay_log {
+            let relay = MeshRelay::start_with_log(
+                (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+                log,
+            )
+            .map_err(|error| format!("restart mesh relay: {error}"))?;
+            *mesh_relay = Some(relay);
+        } else {
+            let relay = MeshRelay::start(
+                (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+            )
+            .map_err(|error| format!("restart mesh relay: {error}"))?;
+            *mesh_relay = Some(relay);
+        }
     }
     let deadline = Instant::now() + Duration::from_secs(90);
     loop {
@@ -1653,7 +1746,7 @@ fn start_all(
     module_sha256: &str,
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
-    let (environments, _authority, _wrong) = mesh_environments(nodes, options.fault);
+    let (environments, _authority, _wrong) = mesh_environments(nodes, options.fault, options.transport);
     start_all_with(
         options,
         nodes,
@@ -2030,7 +2123,7 @@ fn print_config(options: &Options) -> Result<i32, String> {
     let module_sha = fs::read(&options.module)
         .map(|bytes| sha256::hex(&sha256::digest(&bytes)))
         .unwrap_or_else(|_| "<module sha256>".into());
-    let (environments, authority, wrong) = mesh_environments(&nodes, options.fault);
+    let (environments, authority, wrong) = mesh_environments(&nodes, options.fault, options.transport);
     println!("authority={}", nodes[0].node_id_string());
     println!("authority.pub={}", authority.public_hex);
     if options.fault == Fault::WrongAuthority {
@@ -2102,6 +2195,7 @@ fn write_evidence(
     homes: Option<&HomesEvidence>,
     route: Option<&route::RouteEvidence>,
     migration: Option<&migrate::MigrateEvidence>,
+    latency: Option<&latency::LatencyEvidence>,
     bulk: Option<&bulk::BulkEvidence>,
     failure: Option<&FailureEvidence>,
     fixture: Option<&Fixture>,
@@ -2169,6 +2263,7 @@ fn write_evidence(
         homes,
         route,
         migration,
+        latency,
         bulk,
         failure,
         fixture,

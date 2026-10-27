@@ -39,7 +39,7 @@ m1-policy-bridge = { path = "../crates/m1-policy-bridge" }
 mesh-service = { path = "../crates/mesh-service", default-features = false }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
-embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384", "rsa"] }
+embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "rsa"] }
 rand_core = { version = "0.6", default-features = false }
 x509-cert = { version = "0.2", default-features = false }
 smoltcp = { version = "0.13", default-features = false, features = [
