@@ -19,6 +19,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional (linked, not booted) IRIX PAL scaffold. |
 | [`m2-completion-audit.md`](m2-completion-audit.md) | The adversarial audit of M2 closure against issue #3, with the three remaining gaps. |
 | [`m2-remediation.md`](m2-remediation.md) | The remediation gate: signed persistent epoch, two-node CI, provenance, engineering review and the remaining limits. |
+| [`quic-primary.md`](quic-primary.md) | Whether QUIC should replace TCP as the native transport, the Indy's crypto/code/memory budget, the recommended QUIC profile and the measured spike that decides it. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.

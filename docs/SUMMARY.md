@@ -66,3 +66,4 @@
 - [relibc n32 bring-up](research/relibc-n32-bringup.md)
 - [M2 completion audit](research/m2-completion-audit.md)
 - [M2 remediation gate](research/m2-remediation.md)
+- [QUIC as the primary transport](research/quic-primary.md)
