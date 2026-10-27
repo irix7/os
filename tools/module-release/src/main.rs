@@ -42,6 +42,10 @@ struct Release {
     revoked: Vec<u32>,
     #[serde(default)]
     root: Option<String>,
+    /// Host ABI declared by the running kernel.  The release fixture must
+    /// match it; the default preserves older specs.
+    #[serde(default)]
+    host_abi: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -555,7 +559,11 @@ fn build(args: BuildArgs) -> Result<(), String> {
         let (name, version) = root
             .split_once('@')
             .ok_or_else(|| format!("bad release root {root}"))?;
-        let plan = Plan::from_index(&index, name, version, Abi::new(12, 0))
+        let host_abi = match spec.release.host_abi.as_deref() {
+            Some(text) => parse_abi(text)?,
+            None => Abi::new(12, 0),
+        };
+        let plan = Plan::from_index(&index, name, version, host_abi)
             .map_err(|error| error.status_text(None))?;
         println!(
             "plan: {} nodes, root={}@{}",

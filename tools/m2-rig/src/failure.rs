@@ -12,8 +12,10 @@
 //!   side removes the unreachable member and continues; the member side keeps
 //!   its last confirmed view, refuses a mutable commit immediately and serves
 //!   a read only from its unexpired lease.  It never advances the epoch and
-//!   never creates a second home.  Restoring the relay makes it rejoin at a
-//!   new epoch and restores mutable service.
+//!   never creates a second home.  Restoring the seam resets both guest links
+//!   through the link-only `mesh.reconnect` control (a cut longer than the
+//!   receive deadline can tear the emulated forward's session mid-record) and
+//!   the member rejoins at a new epoch with mutable service restored.
 //!
 //! The rig recomputes the expected epoch, member list, digest, homes and
 //! fixture values independently of the module.  `mesh-sim` is not evidence.
@@ -739,25 +741,30 @@ pub fn partition(
     );
 
     // Recovery: restore the seam and require a fresh signed confirmation.
+    // The log already contains `mesh-join: confirm` and a transient
+    // `authority state=restored` from before the authority was lost, so the
+    // gate must name the recovered epoch.  A generic marker returns instantly
+    // on the stale line and the home check then races the real rejoin.
     evidence.stage = "recovery".into();
     progress("partition: restoring the mesh seam");
     if let Err(error) = restore() {
         errors.push(format!("restore the mesh relay: {error}"));
         return evidence.finish(errors);
     }
-    let rejoined = wait_marker(root, "mesh-join: confirm", Duration::from_secs(60))
-        && wait_marker(
-            member,
-            "mesh-fail: authority state=restored",
-            Duration::from_secs(60),
-        );
+    let recovered_epoch = before.epoch.saturating_add(2);
+    let root_marker = format!("mesh-join: confirm epoch={recovered_epoch} ");
+    let member_marker = format!("mesh-fail: authority state=restored epoch={recovered_epoch} ");
+    let rejoined = wait_marker(root, &root_marker, Duration::from_secs(120))
+        && wait_marker(member, &member_marker, Duration::from_secs(120));
     if !rejoined {
-        errors.push("the member did not rejoin after the partition healed".into());
+        errors.push(format!(
+            "the member did not rejoin at epoch {recovered_epoch} after the partition healed"
+        ));
         return evidence.finish(errors);
     }
     progress("partition: member rejoined; checking the recovered tables");
     let both = [survivor_id.clone(), member_id.clone()];
-    let recovered = match expected_view(before.epoch + 2, &both) {
+    let recovered = match expected_view(recovered_epoch, &both) {
         Ok(view) => view,
         Err(error) => {
             errors.push(error);

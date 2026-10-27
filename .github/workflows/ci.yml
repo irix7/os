@@ -534,10 +534,26 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'wasm: host=1' --timeout 120
           iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 120
-          grep -Eq 'm1: .*mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'm1-post: mesh=0/0/0' "$work/serial.log"
-          grep -Eq 'BOOT-READY .*network=up mcp=listening' "$work/serial.log"
+          # `serial-wait` matches the socket stream as soon as the prefix
+          # arrives, which can be mid-line; the `--serial-log` mirror is a
+          # separate writer and can still be a few bytes behind.  Wait for the
+          # complete line (the actor follows the marker) and poll the file
+          # instead of asserting on it in the same instant.
+          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0 actor=' --timeout 120
+          wait_serial_log() {
+            pattern="$1"
+            for _ in $(seq 1 150); do
+              if grep -Eq "$pattern" "$work/serial.log"; then
+                return 0
+              fi
+              sleep 0.2
+            done
+            echo "serial log never contained: $pattern" >&2
+            return 1
+          }
+          wait_serial_log 'm1: .*mesh=0/0/0'
+          wait_serial_log 'm1-post: mesh=0/0/0 actor='
+          wait_serial_log 'BOOT-READY .*network=up mcp=listening'
           python3 - "$work/serial.log" <<'PY'
           import re
           import sys

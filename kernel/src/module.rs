@@ -112,6 +112,7 @@ static SERVICES: Services = Services {
     module_find_export: service_module_find_export,
     module_query: service_module_query,
     module_unload: service_module_unload,
+    tcp_connect: service_tcp_connect,
 };
 
 /// Periodic callbacks for every multiplexer region.
@@ -702,26 +703,41 @@ fn module_handle(slot: u32) -> Option<SocketHandle> {
     unsafe { MODULE_TCP[slot] }
 }
 
-unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
-    let slot_usize = slot as usize;
-    if slot_usize >= MODULE_TCP_SLOTS || port == 0 {
-        return -1;
-    }
-    if let Some(old) = module_handle(slot) {
-        let _ = crate::net::sockets_with(|sockets| sockets.remove(old));
-        // SAFETY: single-threaded; the old socket has been removed.
-        unsafe {
-            MODULE_TCP[slot_usize] = None;
-        }
-    }
+/// Create a module TCP socket in `slot` with the bounded static rings and the
+/// common module policy (keepalive).
+fn new_module_socket(slot: usize) -> TcpSocket<'static> {
     // SAFETY: each slot's buffers are owned by at most one socket at a time.
-    let rx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_RX[slot_usize]) };
-    let tx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_TX[slot_usize]) };
+    let rx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_RX[slot]) };
+    let tx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_TX[slot]) };
     let mut socket = TcpSocket::new(
         SocketBuffer::new(&mut rx[..]),
         SocketBuffer::new(&mut tx[..]),
     );
     socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(60)));
+    // Keep the stack defaults.  A mesh-slot Nagle override changed the M2
+    // partition/rejoin timing, and a 1 ms delayed ACK broke the slot-B Wasm
+    // autoload; the direct transport does not need either.
+    socket
+}
+
+/// Remove any socket previously owned by `slot`.
+fn clear_module_slot(slot: usize) {
+    if let Some(old) = module_handle(slot as u32) {
+        let _ = crate::net::sockets_with(|sockets| sockets.remove(old));
+        // SAFETY: single-threaded; the old socket has been removed.
+        unsafe {
+            MODULE_TCP[slot] = None;
+        }
+    }
+}
+
+unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
+    let slot_usize = slot as usize;
+    if slot_usize >= MODULE_TCP_SLOTS || port == 0 {
+        return -1;
+    }
+    clear_module_slot(slot_usize);
+    let socket = new_module_socket(slot_usize);
     let Some(handle) = crate::net::sockets_with(|sockets| sockets.add(socket)) else {
         return -1;
     };
@@ -737,6 +753,45 @@ unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
     } else {
         let _ = crate::net::sockets_with(|sockets| sockets.remove(handle));
         -1
+    }
+}
+
+unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> i32 {
+    let slot_usize = slot as usize;
+    if slot_usize >= MODULE_TCP_SLOTS || address == 0 || port == 0 {
+        return -1;
+    }
+    clear_module_slot(slot_usize);
+    let socket = new_module_socket(slot_usize);
+
+    // `address` is the IPv4 address in network byte order.
+    let octets = address.to_be_bytes();
+    let remote = smoltcp::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
+    // One mesh link per module lifecycle; a fixed IANA dynamic port is enough
+    // and keeps the connect path small.
+    let local_port = 49152;
+    let result = crate::net::with_stack(|iface, sockets| {
+        let handle = sockets.add(socket);
+        let result = sockets.get_mut::<TcpSocket>(handle).connect(
+            iface.context(),
+            (smoltcp::wire::IpAddress::Ipv4(remote), port),
+            local_port,
+        );
+        (handle, result)
+    });
+    match result {
+        Some((handle, Ok(()))) => {
+            // SAFETY: single-threaded.
+            unsafe {
+                MODULE_TCP[slot_usize] = Some(handle);
+            }
+            0
+        }
+        Some((handle, Err(_))) => {
+            let _ = crate::net::sockets_with(|sockets| sockets.remove(handle));
+            -1
+        }
+        None => -1,
     }
 }
 

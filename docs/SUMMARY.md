@@ -33,6 +33,7 @@
 - [M2-ADR-0009 — L0 actor migration](adr/m2-0009-actor-migration.md)
 - [M3-ADR-0001 — first shard slice](adr/m3-0001-shard-slice.md)
 - [M3-ADR-0002 — multi-member hub](adr/m3-0002-multi-node-hub.md)
+- [M2-ADR-0010 — direct peer transport](adr/m2-0010-direct-peer-transport.md)
 
 ## Plan
 
@@ -68,3 +69,4 @@
 - [M2 remediation gate](research/m2-remediation.md)
 - [QUIC as the primary transport](research/quic-primary.md)
 - [Bulk buffers and batching](research/bulk-batching.md)
+- [Direct peer transport](research/direct-peer.md)
