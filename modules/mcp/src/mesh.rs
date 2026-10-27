@@ -2378,8 +2378,7 @@ impl Mesh {
                 node,
                 epoch,
                 digest,
-            } if self.verbose_join_log()
-                && now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
+            } if self.verbose_join_log() =>
             {
                 self.last_ack_log_ms = now;
                 let mut line = Line::new();
@@ -2874,9 +2873,7 @@ impl Mesh {
                     line.push(b'\n');
                     log(services, line.as_bytes());
                 }
-                JoinMessage::Ack(ack)
-                    if now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
-                {
+                JoinMessage::Ack(ack) => {
                     self.last_ack_log_ms = now;
                     let mut line = Line::new();
                     line.str("mesh-join: ack-sent epoch=");
