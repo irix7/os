@@ -211,8 +211,19 @@ fn read_count() -> u32 {
     (hi << 16) | (med << 8) | lo
 }
 
+/// Poll budget for one controller command.
+///
+/// This is a guest spin count, not a wall-clock deadline: the emulated
+/// controller runs on the host, and a loaded CI runner can take milliseconds
+/// of host time to advance a command that looks instant on an idle machine.
+/// The old 200,000-spin budget (~a few milliseconds of guest time) produced
+/// spurious `CIP timeout` failures during a parallel boot.  20,000,000 spins
+/// still bounds a dead controller to well under a second on the slowest
+/// supported CPU while leaving ample room for host scheduling.
+const SCSI_POLL_BUDGET: u32 = 20_000_000;
+
 fn wait_cip_clear() -> Result<(), &'static str> {
-    for _ in 0..200_000 {
+    for _ in 0..SCSI_POLL_BUDGET {
         if read_asr() & ASR_CIP == 0 {
             return Ok(());
         }
@@ -222,7 +233,7 @@ fn wait_cip_clear() -> Result<(), &'static str> {
 }
 
 fn wait_interrupt() -> Result<(), &'static str> {
-    for _ in 0..200_000 {
+    for _ in 0..SCSI_POLL_BUDGET {
         if read_asr() & ASR_INT != 0 {
             return Ok(());
         }
