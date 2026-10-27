@@ -2336,7 +2336,10 @@ impl Mesh {
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
-                if !self.m3_quiet() && snapshot.len() <= 2 {
+                if !self.m3_quiet()
+                    && snapshot.len() <= 2
+                    && now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS
+                {
                     self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                     self.logged_join_epoch = snapshot.epoch;
