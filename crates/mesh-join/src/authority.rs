@@ -18,7 +18,9 @@ use core::fmt;
 
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
-use mesh_service::{FailureDetector, MembershipError, MembershipTable, Observe, Transition};
+use mesh_service::{
+    FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
+};
 use sys_primitives::{NodeId, NodeKey};
 
 use crate::wire::{
@@ -128,18 +130,16 @@ pub struct AuthorityRoot {
     failures: FailureDetector,
 }
 
-/// A member removed from the confirmed view after a confirmed failure.
-///
 /// The removal is the root's membership change; it advances the epoch exactly
 /// once and carries the full remaining member list.  The root installs it
 /// locally.  A live member installs it only through a signed confirmation when
 /// it next joins, so a partition cannot create a second authoritative view.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Removal {
-    /// The removed node.
-    pub node: NodeId,
-    /// The confirmed view after the removal.
-    pub snapshot: MembershipSnapshot,
+pub struct BatchRemoval {
+    /// Every member removed in this change set.
+    pub nodes: alloc::vec::Vec<NodeId>,
+    /// The confirmed view after the set.
+    pub snapshot: crate::wire::MembershipSnapshot,
 }
 
 impl AuthorityRoot {
@@ -204,6 +204,44 @@ impl AuthorityRoot {
             .observe(&mut self.table, node, incarnation, now_ns)
     }
 
+    /// Refresh liveness using the incarnation the caller validated.
+    ///
+    /// The gossip aggregate carries the confirmed incarnation, so the root can
+    /// observe a member without re-reading the table (and without accepting a
+    /// summary whose incarnation it did not sign).
+    pub fn observe_with_incarnation(
+        &mut self,
+        node: NodeId,
+        incarnation: u64,
+        now_ns: u64,
+    ) -> Observe {
+        self.failures
+            .observe(&mut self.table, node, incarnation, now_ns)
+    }
+
+    /// Every confirmed record, including failed nodes.
+    pub fn records(&self) -> impl Iterator<Item = (NodeId, mesh_service::NodeRecord)> + '_ {
+        self.table.records()
+    }
+
+    /// Apply one batch of membership changes, advancing the epoch once.
+    ///
+    /// The authority root is never removed: a root that removed itself would
+    /// leave no epoch writer.  Every other change is delegated to the single
+    /// table implementation so the epoch rule lives in one place.
+    pub fn apply_changes(
+        &mut self,
+        changes: &[mesh_service::Change],
+        now_ns: u64,
+    ) -> Result<mesh_service::ChangeSet, AuthorityError> {
+        if changes.iter().any(
+            |change| matches!(change, mesh_service::Change::Remove { node } if *node == self.root),
+        ) {
+            return Err(AuthorityError::WrongSubject);
+        }
+        Ok(self.table.apply(changes, now_ns)?)
+    }
+
     /// Advance every member's liveness state at `now_ns`.
     pub fn expire(&mut self, now_ns: u64) -> alloc::vec::Vec<Transition> {
         self.failures.tick(&mut self.table, self.root, now_ns)
@@ -211,29 +249,31 @@ impl AuthorityRoot {
 
     /// Remove every member the detector has confirmed failed.
     ///
-    /// Each removal is a separate authority-confirmed epoch advance, exactly
-    /// as a clean leave would be.  The root is never removed.  A node that is
-    /// merely suspect stays in the routing snapshot.
-    pub fn remove_failed(&mut self) -> alloc::vec::Vec<Removal> {
+    /// All failed nodes are removed in a single change set so the membership
+    /// epoch advances exactly once for the whole removal set, not once per
+    /// node.  The root is never removed.  A node that is merely suspect stays
+    /// in the routing snapshot.
+    pub fn remove_failed(&mut self) -> Option<BatchRemoval> {
         let failed: alloc::vec::Vec<NodeId> = self
             .table
             .records()
-            .filter(|(node, record)| {
-                *node != self.root && record.state == mesh_service::NodeState::Failed
-            })
+            .filter(|(node, record)| *node != self.root && record.state == NodeState::Failed)
             .map(|(node, _)| node)
             .collect();
-        let mut removals = alloc::vec::Vec::new();
-        for node in failed {
-            if !self.table.leave(node).unwrap_or(false) {
-                continue;
-            }
-            let Ok(snapshot) = self.snapshot() else {
-                continue;
-            };
-            removals.push(Removal { node, snapshot });
+        if failed.is_empty() {
+            return None;
         }
-        removals
+        for node in &failed {
+            let _ = self.table.leave(*node);
+        }
+        let snapshot = match self.snapshot() {
+            Ok(s) => s,
+            Err(_) => return None,
+        };
+        Some(BatchRemoval {
+            nodes: failed,
+            snapshot,
+        })
     }
 
     /// The root's public key.  A member hears the same key through
@@ -397,6 +437,23 @@ impl AuthorityVerifier {
     /// The configured root public key.
     pub const fn key(&self) -> NodeKey {
         self.key
+    }
+
+    /// Verify one message signed by the configured root.
+    ///
+    /// This is the aggregate seam: an [`EpochSummary`](crate::wire::EpochSummary)
+    /// is one signature over the whole change set, so members verify it with
+    /// the same trust store the join confirmation uses.
+    pub fn verify_signature(
+        &self,
+        message: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<(), AuthorityError> {
+        match self.store.verify_trusted(&self.key, message, signature) {
+            Ok(()) => Ok(()),
+            Err(KeyError::Untrusted) => Err(AuthorityError::UntrustedRoot),
+            Err(_) => Err(AuthorityError::BadSignature),
+        }
     }
 
     /// Verify a confirmation and return the snapshot it authorises.

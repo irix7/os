@@ -231,3 +231,52 @@ requires the root restart to recover the same epoch with no `epoch-regression`. 
 `wrong-authority` mode rejects with `mesh-join: reject reason=bad-signature` and leaves the
 member at epoch 1.  The `no-peer` mode has no mesh listener and no join, and keeps the M1
 `mesh=single` and `mesh=0/0/0` markers.
+
+## M3 aggregated refresh (post-M2 gate)
+
+M3 replaces the per-member signed refresh with an aggregated root-signed summary so a
+converged member stops sending a full signed join request every interval.  The root signs
+**one** `EpochSummary` per change set and pushes it to every known peer; a member reports
+liveness with an unsigned `MemberSummary` instead.
+
+**Decision (M3):**
+
+1. **Aggregate replaces refresh.** After the first confirmation a converged member sends a
+   `MemberSummary` every `SUMMARY_INTERVAL_MS` (5 s) rather than a `JoinRequest`.  The
+   root validates the summary against the aggregate it last signed (epoch, digest,
+   incarnation and monotonic counter) and refreshes the member's failure-clock record; it
+   does not sign per summary.  On any change the root signs one aggregate per change set.
+   The summary itself is small (60 bytes) and unsigned; its authority comes from the
+   signed aggregate that binds `node` and `incarnation` to `epoch` and `digest`.
+
+2. **One signed aggregate per change set.** The root builds grants from its confirmed
+   table (`node` + confirmed `incarnation`), signs `EpochSummary` once, and pushes it to
+   every known peer.  A member installs a verified aggregate (signature first, then the
+   snapshot, never lower than the local epoch, and it must name this member).  The cost of
+   a change set is linear in the member count, not quadratic.
+
+3. **Epoch floor / persistence.** The confirmed epoch is persisted via ABI v11
+   `block_write`/`block_read` on a dedicated scratch target (target 3, LBA 8), exactly as
+   the M2 signed epoch record.  A root restores its signed record and resumes the
+   confirmed epoch; a member restores its signed confirmation.  A corrupt or role-mismatch
+   record disables the join rather than inventing a higher epoch.  Root restart refuses to
+   lower a member's confirmed view (`epoch-regression`).
+
+4. **Batch removal.** The root removes every member the failure detector has confirmed
+   failed in a single change set and one epoch advance (not one epoch per failed member),
+   then signs one aggregate for the post-removal view.
+
+5. **Single-root limit.** Only the root signs.  A partition leaves a member on its last
+   confirmed aggregate; it cannot self-confirm or create a second authoritative home.  An
+   equivocated aggregate (re-signed different list at the same epoch) yields
+   `Equivocation` and is fail-closed.  A threshold root is Phase 8 work.
+
+6. **Per-link module state is deferred to #264.** The module owns one mesh TCP slot for
+   the join handshake; aggregated refresh runs over the existing multi-source link
+   (multiplexed by the host hub).  Direct per-member TCP slots and sparse fan-out over
+   them are #264 work.
+
+**Status:** proposed for M3; not yet reviewed at a gate.  The library policy is
+implemented and host-tested in `crates/mesh-join` (gossip, authority, fail-closed rules,
+deterministic 2/8/128-node model).  The module wiring is in `modules/mcp/src/mesh.rs`.
+Real 4-node convergence over the host hub is recorded in the #249 evidence bundle.

@@ -1557,6 +1557,21 @@ impl Mesh {
                     log(services, line.as_bytes());
                     removed = Some(snapshot.clone());
                 }
+                JoinEvent::RemovedBatch { nodes, snapshot } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: removed batch");
+                    for node in nodes.iter() {
+                        line.str(" node=");
+                        line.node(node);
+                    }
+                    line.str(" epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    removed = Some(snapshot.clone());
+                }
                 JoinEvent::AuthorityLost { node, epoch } => {
                     lost = true;
                     let mut line = Line::new();
@@ -1792,6 +1807,17 @@ impl Mesh {
                     false,
                 );
             }
+            Some((Tick::Summary, _)) => {
+                // Routine M3 refresh: the member reports liveness with a small
+                // summary instead of a full signed join request.  The root
+                // answers with one signed aggregate for the whole view.
+                if let Some(join) = self.join.as_mut() {
+                    let root = join.root();
+                    if let Some(summary) = join.member_summary() {
+                        self.send_join(services, JoinMessage::Summary(summary), root, now, false);
+                    }
+                }
+            }
             Some((Tick::TimedOut, attempts)) if !self.join_timeout_logged => {
                 self.join_timeout_logged = true;
                 let mut line = Line::new();
@@ -1952,7 +1978,8 @@ impl Mesh {
             }
             (MessageKind::Request, OpCode::Hello)
             | (MessageKind::Response, OpCode::Hello)
-            | (MessageKind::Completion, OpCode::Hello) => {
+            | (MessageKind::Completion, OpCode::Hello)
+            | (MessageKind::Control, OpCode::Hello) => {
                 if self.join.is_none() {
                     self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
                     return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
@@ -2048,7 +2075,8 @@ impl Mesh {
             (MessageKind::Control, OpCode::Ping) => {}
             (MessageKind::Request, OpCode::Hello)
             | (MessageKind::Response, OpCode::Hello)
-            | (MessageKind::Completion, OpCode::Hello) => {
+            | (MessageKind::Completion, OpCode::Hello)
+            | (MessageKind::Control, OpCode::Hello) => {
                 let message = match JoinMessage::decode(body) {
                     Ok(message) => message,
                     Err(error) => {
@@ -2323,13 +2351,18 @@ impl Mesh {
                 self.on_route_snapshot(services, snapshot, now);
             }
             JoinEvent::Duplicate(snapshot) => {
-                if !self.m3_quiet()
-                    && snapshot.len() <= 2
-                    && now.saturating_sub(self.last_join_log_ms) >= JOIN_LOG_INTERVAL_MS
-                {
+                if !self.m3_quiet() && snapshot.len() <= 2 {
                     self.last_join_log_ms = now;
                     self.log_snapshot(services, "mesh-join: duplicate", snapshot);
                     self.logged_join_epoch = snapshot.epoch;
+                    // After a restart the member gets Duplicate (not Converged)
+                    // because the epoch already matches. Log homes so the
+                    // restart gate can verify the home table survived.
+                    if self.link_generation != self.homes_logged_generation {
+                        self.log_homes(services, snapshot, true);
+                        self.log_shard(services, snapshot, false);
+                        self.homes_logged_generation = self.link_generation;
+                    }
                 }
                 self.on_route_snapshot(services, snapshot, now);
             }
@@ -2368,9 +2401,7 @@ impl Mesh {
                 node,
                 epoch,
                 digest,
-            } if self.verbose_join_log()
-                && now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
-            {
+            } if self.verbose_join_log() => {
                 self.last_ack_log_ms = now;
                 let mut line = Line::new();
                 line.str("mesh-join: ack from=");
@@ -2397,12 +2428,63 @@ impl Mesh {
             // A compact multi-member view suppresses per-ack and per-reject
             // lines; the protocol handling above is unchanged.
             JoinEvent::Acked { .. } | JoinEvent::Rejected(_) => {}
+            JoinEvent::Removed { node, snapshot } => {
+                let mut line = Line::new();
+                line.str("mesh-join: removed node=");
+                line.node(node);
+                line.str(" epoch=");
+                line.u64(snapshot.epoch as u64);
+                line.push(b'\n');
+                log(services, line.as_bytes());
+                self.persist_root(services);
+                self.on_route_snapshot(services, snapshot, now);
+            }
+            JoinEvent::RemovedBatch { nodes, snapshot } => {
+                for node in nodes {
+                    let mut line = Line::new();
+                    line.str("mesh-join: removed node=");
+                    line.node(node);
+                    line.str(" epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                self.persist_root(services);
+                self.on_route_snapshot(services, snapshot, now);
+            }
             JoinEvent::Suspect { .. }
             | JoinEvent::Failed { .. }
             | JoinEvent::Recovered { .. }
-            | JoinEvent::Removed { .. }
             | JoinEvent::AuthorityLost { .. }
             | JoinEvent::None => {}
+        }
+
+        // Root: sign one aggregate for each change set and push it to every
+        // known peer.  This is the M3 aggregated refresh: one signed
+        // EpochSummary per change set, not one full confirmation per member
+        // per refresh interval.  `publish_aggregate` returns owned data, so
+        // the mutable borrow on `self.join` ends before we iterate `self.peers`.
+        let is_root = self.join.as_ref().map(|join| join.role()) == Some(Role::Root);
+        if is_root {
+            match &outcome.event {
+                JoinEvent::Confirmed { .. } | JoinEvent::RemovedBatch { .. } => {
+                    if let Some(aggregate) =
+                        self.join.as_mut().and_then(|join| join.publish_aggregate())
+                    {
+                        let peers: alloc::vec::Vec<NodeId> = self.peers[..self.peer_count].to_vec();
+                        for peer in peers {
+                            self.send_join(
+                                services,
+                                JoinMessage::Epoch(aggregate.clone()),
+                                peer,
+                                now,
+                                false,
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
@@ -2790,6 +2872,8 @@ impl Mesh {
                 ack.request_nonce,
                 ack.request_nonce,
             ),
+            JoinMessage::Summary(_) => (MessageKind::Control, reply_to_source, 0, 0),
+            JoinMessage::Epoch(_) => (MessageKind::Control, reply_to_source, 0, 0),
         };
         if verbose {
             match &message {
@@ -2811,15 +2895,33 @@ impl Mesh {
                     line.push(b'\n');
                     log(services, line.as_bytes());
                 }
-                JoinMessage::Ack(ack)
-                    if now.saturating_sub(self.last_ack_log_ms) >= JOIN_LOG_INTERVAL_MS =>
-                {
+                JoinMessage::Ack(ack) => {
                     self.last_ack_log_ms = now;
                     let mut line = Line::new();
                     line.str("mesh-join: ack-sent epoch=");
                     line.u64(ack.epoch as u64);
                     line.str(" digest=");
                     line.digest(&ack.digest);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinMessage::Summary(summary) => {
+                    let mut line = Line::new();
+                    line.str("mesh-join: summary-sent epoch=");
+                    line.u64(summary.epoch as u64);
+                    line.str(" digest=");
+                    line.digest(&summary.digest);
+                    line.str(" counter=");
+                    line.u64(summary.counter);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                }
+                JoinMessage::Epoch(summary) => {
+                    let mut line = Line::new();
+                    line.str("mesh-join: epoch-sent epoch=");
+                    line.u64(summary.epoch as u64);
+                    line.str(" members=");
+                    line.u64(summary.grants.len() as u64);
                     line.push(b'\n');
                     log(services, line.as_bytes());
                 }
@@ -3577,6 +3679,7 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
         | (MessageKind::Request, OpCode::Write)
         | (MessageKind::Response, OpCode::Write) => FRAME_BODY_MAX,
         (MessageKind::Control, OpCode::WindowUpdate) => 16,
+        (MessageKind::Control, OpCode::Hello) => JOIN_BODY_MAX,
         (MessageKind::Cancel, OpCode::Cancel) => 8,
         _ => 16,
     }

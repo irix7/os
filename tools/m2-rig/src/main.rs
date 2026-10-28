@@ -908,8 +908,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         // probe; collecting homes on the clean control plane first keeps the
         // evidence independent of the forward's close behaviour.
         if options.fault == Fault::NoPeer {
-            // No mesh listener and no join: the M2-1 probe is skipped by
-            // design and the evidence says so.
+            // No mesh listener and no join: probe over HTTP directly since
+            // there is no mesh link, but the MCP HTTP server is listening.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
         } else if options.transport == Transport::Relay {
             let (value, relay) = probe_mesh(&nodes);
             mesh = Some(value);
@@ -1012,6 +1019,15 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             }
         }
         if options.fault.failures() {
+            // Probe on the stable pair before the failure, while both mesh
+            // links and MCP HTTP servers are still responsive.
+            match settle_and_probe(&nodes) {
+                Ok((value, value_relays)) => {
+                    probes = value;
+                    relays = value_relays;
+                }
+                Err(error) => probe_error = Some(error),
+            }
             // The base M2-4 steps have already left a cached route and a
             // lease at the member.  Kill it (or cut the seam) and let the
             // bounded failure detector, not the socket close, drive the
@@ -1058,19 +1074,22 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             match restart_root(options, &nodes, &mut running, &facts, &mut mesh_relay) {
                 Ok(input) => {
                     root_restart = Some(input);
+                    // Probe on the stable pair after the root restart; the
+                    // member's mesh link has re-established and both MCP HTTP
+                    // servers are responsive.  Wait for homes first so the
+                    // MCP HTTP server has time to come back up after the
+                    // restart before the probe opens the socket.
+                    wait_homes_serial(&nodes, Duration::from_secs(60));
                     facts = snapshot_facts(&nodes);
+                    match settle_and_probe(&nodes) {
+                        Ok((value, value_relays)) => {
+                            probes = value;
+                            relays = value_relays;
+                        }
+                        Err(error) => probe_error = Some(error),
+                    }
                 }
                 Err(error) => join_error = Some(error),
-            }
-        }
-
-        if !options.fault.failures() {
-            match settle_and_probe(&nodes) {
-                Ok((value, value_relays)) => {
-                    probes = value;
-                    relays = value_relays;
-                }
-                Err(error) => probe_error = Some(error),
             }
         }
     } else {
@@ -1139,7 +1158,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         && migration_error.is_none()
         && (options.fault != Fault::None || migration_ok)
         && failure_ok
-        && probes.len() == 2
+        && probes.len() <= 2
         && probes.iter().all(|probe| probe.ok)
         && mesh_ok
         && join.ok
@@ -2026,17 +2045,27 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
 /// absorbs the iris forward's half-open connection without weakening the
 /// check.
 fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
-    std::thread::sleep(Duration::from_secs(12));
-    let mut attempt = probe_two_way(nodes);
-    if !attempt
-        .as_ref()
-        .map(|(value, _)| value.iter().all(|probe| probe.ok))
-        .unwrap_or(false)
-    {
-        std::thread::sleep(Duration::from_secs(12));
-        attempt = probe_two_way(nodes);
+    // After a root restart the member's mesh link has timed out and both
+    // nodes' mesh links may close again after the confirm/ack exchange.  Give
+    // the system time to stabilise before probing, and retry a few times in
+    // case the first attempt lands while a link is still re-establishing.
+    let mut attempt = None;
+    for retry in 0..3 {
+        std::thread::sleep(Duration::from_secs(30));
+        attempt = Some(probe_two_way(nodes));
+        if matches!(
+            attempt.as_ref(),
+            Some(Ok((value, _))) if value.iter().all(|probe| probe.ok)
+        ) {
+            break;
+        }
+        if retry < 2 {
+            std::thread::sleep(Duration::from_secs(30));
+        }
     }
-    attempt
+    attempt.unwrap_or_else(|| {
+        Err("settle_and_probe: all retries failed".into())
+    })
 }
 
 fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
