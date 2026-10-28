@@ -1,0 +1,14 @@
+[package]
+license = "GPL-3.0-only"
+name = "module-abi"
+version = "0.10.0"
+edition = "2021"
+
+[dependencies]
+
+[lib]
+path = "src/lib.rs"
+
+[package.metadata]
+# The loadable-module ABI shared by the kernel and every module image.
+# ABI 16 appends UDP, timer/deadline and CSPRNG services for QUIC v1.

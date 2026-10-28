@@ -1,0 +1,21 @@
+[package]
+license = "GPL-3.0-only"
+name = "quic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+module-abi = { path = "../../crates/module-abi" }
+sys-primitives = { path = "../../crates/sys-primitives" }
+
+[lib]
+path = "src/lib.rs"
+
+[package.metadata]
+# Minimal QUIC v1 over UDP for native IRIX 7 flows.
+#
+# Builds on the kernel's ABI 16 UDP, timer/deadline and CSPRNG services.
+# Provides connection IDs, packet framing, and a retransmission timer.  The
+# TLS 1.3 handshake and record protection are a pluggable `Crypto` trait;
+# the default `CleartextCrypto` is for bring-up only and must be replaced
+# with the minimal TLS/QUIC profile before production use.
