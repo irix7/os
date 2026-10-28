@@ -2809,6 +2809,8 @@ impl Mesh {
                 ack.request_nonce,
                 ack.request_nonce,
             ),
+            JoinMessage::Summary(_) => (MessageKind::Control, reply_to_source, 0, 0),
+            JoinMessage::Epoch(_) => (MessageKind::Control, reply_to_source, 0, 0),
         };
         if verbose {
             match &message {
