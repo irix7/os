@@ -263,19 +263,8 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        let changes: alloc::vec::Vec<Change> = failed
-            .iter()
-            .copied()
-            .map(|node| Change::Remove { node })
-            .collect();
-        // `now_ns` is only used for `Change::Add` (last_seen_ns); a removal set
-        // never refreshes a record, so any value is valid here.
-        let set = match self.table.apply(&changes, 0) {
-            Ok(set) => set,
-            Err(_) => return None,
-        };
-        if !set.changed {
-            return None;
+        for node in &failed {
+            let _ = self.table.leave(*node);
         }
         let snapshot = match self.snapshot() {
             Ok(s) => s,
