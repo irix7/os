@@ -1045,6 +1045,9 @@ pub fn evaluate(
                 None => errors.push("the stale-epoch negative did not run".into()),
             }
         }
+        // The datagram gate runs no join, so there are no homes to check; the
+        // mode never reaches this helper.
+        Fault::Udp => {}
         Fault::NoPeer => match &evidence.disabled {
             Some(round) if round.ok => {}
             Some(round) => errors.push(round.message.clone()),
@@ -1076,6 +1079,7 @@ pub fn evaluate(
                         .unwrap_or(0)
                 )
             }
+            Fault::Udp => "udp: the datagram gate runs no join and collects no homes".into(),
             Fault::NoPeer => "no-peer: /mesh/homes is disabled and presents no homes".into(),
             Fault::WrongAuthority => {
                 "wrong-authority: the root's confirmed view is checked, and the member presents \

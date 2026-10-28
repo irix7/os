@@ -30,6 +30,7 @@ mod rig;
 mod route;
 mod sha256;
 mod shard;
+mod udp;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -84,6 +85,7 @@ fn run() -> Result<i32, String> {
         return Err("--transport direct is supported for run --fault none/no-route".into());
     }
     match options.action {
+        Action::Run if options.fault == Fault::Udp => udp_run(&options),
         Action::Run => run_and_probe(&options),
         Action::Bulk => bulk_run(&options),
         Action::Shard => shard::run(&options),
@@ -128,7 +130,7 @@ Options:
   --transport M    relay (default), direct, or direct-fail (bulk/run)
   --timeout SECS   boot deadline (default: 180)
   --fault MODE     none (default), no-peer, wrong-authority, no-route,
-                   kill-peer or partition
+                   kill-peer, partition or udp
   --keep           with run or shard, leave the nodes running
   --verbose        print extra detail
 
@@ -324,6 +326,7 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         Some(&join),
         Some(&homes),
         route.as_ref(),
+        None,
         None,
         None,
         None,
@@ -572,6 +575,7 @@ fn collect_route(
             }
             Ok(evidence)
         }
+        Fault::Udp => Err("the datagram gate runs no capability route".into()),
         Fault::NoRoute | Fault::NoPeer | Fault::WrongAuthority => {
             route::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
         }
@@ -587,7 +591,7 @@ fn collect_migration(
         Fault::NoPeer | Fault::NoRoute | Fault::WrongAuthority => {
             migrate::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
         }
-        Fault::None | Fault::KillPeer | Fault::Partition => {
+        Fault::None | Fault::KillPeer | Fault::Partition | Fault::Udp => {
             Err("the migration scenario is driven by run".into())
         }
     }
@@ -1266,6 +1270,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         bulk_evidence.as_ref(),
         failure_evidence.as_ref(),
         Some(&fixture),
+        None,
         "run",
         verdict,
         error.as_deref(),
@@ -1457,6 +1462,8 @@ fn collect_homes(
                 Duration::from_secs(30),
             ));
         }
+        // The datagram gate runs before any join, so there are no homes.
+        Fault::Udp => {}
         Fault::NoPeer => {
             inputs.disabled = Some(homes::collect_disabled(nodes, Duration::from_secs(30)));
         }
@@ -2063,9 +2070,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
             std::thread::sleep(Duration::from_secs(30));
         }
     }
-    attempt.unwrap_or_else(|| {
-        Err("settle_and_probe: all retries failed".into())
-    })
+    attempt.unwrap_or_else(|| Err("settle_and_probe: all retries failed".into()))
 }
 
 fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
@@ -2404,6 +2409,166 @@ fn clean(options: &Options) -> Result<i32, String> {
     Ok(0)
 }
 
+/// Wait for the full datagram marker set in every node's serial transcript.
+///
+/// The gate is not "the module printed something": every node must show that
+/// its socket came up, that a `PING` left, that the peer received a `PING` and
+/// that a `PONG` came back across the relay.  A missing marker is reported by
+/// name so a regression points at the side that stopped working.
+fn wait_udp_markers(options: &Options, nodes: &[RunningNode]) -> Result<(), String> {
+    const MARKERS: [&str; 4] = [
+        "netprobe: up",
+        "netprobe: ping seq=",
+        "netprobe: ping-rx",
+        "netprobe: pong",
+    ];
+    let deadline = Instant::now() + options.timeout.min(Duration::from_secs(120));
+    loop {
+        let mut missing = Vec::new();
+        for node in nodes {
+            let serial = read_serial(&node.node);
+            for marker in MARKERS {
+                if !serial.contains(marker) {
+                    missing.push(format!("{}: {marker}", node.node.name));
+                }
+            }
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "UDP probe markers missing after {}s: {}",
+                options.timeout.as_secs(),
+                missing.join(", ")
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The M3-ADR-0006 datagram gate.
+///
+/// Both kernels boot the MCP module with `netprobe.peer` pointing at their own
+/// gateway, which `iris` maps to host loopback.  The rig's UDP relay pairs the
+/// two flows, so each node's `PING` reaches the other node and its `PONG` comes
+/// back across the same relay.  No inbound port forward is involved: the only
+/// path is each node's own outbound datagram socket and its NAT mapping.
+fn udp_run(options: &Options) -> Result<i32, String> {
+    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
+    let module_sha_text = sha256::hex(&module_sha);
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let nodes = derive_nodes(options)?;
+
+    let mut relay = udp::UdpRelay::start().map_err(|error| format!("start UDP relay: {error}"))?;
+    println!("udp relay on 127.0.0.1:{}", relay.port);
+
+    let environments = rig::udp_environments(&nodes, relay.port);
+    let mut running = Vec::new();
+    start_all_with(
+        options,
+        &nodes,
+        &environments,
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    )?;
+
+    let facts = match wait_boot(options, &mut running) {
+        Ok(facts) => facts,
+        Err(error) => {
+            let _ = rig::stop_nodes(options, &mut running);
+            return Err(error);
+        }
+    };
+    let mut failure = None;
+    if let Err(error) = wait_udp_markers(options, &running) {
+        failure = Some(error);
+    }
+
+    let counters = relay.counters();
+    let markers: Vec<udp::UdpNodeEvidence> = running
+        .iter()
+        .map(|node| udp::markers(&node.node.name, &read_serial(&node.node)))
+        .collect();
+    let complete = markers.iter().all(|marker| {
+        marker.up.is_some()
+            && marker.ping.is_some()
+            && marker.ping_rx.is_some()
+            && marker.pong.is_some()
+    });
+    let ok = failure.is_none() && complete;
+    let message = match &failure {
+        Some(error) => error.clone(),
+        None if ok => format!(
+            "{} datagrams forwarded across the two-kernel relay",
+            counters.forwarded
+        ),
+        None => "one or more datagram probe markers are missing".to_string(),
+    };
+    let udp_evidence = udp::UdpEvidence {
+        port: relay.port,
+        counters,
+        nodes: markers,
+        ok,
+        message: message.clone(),
+    };
+    relay.stop();
+
+    for marker in &udp_evidence.nodes {
+        println!(
+            "{}: {}",
+            marker.name,
+            marker
+                .pong
+                .as_deref()
+                .or(marker.ping_rx.as_deref())
+                .unwrap_or("no datagram markers")
+        );
+    }
+    println!(
+        "udp: received={} learned={} forwarded={} dropped={}",
+        counters.received, counters.learned, counters.forwarded, counters.dropped
+    );
+
+    let directory = write_evidence(
+        options,
+        &nodes,
+        &facts,
+        &[],
+        &[],
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(&fixture),
+        Some(&udp_evidence),
+        "run",
+        if ok { "pass" } else { "fail" },
+        if ok { None } else { Some(message.as_str()) },
+    )?;
+    let relay_log = udp::lines(&relay.log).join("\n");
+    fs::write(directory.join("udp-relay.log"), format!("{relay_log}\n"))
+        .map_err(|error| format!("write udp-relay.log: {error}"))?;
+    println!("evidence: {}", directory.display());
+
+    let stopped = rig::stop_nodes(options, &mut running);
+    for error in &stopped {
+        eprintln!("m2-rig: {error}");
+    }
+    if ok {
+        Ok(0)
+    } else {
+        eprintln!("m2-rig: {message}");
+        Ok(1)
+    }
+}
+
 /// Read one artifact and return its size and SHA-256.
 fn artifact(path: &std::path::Path, label: &str) -> Result<(u64, String), String> {
     let bytes =
@@ -2429,6 +2594,7 @@ fn write_evidence(
     bulk: Option<&bulk::BulkEvidence>,
     failure: Option<&FailureEvidence>,
     fixture: Option<&Fixture>,
+    udp: Option<&udp::UdpEvidence>,
     action: &str,
     verdict: &str,
     error: Option<&str>,
@@ -2497,6 +2663,7 @@ fn write_evidence(
         bulk,
         failure,
         fixture,
+        udp,
         relays: &relay_logs,
         verdict,
         error,

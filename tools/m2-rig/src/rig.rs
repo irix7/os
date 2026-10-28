@@ -88,6 +88,10 @@ pub enum Fault {
     /// Cut only the mesh link: both kernels stay alive and must not create two
     /// authoritative homes.
     Partition,
+    /// The M3-ADR-0006 datagram gate: no join and no mesh.  Each node's MCP
+    /// module probes a UDP peer through its own gateway, and the rig's UDP
+    /// relay pairs the two flows.
+    Udp,
 }
 
 impl Fault {
@@ -100,6 +104,7 @@ impl Fault {
             "no-route" => Self::NoRoute,
             "kill-peer" => Self::KillPeer,
             "partition" => Self::Partition,
+            "udp" => Self::Udp,
             _ => return None,
         })
     }
@@ -113,6 +118,7 @@ impl Fault {
             Self::NoRoute => "no-route",
             Self::KillPeer => "kill-peer",
             Self::Partition => "partition",
+            Self::Udp => "udp",
         }
     }
 
@@ -660,6 +666,32 @@ pub fn mesh_environments(
         envs.push(Some(env));
     }
     (envs, authority, wrong)
+}
+
+/// Build the `netprobe.*` environment for the datagram gate.
+///
+/// The gate runs no join: each node's MCP module sends `PING` datagrams to its
+/// own gateway on `relay_port`, which `iris` maps to host loopback, and the
+/// rig's UDP relay pairs the two flows.  None of the mesh keys are present, so
+/// the DS1386 environment stays well inside its 298-byte budget.
+pub fn udp_environments(nodes: &[Node], relay_port: u16) -> Vec<Option<MeshEnv>> {
+    nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            Some(MeshEnv {
+                extra: Some(vec![
+                    (
+                        "netprobe.peer".into(),
+                        format!("{}:{relay_port}", node.gateway),
+                    ),
+                    ("netprobe.name".into(), format!("n{index}")),
+                    ("netprobe.port".into(), crate::udp::GUEST_PORT.to_string()),
+                ]),
+                ..MeshEnv::default()
+            })
+        })
+        .collect()
 }
 
 /// Build the M3 shard environment for every node.

@@ -19,6 +19,7 @@
 #![no_main]
 
 mod mesh;
+mod netprobe;
 
 extern crate alloc;
 
@@ -546,6 +547,10 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     // two-slot HTTP server behaviour.  When it is on, slot 1 belongs to the
     // mesh listener and HTTP is confined to slot 0.
     let mesh_enabled = unsafe { mesh::init(services) };
+    // The UDP probe is a transport gate (M3-ADR-0006).  It is inert unless
+    // `netprobe.peer` is configured, and it owns a UDP slot rather than a TCP
+    // one, so it cannot collide with the HTTP server or the mesh listener.
+    unsafe { netprobe::init(services) };
     if mesh_enabled {
         unsafe {
             CURRENT = mesh::HTTP_SLOT;
@@ -591,6 +596,9 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
     // The mesh listener owns module TCP slot 1 when configured.  It is a
     // separate protocol and state machine from the HTTP server below.
     mesh::tick(services);
+
+    // The UDP probe drains its socket and sends on its own period.
+    netprobe::tick(services);
 
     // A deferred system action runs after the tool response has had a few
     // poll cycles to reach the client.

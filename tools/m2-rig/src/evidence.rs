@@ -199,6 +199,8 @@ pub struct Evidence<'a> {
     pub bulk: Option<&'a crate::bulk::BulkEvidence>,
     /// Failure/partition evidence, when that fault mode ran.
     pub failure: Option<&'a crate::failure::FailureEvidence>,
+    /// Datagram-probe evidence, when the `udp` mode ran.
+    pub udp: Option<&'a crate::udp::UdpEvidence>,
     /// Module fixture, when the run started one.
     pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
@@ -512,7 +514,41 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         Some(failure) => out.push_str(&render_failure_json(failure)),
         None => out.push_str("null"),
     }
+    out.push_str(",\n  \"udp\": ");
+    match evidence.udp {
+        Some(udp) => out.push_str(&render_udp_json(udp)),
+        None => out.push_str("null"),
+    }
     out.push_str("\n}\n");
+    out
+}
+
+fn render_udp_json(udp: &crate::udp::UdpEvidence) -> String {
+    let mut out = String::new();
+    out.push_str(&format!(
+        "{{\"ok\": {}, \"port\": {}, \"message\": \"{}\", \"received\": {}, \"learned\": {}, \"forwarded\": {}, \"dropped\": {}, \"nodes\": [",
+        udp.ok,
+        udp.port,
+        json_escape(&udp.message),
+        udp.counters.received,
+        udp.counters.learned,
+        udp.counters.forwarded,
+        udp.counters.dropped
+    ));
+    for (index, node) in udp.nodes.iter().enumerate() {
+        out.push_str(&format!(
+            "{{\"name\": \"{}\", \"up\": {}, \"ping\": {}, \"ping_rx\": {}, \"pong\": {}}}",
+            json_escape(&node.name),
+            json_option(&node.up),
+            json_option(&node.ping),
+            json_option(&node.ping_rx),
+            json_option(&node.pong)
+        ));
+        if index + 1 < udp.nodes.len() {
+            out.push(',');
+        }
+    }
+    out.push_str("]}");
     out
 }
 
@@ -1200,13 +1236,25 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         if let Some(run) = &bulk.baseline {
             out.push_str(&format!(
                 "| {} (baseline) | {} | {} | {} | {} | {:.3} | `{}` |\n",
-                run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s, run.raw.trim()
+                run.from,
+                run.to,
+                run.bytes,
+                run.chunks,
+                run.elapsed_ms,
+                run.mb_per_s,
+                run.raw.trim()
             ));
         }
         for run in &bulk.runs {
             out.push_str(&format!(
                 "| {} | {} | {} | {} | {} | {:.3} | `{}` |\n",
-                run.from, run.to, run.bytes, run.chunks, run.elapsed_ms, run.mb_per_s, run.raw.trim()
+                run.from,
+                run.to,
+                run.bytes,
+                run.chunks,
+                run.elapsed_ms,
+                run.mb_per_s,
+                run.raw.trim()
             ));
         }
         if let Some(control) = &bulk.control {
@@ -1636,6 +1684,45 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
                     out.push_str(node.error.as_deref().unwrap_or("no report"));
                     out.push('\n');
                 }
+            }
+        }
+        out.push_str("```\n\n");
+    }
+
+    if let Some(udp) = evidence.udp {
+        out.push_str(&format!(
+            "## Datagram probe (M3-ADR-0006)\n\n**Result:** `{}`  \n**Host relay:** `127.0.0.1:{}`  \n**Datagrams:** received {}, learned {}, forwarded {}, dropped {}  \n**Message:** {}\n\n",
+            if udp.ok { "pass" } else { "FAIL" },
+            udp.port,
+            udp.counters.received,
+            udp.counters.learned,
+            udp.counters.forwarded,
+            udp.counters.dropped,
+            udp.message
+        ));
+        out.push_str("| Node | up | ping | ping-rx | pong |\n|---|---|---|---|---|\n");
+        for node in &udp.nodes {
+            out.push_str(&format!(
+                "| {} | {} | {} | {} | {} |\n",
+                node.name,
+                node.up.is_some(),
+                node.ping.is_some(),
+                node.ping_rx.is_some(),
+                node.pong.is_some()
+            ));
+        }
+        out.push_str("\n### Markers\n\n```text\n");
+        for node in &udp.nodes {
+            for line in [
+                node.up.as_deref(),
+                node.ping.as_deref(),
+                node.ping_rx.as_deref(),
+                node.pong.as_deref(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                out.push_str(&format!("{}: {line}\n", node.name));
             }
         }
         out.push_str("```\n\n");
