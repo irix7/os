@@ -1560,6 +1560,25 @@ impl Mesh {
                 JoinEvent::RemovedBatch { nodes, snapshot } => {
                     let mut line = Line::new();
                     line.str("mesh-fail: removed batch");
+                    for node in nodes.iter() {
+                        line.str(" node=");
+                        line.node(node);
+                    }
+                    line.str(" epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.str(" digest=");
+                    line.digest(&snapshot.digest());
+                    line.str(" snapshot=");
+                    line.nodes(&snapshot.members);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    removed = Some(snapshot.clone());
+                }
+                JoinEvent::RemovedBatch { nodes, snapshot } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: removed batch");
                     for node in nodes {
                         line.str(" node=");
                         line.node(node);
@@ -2809,6 +2828,8 @@ impl Mesh {
                 ack.request_nonce,
                 ack.request_nonce,
             ),
+            JoinMessage::Summary(_) => (MessageKind::Control, reply_to_source, 0, 0),
+            JoinMessage::Epoch(_) => (MessageKind::Control, reply_to_source, 0, 0),
             JoinMessage::Summary(_) => (MessageKind::Control, reply_to_source, 0, 0),
             JoinMessage::Epoch(_) => (MessageKind::Control, reply_to_source, 0, 0),
         };
