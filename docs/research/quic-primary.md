@@ -2,6 +2,11 @@
 
 **Status:** research / design input. No production code, ABI, ROM image or wire format was
 changed by this slice.
+**Update 2026-10-29:** the first spike prerequisite landed as
+[`M3-ADR-0006`](../adr/m3-0006-udp-transport.md): ABI 16 module UDP services, a
+non-blocking Seeq transmit path, and a two-real-kernel datagram gate in the M2 CI job.  The
+verdict, the gate list and the budget arithmetic in this study are unchanged; the crypto
+throughput, linked QUIC/TLS footprint and CID-routed relay measurements are still open.
 **Question.** Should QUIC replace TCP as the primary network protocol of IRIX 7, and if so,
 what exactly moves, what stays, and what would have to be true for it to fit an SGI Indy?
 **Basis.** `origin/main` at `41f3f24` (2026-10-27), including the pre-release policy
@@ -139,7 +144,7 @@ the PROM, or the removal of POSIX TCP.**
 | RAM | 32–256 MiB depending on profile; the m2-rig uses 64 MiB (`banks = [64, 0, 0, 0]`) | [C] `docs/spec/architecture.md`, `tools/m2-rig/src/rig.rs:680` |
 | NIC | Seeq 80C03, 10 Mbit, HPC3 PDMA | [C] `kernel/src/net.rs`, `docs/research/indy-hardware.md` |
 | Kernel UDP | smoltcp `socket-udp` compiled; used by DNS/NTP | [C] `kernel/Cargo.toml`, `kernel/src/dns.rs:8`, `kernel/src/ntp.rs:13` |
-| Module UDP | **none** | [C] `kernel/src/module.rs:705-909`; no `udp_*` in `Services` |
+| Module UDP | **none at the study's commit**; ABI 16 adds the `udp_*` services and eight kernel slots (`M3-ADR-0006`, 2026-10-29) | [C] `kernel/src/module.rs`, `docs/adr/m3-0006-udp-transport.md` |
 | Module connect | **none** | [C] same; only `tcp_listen` |
 | Kernel TLS | embedded-tls 0.19, AES-128-GCM-SHA256, P-384/RSA verification, CA roots in `kernel/src/ca/` | [C] `kernel/src/tls.rs`, `kernel/src/ca/README.md` |
 | TLS server | **none** | [C] |
