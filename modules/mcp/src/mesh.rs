@@ -1557,6 +1557,21 @@ impl Mesh {
                     log(services, line.as_bytes());
                     removed = Some(snapshot.clone());
                 }
+                JoinEvent::RemovedBatch { nodes, snapshot } => {
+                    let mut line = Line::new();
+                    line.str("mesh-fail: removed batch");
+                    for node in &nodes {
+                        line.str(" node=");
+                        line.node(node);
+                    }
+                    line.str(" epoch=");
+                    line.u64(snapshot.epoch as u64);
+                    line.str(" members=");
+                    line.u64(snapshot.len() as u64);
+                    line.push(b'\n');
+                    log(services, line.as_bytes());
+                    removed = Some(snapshot.clone());
+                }
                 JoinEvent::AuthorityLost { node, epoch } => {
                     lost = true;
                     let mut line = Line::new();
