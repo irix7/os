@@ -121,7 +121,7 @@ The lifecycle commands:
 
 Useful options: `--work DIR`, `--base-port N`, `--timeout SECS`, `--keep` (with `run`,
 leave the nodes running), `--verbose`, and
-`--fault none|no-peer|wrong-authority|no-route|kill-peer|partition`.
+`--fault none|no-peer|wrong-authority|no-route|kill-peer|partition|udp`.
 
 ### Module slot probe
 
@@ -153,6 +153,7 @@ The fault modes are negative evidence, not extra features:
 | `no-route` | The join and homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both kernels log `mesh-route: disabled reason=config` and `mesh-migrate: disabled reason=config`, `/mesh/route` and `/mesh/migrate` are `404 disabled`, and no route step, `MOVED` or migration runs. |
 | `kill-peer` | The full route configuration (`mesh.route=1`); n1 is `SIGKILL`ed after steps 1–5. | n0 logs `mesh-fail: suspect`, `failed` and `removed`; the epoch advances 2→3 with a one-member table; every object is recomputed to n0; a fence row names n1 as the stale home; step 6 completes at n0 with one attempt, no send and no timeout; step 7 is `stale-epoch`; step 8 commits; step 9 reads. |
 | `partition` | The full route configuration (`mesh.route=1`); the mesh relay is paused (frames dropped, sessions kept). | The root follows the same removal path; the live member keeps epoch 2 and two members, reports `authority state=lost mutable=0 reads=lease`, refuses step 8 with `no-authority` and reports a remote home in step 6 as `no-authority`. Resuming the seam resets both guest links through the link-only `mesh.reconnect` control and starts a fresh relay; the member rejoins at epoch 4 with the two-member table; the root then commits a peer-homed object (step 10) and the recovered member serves it. |
+| `udp` | No `mesh.*` key is written. Each node carries `netprobe.peer=<its gateway>:<relay port>`, `netprobe.name` and `netprobe.port`; the module binds a UDP slot and the rig runs a two-flow UDP relay on host loopback. | Both kernels log `netprobe: up`, `netprobe: ping`, `netprobe: ping-rx` and `netprobe: pong`, so a datagram crossed from each kernel to the other and a reply came back through the sender address `udp_recv` reported. This is the M3-ADR-0006 transport gate; it runs no join. |
 
 `run --fault no-peer` deliberately skips the M2-1 mesh probe (there is no listener) and
 passes on the HTTP probe plus the M1/M2-0 markers. `probe` and `run` write the mode into
