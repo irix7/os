@@ -800,7 +800,7 @@ dependencies = [
 [[package]]
 name = "module-abi"
 version = "0.1.0"
-source = "git+https://github.com/irix7/os-sdk?tag=v0.10.0#7bb91e329c72049a389b1802ba534cd1269d9bd9"
+source = "git+https://github.com/irix7/os-sdk?tag=v0.11.0#47546a72dc24bb93b1dd31ca05c2f18aa3b866d0"
 
 [[package]]
 name = "module-resolver"

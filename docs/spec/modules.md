@@ -106,7 +106,7 @@ const struct ModuleVtable *_start(const struct Services *services);
 
 | Offset | Field | Meaning |
 |---|---|---|
-| 0x00 | `version` | 15 |
+| 0x00 | `version` | 16 |
 | 0x04 | `write` | `void (*)(const uint8_t *ptr, size_t len)` — serial and telnet |
 | 0x08 | `clock_ms` | `uint64_t (*)(void)` — monotonic milliseconds since boot |
 | 0x0C | `alloc` | `void *(*)(size_t size, size_t align)` — kernel heap, never freed |
@@ -131,10 +131,16 @@ const struct ModuleVtable *_start(const struct Services *services);
 | 0x70 | `tcp_connect` | `int32_t (*)(uint32_t slot, uint32_t address, uint16_t port)` — IPv4 in network byte order; 0 or -1 |
 | 0x74 | `tcp_events` | `uint32_t (*)(uint32_t slot)` — level-triggered RX/TX/CLOSED/LISTEN/ESTAB bits; bit 31 = no socket |
 | 0x78 | `tcp_slots` | `uint32_t (*)(void)` — number of module TCP slots the kernel provides |
+| 0x7C | `udp_open` | `int32_t (*)(uint32_t slot, uint16_t port)` — bind one socket to a nonzero local port; 0 or -1 |
+| 0x80 | `udp_send` | `intptr_t (*)(uint32_t slot, uint32_t address, uint16_t port, const uint8_t *ptr, size_t len)` — one datagram; bytes queued, 0 when the ring is full, -1 for no socket |
+| 0x84 | `udp_recv` | `intptr_t (*)(uint32_t slot, uint8_t *ptr, size_t len, uint32_t *src_address, uint16_t *src_port)` — one datagram; bytes, 0 for none, -1 for no socket, -2 when too large |
+| 0x88 | `udp_close` | `void (*)(uint32_t slot)` — close and release the slot |
+| 0x8C | `udp_slots` | `uint32_t (*)(void)` — number of module UDP slots the kernel provides |
+| 0x90 | `udp_state` | `int32_t (*)(uint32_t slot, uint32_t *address, uint16_t *port)` — bound local endpoint; 0 or -1 |
 
-The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.10.0`.  The kernel and every module
+The struct lives in the SDK's `abi/` crate (crate `module-abi`), pinned at tag `v0.11.0`.  The kernel and every module
 link that one crate, and compile-time assertions pin these offsets for the n32 target;
-the v11 prefix is 0x54 bytes, the ABI v12 table was 0x70 bytes, ABI v13 was 0x74 bytes, ABI v14 was 0x78 bytes and the ABI v15 table is 0x7c bytes.
+the v11 prefix is 0x54 bytes, the ABI v12 table was 0x70 bytes, ABI v13 was 0x74 bytes, ABI v14 was 0x78 bytes, the ABI v15 table was 0x7c bytes and the ABI v16 table is 0x94 bytes.
 
 New services are appended and `version` is bumped; existing offsets never move. A module
 that needs a newer table can reject an older core by checking `version`. ABI v12 appends
@@ -160,8 +166,30 @@ HTTP and slot 1 for the mesh listener. The remaining slots are free for a multi-
 transport: eight slots are enough for a star of seven peers plus the control plane, which
 is the Version 1 transport prerequisite for the four-to-eight-node membership work tracked
 in issue #249. This is a fixed slot pool, not a module slot manager; general runtime module
-dependencies remain issue #217. The kernel's socket set has 20 entries, so eight module
-sockets coexist with DHCP, telnet, the MCP listener and the userland client.
+dependencies remain issue #217. The kernel's socket set has 28 entries, so eight module
+TCP sockets and eight module UDP sockets coexist with DHCP, telnet, the MCP listener and
+the userland client.
+
+### UDP slots
+
+`udp_slots()` returns eight. Slots are `0..8`; each owns one socket, a 2 KiB receive ring,
+a 2 KiB transmit ring and eight packet-metadata entries each way. `udp_open` binds a
+nonzero local port and replaces any socket already in the slot; there is no ephemeral bind
+because the in-tree stack has none, so a module chooses its ports.
+
+`udp_send` queues exactly one datagram and never splits it. It returns the number of bytes
+queued, `0` when the socket ring is full (retry after the next `poll`) and `-1` for no
+socket or an invalid argument. `udp_recv` dequeues one datagram and returns its length, `0`
+when nothing is queued, `-1` for no socket and `-2` when the datagram did not fit the
+caller's buffer; that datagram is dropped, not truncated. When the out-parameters are
+non-null they receive the sender's IPv4 address (network byte order) and port, so an echo
+or reply path needs no second lookup. `udp_state` reports the bound local endpoint.
+
+The kernel owns the socket and the interface queue. Framing, retransmission, congestion
+control, connection identity and demultiplexing are the module's responsibility, which is
+what a datagram transport such as QUIC would replace. The ABI is not a QUIC stack: the
+[`M3-ADR-0006`](../adr/m3-0006-udp-transport.md) slice only makes datagrams possible
+between two real kernels.
 
 The entry returns a pointer to a vtable, or null for "initialised, no callback":
 
