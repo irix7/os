@@ -151,6 +151,13 @@ pub struct SeeqDevice {
     mac: EthernetAddress,
     /// Transmit frame buffer (DMA-visible).
     tx_buf: [u8; 1514],
+    /// Set while the HPC3 still owns the transmit descriptor.
+    ///
+    /// A frame is handed to the engine and the call returns; the next
+    /// `transmit`/`receive` reaps the completion.  The buffer must not be
+    /// rewritten until the engine has cleared ACTIVE, so this flag is the
+    /// backpressure signal smoltcp sees as "no token".
+    tx_busy: bool,
     /// Receive DMA buffers: 2 pad + frame + status each.
     rx_bufs: [[u8; 1520]; RX_RING],
     /// Copy of the last received frame handed to smoltcp.
@@ -179,6 +186,7 @@ impl SeeqDevice {
         let dev = Self {
             mac: EthernetAddress::from_bytes(&mac_bytes),
             tx_buf: [0; 1514],
+            tx_busy: false,
             rx_bufs: [[0; 1520]; RX_RING],
             rx_frame: [0; 1514],
             tx_desc: DmaDesc {
@@ -245,6 +253,18 @@ impl SeeqDevice {
             write_volatile(&mut self.rx_descs[index].flags, DESC_ROWN | MAX_RPKT);
         }
     }
+
+    /// Reap a completed transmit and report whether the engine is free.
+    ///
+    /// The HPC3 clears ACTIVE when it has finished with the descriptor.  There
+    /// is no per-descriptor ownership bit documented for transmit, so one
+    /// frame is outstanding at a time and this flag is the whole handshake.
+    fn tx_ready(&mut self) -> bool {
+        if self.tx_busy && hpc3_rd32(TX_ENGINE, ENET_CTRL) & ENET_CTRL_ACTIVE == 0 {
+            self.tx_busy = false;
+        }
+        !self.tx_busy
+    }
 }
 
 impl Device for SeeqDevice {
@@ -268,6 +288,14 @@ impl Device for SeeqDevice {
     }
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
+        // The receive token is handed out with a transmit token, and the
+        // response may be the only way an ACK leaves the machine.  Do not take
+        // a frame off the ring unless the transmit path can honour that token;
+        // the frame stays in the descriptor and is picked up on the next poll.
+        if !self.tx_ready() {
+            return None;
+        }
+
         // Each descriptor owns one buffer.  ROWN is set while the HPC3 owns
         // it; it clears when a frame has been written.  The descriptor lives
         // in RAM shared with the DMA engine, so use volatile semantics.
@@ -309,18 +337,30 @@ impl Device for SeeqDevice {
             return None;
         }
 
-        let (rx, tx, desc) = (
+        let (rx, tx, desc, busy) = (
             &mut self.rx_frame[..len],
             &mut self.tx_buf,
             &mut self.tx_desc,
+            &mut self.tx_busy,
         );
-        Some((SeeqRxToken(rx), SeeqTxToken { buf: tx, desc }))
+        Some((
+            SeeqRxToken(rx),
+            SeeqTxToken {
+                buf: tx,
+                desc,
+                busy,
+            },
+        ))
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
+        if !self.tx_ready() {
+            return None;
+        }
         Some(SeeqTxToken {
             buf: &mut self.tx_buf,
             desc: &mut self.tx_desc,
+            busy: &mut self.tx_busy,
         })
     }
 }
@@ -339,9 +379,16 @@ impl<'a> smoltcp::phy::RxToken for SeeqRxToken<'a> {
 
 /// Transmit token: on consume, fill the buffer and run one descriptor through
 /// the HPC3 TX engine.
+///
+/// The kick is non-blocking.  The old path spun up to ten million times per
+/// frame inside the service call, which stalled the console, other modules and
+/// the receive path for the whole transmission.  Here the descriptor is handed
+/// to the engine, the token is recorded as busy, and completion is reaped by
+/// the next `transmit`/`receive` that sees ACTIVE clear.
 pub struct SeeqTxToken<'a> {
     buf: &'a mut [u8; 1514],
     desc: &'a mut DmaDesc,
+    busy: &'a mut bool,
 }
 
 impl<'a> smoltcp::phy::TxToken for SeeqTxToken<'a> {
@@ -371,14 +418,7 @@ impl<'a> smoltcp::phy::TxToken for SeeqTxToken<'a> {
         hpc3_wr32(TX_ENGINE, ENET_NBDP, desc_phys);
         hpc3_wr32(TX_ENGINE, ENET_CTRL, 0);
         hpc3_wr32(TX_ENGINE, ENET_CTRL, ENET_CTRL_ACTIVE);
-
-        // Poll until the HPC3 has consumed the descriptor and cleared ACTIVE.
-        for _ in 0..10_000_000 {
-            if hpc3_rd32(TX_ENGINE, ENET_CTRL) & ENET_CTRL_ACTIVE == 0 {
-                break;
-            }
-            core::hint::spin_loop();
-        }
+        *self.busy = true;
         result
     }
 }
@@ -485,7 +525,7 @@ fn dhcpv4_configure(
 
 /// Socket storage backing the shared `SocketSet`.  It must be static because
 /// the set is stored in `STACK` and used from `poll()`.
-const SOCKET_SLOTS: usize = 20;
+const SOCKET_SLOTS: usize = 28;
 
 static mut SOCKET_STORAGE: MaybeUninit<[SocketStorage<'static>; SOCKET_SLOTS]> =
     MaybeUninit::uninit();

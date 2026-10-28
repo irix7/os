@@ -14,6 +14,8 @@ use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
 use smoltcp::iface::SocketHandle;
 use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer};
+use smoltcp::socket::udp::{PacketBuffer, RecvError, SendError, Socket as UdpSocket, UdpMetadata};
+use smoltcp::storage::PacketMetadata;
 
 /// The loadable-module ABI, shared with every module image.
 pub use module_abi::{
@@ -115,6 +117,12 @@ static SERVICES: Services = Services {
     tcp_connect: service_tcp_connect,
     tcp_events: service_tcp_events,
     tcp_slots: service_tcp_slots,
+    udp_open: service_udp_open,
+    udp_send: service_udp_send,
+    udp_recv: service_udp_recv,
+    udp_close: service_udp_close,
+    udp_slots: service_udp_slots,
+    udp_state: service_udp_state,
 };
 
 /// Periodic callbacks for every multiplexer region.
@@ -946,6 +954,176 @@ extern "C" fn service_tcp_close(slot: u32) {
         return;
     };
     let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).close());
+}
+
+/// Module UDP slots.  A datagram transport needs one slot per peer link plus
+/// one for a listener; eight matches the TCP policy and fits the socket set.
+const MODULE_UDP_SLOTS: usize = 8;
+
+/// One datagram buffer per direction per slot.  A 2 KiB buffer holds the
+/// largest QUIC datagram that fits an Ethernet path (1500-byte MTU after IP
+/// and UDP headers) with room for a coalesced short-header packet.
+const MODULE_UDP_BUFFER: usize = 2048;
+
+/// Datagrams queued per direction per slot.  The payload ring is the larger
+/// bound; this caps how many small datagrams can wait in one poll.
+const MODULE_UDP_PACKETS: usize = 8;
+
+static mut MODULE_UDP: [Option<SocketHandle>; MODULE_UDP_SLOTS] = [None; MODULE_UDP_SLOTS];
+static mut MODULE_UDP_RX: [[u8; MODULE_UDP_BUFFER]; MODULE_UDP_SLOTS] =
+    [[0; MODULE_UDP_BUFFER]; MODULE_UDP_SLOTS];
+static mut MODULE_UDP_TX: [[u8; MODULE_UDP_BUFFER]; MODULE_UDP_SLOTS] =
+    [[0; MODULE_UDP_BUFFER]; MODULE_UDP_SLOTS];
+static mut MODULE_UDP_RX_META: [[PacketMetadata<UdpMetadata>; MODULE_UDP_PACKETS];
+    MODULE_UDP_SLOTS] = [[PacketMetadata::EMPTY; MODULE_UDP_PACKETS]; MODULE_UDP_SLOTS];
+static mut MODULE_UDP_TX_META: [[PacketMetadata<UdpMetadata>; MODULE_UDP_PACKETS];
+    MODULE_UDP_SLOTS] = [[PacketMetadata::EMPTY; MODULE_UDP_PACKETS]; MODULE_UDP_SLOTS];
+
+fn udp_handle(slot: u32) -> Option<SocketHandle> {
+    let slot = slot as usize;
+    if slot >= MODULE_UDP_SLOTS {
+        return None;
+    }
+    // SAFETY: single-threaded kernel; the table is only written by the
+    // service functions below.
+    unsafe { MODULE_UDP[slot] }
+}
+
+/// Remove any UDP socket previously owned by `slot`.
+fn clear_udp_slot(slot: usize) {
+    if let Some(old) = unsafe { MODULE_UDP[slot] } {
+        let _ = crate::net::sockets_with(|sockets| sockets.remove(old));
+        // SAFETY: single-threaded; the old socket has been removed.
+        unsafe { MODULE_UDP[slot] = None };
+    }
+}
+
+unsafe extern "C" fn service_udp_open(slot: u32, port: u16) -> i32 {
+    let slot_usize = slot as usize;
+    if slot_usize >= MODULE_UDP_SLOTS || port == 0 {
+        return -1;
+    }
+    clear_udp_slot(slot_usize);
+    // SAFETY: each slot's buffers are owned by at most one socket at a time.
+    let rx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_UDP_RX[slot_usize]) };
+    let tx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_UDP_TX[slot_usize]) };
+    let rx_meta = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_UDP_RX_META[slot_usize]) };
+    let tx_meta = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_UDP_TX_META[slot_usize]) };
+    let mut socket = UdpSocket::new(
+        PacketBuffer::new(&mut rx_meta[..], &mut rx[..]),
+        PacketBuffer::new(&mut tx_meta[..], &mut tx[..]),
+    );
+    if socket.bind(port).is_err() {
+        return -1;
+    }
+    let Some(handle) = crate::net::sockets_with(|sockets| sockets.add(socket)) else {
+        return -1;
+    };
+    // SAFETY: single-threaded.
+    unsafe { MODULE_UDP[slot_usize] = Some(handle) };
+    0
+}
+
+unsafe extern "C" fn service_udp_send(
+    slot: u32,
+    address: u32,
+    port: u16,
+    ptr: *const u8,
+    len: usize,
+) -> isize {
+    if ptr.is_null() || len == 0 || address == 0 || port == 0 {
+        return -1;
+    }
+    let Some(handle) = udp_handle(slot) else {
+        return -1;
+    };
+    // SAFETY: the module owns the source buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
+    // `address` is the IPv4 address in network byte order.
+    let octets = address.to_be_bytes();
+    let remote = smoltcp::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
+    let result = crate::net::sockets_with(|sockets| {
+        sockets
+            .get_mut::<UdpSocket>(handle)
+            .send_slice(buf, (smoltcp::wire::IpAddress::Ipv4(remote), port))
+    });
+    match result {
+        Some(Ok(())) => len as isize,
+        // The socket buffer is full: the module retries after the next poll.
+        Some(Err(SendError::BufferFull)) => 0,
+        _ => -1,
+    }
+}
+
+unsafe extern "C" fn service_udp_recv(
+    slot: u32,
+    ptr: *mut u8,
+    len: usize,
+    src_address: *mut u32,
+    src_port: *mut u16,
+) -> isize {
+    if ptr.is_null() || len == 0 {
+        return -1;
+    }
+    let Some(handle) = udp_handle(slot) else {
+        return -1;
+    };
+    // SAFETY: the module owns the destination buffer for the duration.
+    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
+    let result =
+        crate::net::sockets_with(|sockets| sockets.get_mut::<UdpSocket>(handle).recv_slice(buf));
+    match result {
+        Some(Ok((n, meta))) => {
+            if let smoltcp::wire::IpAddress::Ipv4(address) = meta.endpoint.addr {
+                let octets = address.octets();
+                if !src_address.is_null() {
+                    // SAFETY: the caller passed a writable u32 out-parameter.
+                    unsafe { *src_address = u32::from_be_bytes(octets) };
+                }
+                if !src_port.is_null() {
+                    // SAFETY: the caller passed a writable u16 out-parameter.
+                    unsafe { *src_port = meta.endpoint.port };
+                }
+            }
+            n as isize
+        }
+        Some(Err(RecvError::Exhausted)) => 0,
+        // The datagram did not fit the caller's buffer and was dropped.
+        Some(Err(RecvError::Truncated)) => -2,
+        None => -1,
+    }
+}
+
+extern "C" fn service_udp_close(slot: u32) {
+    let slot = slot as usize;
+    if slot < MODULE_UDP_SLOTS {
+        clear_udp_slot(slot);
+    }
+}
+
+/// Number of module UDP slots the kernel provides.
+extern "C" fn service_udp_slots() -> u32 {
+    MODULE_UDP_SLOTS as u32
+}
+
+extern "C" fn service_udp_state(slot: u32, address: *mut u32, port: *mut u16) -> i32 {
+    let Some(handle) = udp_handle(slot) else {
+        return -1;
+    };
+    let endpoint = crate::net::sockets_with(|sockets| sockets.get::<UdpSocket>(handle).endpoint());
+    let Some(endpoint) = endpoint else {
+        return -1;
+    };
+    if !port.is_null() {
+        // SAFETY: the caller passed a writable u16 out-parameter.
+        unsafe { *port = endpoint.port };
+    }
+    if !address.is_null() {
+        let local = crate::net::ip_addr().map(|ip| u32::from_be_bytes(ip.octets()));
+        // SAFETY: the caller passed a writable u32 out-parameter.
+        unsafe { *address = local.unwrap_or(0) };
+    }
+    0
 }
 
 unsafe extern "C" fn service_console_read(offset: u64, ptr: *mut u8, len: usize) -> isize {
