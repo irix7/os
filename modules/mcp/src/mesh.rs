@@ -1560,7 +1560,7 @@ impl Mesh {
                 JoinEvent::RemovedBatch { nodes, snapshot } => {
                     let mut line = Line::new();
                     line.str("mesh-fail: removed batch");
-                    for node in nodes.iter() {
+                    for node in nodes {
                         line.str(" node=");
                         line.node(node);
                     }
