@@ -19,7 +19,7 @@ use core::fmt;
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
 use mesh_service::{
-    Change, FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
+    FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
 };
 use sys_primitives::{NodeId, NodeKey};
 
