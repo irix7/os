@@ -1,6 +1,7 @@
-# M3-ADR-0006 — module UDP services and a non-blocking Seeq transmit path
+# M3-ADR-0006 — module UDP services and the two-kernel datagram gate
 
-**Status:** implemented; transport prerequisite only
+**Status:** implemented and gated, but **blocked from landing**: the ABI 16 kernel fails the
+M1 Wasm-autoload boot (see *A second failure, not yet explained*)
 **Date:** 2026-10-29
 **Issue:** <https://github.com/irix7/os/issues/255>
 **Related:** [M3-ADR-0005](m3-0005-multi-connection-transport.md),
@@ -20,11 +21,12 @@ Neither existed.  The module ABI exposed TCP only (`tcp_open`-style listen/conne
 receive, close, events and slots at ABI 15), and the Seeq transmit token polled the HPC3
 `ACTIVE` bit up to ten million times inside the service call.  A module that sent a frame
 therefore stalled the console, the idle loop, every other module and the receive path until
-the engine finished with the descriptor.
+the engine finished with the descriptor.  Both were attempted in this slice; the datagram
+path landed and the transmit rework did not, for a reason worth writing down (§Decision 5).
 
 A QUIC profile cannot be evaluated on this machine until a datagram can leave one kernel and
-arrive at another.  This ADR records that foundation.  It does **not** adopt QUIC, and it
-does not change the transport of any existing flow.
+arrive at another.  This ADR records that foundation.  It does **not** adopt QUIC, it does
+not change the transport of any existing flow, and it leaves the transmit rework open.
 
 ## Decision
 
@@ -44,12 +46,16 @@ does not change the transport of any existing flow.
 4. **Receive is level-triggered by construction.**  `udp_recv` returns one datagram per
    call and `-2` when the caller's buffer was too small (the datagram is dropped, not
    truncated).  There is no edge queue and no lost notification.
-5. **The Seeq transmit path is non-blocking.**  One frame is outstanding at a time.  The
-   token fills the buffer, programmes the descriptor, kicks the engine and returns; the next
-   `transmit`/`receive` reaps completion when `ACTIVE` clears.  While a frame is in flight
-   the device hands out no token, so smoltcp backpressures instead of the kernel spinning.
-   `receive` also checks the gate before taking a frame, so it never hands out a transmit
-   token it cannot honour; the frame stays in the descriptor ring for the next poll.
+5. **The single-descriptor transmit path is unchanged, and the non-blocking variant was
+   rejected on evidence.**  The HPC3 clears `ACTIVE` when the transfer completes but
+   publishes its descriptor writeback — `ENET_BC_TXD` into the descriptor's byte-count
+   field — *after* that, from the Seeq thread.  A driver that reuses the one transmit
+   descriptor as soon as `ACTIVE` clears races that writeback.  A non-blocking transmit was
+   implemented, measured and withdrawn: it corrupted received data (a module download
+   failed its SHA-256 check) and then kernel memory, and the same boot passes three times
+   out of three with the original blocking path restored.  A replacement needs a transmit
+   ring whose descriptors are each reused only after their own writeback has landed; that
+   is a separate slice with its own evidence, not part of this ABI change.
 6. **The socket set grows from 20 to 28 entries.**  Eight module TCP slots, eight module UDP
    slots and the control-plane sockets (DHCP, telnet, MCP listener, mesh, userland client)
    fit without eviction.
@@ -79,20 +85,68 @@ two-node rig at `tools/m2-rig`, `--fault udp`:
 - **Bundle.**  `<work>/evidence/{summary.md,run.json,udp-relay.log,serial-n0.log,serial-n1.log}`
   in the `udp` mode of the two-kernel CI job (`$RUNNER_TEMP/m2-evidence/udp`).
 
+### The rejected transmit rework
+
+The M1 gate boots the kernel, fetches a 1.3 MiB Wasm policy module over HTTP, loads it into
+slot B and runs it.  With the non-blocking transmit in place that boot failed, and the
+failure moved with the code: a TLB refill trap after userland returned, a trap during the
+module run, `autoload: wasm failed / module hash mismatch` (the *downloaded bytes* were
+wrong), and a kernel panic in `receive` with `rx_index` holding `0x574242FF` instead of
+`0..8`.  The last value was stable across runs.
+
+The same boot passed on the unmodified tree three times out of three.  Bisecting by file
+isolated the transmit change: with only `SeeqTxToken` changed to return without waiting
+(completion reaped from `ACTIVE`), the boot failed two runs out of two with an identical
+trap; with the original transmit path restored, it passed three runs out of three with the
+Wasm policy adopted.
+
+The emulator's HPC3 model explains why.  `set_active(false)` happens inside the DMA write,
+and the descriptor writeback (`ENET_BC_TXD` into the descriptor's byte-count field) is
+applied afterwards by the Seeq thread.  Reusing the descriptor on `ACTIVE` therefore races
+a writeback that is still addressed to it, and the engine can be restarted against a
+descriptor that is being rewritten.  The non-blocking transmit was withdrawn rather than
+shipped with a known race.
+
+### A second failure, not yet explained
+
+The ABI 16 kernel also fails the M1 Wasm-autoload boot, and that failure is **not** the
+transmit race above: it persists with the original transmit path restored.  It is
+timing/memory-layout sensitive and it corrupts memory:
+
+- with the ABI 16 kernel (UDP services present, slots set to zero, transmit untouched) the
+  boot traps three runs out of three, jumping into hex text (`0x30643439` is ASCII `0d49`
+  from the policy digest, `0x30303030` is `0000`);
+- the same *code* with ~1 KiB of unrelated trap-handler diagnostics added passes three runs
+  out of three, and the GDB stub changes the symptom to a module hash mismatch — the
+  downloaded bytes themselves are wrong;
+- `origin/main` passes seven runs out of seven, including with a 40 KiB `.bss` probe, a
+  changed boot string, and a 16-cycle delay in the hot network path, so it is not simply
+  "any perturbation".
+
+Bisection so far: the ABI 16 `Services` table and the UDP services are the remaining
+difference from `main` (the transmit change is withdrawn, `SOCKET_SLOTS` alone passes, the
+ABI version *value* does not matter, and the failure reproduces with the JIT disabled).  The
+corruption reaches downloaded module bytes and kernel memory, so it looks like a latent
+race in the receive path that a different code layout resolves differently — but that is a
+hypothesis, not a diagnosis, and the slice does not land until it is settled.
+
 This is a transport prerequisite, not a QUIC result.  #255's remaining acceptance
-criteria — guest crypto throughput, the linked n32 QUIC/TLS footprint, and the CID-routed
-relay design — are still open, and the GO/NO-GO ADR has not been written.
+criteria — guest crypto throughput, the linked n32 QUIC/TLS footprint, the CID-routed
+relay design and a race-free transmit ring — are still open, and the GO/NO-GO ADR has not
+been written.
 
 ## Consequences
 
 - A module can move datagrams between kernels, which is the precondition for the QUIC
   profile and for any future UDP-based fabric.
-- Ordinary TCP traffic is unchanged in behaviour.  The transmit change removes a blocking
-  wait; it does not change framing, ordering or the ring clamp
+- Ordinary TCP traffic is unchanged: same transmit path, same framing, same ring clamp
   (`max_burst_size = Some(7)`).
-- One outstanding transmit frame bounds transmit throughput to one frame per poll.  The
-  receive path already worked this way; a real Indy measurement is still needed to show
-  whether that bound matters at 10 Mbit.
+- The transmit path still spins, bounded, inside the transmit callback.  A module that
+  sends a frame can block the kernel for up to one frame time.  That was true before this
+  slice and remains true after it; the next transport slice owns the fix.
+- The transmit completion handshake is now a known, documented hazard rather than an
+  assumption: `ACTIVE` is necessary but not sufficient, and the descriptor writeback is the
+  real signal.
 - The UDP service is **not** a QUIC stack.  Encryption, stream multiplexing, loss recovery,
   connection migration and congestion control remain module work gated on #255.
 - The 2 KiB receive buffer holds one path-MTU datagram.  A module that wants to queue
@@ -105,10 +159,12 @@ relay design — are still open, and the GO/NO-GO ADR has not been written.
 - **smoltcp's `udp` socket exposed directly as a file descriptor.**  That would bind the
   module ABI to smoltcp's socket type and give up the versioned C table the whole module
   system depends on.
+- **Non-blocking transmit keyed on `ACTIVE`.**  Implemented and rejected on evidence: the
+  descriptor writeback lands after `ACTIVE` clears, so the reuse races it and corrupts
+  memory.  Keying on the writeback instead, or on a ring with one frame per descriptor,
+  is the candidate design for the next slice.
 - **Keeping the blocking transmit and adding a timeout.**  A timeout does not make the call
-  non-blocking; it only chooses how long the kernel stalls.  The existing ten-million-spin
-  loop was already a latent corruption risk: after it expired the buffer could be rewritten
-  while the engine still owned the descriptor.
+  non-blocking; it only chooses how long the kernel stalls.
 - **Porting quinn, quiche, s2n-quic or neqo now.**  The study measured rustls alone at
   ~482 KiB against ~113 KiB of free module space.  The spike must produce a code-size
   measurement before any stack is chosen.

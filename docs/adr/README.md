@@ -43,4 +43,4 @@ proposal, not an ADR.
 
 - [M3-ADR-0005 — eight module TCP slots](m3-0005-multi-connection-transport.md)
 
-- [M3-ADR-0006 — module UDP services and a non-blocking Seeq transmit path](m3-0006-udp-transport.md)
+- [M3-ADR-0006 — module UDP services and the two-kernel datagram gate](m3-0006-udp-transport.md)

@@ -3,10 +3,13 @@
 **Status:** research / design input. No production code, ABI, ROM image or wire format was
 changed by this slice.
 **Update 2026-10-29:** the first spike prerequisite landed as
-[`M3-ADR-0006`](../adr/m3-0006-udp-transport.md): ABI 16 module UDP services, a
-non-blocking Seeq transmit path, and a two-real-kernel datagram gate in the M2 CI job.  The
-verdict, the gate list and the budget arithmetic in this study are unchanged; the crypto
-throughput, linked QUIC/TLS footprint and CID-routed relay measurements are still open.
+[`M3-ADR-0006`](../adr/m3-0006-udp-transport.md): ABI 16 module UDP services and a
+two-real-kernel datagram gate in the M2 CI job.  The same slice attempted the non-blocking
+Seeq transmit path and **withdrew it**: the HPC3 publishes its descriptor writeback after
+`ACTIVE` clears, so reusing the descriptor on `ACTIVE` races it and corrupts memory (see the
+ADR's evidence).  The verdict, the gate list and the budget arithmetic in this study are
+unchanged; the crypto throughput, linked QUIC/TLS footprint, CID-routed relay design and a
+race-free transmit ring are still open.
 **Question.** Should QUIC replace TCP as the primary network protocol of IRIX 7, and if so,
 what exactly moves, what stays, and what would have to be true for it to fit an SGI Indy?
 **Basis.** `origin/main` at `41f3f24` (2026-10-27), including the pre-release policy
