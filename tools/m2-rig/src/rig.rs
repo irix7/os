@@ -13,6 +13,7 @@ use std::io::Write;
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -1104,9 +1105,79 @@ pub fn wait_serial(
     }
 }
 
+/// Wall-clock marks for one node's boot, in milliseconds from node start.
+///
+/// A network change that costs a few hundred milliseconds and one that stalls
+/// until the guest's own deadline look identical in a marker-only transcript:
+/// the module fetch is the phase in between, so its start and end are recorded
+/// as they appear.  Without these numbers "slower" and "broken" cannot be told
+/// apart (see issues #273 and #274).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BootTimings {
+    /// `autoload: fetching module` first appeared (the fetch began).
+    pub fetch_start_ms: Option<u64>,
+    /// `autoload: module returned` first appeared (the fetch finished).
+    pub fetch_done_ms: Option<u64>,
+    /// `BOOT-READY` completed.
+    pub boot_ready_ms: Option<u64>,
+}
+
+impl BootTimings {
+    /// Whether anything was recorded.
+    pub fn is_empty(&self) -> bool {
+        self.boot_ready_ms.is_none()
+    }
+
+    /// The module fetch's wall-clock duration, when both marks were seen.
+    pub fn fetch_ms(&self) -> Option<u64> {
+        Some(self.fetch_done_ms?.saturating_sub(self.fetch_start_ms?))
+    }
+
+    /// A short human-readable form for the run log.
+    pub fn describe(&self) -> String {
+        match (self.fetch_ms(), self.boot_ready_ms) {
+            (Some(fetch), Some(boot)) => format!("{boot} ms (module fetch {fetch} ms)"),
+            (None, Some(boot)) => format!("{boot} ms (no module fetch)"),
+            _ => "unrecorded".into(),
+        }
+    }
+}
+
+/// Boot phases are timed once, when the readiness wait runs, but several
+/// later paths rebuild the marker facts from the transcript alone.  Keep the
+/// timings per node and stamp them back on at the evidence boundary so every
+/// path reports the same numbers.
+fn timing_table() -> &'static Mutex<Vec<(String, BootTimings)>> {
+    static TABLE: OnceLock<Mutex<Vec<(String, BootTimings)>>> = OnceLock::new();
+    TABLE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Record a node's boot phases.
+pub fn record_boot_timings(node: &str, timings: BootTimings) {
+    if let Ok(mut table) = timing_table().lock() {
+        table.retain(|(name, _)| name != node);
+        table.push((node.to_string(), timings));
+    }
+}
+
+/// The recorded phases for a node, when its boot was timed.
+pub fn boot_timings_for(node: &str) -> Option<BootTimings> {
+    timing_table()
+        .lock()
+        .ok()
+        .and_then(|table| {
+            table
+                .iter()
+                .find(|(name, _)| name == node)
+                .map(|(_, timings)| *timings)
+        })
+}
+
 /// Boot markers extracted from one serial transcript.
 #[derive(Clone, Debug, Default)]
 pub struct BootFacts {
+    /// Wall-clock marks for the boot, when the wait recorded them.
+    pub timings: BootTimings,
     /// The `BOOT-READY` line.
     pub boot_ready: Option<String>,
     /// The `mcp: listening` line.
@@ -1177,6 +1248,7 @@ impl BootFacts {
                 .map(|line| line.trim().to_string())
         };
         Self {
+            timings: BootTimings::default(),
             boot_ready: text
                 .lines()
                 .find(|line| line.trim_start().starts_with("BOOT-READY "))
@@ -1374,10 +1446,49 @@ impl BootFacts {
 pub fn wait_boot(options: &Options, nodes: &mut [RunningNode]) -> Result<Vec<BootFacts>, String> {
     let mut facts = Vec::new();
     for running in nodes.iter_mut() {
-        wait_serial(options, running, "BOOT-READY", options.timeout)?;
+        // Poll for the readiness marker the way `wait_serial` does, stamping the
+        // boot's phases as they appear so the module fetch has a duration.
+        let started = Instant::now();
+        let mut timings = BootTimings::default();
+        loop {
+            let text = read_serial(&running.node);
+            let elapsed = started.elapsed().as_millis() as u64;
+            if timings.fetch_start_ms.is_none() && text.contains("autoload: fetching module") {
+                timings.fetch_start_ms = Some(elapsed);
+            }
+            if timings.fetch_done_ms.is_none() && text.contains("autoload: module returned") {
+                timings.fetch_done_ms = Some(elapsed);
+            }
+            if complete_line(&text, "BOOT-READY").is_some() {
+                timings.boot_ready_ms = Some(elapsed);
+                break;
+            }
+            if let Some(status) = running
+                .child
+                .try_wait()
+                .map_err(|error| format!("wait for {}: {error}", running.node.name))?
+            {
+                return Err(format!(
+                    "{} exited ({status}) before \"BOOT-READY\"\n--- serial ---\n{}",
+                    running.node.name,
+                    tail(&text, 40)
+                ));
+            }
+            if started.elapsed() >= options.timeout {
+                return Err(format!(
+                    "{}: timed out waiting for \"BOOT-READY\"\n--- serial ---\n{}",
+                    running.node.name,
+                    tail(&text, 40)
+                ));
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
         let text = read_serial(&running.node);
-        let fact = BootFacts::from_serial(&text);
+        let mut fact = BootFacts::from_serial(&text);
         fact.verify(&running.node)?;
+        fact.timings = timings;
+        record_boot_timings(&running.node.name, timings);
+        println!("{}: boot {}", running.node.name, timings.describe());
         facts.push(fact);
     }
     Ok(facts)
