@@ -28,6 +28,7 @@ erofs-debug = ["dep:erofs"]
 
 [dependencies]
 agnostic-core = { path = "../crates/agnostic-core" }
+frame-alloc = { path = "../crates/frame-alloc" }
 cas-core = { path = "../crates/cas-core" }
 cas-store = { path = "../crates/cas-store" }
 embedded-io = { version = "0.7", default-features = false }
