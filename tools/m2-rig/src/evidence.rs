@@ -57,6 +57,14 @@ pub struct NodeEvidence {
 impl NodeEvidence {
     /// Capture a node and its boot facts.
     pub fn capture(node: &Node, facts: BootFacts) -> Self {
+        // The boot phases are timed once, in `wait_boot`; several later paths
+        // rebuild the marker facts, so re-attach the timings here.
+        let mut facts = facts;
+        if facts.timings.is_empty() {
+            if let Some(timings) = crate::rig::boot_timings_for(&node.name) {
+                facts.timings = timings;
+            }
+        }
         let mut nvram_env = std::fs::read(node.state_dir.join("nvram.bin"))
             .map(|image| nvram::parse(&image))
             .unwrap_or_default();
@@ -379,8 +387,12 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             json_escape(&node.gateway)
         ));
         out.push_str(&format!(
-            "\"telnet_port\": {}, \"http_port\": {}, \"mesh_port\": {}, ",
-            node.telnet_port, node.http_port, node.mesh_port
+            "\"telnet_port\": {}, \"http_port\": {}, \"mesh_port\": {}, \"boot_ms\": {}, \"fetch_ms\": {}, ",
+            node.telnet_port,
+            node.http_port,
+            node.mesh_port,
+            json_option_num(node.facts.timings.boot_ready_ms),
+            json_option_num(node.facts.timings.fetch_ms())
         ));
         out.push_str(&format!(
             "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"mesh_route_enabled\": {}, \"mesh_route_disabled\": {}, \"mesh_migrate_enabled\": {}, \"mesh_migrate_disabled\": {}, \"mesh_migrate_lines\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
@@ -962,6 +974,10 @@ fn json_env(env: &[(String, String)]) -> String {
     format!("{{{}}}", entries.join(", "))
 }
 
+fn json_option_num(value: Option<u64>) -> String {
+    value.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+}
+
 fn json_option(value: &Option<String>) -> String {
     value
         .as_deref()
@@ -1112,6 +1128,28 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             node.http_port,
             node.mesh_port
         ));
+    }
+    out.push('\n');
+
+    // Boot phases: a network change that costs time and one that stalls until
+    // the guest's deadline read the same in a marker-only transcript, so the
+    // module fetch is timed and shown here (issues #273, #274).
+    out.push_str("## Boot timings\n\n");
+    out.push_str("| Node | Module fetch | Boot to `BOOT-READY` |\n|---|---|---|\n");
+    for node in evidence.nodes {
+        let fetch = node
+            .facts
+            .timings
+            .fetch_ms()
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "n/a".into());
+        let boot = node
+            .facts
+            .timings
+            .boot_ready_ms
+            .map(|ms| format!("{ms} ms"))
+            .unwrap_or_else(|| "n/a".into());
+        out.push_str(&format!("| {} | {} | {} |\n", node.name, fetch, boot));
     }
     out.push('\n');
 
