@@ -29,21 +29,8 @@ impl<'a> Buf<'a> {
         self.push(s.as_bytes());
     }
 
-    fn u32(&mut self, mut value: u32) {
-        let mut digits = [0u8; 10];
-        let mut n = 0;
-        loop {
-            digits[n] = b'0' + (value % 10) as u8;
-            value /= 10;
-            n += 1;
-            if value == 0 {
-                break;
-            }
-        }
-        while n > 0 {
-            n -= 1;
-            self.push(&digits[n..n + 1]);
-        }
+    fn u32(&mut self, value: u32) {
+        irix7_fmt::decimal(u64::from(value), &mut |b| self.push(core::slice::from_ref(&b)));
     }
 
     fn hex8(&mut self, value: u8) {

@@ -126,22 +126,8 @@ pub fn boot_wasm() {
     }
 }
 
-fn write_dec(mut value: u64) {
-    let mut buf = [0u8; 20];
-    let mut len = 0;
-    if value == 0 {
-        console_write("0");
-        return;
-    }
-    while value > 0 && len < buf.len() {
-        buf[len] = b'0' + (value % 10) as u8;
-        value /= 10;
-        len += 1;
-    }
-    while len > 0 {
-        len -= 1;
-        console_write(core::str::from_utf8(&buf[len..len + 1]).unwrap_or("?"));
-    }
+fn write_dec(value: u64) {
+    irix7_fmt::decimal(value, &mut |b| crate::write_byte(b));
 }
 
 fn boot_nvram(url: &[u8]) -> Status {

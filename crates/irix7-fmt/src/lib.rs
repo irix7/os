@@ -39,6 +39,21 @@ pub fn hex(value: u64, width: usize, upper: bool, put: &mut dyn FnMut(u8)) {
     }
 }
 
+/// Write `value` in decimal, zero-padded to exactly `width` digits.  Digits
+/// beyond `width` are dropped from the high end, as a fixed-width field does.
+pub fn decimal_padded(value: u64, width: usize, put: &mut dyn FnMut(u8)) {
+    assert!(width <= 20, "decimal_padded: width exceeds a u64");
+    let mut digits = [0u8; 20];
+    let mut rest = value;
+    for index in (0..width).rev() {
+        digits[index] = b'0' + (rest % 10) as u8;
+        rest /= 10;
+    }
+    for digit in &digits[..width] {
+        put(*digit);
+    }
+}
+
 /// Write a dotted-quad IPv4 address in decimal.
 pub fn dotted(octets: [u8; 4], put: &mut dyn FnMut(u8)) {
     for (index, octet) in octets.iter().enumerate() {
@@ -78,6 +93,13 @@ mod tests {
         assert_eq!(collect(|p| hex(0xdeadbeef, 8, false, p)), "deadbeef");
         assert_eq!(collect(|p| hex(0, 1, false, p)), "0");
         assert_eq!(collect(|p| hex(0x1F, 1, false, p)), "1f");
+    }
+
+    #[test]
+    fn decimal_padded_fixed_width() {
+        assert_eq!(collect(|p| decimal_padded(7, 3, p)), "007");
+        assert_eq!(collect(|p| decimal_padded(12345, 3, p)), "345");
+        assert_eq!(collect(|p| decimal_padded(0, 4, p)), "0000");
     }
 
     #[test]
