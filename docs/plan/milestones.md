@@ -293,6 +293,12 @@ the same core OID and host. Add a PC smoke image and Indy↔PC migration.
 **Exit:** PC boots the core; DHCP/HTTP/block; cross-endian state hash; e1000e
 throughput; Indy unchanged.
 
+**Status:** the first slice ([#266](https://github.com/irix7/os/issues/266))
+boots an x86_64 machine under QEMU's PVH path to a serial console with the
+loader's memory map, an IDT that reports a deliberate fault, and a PIT tick.
+UEFI, ACPI/APIC, the virtio devices and the shared core are still ahead; see
+[`x86.md`](x86.md).
+
 ### Phase 7 — Cloud VirtIO and 128-node gate
 
 virtio-net/blk/vsock, ACPI/DT, GIC/PSCI; 128-node simulator with fault and
