@@ -653,6 +653,7 @@ name = "kernel-x86"
 version = "0.1.0"
 dependencies = [
  "frame-alloc",
+ "smoltcp",
 ]
 
 [[package]]
