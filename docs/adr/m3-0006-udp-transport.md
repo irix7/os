@@ -1,7 +1,8 @@
 # M3-ADR-0006 — module UDP services and the two-kernel datagram gate
 
-**Status:** implemented and gated, but **blocked from landing**: the ABI 16 kernel fails the
-M1 Wasm-autoload boot (see *A second failure, not yet explained*)
+**Status:** implemented; transport prerequisite only.  The M1 Wasm-autoload boot that this
+slice broke is fixed and reproduced on both sides (see *The M1 boot failure this slice
+exposed*)
 **Date:** 2026-10-29
 **Issue:** <https://github.com/irix7/os/issues/255>
 **Related:** [M3-ADR-0005](m3-0005-multi-connection-transport.md),
@@ -107,28 +108,49 @@ a writeback that is still addressed to it, and the engine can be restarted again
 descriptor that is being rewritten.  The non-blocking transmit was withdrawn rather than
 shipped with a known race.
 
-### A second failure, not yet explained
+### The M1 boot failure this slice exposed, and its fix
 
-The ABI 16 kernel also fails the M1 Wasm-autoload boot, and that failure is **not** the
-transmit race above: it persists with the original transmit path restored.  It is
-timing/memory-layout sensitive and it corrupts memory:
+The ABI 16 kernel first failed the M1 Wasm-autoload boot, and it was **not** the transmit
+race above: the failure persisted with the original transmit path restored, and it was
+memory-layout sensitive in a way that made several bisect steps contradict each other:
 
-- with the ABI 16 kernel (UDP services present, slots set to zero, transmit untouched) the
-  boot traps three runs out of three, jumping into hex text (`0x30643439` is ASCII `0d49`
-  from the policy digest, `0x30303030` is `0000`);
-- the same *code* with ~1 KiB of unrelated trap-handler diagnostics added passes three runs
-  out of three, and the GDB stub changes the symptom to a module hash mismatch — the
-  downloaded bytes themselves are wrong;
-- `origin/main` passes seven runs out of seven, including with a 40 KiB `.bss` probe, a
-  changed boot string, and a 16-cycle delay in the hot network path, so it is not simply
-  "any perturbation".
+- with the ABI 16 kernel the boot trapped three runs out of three, jumping into hex text
+  (`0x30643439` is ASCII `0d49` from the policy digest, `0x30303030` is `0000`);
+- the same *code* plus ~1 KiB of unrelated trap-handler diagnostics passed three runs out of
+  three, and with the GDB stub enabled the symptom became a module hash mismatch — the
+  downloaded bytes themselves were wrong;
+- `origin/main` passed seven runs out of seven, including with a 40 KiB `.bss` probe, a
+  changed boot string and a 16-cycle delay in the hot network path.
 
-Bisection so far: the ABI 16 `Services` table and the UDP services are the remaining
-difference from `main` (the transmit change is withdrawn, `SOCKET_SLOTS` alone passes, the
-ABI version *value* does not matter, and the failure reproduces with the JIT disabled).  The
-corruption reaches downloaded module bytes and kernel memory, so it looks like a latent
-race in the receive path that a different code layout resolves differently — but that is a
-hypothesis, not a diagnosis, and the slice does not land until it is settled.
+**Root cause: the kernel stack had grown into `.bss`.**  A Wasm policy boot reaches roughly
+530 KiB of native stack inside wasmi's handlers.  The stack grows down from `__stack_top`
+(0x88300000) towards `__bss_end`, and this slice's 8 slots, 2 KiB rings and metadata added
+about 40 KiB of `.bss`, taking the gap from ~574 KiB to ~530 KiB.  Holding a stopped
+developer-build machine at the exception entry and reading the trap frame showed the
+faulting frame's `sp` at `0x8827c8c0` — **8 KiB below `__bss_end` (0x8827e8b8)** — and the
+instruction history ended at `jr ra` inside wasmi's `call_internal`, where `ra` had been
+loaded from the frame's saved-register slot.  That slot had been overwritten by the
+interpreter's own later stack activity with the guest's console text, so the interpreter
+returned into that text.  (The obvious first fix — raising `__stack_top` in the kernel's
+linker script — was inert: the ROM sets the kernel's `$sp` in `rom/src/boot/reset.S`, and
+the PROM came out byte-identical.)
+
+**Fix:** the 1 MiB between 0x88300000 and the module area at 0x88400000 is reserved and
+otherwise unused, so the kernel stack now starts at 0x883f0000 and the gap above
+`__bss_end` goes from ~530 KiB to ~1.5 MiB (`kernel/linker.ld` and
+`rom/src/boot/reset.S`, which must move together).
+
+**Verification.**  With the fix the M1 Wasm-autoload boot passes five clean runs out of five
+on the CI-pinned emulator (`iris 0.1.10+irix7`, three in one batch and two more after a port
+collision was cleared); the same ROM before the change failed three out of three, and once
+more in a control run against the fixed emulator afterwards.  The
+two-kernel UDP gate (`n0`/`n1` `PONG`s through the host relay) and the default M2 scenario
+both still pass on the fixed artefacts.
+
+**What the fix does not settle.**  ~530 KiB of native stack for one interpreter run is a
+large, unbounded cost: the module should bound its own stack use (wasmi's stack limits, or
+a smaller spill footprint) rather than rely on the kernel's window, and a guest that
+recurses deeply can still exhaust 1.5 MiB.  A real-Indy check is also still outstanding.
 
 This is a transport prerequisite, not a QUIC result.  #255's remaining acceptance
 criteria — guest crypto throughput, the linked n32 QUIC/TLS footprint, the CID-routed
