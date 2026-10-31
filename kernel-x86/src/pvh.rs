@@ -34,6 +34,21 @@ pub struct HvmStartInfo {
     pub reserved: u32,
 }
 
+/// The loader's memory map, or an empty slice for a bad start-info block.
+pub fn memmap(start_info: u64) -> &'static [HvmMemmapEntry] {
+    let Some(info) = info(start_info) else {
+        return &[];
+    };
+    // SAFETY: the loader places `memmap_entries` records at `memmap_paddr`, and
+    // the first 4 GiB is identity mapped, so the physical address is readable.
+    unsafe {
+        core::slice::from_raw_parts(
+            info.memmap_paddr as usize as *const HvmMemmapEntry,
+            info.memmap_entries as usize,
+        )
+    }
+}
+
 fn info(start_info: u64) -> Option<&'static HvmStartInfo> {
     let info = unsafe { &*(start_info as *const HvmStartInfo) };
     (info.magic == PVH_MAGIC).then_some(info)

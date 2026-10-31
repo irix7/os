@@ -37,7 +37,7 @@ else
   export CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/kernel-x86/linker.ld -Crelocation-model=static"
   export CARGO_PROFILE_RELEASE_OPT_LEVEL="${CARGO_PROFILE_RELEASE_OPT_LEVEL:-2}"
 
-  "$CARGO" build --release -Z build-std=core \
+  "$CARGO" build --release -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem \
     --target x86_64-unknown-none -p kernel-x86 --features cross
 
@@ -55,7 +55,9 @@ timeout 60 "$QEMU" \
   -serial "file:$SERIAL" \
   -monitor none \
   -no-reboot \
-  -device isa-debug-exit,iobase=0x501,iosize=0x04
+  -device isa-debug-exit,iobase=0x501,iosize=0x04 \
+  -netdev user,id=net0 \
+  -device virtio-net-pci,netdev=net0,disable-modern=on
 status=$?
 set -e
 
@@ -77,6 +79,13 @@ markers=(
   "x86: ram="
   "x86: timer enabled"
   "x86: timer ticks="
+  "x86: frames total="
+  "x86: frame alloc=0x"
+  "x86: heap base="
+  "x86: heap sum=499500"
+  "x86: virtio-net mac="
+  "x86: net ip=10.0.2.15"
+  "x86: net gateway=10.0.2.2"
   "x86: deliberate fault: int3"
   "x86: exception vector=3 (breakpoint)"
   "x86: halted"

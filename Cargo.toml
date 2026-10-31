@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/guest-abi", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/loader-abi", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-join", "crates/mesh-route", "crates/mesh-migrate", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-stream", "crates/mesh-transport", "crates/module-resolver", "crates/module-trust", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "modules/block", "modules/cache", "modules/erofs", "modules/hello", "modules/demo-dep", "modules/demo-root", "modules/logical", "modules/m2-mesh", "modules/m2-root", "modules/manager", "modules/mcp", "modules/ports", "modules/ticker", "modules/wasm", "rom", "kernel-x86"]
+members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/frame-alloc", "crates/guest-abi", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/loader-abi", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-join", "crates/mesh-route", "crates/mesh-migrate", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-stream", "crates/mesh-transport", "crates/module-resolver", "crates/module-trust", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "modules/block", "modules/cache", "modules/erofs", "modules/hello", "modules/demo-dep", "modules/demo-root", "modules/logical", "modules/m2-mesh", "modules/m2-root", "modules/manager", "modules/mcp", "modules/ports", "modules/ticker", "modules/wasm", "rom", "kernel-x86"]
 # The target-only kernel, ROM and flat modules cannot link as host binaries.
 # Plain `cargo build`/`cargo test` therefore means the host-testable crates;
 # the cross and release jobs select kernel/ROM/module packages explicitly.
@@ -25,6 +25,7 @@ default-members = [
   "crates/mesh-sim",
   "crates/mesh-stream",
   "crates/fabric",
+  "crates/frame-alloc",
   "crates/guest-abi",
   "crates/cas-core",
   "crates/cas-store",

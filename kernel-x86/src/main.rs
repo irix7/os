@@ -12,13 +12,22 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
+use alloc::vec::Vec;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+mod heap;
 mod idt;
+mod memory;
+mod net;
+mod pci;
+mod port;
 mod pvh;
 mod serial;
 mod timer;
+mod virtio_net;
 
 core::arch::global_asm!(include_str!("boot.S"), options(att_syntax));
 
@@ -66,6 +75,12 @@ fn print_hex(value: u64) {
     }
 }
 
+fn print_hex8(value: u8) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    serial::write_byte(DIGITS[(value >> 4) as usize]);
+    serial::write_byte(DIGITS[(value & 0xF) as usize]);
+}
+
 fn print_dec(mut value: u64) {
     let mut digits = [0u8; 20];
     let mut n = 0;
@@ -107,6 +122,44 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     print_dec(ram / (1024 * 1024));
     serial::write(b" MiB\n");
 
+    memory::init(start_info);
+    let (heap_base, heap_size) = heap::init();
+    serial::write(b"x86: frames total=");
+    print_dec(memory::total_ram() / (1024 * 1024));
+    serial::write(b" MiB free=");
+    print_dec(memory::free_frames() as u64);
+    serial::write(b" frames\n");
+    serial::write(b"x86: heap base=");
+    print_hex(heap_base as u64);
+    serial::write(b" size=");
+    print_dec(heap_size as u64);
+    serial::write(b"\n");
+
+    // Prove both layers before anything depends on them: one frame must come
+    // back page-aligned and above the kernel image, and a growing collection
+    // must sum correctly.
+    let frame = memory::alloc_frame().expect("x86: frame allocation");
+    if !frame.is_multiple_of(4096) || frame < heap_base as u64 + heap_size as u64 {
+        print_line(&[b"x86: frame allocation outside the free range"]);
+        qemu_exit(1);
+    }
+    serial::write(b"x86: frame alloc=");
+    print_hex(frame);
+    serial::write_byte(b'\n');
+
+    let mut values: Vec<u64> = Vec::new();
+    for value in 0..1000u64 {
+        values.push(value);
+    }
+    let sum: u64 = values.iter().sum();
+    serial::write(b"x86: heap sum=");
+    print_dec(sum);
+    serial::write_byte(b'\n');
+    if sum != 499_500 {
+        print_line(&[b"x86: heap sum mismatch"]);
+        qemu_exit(1);
+    }
+
     idt::init();
     timer::init();
     print_line(&[b"x86: timer enabled"]);
@@ -123,6 +176,8 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     serial::write(b"x86: timer ticks=");
     print_dec(timer::ticks() as u64);
     serial::write_byte(b'\n');
+
+    let _ = net::init();
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.

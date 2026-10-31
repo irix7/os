@@ -61,7 +61,7 @@ echo "PROM image: $rom_size / 524288 bytes"
 # PIT.  The shared core and virtio devices follow; the image is published now
 # so the release pipeline carries both machines from the first slice.
 CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-Tkernel-x86/linker.ld -Crelocation-model=static" \
-  cargo build --release -Z build-std=core \
+  cargo build --release -Z build-std=core,alloc \
     -Z build-std-features=compiler-builtins-mem \
     --target "$X86_TARGET" -p kernel-x86 --features cross
 cp "$TARGET_DIR/$X86_TARGET/release/kernel-x86" "$DIST/irix7-x86_64.elf"
