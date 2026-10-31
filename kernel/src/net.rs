@@ -579,12 +579,7 @@ pub fn init() {
             print_ipv4(ip);
             crate::println("");
 
-            iface.update_ip_addrs(|addrs| {
-                let _ = addrs.push(IpCidr::Ipv4(lease.address));
-            });
-            if let Some(gateway) = lease.router {
-                let _ = iface.routes_mut().add_default_ipv4_route(gateway);
-            }
+            irix7_netif::apply_lease(&mut iface, lease.address, lease.router);
             if let Some(dns) = lease.dns {
                 crate::print_str("network: dns ");
                 print_ipv4(dns);
@@ -639,13 +634,7 @@ pub fn poll() {
                         let ip = config.address.address();
                         stack.ip = Some(ip);
                         stack.dns = config.dns_servers.first().copied();
-                        stack.iface.update_ip_addrs(|addrs| {
-                            addrs.clear();
-                            let _ = addrs.push(IpCidr::Ipv4(config.address));
-                        });
-                        if let Some(gateway) = config.router {
-                            let _ = stack.iface.routes_mut().add_default_ipv4_route(gateway);
-                        }
+                        irix7_netif::apply_lease(&mut stack.iface, config.address, config.router);
                         crate::print_str("network: lease ");
                         print_ipv4(ip);
                         crate::println("");

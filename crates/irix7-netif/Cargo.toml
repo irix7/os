@@ -1,0 +1,9 @@
+[package]
+license = "GPL-3.0-only"
+name = "irix7-netif"
+version = "0.1.0"
+edition = "2021"
+description = "Interface configuration shared by the IRIX 7 kernels"
+
+[dependencies]
+smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-dhcpv4"] }

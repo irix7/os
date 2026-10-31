@@ -625,6 +625,13 @@ name = "irix7-libc"
 version = "0.1.0"
 
 [[package]]
+name = "irix7-netif"
+version = "0.1.0"
+dependencies = [
+ "smoltcp",
+]
+
+[[package]]
 name = "irix7-sha256"
 version = "0.1.0"
 
@@ -642,6 +649,7 @@ dependencies = [
  "hpc3",
  "irix-elf",
  "irix7-fmt",
+ "irix7-netif",
  "irix7-sha256",
  "m1-policy-bridge",
  "mesh-core",
@@ -665,6 +673,7 @@ version = "0.1.0"
 dependencies = [
  "frame-alloc",
  "irix7-fmt",
+ "irix7-netif",
  "irix7-sha256",
  "module-abi",
  "module-tcp",

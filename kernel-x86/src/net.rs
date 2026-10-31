@@ -199,16 +199,9 @@ pub fn poll() {
     if let Some(dhcpv4::Event::Configured(lease)) =
         stack.sockets.get_mut::<dhcpv4::Socket>(stack.dhcp).poll()
     {
-        let address = lease.address;
-        stack.iface.update_ip_addrs(|addrs| {
-            addrs.clear();
-            let _ = addrs.push(IpCidr::Ipv4(address));
-        });
-        stack.address = Some(address);
-        if let Some(router) = lease.router {
-            let _ = stack.iface.routes_mut().add_default_ipv4_route(router);
-            stack.gateway = Some(router);
-        }
+        irix7_netif::apply_lease(&mut stack.iface, lease.address, lease.router);
+        stack.address = Some(lease.address);
+        stack.gateway = lease.router;
     }
 }
 
