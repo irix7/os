@@ -647,6 +647,7 @@ dependencies = [
  "mesh-core",
  "mesh-service",
  "module-abi",
+ "module-tcp",
  "platform-api",
  "rand_core",
  "smoltcp",
@@ -666,6 +667,7 @@ dependencies = [
  "irix7-fmt",
  "irix7-sha256",
  "module-abi",
+ "module-tcp",
  "smoltcp",
 ]
 
@@ -835,6 +837,13 @@ dependencies = [
  "ed25519-dalek",
  "module-trust",
  "sha2",
+]
+
+[[package]]
+name = "module-tcp"
+version = "0.1.0"
+dependencies = [
+ "smoltcp",
 ]
 
 [[package]]

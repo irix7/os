@@ -1,0 +1,9 @@
+[package]
+license = "GPL-3.0-only"
+name = "module-tcp"
+version = "0.1.0"
+edition = "2021"
+description = "Module TCP slot table shared by the IRIX 7 kernels"
+
+[dependencies]
+smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "socket-tcp"] }

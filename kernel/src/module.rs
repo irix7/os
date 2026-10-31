@@ -12,8 +12,7 @@
 use irix7_sha256::Sha256;
 use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
-use smoltcp::iface::SocketHandle;
-use smoltcp::socket::tcp::{Socket as TcpSocket, SocketBuffer};
+use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::udp::{PacketBuffer, RecvError, SendError, Socket as UdpSocket, UdpMetadata};
 use smoltcp::storage::PacketMetadata;
 
@@ -724,14 +723,21 @@ extern "C" fn service_poll() {
 }
 
 /// Module TCP slots.  Two is enough for an HTTP server plus a client.
-const MODULE_TCP_SLOTS: usize = 8;
+/// The Indy's stack, for the shared module TCP slot table.
+struct IndyStack;
 
-static mut MODULE_TCP: [Option<SocketHandle>; MODULE_TCP_SLOTS] = [None; MODULE_TCP_SLOTS];
-/// Set when the last `tcp_send` accepted fewer bytes than requested.
-static mut MODULE_TX_BLOCKED: [bool; MODULE_TCP_SLOTS] = [false; MODULE_TCP_SLOTS];
-/// Set when a close has been reported once for the slot.
-static mut MODULE_CLOSED_REPORTED: [bool; MODULE_TCP_SLOTS] = [false; MODULE_TCP_SLOTS];
-/// The receive buffer is deliberately larger than the two-node case needs.
+impl module_tcp::Stack for IndyStack {
+    fn with_sockets<R>(f: impl FnOnce(&mut SocketSet<'static>) -> R) -> Option<R> {
+        crate::net::sockets_with(f)
+    }
+
+    fn with_stack<R>(f: impl FnOnce(&mut Interface, &mut SocketSet<'static>) -> R) -> Option<R> {
+        crate::net::with_stack(f)
+    }
+}
+
+const MODULE_TCP_SLOTS: usize = 8;
+/// The receive ring is deliberately larger than the two-node case needs.
 ///
 /// Under the M3 host hub several member records share the root's single mesh
 /// slot while the module writes a bounded serial burst.  A 2 KiB buffer fills
@@ -739,221 +745,55 @@ static mut MODULE_CLOSED_REPORTED: [bool; MODULE_TCP_SLOTS] = [false; MODULE_TCP
 /// a 388-byte record through the host forward's zero-window probe; the 10 s
 /// receive deadline fires on a healthy link.  16 KiB holds a full eight-member
 /// join/refresh burst, so the window never collapses during logging.
-static mut MODULE_TCP_RX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
-static mut MODULE_TCP_TX: [[u8; 16384]; MODULE_TCP_SLOTS] = [[0; 16384]; MODULE_TCP_SLOTS];
+const MODULE_TCP_BUFFER: usize = 16384;
 
-fn module_handle(slot: u32) -> Option<SocketHandle> {
-    let slot = slot as usize;
-    if slot >= MODULE_TCP_SLOTS {
-        return None;
-    }
-    // SAFETY: single-threaded kernel; the table is only written by the
-    // service functions below.
-    unsafe { MODULE_TCP[slot] }
-}
+static mut MODULE_TCP: module_tcp::Slots<MODULE_TCP_SLOTS, MODULE_TCP_BUFFER> =
+    module_tcp::Slots::new();
 
-/// Create a module TCP socket in `slot` with the bounded static rings and the
-/// common module policy (keepalive).
-fn new_module_socket(slot: usize) -> TcpSocket<'static> {
-    // SAFETY: each slot's buffers are owned by at most one socket at a time.
-    let rx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_RX[slot]) };
-    let tx = unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP_TX[slot]) };
-    let mut socket = TcpSocket::new(
-        SocketBuffer::new(&mut rx[..]),
-        SocketBuffer::new(&mut tx[..]),
-    );
-    socket.set_keep_alive(Some(smoltcp::time::Duration::from_secs(60)));
-    // Keep the stack defaults.  A mesh-slot Nagle override changed the M2
-    // partition/rejoin timing, and a 1 ms delayed ACK broke the slot-B Wasm
-    // autoload; the direct transport does not need either.
-    socket
-}
-
-/// Remove any socket previously owned by `slot`.
-fn clear_module_slot(slot: usize) {
-    if let Some(old) = module_handle(slot as u32) {
-        let _ = crate::net::sockets_with(|sockets| sockets.remove(old));
-        // SAFETY: single-threaded; the old socket has been removed.
-        unsafe {
-            MODULE_TCP[slot] = None;
-            MODULE_TX_BLOCKED[slot] = false;
-            MODULE_CLOSED_REPORTED[slot] = false;
-        }
-    }
+fn module_tcp() -> &'static mut module_tcp::Slots<MODULE_TCP_SLOTS, MODULE_TCP_BUFFER> {
+    // SAFETY: single-threaded kernel; the slot table is used only here.
+    unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP) }
 }
 
 unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
-    let slot_usize = slot as usize;
-    if slot_usize >= MODULE_TCP_SLOTS || port == 0 {
-        return -1;
-    }
-    clear_module_slot(slot_usize);
-    let socket = new_module_socket(slot_usize);
-    let Some(handle) = crate::net::sockets_with(|sockets| sockets.add(socket)) else {
-        return -1;
-    };
-    let listened = crate::net::sockets_with(|sockets| {
-        sockets.get_mut::<TcpSocket>(handle).listen(port).is_ok()
-    });
-    if listened == Some(true) {
-        // SAFETY: single-threaded.
-        unsafe {
-            MODULE_TCP[slot_usize] = Some(handle);
-            MODULE_TX_BLOCKED[slot_usize] = false;
-            MODULE_CLOSED_REPORTED[slot_usize] = false;
-        }
-        0
-    } else {
-        let _ = crate::net::sockets_with(|sockets| sockets.remove(handle));
-        -1
-    }
+    module_tcp().listen::<IndyStack>(slot, port)
 }
 
 unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> i32 {
-    let slot_usize = slot as usize;
-    if slot_usize >= MODULE_TCP_SLOTS || address == 0 || port == 0 {
-        return -1;
-    }
-    clear_module_slot(slot_usize);
-    let socket = new_module_socket(slot_usize);
-
-    // `address` is the IPv4 address in network byte order.
-    let octets = address.to_be_bytes();
-    let remote = smoltcp::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
-    // One module slot owns one socket.  Give each slot its own ephemeral local
-    // port so several connects (a star of peers) can be live at once.
-    let local_port = 49152 + slot_usize as u16;
-    let result = crate::net::with_stack(|iface, sockets| {
-        let handle = sockets.add(socket);
-        let result = sockets.get_mut::<TcpSocket>(handle).connect(
-            iface.context(),
-            (smoltcp::wire::IpAddress::Ipv4(remote), port),
-            local_port,
-        );
-        (handle, result)
-    });
-    match result {
-        Some((handle, Ok(()))) => {
-            // SAFETY: single-threaded.
-            unsafe {
-                MODULE_TCP[slot_usize] = Some(handle);
-                MODULE_TX_BLOCKED[slot_usize] = false;
-                MODULE_CLOSED_REPORTED[slot_usize] = false;
-            }
-            0
-        }
-        Some((handle, Err(_))) => {
-            let _ = crate::net::sockets_with(|sockets| sockets.remove(handle));
-            -1
-        }
-        None => -1,
-    }
+    module_tcp().connect::<IndyStack>(slot, address, port)
 }
 
-/// Level-triggered readiness for one module TCP slot.
-///
-/// The module uses this to distinguish "no data yet" from "the peer closed"
-/// and to avoid a blind retry after a short send.  The bits are recomputed
+/// Level-triggered readiness for one module TCP slot.  The bits are recomputed
 /// from the live socket; there is no event queue and no lost edge.
 extern "C" fn service_tcp_events(slot: u32) -> u32 {
-    const RX: u32 = 1 << 0;
-    const TX: u32 = 1 << 1;
-    const CLOSED: u32 = 1 << 2;
-    const LISTEN: u32 = 1 << 3;
-    const ESTAB: u32 = 1 << 4;
-    const NO_SOCKET: u32 = 1 << 31;
-    let Some(handle) = module_handle(slot) else {
-        return NO_SOCKET;
-    };
-    use smoltcp::socket::tcp::State;
-    let result = crate::net::sockets_with(|sockets| {
-        let socket = sockets.get_mut::<TcpSocket>(handle);
-        let state = socket.state();
-        let mut mask = 0u32;
-        if socket.can_recv() {
-            mask |= RX;
-        }
-        if unsafe { MODULE_TX_BLOCKED[slot as usize] } && socket.can_send() {
-            mask |= TX;
-        }
-        match state {
-            State::Listen => mask |= LISTEN,
-            State::Established => mask |= ESTAB,
-            State::Closed | State::TimeWait => mask |= CLOSED,
-            _ => {}
-        }
-        mask
-    });
-    result.unwrap_or(NO_SOCKET)
+    module_tcp().events::<IndyStack>(slot)
 }
 
 /// Number of module TCP slots the kernel provides.
 extern "C" fn service_tcp_slots() -> u32 {
-    MODULE_TCP_SLOTS as u32
+    module_tcp().slots()
 }
 
 extern "C" fn service_tcp_state(slot: u32) -> u32 {
-    let Some(handle) = module_handle(slot) else {
-        return 0;
-    };
-    use smoltcp::socket::tcp::State;
-    let state = crate::net::sockets_with(|sockets| sockets.get::<TcpSocket>(handle).state());
-    match state {
-        Some(State::Listen) | Some(State::SynSent) | Some(State::SynReceived) => 1,
-        Some(State::Established) => 2,
-        Some(State::FinWait1)
-        | Some(State::FinWait2)
-        | Some(State::CloseWait)
-        | Some(State::Closing)
-        | Some(State::LastAck)
-        | Some(State::TimeWait) => 3,
-        Some(State::Closed) | None => 0,
-    }
+    module_tcp().state::<IndyStack>(slot)
 }
 
 unsafe extern "C" fn service_tcp_recv(slot: u32, ptr: *mut u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    let Some(handle) = module_handle(slot) else {
-        return -1;
-    };
-    // SAFETY: the module owns the destination buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    match crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).recv_slice(buf)) {
-        Some(Ok(n)) => n as isize,
-        _ => -1,
-    }
+    // SAFETY: the module owns the destination buffer for the call.
+    unsafe { module_tcp().recv::<IndyStack>(slot, ptr, len) }
 }
 
 unsafe extern "C" fn service_tcp_send(slot: u32, ptr: *const u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    let Some(handle) = module_handle(slot) else {
-        return -1;
-    };
-    // SAFETY: the module owns the source buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
-    let result =
-        crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).send_slice(buf));
-    match result {
-        Some(Ok(n)) => {
-            // SAFETY: single-threaded kernel.
-            unsafe {
-                MODULE_TX_BLOCKED[slot as usize] = n < len;
-            }
-            n as isize
-        }
-        _ => -1,
-    }
+    // SAFETY: the module owns the source buffer for the call.
+    unsafe { module_tcp().send::<IndyStack>(slot, ptr, len) }
 }
 
 extern "C" fn service_tcp_close(slot: u32) {
-    let Some(handle) = module_handle(slot) else {
-        return;
-    };
-    let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).close());
+    module_tcp().close::<IndyStack>(slot);
+}
+
+extern "C" fn service_tcp_abort(slot: u32) {
+    module_tcp().abort::<IndyStack>(slot);
 }
 
 /// Module UDP slots.  A datagram transport needs one slot per peer link plus
@@ -1231,9 +1071,3 @@ unsafe extern "C" fn service_status(ptr: *mut u8, len: usize) -> isize {
     crate::status::text(buf) as isize
 }
 
-extern "C" fn service_tcp_abort(slot: u32) {
-    let Some(handle) = module_handle(slot) else {
-        return;
-    };
-    let _ = crate::net::sockets_with(|sockets| sockets.get_mut::<TcpSocket>(handle).abort());
-}
