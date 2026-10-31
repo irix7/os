@@ -1396,7 +1396,7 @@ jobs:
           cleanup() {
             status=$?
             trap - EXIT
-            for mode in none no-peer kill-peer partition; do
+            for mode in none no-peer kill-peer partition udp; do
               work="$RUNNER_TEMP/m2-run-$mode"
               if [ -d "$work" ]; then
                 "$bin" down --work "$work" \
@@ -1417,13 +1417,17 @@ jobs:
           # The two failure modes prove removal/fencing and the partition rule.
           run_mode kill-peer 9900
           run_mode partition 10000
+          # The datagram gate proves the ABI 16 UDP service and the
+          # non-blocking Seeq transmit path across two real kernels
+          # (M3-ADR-0006).  It runs no join.
+          run_mode udp 10100
       - name: Collect evidence
         if: always()
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/m2-evidence"
           mkdir -p "$out"
-          for mode in none no-peer kill-peer partition; do
+          for mode in none no-peer kill-peer partition udp; do
             work="$RUNNER_TEMP/m2-run-$mode"
             if [ -d "$work/evidence" ]; then
               cp -a "$work/evidence" "$out/$mode"

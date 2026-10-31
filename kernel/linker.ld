@@ -50,7 +50,17 @@ SECTIONS
   }
 
   /* Kernel entry stack, above the image and below the module area. */
-  __stack_top = 0x88300000;
+  /* Boot stack top.
+   *
+   * The stack grows down from here into the reserved low window; `__bss_end`
+   * is its floor.  The gap is load-bearing: a Wasm policy boot reaches roughly
+   * 530 KiB of native stack inside wasmi's handlers, so a 0x8830_0000 top left
+   * only a few kilobytes of margin once the module ABI grew, and the stack
+   * crossed into .bss and overwrote live frames (see issue #271 and
+   * docs/adr/m3-0006-udp-transport.md).  The 1 MiB between 0x8830_0000 and the
+   * module area at 0x8840_0000 is reserved and otherwise unused, so the top
+   * sits just below the module area and the stack gets the whole window. */
+  __stack_top = 0x883f0000;
 
   /* A boot stack that grows into .bss corrupts statics.  Keep a real gap. */
   ASSERT(__bss_end < __stack_top, "kernel .bss overlaps the boot stack")

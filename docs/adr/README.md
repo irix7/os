@@ -42,3 +42,5 @@ proposal, not an ADR.
 - [M3-ADR-0004 — readiness-driven module I/O](m3-0004-event-driven-io.md)
 
 - [M3-ADR-0005 — eight module TCP slots](m3-0005-multi-connection-transport.md)
+
+- [M3-ADR-0006 — module UDP services and the two-kernel datagram gate](m3-0006-udp-transport.md)

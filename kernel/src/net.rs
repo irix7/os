@@ -485,7 +485,7 @@ fn dhcpv4_configure(
 
 /// Socket storage backing the shared `SocketSet`.  It must be static because
 /// the set is stored in `STACK` and used from `poll()`.
-const SOCKET_SLOTS: usize = 20;
+const SOCKET_SLOTS: usize = 28;
 
 static mut SOCKET_STORAGE: MaybeUninit<[SocketStorage<'static>; SOCKET_SLOTS]> =
     MaybeUninit::uninit();

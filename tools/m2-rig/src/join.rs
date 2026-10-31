@@ -374,6 +374,8 @@ pub fn evaluate(
     };
     let mut errors = Vec::new();
     match fault {
+        // The datagram gate runs no join; the mode never reaches this helper.
+        Fault::Udp => {}
         Fault::NoPeer => {
             for node in &evidence.nodes {
                 if node.enabled.is_some() {
@@ -426,7 +428,9 @@ pub fn evaluate(
                     }) {
                         Some(line) => line,
                         None => {
-                            errors.push("n0: no mesh-join converged, duplicate, or local line".into());
+                            errors.push(
+                                "n0: no mesh-join converged, duplicate, or local line".into(),
+                            );
                             JoinLine {
                                 role: String::new(),
                                 epoch: 0,
@@ -436,8 +440,8 @@ pub fn evaluate(
                                 raw: String::new(),
                             }
                         }
-                    }
-                }
+                    },
+                },
             };
             let member = match evidence.nodes[1].converged.as_deref().and_then(|line| {
                 JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "member"))
@@ -458,7 +462,7 @@ pub fn evaluate(
                             raw: String::new(),
                         }
                     }
-                }
+                },
             };
             errors.extend(check_pair(
                 &root,
