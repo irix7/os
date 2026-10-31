@@ -8,7 +8,7 @@
 //! PROM.  NVRAM `mcp.url`/`mcp.sha256` remain a local override for the test
 //! rig.
 
-use irix7_sha256::Sha256;
+use irix7_sha256::{hex_value, Sha256};
 
 const CONFIG_HOST: &str = "raw.githubusercontent.com";
 const CONFIG_PATH: &str = "/irix7/os/main/boot/config.conf";
@@ -146,14 +146,6 @@ fn parse_hex_digest(value: &[u8]) -> Option<[u8; 32]> {
     Some(digest)
 }
 
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
-}
 
 #[cfg(test)]
 mod tests {

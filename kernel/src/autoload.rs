@@ -324,23 +324,6 @@ fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchRes
 }
 
 fn parse_digest(hex: &[u8]) -> Option<Sha256> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (i, byte) in digest.iter_mut().enumerate() {
-        let hi = hex_value(hex[i * 2])?;
-        let lo = hex_value(hex[i * 2 + 1])?;
-        *byte = (hi << 4) | lo;
-    }
-    Some(Sha256(digest))
+    Sha256::from_hex(hex)
 }
 
-fn hex_value(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
-}

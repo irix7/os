@@ -99,7 +99,31 @@ fn compress_block(state: &mut [u32; 8], block: &[u8; 64]) {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Sha256(pub [u8; 32]);
 
+/// The value of one hexadecimal digit, in either case.
+pub fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 impl Sha256 {
+    /// Parse a digest written as 64 hexadecimal digits.
+    pub fn from_hex(hex: &[u8]) -> Option<Sha256> {
+        if hex.len() != 64 {
+            return None;
+        }
+        let mut digest = [0u8; 32];
+        for (i, byte) in digest.iter_mut().enumerate() {
+            let hi = hex_value(hex[i * 2])?;
+            let lo = hex_value(hex[i * 2 + 1])?;
+            *byte = (hi << 4) | lo;
+        }
+        Some(Sha256(digest))
+    }
+
     /// Compute the digest of `data` in one shot.
     pub fn digest(data: &[u8]) -> Sha256 {
         let mut hasher = Hasher::new();
@@ -215,6 +239,17 @@ impl Default for Hasher {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn from_hex_round_trips_and_rejects_bad_input() {
+        let digest = Sha256::digest(b"abc");
+        let text = core::str::from_utf8(&digest.to_hex()).unwrap().as_bytes().to_vec();
+        assert!(Sha256::from_hex(&text).unwrap().eq_digest(&digest));
+        assert!(Sha256::from_hex(b"short").is_none());
+        let mut bad = text.clone();
+        bad[0] = b'z';
+        assert!(Sha256::from_hex(&bad).is_none());
+    }
 
     #[test]
     fn sha256_abc() {
