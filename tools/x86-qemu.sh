@@ -44,6 +44,12 @@ else
   KERNEL="$CARGO_TARGET_DIR/x86_64-unknown-none/release/kernel-x86"
 fi
 SERIAL="$WORK/serial.log"
+
+# A 2 MiB raw disk for the virtio-blk self-test: sector 1 carries the marker the
+# kernel reads back, and the rest is zero.  Recreated on every run.
+DISK="$WORK/disk.img"
+dd if=/dev/zero of="$DISK" bs=512 count=4096 2>/dev/null
+printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/null
 rm -f "$SERIAL"
 
 set +e
@@ -57,7 +63,9 @@ timeout 60 "$QEMU" \
   -no-reboot \
   -device isa-debug-exit,iobase=0x501,iosize=0x04 \
   -netdev user,id=net0 \
-  -device virtio-net-pci,netdev=net0,disable-modern=on
+  -device virtio-net-pci,netdev=net0,disable-modern=on \
+  -drive file="$DISK",if=none,id=disk0,format=raw \
+  -device virtio-blk-pci,drive=disk0,disable-modern=on
 status=$?
 set -e
 
@@ -86,6 +94,9 @@ markers=(
   "x86: virtio-net mac="
   "x86: net ip=10.0.2.15"
   "x86: net gateway=10.0.2.2"
+  "x86: blk capacity="
+  "x86: blk read sector 1=IRIX7-X86-DISK-OK"
+  "x86: blk write readback ok"
   "x86: deliberate fault: int3"
   "x86: exception vector=3 (breakpoint)"
   "x86: halted"

@@ -27,6 +27,8 @@ mod port;
 mod pvh;
 mod serial;
 mod timer;
+mod virtio;
+mod virtio_blk;
 mod virtio_net;
 
 core::arch::global_asm!(include_str!("boot.S"), options(att_syntax));
@@ -178,6 +180,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     serial::write_byte(b'\n');
 
     let _ = net::init();
+    virtio_blk::selftest();
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.
