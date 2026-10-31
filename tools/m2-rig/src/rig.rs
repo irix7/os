@@ -1105,7 +1105,10 @@ pub fn wait_serial(
     }
 }
 
-/// Wall-clock marks for one node's boot, in milliseconds from node start.
+/// Wall-clock marks for one node's boot, in milliseconds from the start of its
+/// readiness wait.  A node that was already ready when the wait began reports
+/// zero, so the fetch of a node that booted during another node's wait is
+/// not comparable with the first node's numbers.
 ///
 /// A network change that costs a few hundred milliseconds and one that stalls
 /// until the guest's own deadline look identical in a marker-only transcript:
