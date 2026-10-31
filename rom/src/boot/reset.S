@@ -28,7 +28,9 @@
 # Kernel image destinations
 .set KERNEL_PHYS_KSEG1, 0xA8040000   /* physical 0x08040000, uncached */
 .set KERNEL_ENTRY,      0x88040000   /* kseg0 cached entry point */
-.set KERNEL_STACK_TOP,  0x88300000   /* matches the kernel's __stack_top */
+.set KERNEL_STACK_TOP,  0x883f0000   /* matches the kernel's __stack_top; the 1 MiB
+                                         below the module area at 0x88400000 belongs
+                                         to the kernel stack (issue #271) */
 
 .section .text._start, "ax", @progbits
 .align 4
