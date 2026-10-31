@@ -52,6 +52,7 @@
 - [Testing](plan/testing.md)
 - [Security](plan/security.md)
 - [Release engineering](plan/release.md)
+- [x86_64 machine](plan/x86.md)
 - [Legal and provenance](plan/legal.md)
 - [Community and governance](plan/community.md)
 - [Cost model](plan/cost.md)

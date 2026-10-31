@@ -34,10 +34,22 @@ jobs:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
           MODULE_SIGNING_EPOCH: ${{ vars.MODULE_SIGNING_EPOCH }}
         run: ./scripts/release/build.sh
+      - name: Boot-check the x86_64 release image
+        run: |
+          if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-x86
+          fi
+          X86_IMAGE="$PWD/dist/irix7-x86_64.elf" \
+            tools/x86-qemu.sh "$RUNNER_TEMP/x86-release"
       - name: Checksums
         run: |
           cd dist
-          sha256sum * > SHA256SUMS
+          # `dist` contains the runtime directory, so a plain `sha256sum *`
+          # fails on it; checksum every file and keep the paths relative.
+          find . -type f ! -name SHA256SUMS -printf '%P\0' \
+            | sort -z \
+            | xargs -0 sha256sum > SHA256SUMS
           cat SHA256SUMS
       - uses: sigstore/cosign-installer@v3
       - name: Sign checksums
@@ -53,7 +65,18 @@ jobs:
       - name: GitHub Release
         uses: softprops/action-gh-release@v3
         with:
-          files: dist/*
+          # The runtime modules are published to boot/modules/<tag>/ by the
+          # next step, not attached to the release, so list the top-level
+          # artefacts explicitly rather than letting the glob pick up a
+          # directory.
+          files: |
+            dist/*.bin
+            dist/*.elf
+            dist/*.module
+            dist/*.conf
+            dist/*.json
+            dist/SHA256SUMS
+            dist/SHA256SUMS.sig
           generate_release_notes: true
           draft: true
           prerelease: ${{ contains(github.ref_name, '-') }}
