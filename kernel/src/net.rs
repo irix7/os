@@ -735,30 +735,10 @@ pub fn mac_address() -> [u8; 6] {
 
 /// Print an IPv4 address in dotted-decimal form.
 fn print_ipv4(addr: Ipv4Address) {
-    let octets = addr.octets();
-    for (i, octet) in octets.iter().enumerate() {
-        if i > 0 {
-            crate::write_byte(b'.');
-        }
-        print_dec(*octet as u32);
-    }
+    irix7_fmt::dotted(addr.octets(), &mut |b| crate::write_byte(b));
 }
 
 /// Print an unsigned integer in decimal.
-fn print_dec(mut v: u32) {
-    let mut buf = [0u8; 10];
-    let mut n = 0;
-    if v == 0 {
-        crate::write_byte(b'0');
-        return;
-    }
-    while v > 0 && n < buf.len() {
-        buf[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    while n > 0 {
-        n -= 1;
-        crate::write_byte(buf[n]);
-    }
+fn print_dec(v: u32) {
+    irix7_fmt::decimal(u64::from(v), &mut |b| crate::write_byte(b));
 }

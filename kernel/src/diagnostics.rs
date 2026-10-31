@@ -52,20 +52,6 @@ pub fn run() {
 }
 
 /// Print an unsigned decimal value.
-fn print_dec(mut v: u32) {
-    let mut buf = [0u8; 10];
-    let mut n = 0;
-    if v == 0 {
-        crate::write_byte(b'0');
-        return;
-    }
-    while v > 0 && n < buf.len() {
-        buf[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    while n > 0 {
-        n -= 1;
-        crate::write_byte(buf[n]);
-    }
+fn print_dec(v: u32) {
+    irix7_fmt::decimal(u64::from(v), &mut |b| crate::write_byte(b));
 }

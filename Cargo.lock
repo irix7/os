@@ -617,6 +617,10 @@ name = "irix-elf"
 version = "0.1.0"
 
 [[package]]
+name = "irix7-fmt"
+version = "0.1.0"
+
+[[package]]
 name = "irix7-libc"
 version = "0.1.0"
 
@@ -637,6 +641,7 @@ dependencies = [
  "frame-alloc",
  "hpc3",
  "irix-elf",
+ "irix7-fmt",
  "irix7-sha256",
  "m1-policy-bridge",
  "mesh-core",
@@ -658,6 +663,7 @@ name = "kernel-x86"
 version = "0.1.0"
 dependencies = [
  "frame-alloc",
+ "irix7-fmt",
  "irix7-sha256",
  "module-abi",
  "smoltcp",

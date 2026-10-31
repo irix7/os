@@ -560,20 +560,6 @@ pub fn hline(x0: i32, x1: i32, y: i32, r: u32, g: u32, b: u32) {
     fill_span(x0, x1, y, r, g, b);
 }
 
-fn print_dec(mut value: u32) {
-    let mut digits = [0u8; 10];
-    let mut count = 0usize;
-    if value == 0 {
-        crate::write_byte(b'0');
-        return;
-    }
-    while value > 0 && count < digits.len() {
-        digits[count] = b'0' + (value % 10) as u8;
-        value /= 10;
-        count += 1;
-    }
-    while count > 0 {
-        count -= 1;
-        crate::write_byte(digits[count]);
-    }
+fn print_dec(value: u32) {
+    irix7_fmt::decimal(u64::from(value), &mut |b| crate::write_byte(b));
 }

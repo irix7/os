@@ -111,9 +111,7 @@ pub fn println(s: &str) {
 
 /// Print a hex byte.
 pub fn print_hex8(v: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    write_byte(HEX[(v >> 4) as usize]);
-    write_byte(HEX[(v & 0x0F) as usize]);
+    irix7_fmt::hex(u64::from(v), 2, true, &mut |b| crate::write_byte(b));
 }
 
 /// Print a string.

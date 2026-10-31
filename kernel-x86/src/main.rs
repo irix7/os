@@ -68,42 +68,15 @@ pub fn halt() -> ! {
 
 fn print_hex(value: u64) {
     serial::write(b"0x");
-    let mut started = false;
-    for shift in (0..16).rev() {
-        let digit = ((value >> (shift * 4)) & 0xF) as u8;
-        if digit != 0 || started || shift == 0 {
-            started = true;
-            serial::write_byte(if digit < 10 {
-                b'0' + digit
-            } else {
-                b'a' + digit - 10
-            });
-        }
-    }
+    irix7_fmt::hex(value, 1, false, &mut |b| serial::write_byte(b));
 }
 
 fn print_hex8(value: u8) {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    serial::write_byte(DIGITS[(value >> 4) as usize]);
-    serial::write_byte(DIGITS[(value & 0xF) as usize]);
+    irix7_fmt::hex(u64::from(value), 2, false, &mut |b| serial::write_byte(b));
 }
 
-fn print_dec(mut value: u64) {
-    let mut digits = [0u8; 20];
-    let mut n = 0;
-    if value == 0 {
-        serial::write_byte(b'0');
-        return;
-    }
-    while value > 0 {
-        digits[n] = b'0' + (value % 10) as u8;
-        value /= 10;
-        n += 1;
-    }
-    while n > 0 {
-        n -= 1;
-        serial::write_byte(digits[n]);
-    }
+fn print_dec(value: u64) {
+    irix7_fmt::decimal(value, &mut |b| serial::write_byte(b));
 }
 
 fn print_line(parts: &[&[u8]]) {

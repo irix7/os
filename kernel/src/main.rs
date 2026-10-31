@@ -231,16 +231,11 @@ pub fn println(s: &str) {
 }
 
 pub fn print_hex8(v: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    write_byte(HEX[(v >> 4) as usize]);
-    write_byte(HEX[(v & 0x0F) as usize]);
+    irix7_fmt::hex(u64::from(v), 2, true, &mut |b| crate::write_byte(b));
 }
 
 pub fn print_hex32(v: u32) {
-    print_hex8((v >> 24) as u8);
-    print_hex8((v >> 16) as u8);
-    print_hex8((v >> 8) as u8);
-    print_hex8(v as u8);
+    irix7_fmt::hex(u64::from(v), 8, true, &mut |b| crate::write_byte(b));
 }
 
 // ---------------------------------------------------------------------------

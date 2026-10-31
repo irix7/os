@@ -6,6 +6,7 @@ edition = "2021"
 description = "IRIX 7 x86_64 machine: boot path, traps and devices"
 
 [dependencies]
+irix7-fmt = { path = "../crates/irix7-fmt" }
 frame-alloc = { path = "../crates/frame-alloc" }
 module-abi.workspace = true
 irix7-sha256 = { path = "../crates/irix7-sha256" }
