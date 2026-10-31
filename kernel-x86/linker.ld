@@ -45,6 +45,9 @@ SECTIONS
         __bss_end = .;
     } :data
 
+    /* First byte after the image: bss, page tables and the boot stack. */
+    __kernel_end = ALIGN(4096);
+
     /DISCARD/ : {
         *(.eh_frame)
         *(.comment)

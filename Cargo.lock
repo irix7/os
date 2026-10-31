@@ -651,6 +651,9 @@ version = "0.1.0"
 [[package]]
 name = "kernel-x86"
 version = "0.1.0"
+dependencies = [
+ "frame-alloc",
+]
 
 [[package]]
 name = "lazy_static"

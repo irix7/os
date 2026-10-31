@@ -51,17 +51,3 @@ pub fn write(bytes: &[u8]) {
         write_byte(*byte);
     }
 }
-
-/// A `core::fmt` sink, used where a panic message needs its arguments.
-struct Writer;
-
-impl core::fmt::Write for Writer {
-    fn write_str(&mut self, text: &str) -> core::fmt::Result {
-        write(text.as_bytes());
-        Ok(())
-    }
-}
-
-pub fn print_fmt(args: core::fmt::Arguments<'_>) {
-    let _ = core::fmt::Write::write_fmt(&mut Writer, args);
-}

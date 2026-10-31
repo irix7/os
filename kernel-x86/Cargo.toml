@@ -5,6 +5,9 @@ version = "0.1.0"
 edition = "2021"
 description = "IRIX 7 x86_64 machine: boot path, traps and devices"
 
+[dependencies]
+frame-alloc = { path = "../crates/frame-alloc" }
+
 [[bin]]
 name = "kernel-x86"
 path = "src/main.rs"

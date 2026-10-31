@@ -6,8 +6,8 @@
 //! descriptor list and one reference count per 4 KiB frame up to 256 MiB.
 //! Frames above that bound are never handed out.
 
-pub use frame_alloc::MemDesc;
 use frame_alloc::Allocator;
+pub use frame_alloc::MemDesc;
 
 /// Maximum number of memory descriptors from ARCS.
 const MAX_MEM_DESCS: usize = 64;
