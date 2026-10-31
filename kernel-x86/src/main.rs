@@ -21,9 +21,13 @@ use core::panic::PanicInfo;
 mod heap;
 mod idt;
 mod memory;
+mod net;
+mod pci;
+mod port;
 mod pvh;
 mod serial;
 mod timer;
+mod virtio_net;
 
 core::arch::global_asm!(include_str!("boot.S"), options(att_syntax));
 
@@ -69,6 +73,12 @@ fn print_hex(value: u64) {
             });
         }
     }
+}
+
+fn print_hex8(value: u8) {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    serial::write_byte(DIGITS[(value >> 4) as usize]);
+    serial::write_byte(DIGITS[(value & 0xF) as usize]);
 }
 
 fn print_dec(mut value: u64) {
@@ -166,6 +176,8 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     serial::write(b"x86: timer ticks=");
     print_dec(timer::ticks() as u64);
     serial::write_byte(b'\n');
+
+    let _ = net::init();
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.
