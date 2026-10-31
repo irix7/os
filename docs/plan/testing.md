@@ -264,6 +264,7 @@ syscall-personality probe, not an IRIX 6.5 binary; the IRIX libc, `rld`,
 | `std` | static `std` image + native syscall fixture | Yes once std bring-up is in CI |
 | `relibc-n32` | external n32/QEMU relibc gate | Manual/nightly until linked |
 | `boot` | Release PROM + user hello under the published IRIS action | Yes |
+| `x86` | Build the x86_64 image and boot it under QEMU (PVH, serial, memory map, PIT, fault report) | Yes |
 | `mcp` | MCP conformance against a running iris instance | Yes once P3 is green |
 | `licence` | `cargo-deny`, REUSE, SBOM | Yes |
 | `security` | CodeQL, dependency review, `cargo-audit` | Yes |
