@@ -190,15 +190,15 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         qemu_exit(1)
     });
     virtio_blk::selftest(&mut disk);
-    fetch::autoload(&mut disk);
-
-    // The MCP module initialises on the boot stack, which is small and only
-    // runs its init.  The wasm policy module runs on the large stack, because
-    // the Wasm runtime is deep.
-    let mcp = module::load(&mut disk, &module::MCP);
+    // Fetch both modules, then load them.  The MCP module initialises on the boot
+    // stack, which is small and only runs its init.  The wasm policy module runs
+    // on the large stack, because the Wasm runtime is deep.
+    let mcp_bytes = fetch::image(&mut disk, "mcp", fetch::MCP_URL_SECTOR, module::MCP_HEADER_SECTOR);
+    let wasm_bytes = fetch::image(&mut disk, "wasm", fetch::WASM_URL_SECTOR, module::WASM_HEADER_SECTOR);
+    let mcp = module::load(&module::MCP, mcp_bytes);
     let mut wasm = core::ptr::null();
     stack::on_stack(&mut || {
-        wasm = module::load(&mut disk, &module::WASM);
+        wasm = module::load(&module::WASM, wasm_bytes);
     });
     if wasm.is_null() {
         print_line(&[b"x86: wasm: no vtable"]);

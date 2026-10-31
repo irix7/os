@@ -9,14 +9,12 @@
 //! not have yet.
 
 use module_abi::ModuleVtable;
-use sha2::{Digest, Sha256};
 
 use crate::net;
 use crate::print_line;
 use crate::serial;
 use crate::services::SERVICES;
 use crate::timer;
-use crate::virtio_blk::{Disk, SECTOR};
 
 /// A module's place on the machine and on the disk.
 pub struct Image {
@@ -24,20 +22,19 @@ pub struct Image {
     pub base: usize,
     /// Window size in bytes.
     pub window: usize,
-    /// Disk sector holding the header.
-    pub header_sector: u64,
-    /// Disk sector holding the first image byte.
-    pub image_sector: u64,
     /// The name used in the boot log.
     pub name: &'static str,
 }
+
+/// Disk sector holding the MCP module's digest header.
+pub const MCP_HEADER_SECTOR: u64 = 8;
+/// Disk sector holding the wasm module's digest header.
+pub const WASM_HEADER_SECTOR: u64 = 10;
 
 /// The MCP control-plane module.
 pub const MCP: Image = Image {
     base: 0x0200_0000,
     window: 0x0020_0000,
-    header_sector: 8,
-    image_sector: 16,
     name: "mcp",
 };
 
@@ -45,8 +42,6 @@ pub const MCP: Image = Image {
 pub const WASM: Image = Image {
     base: 0x0400_0000,
     window: 0x0020_0000,
-    header_sector: 10,
-    image_sector: 2048,
     name: "wasm",
 };
 
@@ -55,49 +50,20 @@ pub const SERVE_TICKS: u32 = 6000;
 
 type Entry = unsafe extern "C" fn(*const module_abi::Services) -> *const ModuleVtable;
 
-/// Load `image` from the disk, check its digest, and call its entry.  Returns
-/// the module's vtable.  Stops the machine on any failure.
-pub fn load(disk: &mut Disk, image: &Image) -> *const ModuleVtable {
-    let mut sector = [0u8; SECTOR];
-    if !disk.read(image.header_sector, &mut sector) || &sector[..8] != b"IRIX7MOD" {
-        fail(image, "header missing");
-    }
-    let size = u64::from_le_bytes(sector[8..16].try_into().unwrap_or([0; 8])) as usize;
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&sector[16..48]);
-    if size == 0 || size > image.window {
+/// Copy a verified image into its window and call its entry.  Returns the
+/// module's vtable.  The caller has checked the digest.  Stops the machine on
+/// any failure.
+pub fn load(image: &Image, bytes: &[u8]) -> *const ModuleVtable {
+    if bytes.is_empty() || bytes.len() > image.window {
         fail(image, "size out of range");
     }
-
     // The loader clears the window so .bss starts zeroed.
     // SAFETY: the window is reserved, so nothing else is using it.
     unsafe { core::ptr::write_bytes(image.base as *mut u8, 0, image.window) };
-    let sectors = size.div_ceil(SECTOR) as u64;
-    for index in 0..sectors {
-        if !disk.read(image.image_sector + index, &mut sector) {
-            fail(image, "read failed");
-        }
-        let offset = index as usize * SECTOR;
-        let count = (size - offset).min(SECTOR);
-        // SAFETY: `offset + count <= size <= window`, inside the window.
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                sector.as_ptr(),
-                (image.base + offset) as *mut u8,
-                count,
-            );
-        }
+    // SAFETY: `bytes.len() <= window`, so the copy stays inside the window.
+    unsafe {
+        core::ptr::copy_nonoverlapping(bytes.as_ptr(), image.base as *mut u8, bytes.len());
     }
-
-    // SAFETY: the window holds `size` bytes just written.
-    let bytes = unsafe { core::slice::from_raw_parts(image.base as *const u8, size) };
-    if Sha256::digest(bytes).as_slice() != digest {
-        fail(image, "digest mismatch");
-    }
-    serial::write(image.name.as_bytes());
-    serial::write(b": sha256 ok size=");
-    crate::print_dec(size as u64);
-    serial::write_byte(b'\n');
 
     // SAFETY: the digest matched the image the machine was built from, and the
     // image begins with its legacy entry, `_start`, at `base`.

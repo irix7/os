@@ -74,10 +74,41 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/wasm/link
 FIXTURE_DIR="$WORK/fixture"
 mkdir -p "$FIXTURE_DIR"
 cp "$MODULE" "$FIXTURE_DIR/mcp-x86.module"
+cp "$WASM" "$FIXTURE_DIR/wasm-x86.module"
 FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
 (cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
 FIXTURE_PID=$!
 printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
+printf '10.0.2.2:%s/wasm-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=11 conv=notrunc 2>/dev/null
+python3 -I - "$DISK" "$MODULE" 8 <<'PY'
+import hashlib, struct, sys
+disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
+data = open(module, "rb").read()
+header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+with open(disk, "r+b") as f:
+    f.seek(header_sector * 512)
+    f.write(header)
+PY
+python3 -I - "$DISK" "$WASM" 10 <<'PY'
+import hashlib, struct, sys
+disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
+data = open(module, "rb").read()
+header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+with open(disk, "r+b") as f:
+    f.seek(header_sector * 512)
+    f.write(header)
+PY
+# Autoload fixture: the host serves the module, and the guest reaches it at the
+# user-network gateway, 10.0.2.2.  Sector 9 names the URL.
+FIXTURE_DIR="$WORK/fixture"
+mkdir -p "$FIXTURE_DIR"
+cp "$MODULE" "$FIXTURE_DIR/mcp-x86.module"
+cp "$WASM" "$FIXTURE_DIR/wasm-x86.module"
+FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+(cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
+FIXTURE_PID=$!
+printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
+printf '10.0.2.2:%s/wasm-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=11 conv=notrunc 2>/dev/null
 python3 -I - "$DISK" "$MODULE" 8 16 <<'PY'
 import hashlib, struct, sys
 disk, module, header_sector, image_sector = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
@@ -167,11 +198,11 @@ markers=(
   "x86: blk capacity="
   "x86: blk read sector 1=IRIX7-X86-DISK-OK"
   "x86: blk write readback ok"
-  "mcp: sha256 ok size="
-  "x86: autoload fetched "
-  "x86: autoload sha256 ok"
+  "x86: autoload mcp fetched "
+  "x86: autoload mcp sha256 ok"
+  "x86: autoload wasm fetched "
+  "x86: autoload wasm sha256 ok"
   "mcp: entry status=0"
-  "wasm: sha256 ok"
   "wasm: entry status=0"
   "wasm: run=42"
   "m1-wasm: "

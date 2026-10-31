@@ -18,8 +18,10 @@ use crate::tcp;
 use crate::timer;
 use crate::virtio_blk::{Disk, SECTOR};
 
-const HEADER_SECTOR: u64 = 8;
-const URL_SECTOR: u64 = 9;
+/// Disk sector holding the MCP module's URL.
+pub const MCP_URL_SECTOR: u64 = 9;
+/// Disk sector holding the wasm module's URL.
+pub const WASM_URL_SECTOR: u64 = 11;
 /// The TCP slot the kernel's fetch uses.  It is free at boot, before any module.
 const SLOT: u32 = 7;
 /// Largest image the fetch accepts: 2 MiB, one contiguous run of frames.
@@ -27,20 +29,26 @@ const CAPACITY: usize = 2 * 1024 * 1024;
 /// Each network step gets this long before the fetch gives up: 30 s at 100 Hz.
 const TIMEOUT_TICKS: u32 = 3000;
 
-/// Fetch the image named on the disk and check its digest.  Stops the machine
-/// on any failure, like the module loader.
-pub fn autoload(disk: &mut Disk) {
-    let mut url_sector = [0u8; SECTOR];
-    if !disk.read(URL_SECTOR, &mut url_sector) {
+/// Fetch one module image named on the disk, and check it against the digest
+/// in its header sector.  Returns the verified bytes.  Stops the machine on any
+/// failure, like the module loader.
+pub fn image(
+    disk: &mut Disk,
+    name: &str,
+    url_sector: u64,
+    header_sector: u64,
+) -> &'static [u8] {
+    let mut url_bytes = [0u8; SECTOR];
+    if !disk.read(url_sector, &mut url_bytes) {
         fail("x86: autoload: url sector unreadable");
     }
-    let text = &url_sector[..url_sector.iter().position(|&b| b == 0).unwrap_or(SECTOR)];
+    let text = &url_bytes[..url_bytes.iter().position(|&b| b == 0).unwrap_or(SECTOR)];
     let Some((address, port, path)) = parse_url(text) else {
         fail("x86: autoload: url not understood");
     };
 
     let mut sector = [0u8; SECTOR];
-    if !disk.read(HEADER_SECTOR, &mut sector) {
+    if !disk.read(header_sector, &mut sector) {
         fail("x86: autoload: header unreadable");
     }
     let mut digest = [0u8; 32];
@@ -57,15 +65,20 @@ pub fn autoload(disk: &mut Disk) {
         Ok(length) => length,
         Err(message) => fail(message),
     };
-    crate::serial::write(b"x86: autoload fetched ");
+    crate::serial::write(b"x86: autoload ");
+    crate::serial::write(name.as_bytes());
+    crate::serial::write(b" fetched ");
     crate::print_dec(length as u64);
     crate::serial::write(b" bytes\n");
 
-    let actual = Sha256::digest(&buffer[..length]);
-    if actual.as_slice() != digest {
+    let fetched = &buffer[..length];
+    if Sha256::digest(fetched).as_slice() != digest {
         fail("x86: autoload digest mismatch");
     }
-    crate::print_line(&[b"x86: autoload sha256 ok"]);
+    crate::serial::write(b"x86: autoload ");
+    crate::serial::write(name.as_bytes());
+    crate::serial::write(b" sha256 ok\n");
+    fetched
 }
 
 fn fail(message: &str) -> ! {
