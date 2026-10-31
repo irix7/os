@@ -10,7 +10,7 @@
  * `kernel_main`.
  *
  * The identity map is deliberately the whole first 4 GiB rather than just the
- * kernel image: the 16550, the IO-APIC/PIC and later the PCI BARs all sit in
+ * kernel image: the 16550, the IO-APIC/PIC and later the PCI base-address registers sit in
  * that window, and the frame allocator can hand out any page below it until
  * the machine layer narrows the mapping.
  */
