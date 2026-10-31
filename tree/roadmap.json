@@ -3,7 +3,7 @@
     "title": "The Tree of IRIX 7",
     "short": "IRIX 7",
     "version": "2026.10",
-    "updated": "24 October 2026",
+    "updated": "31 October 2026",
     "repo": "https://github.com/irix7/os",
     "docs": "https://irix7.github.io/os/",
     "description": "A living, interactive map of the IRIX 7 operating system roadmap.",
@@ -125,7 +125,7 @@
       "branch": "foundation",
       "status": "active",
       "title": "IRIX 7",
-      "subtitle": "IP24 \u00b7 MIPS R4400",
+      "subtitle": "IP24 · MIPS R4400",
       "summary": "A clean-room Rust operating system for the SGI Indy, carrying IRIX's identity forward as first-class services."
     },
     {
@@ -148,10 +148,10 @@
         "The Nix devshell pins rustc, GCC, binutils and the target specs.",
         "A clean checkout builds the tracer bullet without manual steps.",
         "CI caches the toolchain and the target artefacts.",
-        "The build is reproducible (same inputs \u2192 same hashes) \u2014 still being verified."
+        "The build is reproducible (same inputs → same hashes) — still being verified."
       ],
       "deps": "Access to `irix7/project`, the Nix flake, the captured sysroot, iris.",
-      "estimate": "2\u20134 weeks",
+      "estimate": "2–4 weeks",
       "risks": "Host-toolchain glue; GCC-backend disk space; nightly drift.",
       "docs": "../plan/milestones.html#m0--toolchain-unblocked"
     },
@@ -182,7 +182,7 @@
         "The handoff is documented; BootInfo is optional and the current ROM passes registers."
       ],
       "deps": "M0, iris (or an Indy), a local HTTP server for modules.",
-      "estimate": "4\u20136 weeks",
+      "estimate": "4–6 weeks",
       "risks": "PROM window size; Seeq DMA cache coherency; 80C03 register semantics; 10 Mbit timeouts.",
       "docs": "../plan/milestones.html#m1--rom-netboot"
     },
@@ -190,7 +190,7 @@
       "id": "m2",
       "kind": "milestone",
       "branch": "foundation",
-      "status": "active",
+      "status": "done",
       "code": "M2",
       "title": "Kernel core",
       "fullTitle": "Kernel core",
@@ -211,7 +211,7 @@
         "The `ctl`/`data`/`status` driver interface is specified and unit-tested."
       ],
       "deps": "M1.",
-      "estimate": "6\u201310 weeks",
+      "estimate": "6–10 weeks",
       "risks": "TLB/cache corner cases; exception vector placement; no full IOMMU; stack usage.",
       "docs": "../plan/milestones.html#m2--kernel-core",
       "note": "The framework boots on iris: frames, scheduler and the CP0 timer/WAIT idle path are live. Remaining: 8254 calibration, page-fault handling, a register-dump panic screen, and the driver interface."
@@ -242,7 +242,7 @@
         "The MCP control plane is a cell, not a kernel thread."
       ],
       "deps": "M2, R2/local HTTP, a host-side MCP client.",
-      "estimate": "4\u20136 weeks",
+      "estimate": "4–6 weeks",
       "risks": "MCP prompt injection; full root; no audit; network driver bugs.",
       "docs": "../plan/milestones.html#m3--network--mcp--shell"
     },
@@ -258,20 +258,20 @@
         720,
         1420
       ],
-      "summary": "Read the root image from R2 over HTTP Range through a userspace block and filesystem stack \u2014 with the disk absent or present.",
+      "summary": "Read the root image from R2 over HTTP Range through a userspace block and filesystem stack — with the disk absent or present.",
       "demo": "The shell runs `cat /etc/motd` and `ls /` from the EROFS root image; a write to `/tmp` goes to the overlay; the machine boots with no SCSI disk.",
       "criteria": [
         "SCSI cell initialises the WD33C93 and reads blocks.",
         "Block cell exposes a block-device capability and an LRU cache.",
         "EROFS reader mounts the standard little-endian image; byte-order codec tested.",
-        "HTTP Range client fetches 64\u2013256 KiB blocks with read-ahead.",
+        "HTTP Range client fetches 64–256 KiB blocks with read-ahead.",
         "SHA-256 verifies the image before mount.",
         "Overlay supports `/tmp`, `/etc`, `/home` (RAM; optional local disk).",
         "The boot path works with the disk absent and with the disk present.",
         "All storage drivers are de-privileged cells."
       ],
       "deps": "M3 (network), M2 (framework).",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "SCSI DMA/direction; EROFS corner cases; R2 latency; 10 Mbit throughput.",
       "docs": "../plan/milestones.html#m4--scsi--block--erofs"
     },
@@ -300,7 +300,7 @@
         "Backward compatibility only: no forward promises."
       ],
       "deps": "M2, M4.",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "ABI details; libc surface; stack/register conventions; big-endian.",
       "docs": "../plan/milestones.html#m5--first-irix-binary"
     },
@@ -320,7 +320,7 @@
       "demo": "A native window shows `hello, IRIX 7`, moves, raises and redraws with damage tracking; the hardware cursor moves; the desktop has a launcher and a clock.",
       "criteria": [
         "Newport REX3 blit, fill, line and text paths work.",
-        "VC2 mode programming (1024\u00d7768 or 1280\u00d71024) and XMAP9 palette.",
+        "VC2 mode programming (1024×768 or 1280×1024) and XMAP9 palette.",
         "Hardware cursor in the XMAP9 auxiliary plane.",
         "Retained window images and damage-driven repair.",
         "Display lease for a full-screen cell.",
@@ -329,7 +329,7 @@
         "The display protocol is documented in display-protocol.md."
       ],
       "deps": "M2, M4.",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "Undocumented VRAM size; REX3 FIFO depth; 24-bit planar mode; input.",
       "docs": "../plan/milestones.html#m6--display--native-desktop"
     },
@@ -358,7 +358,7 @@
         "The X11 server is a native cell; legacy clients are MMU processes."
       ],
       "deps": "M5 (libc), M6 (display).",
-      "estimate": "12\u201320 weeks",
+      "estimate": "12–20 weeks",
       "risks": "Xlib/Motif surface; protocol corner cases; performance; 4Dwm parity.",
       "docs": "../plan/milestones.html#m7--x11"
     },
@@ -387,7 +387,7 @@
         "No log replay and no write path in v1.0."
       ],
       "deps": "M4.",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "IRIX v4 specifics (v1 dirs, ACLs); dirty logs; corrupted images.",
       "docs": "../plan/milestones.html#m8--xfs-read-only"
     },
@@ -416,7 +416,7 @@
         "The native ABI is documented in native-abi.md."
       ],
       "deps": "M2, M3, M4.",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "`fork` in a SAS kernel; cell relocation; capability/namespace impedance.",
       "docs": "../plan/milestones.html#m9--native-cell--capability-abi"
     },
@@ -447,7 +447,7 @@
         "The release is reproducible from a clean checkout."
       ],
       "deps": "All milestones.",
-      "estimate": "8\u201312 weeks",
+      "estimate": "8–12 weeks",
       "risks": "Hardware failures; real-Indy configuration; R2 quotas; last-mile bugs.",
       "docs": "../plan/milestones.html#m10--real-indy-release",
       "accent": "#ffe08a"
@@ -522,7 +522,7 @@
       "branch": "storage",
       "status": "planned",
       "title": "HTTP range",
-      "summary": "Fetch 64\u2013256 KiB root-image blocks with read-ahead, and verify the image before mount."
+      "summary": "Fetch 64–256 KiB root-image blocks with read-ahead, and verify the image before mount."
     },
     {
       "id": "m5-elf",
@@ -684,7 +684,7 @@
       "branch": "native",
       "status": "exploring",
       "title": "Capability rights",
-      "summary": "Rights, derivation, delegation and revocation \u2014 with generation counters that make stale handles loud."
+      "summary": "Rights, derivation, delegation and revocation — with generation counters that make stale handles loud."
     },
     {
       "id": "m9-ipc",
@@ -725,7 +725,7 @@
         1710,
         1520
       ],
-      "summary": "Serial, network, MCP, shell, reset and watchdog \u2014 the machine becomes programmable.",
+      "summary": "Serial, network, MCP, shell, reset and watchdog — the machine becomes programmable.",
       "includes": [
         "Serial console",
         "Network cell",
@@ -924,7 +924,7 @@
       "branch": "mycelium",
       "status": "done",
       "title": "Hardware lab",
-      "summary": "Two Indys, serial, SCSI emulation, spares and backups \u2014 the only real proof that matters.",
+      "summary": "Two Indys, serial, SCSI emulation, spares and backups — the only real proof that matters.",
       "items": [
         "Two Indys",
         "Serial rig",
