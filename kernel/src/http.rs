@@ -45,7 +45,7 @@ pub struct Summary {
     /// `Content-Length` from the response headers, when present.
     pub content_length: Option<usize>,
     /// SHA-256 of the body bytes.
-    pub sha256: crate::sha256::Sha256,
+    pub sha256: irix7_sha256::Sha256,
     /// `Location` header, when the response has one.
     pub location: Option<Location>,
 }
@@ -237,7 +237,7 @@ fn get_inner(
     let mut location: Option<Location> = None;
     let mut total_rx = 0usize;
     let mut captured = 0usize;
-    let mut hasher = crate::sha256::Hasher::new();
+    let mut hasher = irix7_sha256::Hasher::new();
     let mut last_state;
 
     let recv_deadline = net::clock_now().total_millis() + 10_000;

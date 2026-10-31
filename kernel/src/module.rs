@@ -9,7 +9,7 @@
 //! service table rather than linking against kernel symbols, so the core and
 //! a module can be rebuilt independently.
 
-use crate::sha256::Sha256;
+use irix7_sha256::Sha256;
 use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
 use smoltcp::iface::SocketHandle;

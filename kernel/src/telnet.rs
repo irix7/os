@@ -175,7 +175,7 @@ pub fn poll() {
                             let _ = write!(w, "sha256: {}\r\n", text);
                         }
                         if let Some(want) = expected {
-                            if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) {
+                            if summary.sha256.eq_digest(&irix7_sha256::Sha256(want)) {
                                 let _ = w.write_str("verify: ok\r\n");
                             } else {
                                 let _ = w.write_str("verify: MISMATCH\r\n");
@@ -295,7 +295,7 @@ pub fn poll() {
                         } else {
                             match req.expected {
                                 Some(want)
-                                    if summary.sha256.eq_digest(&crate::sha256::Sha256(want)) =>
+                                    if summary.sha256.eq_digest(&irix7_sha256::Sha256(want)) =>
                                 {
                                     // SAFETY: the image fits and its hash matched.
                                     unsafe { Ok(crate::module::call_entry(slot, captured)) }

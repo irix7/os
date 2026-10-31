@@ -8,7 +8,7 @@ description = "IRIX 7 x86_64 machine: boot path, traps and devices"
 [dependencies]
 frame-alloc = { path = "../crates/frame-alloc" }
 module-abi.workspace = true
-sha2 = { version = "0.10", default-features = false }
+irix7-sha256 = { path = "../crates/irix7-sha256" }
 smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-dhcpv4", "socket-tcp"] }
 
 [[bin]]

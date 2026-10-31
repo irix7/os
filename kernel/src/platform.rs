@@ -57,7 +57,7 @@ impl IndyShim {
 }
 
 fn seed_entropy() {
-    use crate::sha256::Hasher;
+    use irix7_sha256::Hasher;
     let mut hasher = Hasher::new();
     hasher.update(b"IRIX7-INDY-RNG-v1");
     hasher.update(&crate::traps::count_read().to_be_bytes());
@@ -71,7 +71,7 @@ fn seed_entropy() {
 }
 
 fn entropy_bytes(out: &mut [u8]) {
-    use crate::sha256::Hasher;
+    use irix7_sha256::Hasher;
     for chunk in out.chunks_mut(32) {
         unsafe {
             RNG_COUNTER = RNG_COUNTER.wrapping_add(1);

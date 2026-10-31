@@ -54,7 +54,6 @@ pub mod rtc;
 pub mod sash;
 pub mod scheduler;
 pub mod scsi;
-pub mod sha256;
 pub mod status;
 pub mod telnet;
 pub mod tlb;

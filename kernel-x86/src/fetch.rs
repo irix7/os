@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use sha2::{Digest, Sha256};
+use irix7_sha256::Sha256;
 use smoltcp::wire::Ipv4Address;
 
 use crate::memory;
@@ -72,7 +72,7 @@ pub fn image(
     crate::serial::write(b" bytes\n");
 
     let fetched = &buffer[..length];
-    if Sha256::digest(fetched).as_slice() != digest {
+    if Sha256::digest(fetched).0 != digest {
         fail("x86: autoload digest mismatch");
     }
     crate::serial::write(b"x86: autoload ");

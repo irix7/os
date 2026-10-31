@@ -8,7 +8,7 @@
 //! PROM.  NVRAM `mcp.url`/`mcp.sha256` remain a local override for the test
 //! rig.
 
-use crate::sha256::Sha256;
+use irix7_sha256::Sha256;
 
 const CONFIG_HOST: &str = "raw.githubusercontent.com";
 const CONFIG_PATH: &str = "/irix7/os/main/boot/config.conf";

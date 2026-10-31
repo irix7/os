@@ -366,8 +366,8 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
                 out.write(b"packages: userland image is not sector aligned\r\n");
                 return;
             }
-            let expected = crate::sha256::Sha256(digest);
-            if !crate::sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
+            let expected = irix7_sha256::Sha256(digest);
+            if !irix7_sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
                 out.write(b"packages: userland digest mismatch\r\n");
                 return;
             }
@@ -388,7 +388,7 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
             out.write(b"packages: userland written to SCSI target 2; reboot\r\n");
             return;
         }
-        match crate::autoload::load_url(url, &crate::sha256::Sha256(digest)) {
+        match crate::autoload::load_url(url, &irix7_sha256::Sha256(digest)) {
             Ok(0) => out.write(b"packages: module loaded\r\n"),
             Ok(code) => {
                 let _ = write!(
@@ -452,8 +452,8 @@ fn run_userland(out: &mut dyn Sink, name: &[u8]) {
                 return;
             }
         };
-        let expected = crate::sha256::Sha256(digest);
-        if !crate::sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
+        let expected = irix7_sha256::Sha256(digest);
+        if !irix7_sha256::Sha256::digest(&image[..len]).eq_digest(&expected) {
             out.write(b"packages: userland digest mismatch\r\n");
             return;
         }

@@ -621,6 +621,10 @@ name = "irix7-libc"
 version = "0.1.0"
 
 [[package]]
+name = "irix7-sha256"
+version = "0.1.0"
+
+[[package]]
 name = "kernel"
 version = "0.1.0"
 dependencies = [
@@ -633,6 +637,7 @@ dependencies = [
  "frame-alloc",
  "hpc3",
  "irix-elf",
+ "irix7-sha256",
  "m1-policy-bridge",
  "mesh-core",
  "mesh-service",
@@ -653,8 +658,8 @@ name = "kernel-x86"
 version = "0.1.0"
 dependencies = [
  "frame-alloc",
+ "irix7-sha256",
  "module-abi",
- "sha2",
  "smoltcp",
 ]
 

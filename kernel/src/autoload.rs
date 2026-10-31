@@ -11,7 +11,7 @@
 //! before the network path.
 
 use crate::nvram;
-use crate::sha256::Sha256;
+use irix7_sha256::Sha256;
 use crate::{console_println, console_write, http, module, scsi, tls};
 
 /// Outcome of the boot-time module autoload.
