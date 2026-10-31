@@ -37,6 +37,9 @@ not change the transport of any existing flow, and it leaves the transmit rework
    (SDK v0.11.0).  `udp_recv` reports the sender so a reply needs no second lookup, and
    `udp_state` reports the bound local endpoint.  `udp_open` rejects port zero because the
    in-tree stack has no ephemeral UDP bind.
+   The release graph moves with it: `packages/runtime-modules.toml` declares `host_abi` and a
+   per-module `abi`, and the manager's resolver compares a package's declared ABI against the
+   host, so a stale spec fails the boot gate instead of degrading.
 2. **The kernel owns the socket; the module owns the protocol.**  Eight slots, one socket
    per slot, a 2 KiB payload ring each way and eight packet metadata entries.  There is no
    retransmission, congestion control, framing or demultiplexing in the kernel: that is the
