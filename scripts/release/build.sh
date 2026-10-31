@@ -67,9 +67,12 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-Tkernel-x86/linker.ld -C
 cp "$TARGET_DIR/$X86_TARGET/release/kernel-x86" "$DIST/irix7-x86_64.elf"
 echo "x86_64 image: $(stat -c%s "$DIST/irix7-x86_64.elf") bytes"
 
-# The MCP control plane is a flat kernel module.
+# The MCP control plane is a flat kernel module.  It must link at opt-level z,
+# matching tools/m2-rig/build.sh: at the profile default it overflows slot A.
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
-  cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
+  cargo build --release -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
   --target "$TARGET_JSON" -p mcp-module
 "$LLVM_OBJCOPY" -O binary \
   "$TARGET_DIR/$TARGET/release/mcp-module" "$DIST/mcp.module"
