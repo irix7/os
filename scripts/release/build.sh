@@ -10,6 +10,7 @@ VERSION="${GITHUB_REF_NAME:-$(git describe --tags --always --dirty 2>/dev/null |
 DIST="$ROOT/dist"
 TARGET="mips3-sgi-irix7-n32"
 TARGET_JSON="targets/$TARGET.json"
+X86_TARGET="x86_64-unknown-none"
 TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}"
 
 rm -rf "$DIST"
@@ -54,6 +55,17 @@ if [ "$rom_size" -gt 524288 ]; then
   exit 1
 fi
 echo "PROM image: $rom_size / 524288 bytes"
+
+# The x86_64 machine image.  This slice is boot-only: QEMU's PVH path proves
+# the 32-bit entry, long mode, the deterministic memory map, the IDT and the
+# PIT.  The shared core and virtio devices follow; the image is published now
+# so the release pipeline carries both machines from the first slice.
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-Tkernel-x86/linker.ld -Crelocation-model=static" \
+  cargo build --release -Z build-std=core \
+    -Z build-std-features=compiler-builtins-mem \
+    --target "$X86_TARGET" -p kernel-x86 --features cross
+cp "$TARGET_DIR/$X86_TARGET/release/kernel-x86" "$DIST/irix7-x86_64.elf"
+echo "x86_64 image: $(stat -c%s "$DIST/irix7-x86_64.elf") bytes"
 
 # The MCP control plane is a flat kernel module.
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
@@ -151,19 +163,33 @@ mcp.url=$raw_base/boot/modules/$VERSION/mcp.module
 mcp.sha256=$module_sha
 CONF
 
+# One manifest, one entry per machine.  The Indy entry carries the ROM and the
+# signed runtime graph; the x86_64 entry carries the machine image and its
+# stage, so a consumer can tell what is actually runnable on each target.
 cat > "$DIST/manifest.json" <<MANIFEST
 {
   "name": "IRIX 7",
   "version": "$VERSION",
-  "kernel_abi": "n32",
-  "rom_abi": "o32",
   "created": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "commit": "$(git rev-parse HEAD 2>/dev/null || echo unknown)",
-  "rom_sha256": "$(sha256sum "$DIST/irix7-rom.bin" | awk '{print $1}')",
-  "mcp_sha256": "$module_sha",
-  "manager_sha256": "$manager_sha",
-  "runtime_index_sha256": "$runtime_index_sha",
-  "runtime_signatures": "$([ "${IRIX7_RELEASE_UNSIGNED:-0}" = "1" ] && echo unsigned || echo ed25519)"
+  "machines": {
+    "indy": {
+      "arch": "mips3",
+      "kernel_abi": "n32",
+      "rom_abi": "o32",
+      "rom_sha256": "$(sha256sum "$DIST/irix7-rom.bin" | awk '{print $1}')",
+      "mcp_sha256": "$module_sha",
+      "manager_sha256": "$manager_sha",
+      "runtime_index_sha256": "$runtime_index_sha",
+      "runtime_signatures": "$([ "${IRIX7_RELEASE_UNSIGNED:-0}" = "1" ] && echo unsigned || echo ed25519)"
+    },
+    "x86_64": {
+      "arch": "x86_64",
+      "image": "irix7-x86_64.elf",
+      "image_sha256": "$(sha256sum "$DIST/irix7-x86_64.elf" | awk '{print $1}')",
+      "stage": "boot"
+    }
+  }
 }
 MANIFEST
 

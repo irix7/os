@@ -1,0 +1,15 @@
+[package]
+license = "GPL-3.0-only"
+name = "kernel-x86"
+version = "0.1.0"
+edition = "2021"
+description = "IRIX 7 x86_64 machine: boot path, traps and devices"
+
+[[bin]]
+name = "kernel-x86"
+path = "src/main.rs"
+# A no_main machine image: cross-built only, never linked for the host.
+required-features = ["cross"]
+
+[features]
+cross = []

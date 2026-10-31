@@ -34,6 +34,14 @@ jobs:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
           MODULE_SIGNING_EPOCH: ${{ vars.MODULE_SIGNING_EPOCH }}
         run: ./scripts/release/build.sh
+      - name: Boot-check the x86_64 release image
+        run: |
+          if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-x86
+          fi
+          X86_IMAGE="$PWD/dist/irix7-x86_64.elf" \
+            tools/x86-qemu.sh "$RUNNER_TEMP/x86-release"
       - name: Checksums
         run: |
           cd dist

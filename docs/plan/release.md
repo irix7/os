@@ -53,7 +53,8 @@ Every release attaches:
 
 | Artefact | Contents |
 |---|---|
-| `irix7-kernel` | n32/MIPS III kernel, stripped, with symbols separately |
+| `irix7-rom.bin` | The Indy PROM image with the embedded n32 kernel |
+| `irix7-x86_64.elf` | The x86_64 machine image (PVH ELF; boot stage in the first slice) |
 | `irix7-boot.bundle` | Network, block, FS, init, MCP, console, RTC cells |
 | `irix7-root.erofs` | Read-only EROFS root image |
 | `irix7-mcp` | Host-side MCP client/CLI (optional) |
@@ -70,6 +71,7 @@ Every release attaches:
 source + lockfiles
       │
       ├─ cargo build --release --target mips3-sgi-irix7-n32   (kernel + ROM)
+      ├─ cargo build --release --target x86_64-unknown-none   (x86_64 machine)
       ├─ build boot bundle (cells + init)
       ├─ mkfs.erofs -T -U clear root/ root.erofs
       ├─ manifest.json (versions, digests, sizes, ABI)
@@ -84,7 +86,8 @@ Requirements:
 - Reproducible: same inputs → same hashes; record the toolchain versions.
 - Content-addressed: the R2 object name is the SHA-256.
 - Immutable: never overwrite a released object; publish a new digest.
-- Manifest: `manifest.json` lists the kernel, bundle, root and ABI versions.
+- Manifest: `manifest.json` lists one entry per machine under `machines`, with the
+  Indy ROM/runtime digests and the x86_64 image digest and stage.
 
 ## 5. A/B updates and rollback
 

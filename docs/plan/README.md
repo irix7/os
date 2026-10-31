@@ -19,6 +19,7 @@ The system architecture answers *what* IRIX 7 is; the hardware/compatibility spe
 | [`testing.md`](testing.md) | Test pyramid, corpus, CI, fuzzing, conformance and benchmarks. |
 | [`security.md`](security.md) | Threat model, trust boundaries, MCP development/production modes, supply chain and disclosure. |
 | [`release.md`](release.md) | Versioning, channels, artefacts, image pipeline, signing, A/B, rollback and support. |
+| [`x86.md`](x86.md) | The x86_64 machine: boot path, device set, the boundary being built behind it, and the first slice's limits. |
 | [`legal.md`](legal.md) | GPL-3.0, clean-room, provenance, DCO, trademarks and privacy. |
 | [`community.md`](community.md) | Contributing, governance, maintainers, communication and recognition. |
 | [`cost.md`](cost.md) | Free tiers, quotas, budget and scaling. |
