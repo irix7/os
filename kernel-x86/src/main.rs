@@ -29,6 +29,7 @@ mod port;
 mod pvh;
 mod serial;
 mod services;
+mod stack;
 mod tcp;
 mod timer;
 mod virtio;
@@ -190,7 +191,20 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     });
     virtio_blk::selftest(&mut disk);
     fetch::autoload(&mut disk);
-    module::run(&mut disk);
+
+    // The MCP module initialises on the boot stack, which is small and only
+    // runs its init.  The wasm policy module runs on the large stack, because
+    // the Wasm runtime is deep.
+    let mcp = module::load(&mut disk, &module::MCP);
+    let mut wasm = core::ptr::null();
+    stack::on_stack(&mut || {
+        wasm = module::load(&mut disk, &module::WASM);
+    });
+    if wasm.is_null() {
+        print_line(&[b"x86: wasm: no vtable"]);
+        qemu_exit(1);
+    }
+    module::serve(mcp);
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.

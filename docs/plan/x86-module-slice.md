@@ -43,7 +43,24 @@ machine. It does not prove the M1 probe: the M1 probe loads the wasm module
 through the Indy's autoload and checks the wasm runtime, and that is not done
 here.
 
-## Limits, stated plainly
+## The wasm policy module runs (eighth slice)
+
+The machine now runs the wasm policy module, which logs `wasm: run=42` and
+`m1-wasm: ... cap=ok`, the same result the Indy's M1 autoload check expects.
+
+- The wasm module links at `0x0400_0000` in its own 2 MiB window
+  (`modules/wasm/linker-x86.ld`). The image is 1,257,992 bytes, at disk sector
+  2048, with its header at sector 10.
+- Its runtime is deep, so the machine runs its load on a 2 MiB stack window
+  (`kernel-x86/src/stack.rs`). The 32 KiB boot stack is too small.
+- The heap grows to 16 MiB. The wasm runtime allocates through `services.alloc`.
+- `services.info(1)` returns `mac: aa:bb:cc:dd:ee:ff`, which the module reads to
+  derive its node identity. This is the same query the Indy kernel answers.
+
+The gate runs the MCP module's fetch and HTTP serve first, then loads the wasm
+module from the disk.
+
+## Limits
 
 - **Trust.** The digest comes from the disk header, which the machine itself
   trusts. A real boot takes the digest from the signed boot configuration. The
@@ -51,6 +68,8 @@ here.
 - **Services.** TCP slots are real. UDP, console input, block-through-module
   and screen services still refuse. The mesh listener depends on UDP and is
   not exercised.
+- **M1 fetch.** The wasm module comes from the disk, not from an HTTP fetch as
+  on the Indy. Only the MCP module is fetched over HTTP.
 - **Shared loader.** The loader is x86-only. The Indy kernel's loader in
   `kernel/src/module.rs` is still the only one with the full service table. The
   shared home is the next step.

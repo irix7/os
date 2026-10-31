@@ -44,7 +44,7 @@ pub fn init(start_info: u64) {
     let kernel_end = kernel_end.max(LOW_MEMORY);
     let entries = pvh::memmap(start_info);
     assert!(
-        entries.len() + 2 <= MAX_DESCS,
+        entries.len() + 4 <= MAX_DESCS,
         "memory map has too many entries"
     );
 
@@ -58,14 +58,23 @@ pub fn init(start_info: u64) {
             kind: KIND_RESERVED,
             flags: 0,
         };
-        // The module window is reserved too: modules are linked and run there.
-        descs[1] = MemDesc {
-            base: crate::module::BASE as u64,
-            size: crate::module::WINDOW as u64,
-            kind: KIND_RESERVED,
-            flags: 0,
-        };
-        for (slot, entry) in descs[2..].iter_mut().zip(entries) {
+        // Module windows and the large stack are reserved too: modules are
+        // linked and run there, and the stack is not frame memory.
+        let reserved = [
+            (crate::module::MCP.base, crate::module::MCP.window),
+            (crate::module::WASM.base, crate::module::WASM.window),
+            (crate::stack::BASE, crate::stack::SIZE),
+        ];
+        for (slot, (base, size)) in descs[1..=reserved.len()].iter_mut().zip(reserved) {
+            *slot = MemDesc {
+                base: base as u64,
+                size: size as u64,
+                kind: KIND_RESERVED,
+                flags: 0,
+            };
+        }
+        let first_entry = 1 + reserved.len();
+        for (slot, entry) in descs[first_entry..].iter_mut().zip(entries) {
             // The loader's type 1 is usable RAM; everything else is reserved.
             *slot = MemDesc {
                 base: entry.addr,
@@ -78,7 +87,7 @@ pub fn init(start_info: u64) {
                 flags: 0,
             };
         }
-        let count = 2 + entries.len();
+        let count = first_entry + entries.len();
         let all: &'static [MemDesc; MAX_DESCS] = &*addr_of!(DESCS);
         let descs = &all[..count];
         let refs = &mut *addr_of_mut!(REFS);

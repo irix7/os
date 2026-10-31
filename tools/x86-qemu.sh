@@ -48,7 +48,7 @@ SERIAL="$WORK/serial.log"
 # A 2 MiB raw disk for the virtio-blk self-test: sector 1 carries the marker the
 # kernel reads back, and the rest is zero.  Recreated on every run.
 DISK="$WORK/disk.img"
-dd if=/dev/zero of="$DISK" bs=512 count=4096 2>/dev/null
+dd if=/dev/zero of="$DISK" bs=512 count=16384 2>/dev/null
 printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/null
 
 # The MCP control-plane module, linked for the x86 window, and its header on
@@ -62,7 +62,13 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/mcp/linke
 OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
 MODULE="$WORK/mcp-x86.module"
 "$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/mcp-module" "$MODULE"
-dd if="$MODULE" of="$DISK" bs=512 seek=16 conv=notrunc 2>/dev/null
+WASM="$WORK/wasm-x86.module"
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/wasm/linker-x86.ld -Crelocation-model=static" \
+  CARGO_TARGET_DIR="$MODULE_TARGET" \
+  "$CARGO" build --release -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem \
+    --target x86_64-unknown-none -p wasm-module
+"$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/wasm-module" "$WASM"
 # Autoload fixture: the host serves the module, and the guest reaches it at the
 # user-network gateway, 10.0.2.2.  Sector 9 names the URL.
 FIXTURE_DIR="$WORK/fixture"
@@ -72,13 +78,26 @@ FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.
 (cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
 FIXTURE_PID=$!
 printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
-python3 -I - "$DISK" "$MODULE" <<'PY'
+python3 -I - "$DISK" "$MODULE" 8 16 <<'PY'
 import hashlib, struct, sys
-disk, module = sys.argv[1], sys.argv[2]
+disk, module, header_sector, image_sector = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 data = open(module, "rb").read()
 header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
 with open(disk, "r+b") as f:
-    f.seek(8 * 512)
+    f.seek(image_sector * 512)
+    f.write(data)
+    f.seek(header_sector * 512)
+    f.write(header)
+PY
+python3 -I - "$DISK" "$WASM" 10 2048 <<'PY'
+import hashlib, struct, sys
+disk, module, header_sector, image_sector = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+data = open(module, "rb").read()
+header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+with open(disk, "r+b") as f:
+    f.seek(image_sector * 512)
+    f.write(data)
+    f.seek(header_sector * 512)
     f.write(header)
 PY
 rm -f "$SERIAL"
@@ -148,10 +167,14 @@ markers=(
   "x86: blk capacity="
   "x86: blk read sector 1=IRIX7-X86-DISK-OK"
   "x86: blk write readback ok"
-  "x86: module sha256 ok size="
+  "mcp: sha256 ok size="
   "x86: autoload fetched "
   "x86: autoload sha256 ok"
-  "x86: module entry status=0"
+  "mcp: entry status=0"
+  "wasm: sha256 ok"
+  "wasm: entry status=0"
+  "wasm: run=42"
+  "m1-wasm: "
   "x86: module serving"
   "mcp: listening on port 80"
   "x86: deliberate fault: int3"

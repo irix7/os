@@ -85,6 +85,15 @@ impl Device for NicDevice {
     }
 }
 
+/// The NIC's MAC address, recorded when the stack comes up.
+static mut MAC: Option<[u8; 6]> = None;
+
+/// The NIC's MAC address, once the stack is up.
+pub fn mac() -> Option<[u8; 6]> {
+    // SAFETY: read-only access on the single thread.
+    unsafe { *core::ptr::addr_of!(MAC) }
+}
+
 /// Everything the stack owns for the life of the boot.
 pub struct Stack {
     device: NicDevice,
@@ -118,6 +127,8 @@ pub fn init() -> Option<Ipv4Address> {
         return None;
     };
     let mac = nic.mac();
+    // SAFETY: written once, before any reader.
+    unsafe { *core::ptr::addr_of_mut!(MAC) = Some(mac) };
     crate::serial::write(b"x86: virtio-net mac=");
     for (i, byte) in mac.iter().enumerate() {
         if i > 0 {

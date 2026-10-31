@@ -11,8 +11,8 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::memory;
 
-/// Heap size in 4 KiB frames: 1 MiB.
-const HEAP_FRAMES: usize = 256;
+/// Heap size in 4 KiB frames: 16 MiB, enough for the Wasm runtime's heap.
+const HEAP_FRAMES: usize = 4096;
 const HEAP_BYTES: usize = HEAP_FRAMES * 4096;
 
 struct Bump {

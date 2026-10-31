@@ -70,7 +70,31 @@ safe_stub!(console_total() -> u64 = 0);
 safe_stub!(reset() -> () = ());
 safe_stub!(poweroff() -> () = ());
 stub!(status(*mut u8, usize) -> isize = REFUSED);
-stub!(info(u32, *mut u8, usize) -> isize = REFUSED);
+/// Machine information.  Query 1 is the node text the wasm policy module reads:
+/// `mac: aa:bb:cc:dd:ee:ff`.  Other queries are refused.
+unsafe extern "C" fn info(which: u32, out: *mut u8, len: usize) -> isize {
+    if which != 1 || out.is_null() {
+        return REFUSED;
+    }
+    let Some(mac) = crate::net::mac() else {
+        return REFUSED;
+    };
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut text = [0u8; 24];
+    text[..5].copy_from_slice(b"mac: ");
+    for (i, byte) in mac.iter().enumerate() {
+        let at = 5 + i * 3;
+        text[at] = DIGITS[(byte >> 4) as usize];
+        text[at + 1] = DIGITS[(byte & 0xF) as usize];
+        if i < 5 {
+            text[at + 2] = b':';
+        }
+    }
+    let count = text.len().min(len);
+    // SAFETY: the module passes a buffer of `len` bytes it owns for the call.
+    unsafe { core::ptr::copy_nonoverlapping(text.as_ptr(), out, count) };
+    count as isize
+}
 stub!(screen_read(u32, *mut u8, usize) -> isize = REFUSED);
 stub!(block_read(u8, u32, *mut u8) -> i32 = -1);
 stub!(block_write(u8, u32, *const u8) -> i32 = -1);
