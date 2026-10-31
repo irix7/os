@@ -8,16 +8,16 @@
 
 use core::ptr::{addr_of, addr_of_mut};
 
-use frame_alloc::{Allocator, MemDesc, KIND_RESERVED, KIND_USABLE_RAM};
+use frame_alloc::{MemDesc, Store, KIND_RESERVED, KIND_USABLE_RAM};
 
 use crate::pvh;
 
-/// Descriptor slots: the reserved low image plus the loader's entries.
+/// Descriptor slots: the reserved low image, the module windows and stack, and
+/// the loader's entries.
 const MAX_DESCS: usize = 32;
 
 /// Frames the allocator tracks: 1 GiB of 4 KiB frames.  Frames above this are
-/// never handed out, so a larger guest keeps its extra RAM unused until the
-/// array grows.  The array costs four bytes per frame of `.bss`.
+/// never handed out.  The reference counts cost four bytes per frame of `.bss`.
 const TRACKED_FRAMES: usize = 1024 * 1024 * 1024 / 4096;
 
 /// The loader's memory map is at least this large in every boot we target.
@@ -28,82 +28,71 @@ extern "C" {
     static __kernel_end: u8;
 }
 
-static mut DESCS: [MemDesc; MAX_DESCS] = [MemDesc {
-    base: 0,
-    size: 0,
-    kind: KIND_RESERVED,
-    flags: 0,
-}; MAX_DESCS];
-static mut REFS: [u32; TRACKED_FRAMES] = [0; TRACKED_FRAMES];
-static mut ALLOC: Option<Allocator<'static>> = None;
+static mut STORE: Store<MAX_DESCS, TRACKED_FRAMES> = Store::new();
+
+/// The machine's frame store.  The machine is single-threaded, so this is the
+/// only mutable access in flight.
+fn store() -> &'static mut Store<MAX_DESCS, TRACKED_FRAMES> {
+    // SAFETY: single-threaded, and no caller holds the store across another call.
+    unsafe { &mut *addr_of_mut!(STORE) }
+}
 
 /// Build the descriptor list from the loader's memory map and start the
 /// allocator.  Called once, before the heap or any other allocation.
 pub fn init(start_info: u64) {
-    let kernel_end = addr_of!(__kernel_end) as u64;
-    let kernel_end = kernel_end.max(LOW_MEMORY);
+    let kernel_end = (addr_of!(__kernel_end) as u64).max(LOW_MEMORY);
     let entries = pvh::memmap(start_info);
-    assert!(
-        entries.len() + 4 <= MAX_DESCS,
-        "memory map has too many entries"
-    );
 
-    // SAFETY: called once during boot, before any other access to these
-    // statics; no interrupt handler reads them.
-    unsafe {
-        let descs = &mut *addr_of_mut!(DESCS);
-        descs[0] = MemDesc {
-            base: 0,
-            size: kernel_end,
+    let mut descs = [MemDesc {
+        base: 0,
+        size: 0,
+        kind: KIND_RESERVED,
+        flags: 0,
+    }; MAX_DESCS];
+    let mut count = 0;
+    let mut reserve = |base: u64, size: u64| {
+        descs[count] = MemDesc {
+            base,
+            size,
             kind: KIND_RESERVED,
             flags: 0,
         };
-        // Module windows and the large stack are reserved too: modules are
-        // linked and run there, and the stack is not frame memory.
-        let reserved = [
-            (crate::module::MCP.base, crate::module::MCP.window),
-            (crate::module::WASM.base, crate::module::WASM.window),
-            (crate::stack::BASE, crate::stack::SIZE),
-        ];
-        for (slot, (base, size)) in descs[1..=reserved.len()].iter_mut().zip(reserved) {
-            *slot = MemDesc {
-                base: base as u64,
-                size: size as u64,
-                kind: KIND_RESERVED,
-                flags: 0,
-            };
-        }
-        let first_entry = 1 + reserved.len();
-        for (slot, entry) in descs[first_entry..].iter_mut().zip(entries) {
-            // The loader's type 1 is usable RAM; everything else is reserved.
-            *slot = MemDesc {
-                base: entry.addr,
-                size: entry.size,
-                kind: if entry.kind == 1 {
-                    KIND_USABLE_RAM
-                } else {
-                    KIND_RESERVED
-                },
-                flags: 0,
-            };
-        }
-        let count = first_entry + entries.len();
-        let all: &'static [MemDesc; MAX_DESCS] = &*addr_of!(DESCS);
-        let descs = &all[..count];
-        let refs = &mut *addr_of_mut!(REFS);
-        *addr_of_mut!(ALLOC) = Some(Allocator::new(descs, refs));
+        count += 1;
+    };
+    // The low memory and kernel image come first.
+    reserve(0, kernel_end);
+    // Module windows and the large stack are reserved too: modules are linked
+    // and run there, and the stack is not frame memory.
+    for (base, size) in [
+        (crate::module::MCP.base, crate::module::MCP.window),
+        (crate::module::WASM.base, crate::module::WASM.window),
+        (crate::stack::BASE, crate::stack::SIZE),
+    ] {
+        reserve(base as u64, size as u64);
     }
-}
-
-fn with<R>(f: impl FnOnce(&mut Allocator<'static>) -> R) -> Option<R> {
-    // SAFETY: the machine is single-threaded and `init` has run before use.
-    unsafe { (*addr_of_mut!(ALLOC)).as_mut().map(f) }
+    for entry in entries {
+        // The loader's type 1 is usable RAM; everything else is reserved.
+        let kind = if entry.kind == 1 {
+            KIND_USABLE_RAM
+        } else {
+            KIND_RESERVED
+        };
+        descs[count] = MemDesc {
+            base: entry.addr,
+            size: entry.size,
+            kind,
+            flags: 0,
+        };
+        count += 1;
+    }
+    assert!(count <= MAX_DESCS, "memory map has too many entries");
+    store().init(&descs[..count]);
 }
 
 /// Allocate `count` physically contiguous frames.  The machine identity maps
 /// the first 4 GiB, so the physical address is also the address to use.
 pub fn alloc_frames(count: usize) -> Option<u64> {
-    with(|a| a.alloc_frames(count)).flatten()
+    store().alloc_frames(count)
 }
 
 /// Allocate one frame.
@@ -113,10 +102,10 @@ pub fn alloc_frame() -> Option<u64> {
 
 /// Usable RAM described by the loader, in bytes.
 pub fn total_ram() -> u64 {
-    with(|a| a.total_ram()).unwrap_or(0)
+    store().total_ram()
 }
 
 /// Frames the allocator can still hand out.
 pub fn free_frames() -> usize {
-    with(|a| a.free_frames()).unwrap_or(0)
+    store().free_frames()
 }

@@ -62,6 +62,12 @@ impl<'a> Allocator<'a> {
         allocator
     }
 
+    /// Attach to state that `new` already initialised.  Unlike `new`, this
+    /// leaves the reference counts as they are.
+    pub fn resume(descs: &'a [MemDesc], refs: &'a mut [u32]) -> Self {
+        Self { descs, refs }
+    }
+
     /// The tracked frame numbers covered by a descriptor.
     fn frames_of(&self, desc: &MemDesc) -> core::ops::Range<usize> {
         let limit = self.refs.len();
@@ -143,6 +149,84 @@ impl<'a> Allocator<'a> {
         self.usable()
             .map(|range| range.filter(|&frame| self.refs[frame] == 0).count())
             .sum()
+    }
+}
+
+/// Frame state with fixed capacity, owned by one kernel.
+///
+/// A kernel declares one `Store` as a static and calls it.  `DESCS` bounds
+/// the descriptor list and `FRAMES` bounds the frames tracked, so the whole
+/// structure is `.bss` and has no allocation.
+pub struct Store<const DESCS: usize, const FRAMES: usize> {
+    descs: [MemDesc; DESCS],
+    count: usize,
+    refs: [u32; FRAMES],
+    ready: bool,
+}
+
+impl<const DESCS: usize, const FRAMES: usize> Store<DESCS, FRAMES> {
+    /// An empty store.  `init` must run before any allocation.
+    pub const fn new() -> Self {
+        Self {
+            descs: [MemDesc {
+                base: 0,
+                size: 0,
+                kind: KIND_RESERVED,
+                flags: 0,
+            }; DESCS],
+            count: 0,
+            refs: [0; FRAMES],
+            ready: false,
+        }
+    }
+
+    /// Copy the descriptor list and mark the frames it reserves.  Returns the
+    /// number of descriptors stored.  Panics if the list does not fit.
+    pub fn init(&mut self, descs: &[MemDesc]) -> usize {
+        assert!(descs.len() <= DESCS, "frame store: too many descriptors");
+        self.descs[..descs.len()].copy_from_slice(descs);
+        self.count = descs.len();
+        Allocator::new(&self.descs[..self.count], &mut self.refs);
+        self.ready = true;
+        self.count
+    }
+
+    fn with<R>(&mut self, f: impl FnOnce(&mut Allocator<'_>) -> R) -> Option<R> {
+        if !self.ready {
+            return None;
+        }
+        let mut allocator = Allocator::resume(&self.descs[..self.count], &mut self.refs);
+        Some(f(&mut allocator))
+    }
+
+    /// Allocate one frame.
+    pub fn alloc_frame(&mut self) -> Option<u64> {
+        self.with(|a| a.alloc_frame()).flatten()
+    }
+
+    /// Allocate `count` contiguous frames.
+    pub fn alloc_frames(&mut self, count: usize) -> Option<u64> {
+        self.with(|a| a.alloc_frames(count)).flatten()
+    }
+
+    /// Drop one reference to a frame.
+    pub fn free_frame(&mut self, addr: u64) {
+        self.with(|a| a.free_frame(addr));
+    }
+
+    /// The reference count of the frame at `addr`.
+    pub fn ref_count(&mut self, addr: u64) -> u32 {
+        self.with(|a| a.ref_count(addr)).unwrap_or(0)
+    }
+
+    /// Usable RAM described, in bytes.
+    pub fn total_ram(&mut self) -> u64 {
+        self.with(|a| a.total_ram()).unwrap_or(0)
+    }
+
+    /// Free frames inside the usable descriptors.
+    pub fn free_frames(&mut self) -> usize {
+        self.with(|a| a.free_frames()).unwrap_or(0)
     }
 }
 
