@@ -188,6 +188,13 @@ been written.
   descriptor writeback lands after `ACTIVE` clears, so the reuse races it and corrupts
   memory.  Keying on the writeback instead, or on a ring with one frame per descriptor,
   is the candidate design for the next slice.
+- **A four- and eight-descriptor ring.**  Implemented and reverted: the rig's 414 KiB module
+  fetch times out with it (8 runs of 4 variants) while upstream passes 4/4, and adding a
+  never-taken diagnostic to the same build turned a failing boot into a passing one, so the
+  ring's fetch is marginal rather than broken.  The measurements, the evidence and the next
+  hypotheses are in <https://github.com/irix7/os/issues/274>; the ring is the right shape,
+  but it needs the emulator-side timing measurement and the hybrid (ring with a bounded
+  blocking wait when full) before it is retried.
 - **Keeping the blocking transmit and adding a timeout.**  A timeout does not make the call
   non-blocking; it only chooses how long the kernel stalls.
 - **Porting quinn, quiche, s2n-quic or neqo now.**  The study measured rustls alone at
