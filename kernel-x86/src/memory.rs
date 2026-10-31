@@ -43,7 +43,10 @@ pub fn init(start_info: u64) {
     let kernel_end = addr_of!(__kernel_end) as u64;
     let kernel_end = kernel_end.max(LOW_MEMORY);
     let entries = pvh::memmap(start_info);
-    assert!(entries.len() < MAX_DESCS, "memory map has too many entries");
+    assert!(
+        entries.len() + 2 <= MAX_DESCS,
+        "memory map has too many entries"
+    );
 
     // SAFETY: called once during boot, before any other access to these
     // statics; no interrupt handler reads them.
@@ -55,7 +58,14 @@ pub fn init(start_info: u64) {
             kind: KIND_RESERVED,
             flags: 0,
         };
-        for (slot, entry) in descs[1..].iter_mut().zip(entries) {
+        // The module window is reserved too: modules are linked and run there.
+        descs[1] = MemDesc {
+            base: crate::module::BASE as u64,
+            size: crate::module::WINDOW as u64,
+            kind: KIND_RESERVED,
+            flags: 0,
+        };
+        for (slot, entry) in descs[2..].iter_mut().zip(entries) {
             // The loader's type 1 is usable RAM; everything else is reserved.
             *slot = MemDesc {
                 base: entry.addr,
@@ -68,7 +78,7 @@ pub fn init(start_info: u64) {
                 flags: 0,
             };
         }
-        let count = 1 + entries.len();
+        let count = 2 + entries.len();
         let all: &'static [MemDesc; MAX_DESCS] = &*addr_of!(DESCS);
         let descs = &all[..count];
         let refs = &mut *addr_of_mut!(REFS);

@@ -21,11 +21,13 @@ use core::panic::PanicInfo;
 mod heap;
 mod idt;
 mod memory;
+mod module;
 mod net;
 mod pci;
 mod port;
 mod pvh;
 mod serial;
+mod services;
 mod timer;
 mod virtio;
 mod virtio_blk;
@@ -180,7 +182,12 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     serial::write_byte(b'\n');
 
     let _ = net::init();
-    virtio_blk::selftest();
+    let mut disk = virtio_blk::probe().unwrap_or_else(|| {
+        print_line(&[b"x86: blk: no virtio-blk device"]);
+        qemu_exit(1)
+    });
+    virtio_blk::selftest(&mut disk);
+    module::run(&mut disk);
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.

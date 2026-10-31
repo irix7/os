@@ -167,13 +167,9 @@ unsafe fn read_status() -> u8 {
 }
 
 /// Boot-time proof of the disk: read a marker the gate placed in sector 1,
-/// then write a pattern to sector 2 and read it back.  A missing device or a
-/// wrong byte stops the machine with a failing exit status.
-pub fn selftest() {
-    let Some(mut disk) = probe() else {
-        crate::print_line(&[b"x86: blk: no virtio-blk device"]);
-        crate::qemu_exit(1);
-    };
+/// then write a pattern to sector 2 and read it back.  A wrong byte stops the
+/// machine with a failing exit status.
+pub fn selftest(disk: &mut Disk) {
     crate::serial::write(b"x86: blk capacity=");
     crate::print_dec(disk.sectors());
     crate::serial::write(b" sectors\n");

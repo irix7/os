@@ -50,6 +50,28 @@ SERIAL="$WORK/serial.log"
 DISK="$WORK/disk.img"
 dd if=/dev/zero of="$DISK" bs=512 count=4096 2>/dev/null
 printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/null
+
+# The MCP control-plane module, linked for the x86 window, and its header on
+# sector 8: magic, length and SHA-256 (see kernel-x86/src/module.rs).
+MODULE_TARGET="$WORK/module-target"
+CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/mcp/linker-x86.ld -Crelocation-model=static" \
+  CARGO_TARGET_DIR="$MODULE_TARGET" \
+  "$CARGO" build --release -Z build-std=core,alloc \
+    -Z build-std-features=compiler-builtins-mem \
+    --target x86_64-unknown-none -p mcp-module
+OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+MODULE="$WORK/mcp-x86.module"
+"$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/mcp-module" "$MODULE"
+dd if="$MODULE" of="$DISK" bs=512 seek=16 conv=notrunc 2>/dev/null
+python3 -I - "$DISK" "$MODULE" <<'PY'
+import hashlib, struct, sys
+disk, module = sys.argv[1], sys.argv[2]
+data = open(module, "rb").read()
+header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+with open(disk, "r+b") as f:
+    f.seek(8 * 512)
+    f.write(header)
+PY
 rm -f "$SERIAL"
 
 set +e
@@ -97,6 +119,8 @@ markers=(
   "x86: blk capacity="
   "x86: blk read sector 1=IRIX7-X86-DISK-OK"
   "x86: blk write readback ok"
+  "x86: module sha256 ok size="
+  "x86: module entry status=0"
   "x86: deliberate fault: int3"
   "x86: exception vector=3 (breakpoint)"
   "x86: halted"
