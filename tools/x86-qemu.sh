@@ -63,6 +63,15 @@ OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p
 MODULE="$WORK/mcp-x86.module"
 "$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/mcp-module" "$MODULE"
 dd if="$MODULE" of="$DISK" bs=512 seek=16 conv=notrunc 2>/dev/null
+# Autoload fixture: the host serves the module, and the guest reaches it at the
+# user-network gateway, 10.0.2.2.  Sector 9 names the URL.
+FIXTURE_DIR="$WORK/fixture"
+mkdir -p "$FIXTURE_DIR"
+cp "$MODULE" "$FIXTURE_DIR/mcp-x86.module"
+FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+(cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
+FIXTURE_PID=$!
+printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
 python3 -I - "$DISK" "$MODULE" <<'PY'
 import hashlib, struct, sys
 disk, module = sys.argv[1], sys.argv[2]
@@ -107,6 +116,7 @@ for _ in $(seq 1 60); do
 done
 wait "$QEMU_PID"
 status=$?
+kill "$FIXTURE_PID" 2>/dev/null || true
 set -e
 
 echo "x86-qemu: http probe: ${http_status:-no response}"
@@ -139,6 +149,8 @@ markers=(
   "x86: blk read sector 1=IRIX7-X86-DISK-OK"
   "x86: blk write readback ok"
   "x86: module sha256 ok size="
+  "x86: autoload fetched "
+  "x86: autoload sha256 ok"
   "x86: module entry status=0"
   "x86: module serving"
   "mcp: listening on port 80"

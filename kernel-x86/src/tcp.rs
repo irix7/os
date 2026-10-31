@@ -23,7 +23,7 @@ const BUFFER: usize = 16384;
 /// Readiness bits, as the Indy kernel defines them.
 const EV_RX: u32 = 1 << 0;
 const EV_TX: u32 = 1 << 1;
-const EV_CLOSED: u32 = 1 << 2;
+pub const EV_CLOSED: u32 = 1 << 2;
 const EV_LISTEN: u32 = 1 << 3;
 const EV_ESTABLISHED: u32 = 1 << 4;
 const EV_NO_SOCKET: u32 = 1 << 31;

@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+mod fetch;
 mod heap;
 mod idt;
 mod memory;
@@ -188,6 +189,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         qemu_exit(1)
     });
     virtio_blk::selftest(&mut disk);
+    fetch::autoload(&mut disk);
     module::run(&mut disk);
 
     print_line(&[b"x86: deliberate fault: int3"]);

@@ -29,6 +29,20 @@ The gate forwards a free host port to guest port 80 with QEMU's user networking,
 waits for `mcp: listening on port 80`, and sends a real HTTP request from the
 host. It got `HTTP/1.0 200 OK` from the module running on the x86 machine.
 
+## Autoload fetch (seventh slice)
+
+The kernel fetches the module over HTTP before it loads it, as the Indy kernel's
+autoload does. The URL is on the boot disk (`a.b.c.d:port/path`, sector 9). The
+kernel makes an HTTP/1.0 GET through module TCP slot 7, which is free at boot,
+and checks the 676,384-byte body against the digest in the disk header. The gate
+serves the module from a host fixture and points sector 9 at the gateway,
+10.0.2.2.
+
+This proves `tcp_connect`, `tcp_send`, `tcp_recv` and the close path on the
+machine. It does not prove the M1 probe: the M1 probe loads the wasm module
+through the Indy's autoload and checks the wasm runtime, and that is not done
+here.
+
 ## Limits, stated plainly
 
 - **Trust.** The digest comes from the disk header, which the machine itself
@@ -43,8 +57,8 @@ host. It got `HTTP/1.0 200 OK` from the module running on the x86 machine.
 
 ## Next
 
-1. The M1 probe: the module fetches a Wasm module over HTTP (a TCP client) and
-   checks its digest. This exercises `tcp_connect` and the autoload path.
+1. The M1 probe: autoload of the wasm module (the fetch path now works), then the
+   wasm runtime running it.
 2. UDP slots over smoltcp, for the M3 transport gate.
 3. Move the arch-neutral loader and service logic into a shared module, with the
    Indy as the first user, so the two kernels stop duplicating it.
