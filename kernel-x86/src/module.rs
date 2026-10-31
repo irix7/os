@@ -11,6 +11,7 @@
 use module_abi::ModuleVtable;
 use sha2::{Digest, Sha256};
 
+use crate::net;
 use crate::print_line;
 use crate::serial;
 use crate::services::SERVICES;
@@ -20,6 +21,9 @@ use crate::virtio_blk::{Disk, SECTOR};
 /// reservation `memory.rs` makes.
 pub const BASE: usize = 0x0200_0000;
 pub const WINDOW: usize = 0x0020_0000;
+
+/// How long the machine serves before its boot ends: 60 s at 100 Hz.
+const SERVE_TICKS: u32 = 6000;
 
 const HEADER_SECTOR: u64 = 8;
 const IMAGE_SECTOR: u64 = 16;
@@ -81,6 +85,25 @@ pub fn run(disk: &mut Disk) {
     serial::write_byte(b'\n');
     if status != 0 {
         fail("x86: module init failed");
+    }
+
+    // Serve: poll the stack and call the module's tick until the window ends.
+    // The module's HTTP server runs from its tick and its listener from the
+    // stack's poll.  A tick that returns non-zero unregisters it, as the Indy
+    // kernel does.
+    serial::write(b"x86: module serving\n");
+    let tick = unsafe { (*vtable).tick };
+    let start = crate::timer::ticks();
+    let mut ticking = tick.is_some();
+    while crate::timer::ticks().wrapping_sub(start) < SERVE_TICKS {
+        net::poll();
+        if let (true, Some(tick)) = (ticking, tick) {
+            // SAFETY: the module registered this tick and receives the same table.
+            if unsafe { tick(&SERVICES) } != 0 {
+                ticking = false;
+            }
+        }
+        core::hint::spin_loop();
     }
 }
 

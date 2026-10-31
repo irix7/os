@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The x86_64 network stack: smoltcp over the polled virtio-net driver, with
-//! DHCP for the address.  This is the same stack the Indy kernel runs, on a
-//! different device.
+//! DHCP for the address.  The stack lives for the whole boot: `init` brings it
+//! up, and `poll` drives it from the idle loop and from module services.
 
-use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
+use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::dhcpv4;
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
 
 use crate::timer;
 use crate::virtio_net::{Nic, MAX_FRAME};
@@ -15,8 +15,11 @@ use crate::virtio_net::{Nic, MAX_FRAME};
 /// How long DHCP may take before the machine reports it and carries on.
 const DHCP_TICKS: u32 = 500; // 5 s at 100 Hz
 
+/// Socket slots: the DHCP client plus the module TCP slots.
+const SOCKET_SLOTS: usize = 12;
+
 /// smoltcp's clock, from the PIT tick count.
-fn now() -> Instant {
+pub fn now() -> Instant {
     Instant::from_millis(i64::from(timer::ticks()) * 10)
 }
 
@@ -82,7 +85,19 @@ impl Device for NicDevice {
     }
 }
 
-static mut SOCKET_STORAGE: [SocketStorage<'static>; 1] = [SocketStorage::EMPTY; 1];
+/// Everything the stack owns for the life of the boot.
+pub struct Stack {
+    device: NicDevice,
+    iface: Interface,
+    sockets: SocketSet<'static>,
+    dhcp: SocketHandle,
+    address: Option<Ipv4Cidr>,
+    gateway: Option<Ipv4Address>,
+}
+
+static mut SOCKET_STORAGE: [SocketStorage<'static>; SOCKET_SLOTS] =
+    [SocketStorage::EMPTY; SOCKET_SLOTS];
+static mut STACK: Option<Stack> = None;
 
 fn dotted(address: Ipv4Address) {
     let octets = address.octets();
@@ -96,7 +111,7 @@ fn dotted(address: Ipv4Address) {
 
 /// Bring up the NIC and configure the interface from DHCP.  Prints the lease
 /// and returns the address, or `None` when the device is absent or DHCP does
-/// not answer in time.
+/// not answer in time.  The stack stays up either way.
 pub fn init() -> Option<Ipv4Address> {
     let Some(nic) = crate::virtio_net::probe() else {
         crate::print_line(&[b"x86: net: no virtio-net device"]);
@@ -117,29 +132,36 @@ pub fn init() -> Option<Ipv4Address> {
         rx: [0; MAX_FRAME],
     };
     let config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
-    let mut iface = Interface::new(config, &mut device, now());
+    let iface = Interface::new(config, &mut device, now());
 
-    // SAFETY: the machine is single-threaded and this runs once, before the
-    // socket set is used anywhere else.
-    let storage = unsafe { &mut *core::ptr::addr_of_mut!(SOCKET_STORAGE) };
-    let mut sockets = SocketSet::new(&mut storage[..]);
+    // SAFETY: the machine is single-threaded and the storage is used only by
+    // the stack created here.
+    let storage: &'static mut [SocketStorage<'static>] =
+        unsafe { &mut *core::ptr::addr_of_mut!(SOCKET_STORAGE) }.as_mut_slice();
+    let mut sockets = SocketSet::new(storage);
     let dhcp = sockets.add(dhcpv4::Socket::new());
 
+    // SAFETY: as above; this is the one write of the stack.
+    unsafe {
+        *core::ptr::addr_of_mut!(STACK) = Some(Stack {
+            device,
+            iface,
+            sockets,
+            dhcp,
+            address: None,
+            gateway: None,
+        });
+    }
+
+    crate::print_line(&[b"x86: net: dhcp started"]);
     let start = timer::ticks();
     while timer::ticks().wrapping_sub(start) < DHCP_TICKS {
-        iface.poll(now(), &mut device, &mut sockets);
-        let socket = sockets.get_mut::<dhcpv4::Socket>(dhcp);
-        if let Some(dhcpv4::Event::Configured(lease)) = socket.poll() {
-            let address = lease.address;
-            iface.update_ip_addrs(|addrs| {
-                addrs.clear();
-                let _ = addrs.push(IpCidr::Ipv4(address));
-            });
+        poll();
+        if let Some(address) = configured() {
             crate::serial::write(b"x86: net ip=");
             dotted(address.address());
             crate::serial::write_byte(b'\n');
-            if let Some(router) = lease.router {
-                let _ = iface.routes_mut().add_default_ipv4_route(router);
+            if let Some(router) = gateway() {
                 crate::serial::write(b"x86: net gateway=");
                 dotted(router);
                 crate::serial::write_byte(b'\n');
@@ -149,4 +171,63 @@ pub fn init() -> Option<Ipv4Address> {
     }
     crate::print_line(&[b"x86: net: dhcp timed out"]);
     None
+}
+
+/// Drive the stack once: move frames, run sockets, and apply any DHCP lease.
+/// Cheap when there is nothing to do.
+pub fn poll() {
+    // SAFETY: single-threaded; the stack is created once by `init` and not
+    // borrowed across this call.
+    let Some(stack) = (unsafe { (*core::ptr::addr_of_mut!(STACK)).as_mut() }) else {
+        return;
+    };
+    stack
+        .iface
+        .poll(now(), &mut stack.device, &mut stack.sockets);
+
+    if let Some(dhcpv4::Event::Configured(lease)) =
+        stack.sockets.get_mut::<dhcpv4::Socket>(stack.dhcp).poll()
+    {
+        let address = lease.address;
+        stack.iface.update_ip_addrs(|addrs| {
+            addrs.clear();
+            let _ = addrs.push(IpCidr::Ipv4(address));
+        });
+        stack.address = Some(address);
+        if let Some(router) = lease.router {
+            let _ = stack.iface.routes_mut().add_default_ipv4_route(router);
+            stack.gateway = Some(router);
+        }
+    }
+}
+
+/// The leased address, once DHCP has configured the interface.
+pub fn configured() -> Option<Ipv4Cidr> {
+    // SAFETY: read-only access on the same single thread.
+    unsafe { (*core::ptr::addr_of!(STACK)).as_ref()?.address }
+}
+
+fn gateway() -> Option<Ipv4Address> {
+    // SAFETY: read-only access on the same single thread.
+    unsafe { (*core::ptr::addr_of!(STACK)).as_ref()?.gateway }
+}
+
+/// Run `f` against the socket set, or return `None` before `init`.
+pub fn with_sockets<R>(f: impl FnOnce(&mut SocketSet<'static>) -> R) -> Option<R> {
+    // SAFETY: single-threaded; the stack is not borrowed elsewhere during `f`.
+    unsafe {
+        (*core::ptr::addr_of_mut!(STACK))
+            .as_mut()
+            .map(|s| f(&mut s.sockets))
+    }
+}
+
+/// Run `f` against the interface and the socket set together.
+pub fn with_stack<R>(f: impl FnOnce(&mut Interface, &mut SocketSet<'static>) -> R) -> Option<R> {
+    // SAFETY: as for `with_sockets`.
+    unsafe {
+        (*core::ptr::addr_of_mut!(STACK))
+            .as_mut()
+            .map(|s| f(&mut s.iface, &mut s.sockets))
+    }
 }

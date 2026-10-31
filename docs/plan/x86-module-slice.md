@@ -18,25 +18,33 @@ returns status 0. The gate checks the digest marker and the status.
   `config_get`. Every other entry returns an error, so a module that calls one
   sees a refusal, not a null pointer.
 
+## Serving (sixth slice)
+
+The module now serves. The x86 kernel keeps its network stack alive for the
+whole boot, implements the module TCP slots (`kernel-x86/src/tcp.rs`) with the
+Indy kernel's semantics, and runs a serve loop after the module's init. The
+loop polls the stack and calls the module's tick for 60 s.
+
+The gate forwards a free host port to guest port 80 with QEMU's user networking,
+waits for `mcp: listening on port 80`, and sends a real HTTP request from the
+host. It got `HTTP/1.0 200 OK` from the module running on the x86 machine.
+
 ## Limits, stated plainly
 
 - **Trust.** The digest comes from the disk header, which the machine itself
   trusts. A real boot takes the digest from the signed boot configuration. The
   x86 machine has no signed configuration yet.
-- **Services.** No TCP, UDP, console-input, block-through-module or screen
-  services. The module's HTTP server and mesh listener cannot run. The module
-  initialises and returns; it does not serve.
+- **Services.** TCP slots are real. UDP, console input, block-through-module
+  and screen services still refuse. The mesh listener depends on UDP and is
+  not exercised.
 - **Shared loader.** The loader is x86-only. The Indy kernel's loader in
   `kernel/src/module.rs` is still the only one with the full service table. The
   shared home is the next step.
-- **Module tick.** The vtable's tick is not called yet. The idle loop that calls
-  it does not exist on x86.
 
 ## Next
 
-1. Implement TCP and UDP services over the x86 smoltcp stack, so the module's
-   listener can run. This is the bulk of the Indy's `module.rs` socket glue.
-2. Move the arch-neutral loader and service logic into a shared module, with the
+1. The M1 probe: the module fetches a Wasm module over HTTP (a TCP client) and
+   checks its digest. This exercises `tcp_connect` and the autoload path.
+2. UDP slots over smoltcp, for the M3 transport gate.
+3. Move the arch-neutral loader and service logic into a shared module, with the
    Indy as the first user, so the two kernels stop duplicating it.
-3. Call the module's tick from an x86 idle loop.
-4. Run the M1 probe on x86 once the HTTP path works.

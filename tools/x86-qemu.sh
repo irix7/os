@@ -74,8 +74,11 @@ with open(disk, "r+b") as f:
 PY
 rm -f "$SERIAL"
 
+# The guest serves the MCP module on port 80.  Forward a free host port to it,
+# so the gate can probe the HTTP server while the machine is running.
+HTTP_PORT="${X86_HTTP_PORT:-$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 set +e
-timeout 60 "$QEMU" \
+timeout 150 "$QEMU" \
   -M q35 \
   -m "$MEMORY" \
   -kernel "$KERNEL" \
@@ -84,13 +87,29 @@ timeout 60 "$QEMU" \
   -monitor none \
   -no-reboot \
   -device isa-debug-exit,iobase=0x501,iosize=0x04 \
-  -netdev user,id=net0 \
+  -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$HTTP_PORT-:80" \
   -device virtio-net-pci,netdev=net0,disable-modern=on \
   -drive file="$DISK",if=none,id=disk0,format=raw \
-  -device virtio-blk-pci,drive=disk0,disable-modern=on
+  -device virtio-blk-pci,drive=disk0,disable-modern=on &
+QEMU_PID=$!
+
+# Wait for the module to start listening, then probe until it answers.
+deadline=$((SECONDS + 90))
+until grep -qF "mcp: listening on port 80" "$SERIAL" 2>/dev/null \
+  || [ "$SECONDS" -ge "$deadline" ] || ! kill -0 "$QEMU_PID" 2>/dev/null; do
+  sleep 0.5
+done
+http_status=""
+for _ in $(seq 1 60); do
+  http_status="$(curl -s -m 3 -i "http://127.0.0.1:$HTTP_PORT/" 2>/dev/null | head -1 | tr -d '\r' || true)"
+  case "$http_status" in HTTP/1.*) break ;; esac
+  sleep 1
+done
+wait "$QEMU_PID"
 status=$?
 set -e
 
+echo "x86-qemu: http probe: ${http_status:-no response}"
 echo "--- serial ---"
 cat "$SERIAL" 2>/dev/null || true
 echo "--------------"
@@ -121,10 +140,16 @@ markers=(
   "x86: blk write readback ok"
   "x86: module sha256 ok size="
   "x86: module entry status=0"
+  "x86: module serving"
+  "mcp: listening on port 80"
   "x86: deliberate fault: int3"
   "x86: exception vector=3 (breakpoint)"
   "x86: halted"
 )
+case "$http_status" in
+  HTTP/1.*) ;;
+  *) echo "x86-qemu: the module did not answer on port 80" >&2; exit 1 ;;
+esac
 for marker in "${markers[@]}"; do
   if ! grep -qF -- "$marker" "$SERIAL"; then
     echo "x86-qemu: missing marker: $marker" >&2

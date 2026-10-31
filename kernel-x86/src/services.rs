@@ -15,7 +15,7 @@ use module_abi::{
     Services, ABI_VERSION,
 };
 
-use crate::{serial, timer};
+use crate::{serial, tcp, timer};
 
 /// Errors use the module ABI's negative convention.
 const REFUSED: isize = -1;
@@ -56,19 +56,15 @@ unsafe extern "C" fn alloc(size: usize, align: usize) -> *mut u8 {
     }
 }
 
-extern "C" fn poll() {}
+extern "C" fn poll() {
+    crate::net::poll();
+}
 
 unsafe extern "C" fn config_get(_: *const u8, _: usize, _: *mut u8, _: usize) -> isize {
     // No configuration store on this machine yet: every key is absent.
     0
 }
 
-stub!(tcp_listen(u32, u16) -> i32 = -1);
-safe_stub!(tcp_state(u32) -> u32 = 0);
-stub!(tcp_recv(u32, *mut u8, usize) -> isize = REFUSED);
-stub!(tcp_send(u32, *const u8, usize) -> isize = REFUSED);
-safe_stub!(tcp_close(u32) -> () = ());
-safe_stub!(tcp_abort(u32) -> () = ());
 stub!(console_read(u64, *mut u8, usize) -> isize = REFUSED);
 safe_stub!(console_total() -> u64 = 0);
 safe_stub!(reset() -> () = ());
@@ -85,9 +81,6 @@ stub!(module_find(*const u8, u32, *const u8, u32, *mut ModuleHandle) -> i32 = -1
 stub!(module_find_export(*const u8, u32, u16, *mut ModuleExportBinding) -> i32 = -1);
 stub!(module_query(ModuleHandle, *mut ModuleInfo) -> i32 = -1);
 stub!(module_unload(ModuleHandle) -> i32 = -1);
-stub!(tcp_connect(u32, u32, u16) -> i32 = -1);
-safe_stub!(tcp_events(u32) -> u32 = 0);
-safe_stub!(tcp_slots() -> u32 = 0);
 stub!(udp_open(u32, u16) -> i32 = -1);
 stub!(udp_send(u32, u32, u16, *const u8, usize) -> isize = REFUSED);
 stub!(udp_recv(u32, *mut u8, usize, *mut u32, *mut u16) -> isize = REFUSED);
@@ -102,12 +95,12 @@ pub static SERVICES: Services = Services {
     clock_ms,
     alloc,
     poll,
-    tcp_listen,
-    tcp_state,
-    tcp_recv,
-    tcp_send,
-    tcp_close,
-    tcp_abort,
+    tcp_listen: tcp::listen,
+    tcp_state: tcp::state,
+    tcp_recv: tcp::recv,
+    tcp_send: tcp::send,
+    tcp_close: tcp::close,
+    tcp_abort: tcp::abort,
     console_read,
     console_total,
     reset,
@@ -125,9 +118,9 @@ pub static SERVICES: Services = Services {
     module_find_export,
     module_query,
     module_unload,
-    tcp_connect,
-    tcp_events,
-    tcp_slots,
+    tcp_connect: tcp::connect,
+    tcp_events: tcp::events,
+    tcp_slots: tcp::slots,
     udp_open,
     udp_send,
     udp_recv,

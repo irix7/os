@@ -28,6 +28,7 @@ mod port;
 mod pvh;
 mod serial;
 mod services;
+mod tcp;
 mod timer;
 mod virtio;
 mod virtio_blk;
