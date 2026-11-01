@@ -511,6 +511,10 @@ static mut HEADER_LEN: usize = 0;
 static mut BODY_PTR: *const u8 = ptr::null();
 static mut BODY_LEN: usize = 0;
 static mut SENT: usize = 0;
+/// When the pending send began.  A peer that stops reading must not hold the
+/// single HTTP slot: the send aborts after `SEND_TIMEOUT_MS` and re-arms.
+static mut SEND_START_MS: u64 = 0;
+const SEND_TIMEOUT_MS: u64 = 10_000;
 static mut RESPONSE: [u8; 16384] = [0; 16384];
 /// Scratch for the `fs.stat` JSON text before it is embedded in a `text`
 /// field; a link target is bounded by [`LINK_MAX`] so the buffer cannot
@@ -826,6 +830,13 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
         }
         SEND_RESPONSE => {
             let slot = unsafe { CURRENT };
+            if (services.clock_ms)().saturating_sub(unsafe { SEND_START_MS }) >= SEND_TIMEOUT_MS {
+                (services.tcp_abort)(slot);
+                unsafe {
+                    PHASE = ARM;
+                }
+                return 0;
+            }
             let sent = unsafe { SENT };
             let header_len = unsafe { HEADER_LEN };
             let body_len = unsafe { BODY_LEN };
@@ -1121,6 +1132,13 @@ fn begin_response(header: &[u8], body: *const u8, body_len: usize) {
         BODY_PTR = body;
         BODY_LEN = body_len;
         SENT = 0;
+        let clock = SERVICES.load(Ordering::Acquire);
+        SEND_START_MS = if clock.is_null() {
+            0
+        } else {
+            // SAFETY: the table is published before any request is served.
+            unsafe { ((*clock).clock_ms)() }
+        };
         PHASE = SEND_RESPONSE;
     }
 }
