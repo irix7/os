@@ -1942,6 +1942,15 @@ fn write_u64(dst: &mut [u8], mut value: u64) -> usize {
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // A silent spin is indistinguishable from a wedged tick.  Report the panic
+    // through the service table so the transcript says what happened.  The
+    // message is fixed: the module has no room in slot A for formatting code.
+    let table = SERVICES.load(Ordering::Acquire);
+    if !table.is_null() {
+        let message = b"mcp: PANIC\n";
+        // SAFETY: the table is published before any allocation or request.
+        unsafe { ((*table).write)(message.as_ptr(), message.len()) };
+    }
     loop {
         core::hint::spin_loop();
     }
