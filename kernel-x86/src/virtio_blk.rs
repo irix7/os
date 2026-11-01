@@ -41,6 +41,31 @@ pub struct Disk {
     sectors: u64,
 }
 
+/// The machine's block device, probed once at boot.  The module services and
+/// the loader share it; the machine is single-threaded.
+static mut DISK: Option<Disk> = None;
+/// The module epoch store's view starts here on the physical disk, away from
+/// the boot header, URL and config sectors.
+pub const STORE_OFFSET: u64 = 4096;
+
+/// Probe the block device and publish it for the loader and services.
+pub fn init() -> bool {
+    match probe() {
+        Some(disk) => {
+            // SAFETY: called once during boot, before any other user.
+            unsafe { *core::ptr::addr_of_mut!(DISK) = Some(disk) };
+            true
+        }
+        None => false,
+    }
+}
+
+/// The machine's block device.
+pub fn disk() -> Option<&'static mut Disk> {
+    // SAFETY: single-threaded; callers do not hold the disk across another call.
+    unsafe { (*core::ptr::addr_of_mut!(DISK)).as_mut() }
+}
+
 /// Find and initialise the first legacy virtio-blk device on bus 0.
 pub fn probe() -> Option<Disk> {
     let function = pci::find(VENDOR, DEVICE_BLK_LEGACY)?;
@@ -66,6 +91,26 @@ pub fn probe() -> Option<Disk> {
         queue,
         sectors,
     })
+}
+
+impl module_block::Block for Disk {
+    fn read_sector(
+        &mut self,
+        _target: u8,
+        sector: u64,
+        out: &mut [u8; crate::virtio_blk::SECTOR],
+    ) -> bool {
+        Disk::read(self, sector, out)
+    }
+
+    fn write_sector(
+        &mut self,
+        _target: u8,
+        sector: u64,
+        data: &[u8; crate::virtio_blk::SECTOR],
+    ) -> bool {
+        Disk::write(self, sector, data)
+    }
 }
 
 impl Disk {

@@ -50,6 +50,8 @@ SERIAL="$WORK/serial.log"
 DISK="$WORK/disk.img"
 dd if=/dev/zero of="$DISK" bs=512 count=16384 2>/dev/null
 printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/null
+# The machine's boot configuration: key=value lines in sectors 100-103.
+printf 'test.key=config-ok\n' | dd of="$DISK" bs=512 seek=100 conv=notrunc 2>/dev/null
 
 # The MCP control-plane module, linked for the x86 window, and its header on
 # sector 8: magic, length and SHA-256 (see kernel-x86/src/module.rs).
@@ -109,28 +111,6 @@ FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.
 FIXTURE_PID=$!
 printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
 printf '10.0.2.2:%s/wasm-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=11 conv=notrunc 2>/dev/null
-python3 -I - "$DISK" "$MODULE" 8 16 <<'PY'
-import hashlib, struct, sys
-disk, module, header_sector, image_sector = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
-with open(disk, "r+b") as f:
-    f.seek(image_sector * 512)
-    f.write(data)
-    f.seek(header_sector * 512)
-    f.write(header)
-PY
-python3 -I - "$DISK" "$WASM" 10 2048 <<'PY'
-import hashlib, struct, sys
-disk, module, header_sector, image_sector = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
-data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
-with open(disk, "r+b") as f:
-    f.seek(image_sector * 512)
-    f.write(data)
-    f.seek(header_sector * 512)
-    f.write(header)
-PY
 rm -f "$SERIAL"
 
 # The guest serves the MCP module on port 80.  Forward a free host port to it,
@@ -198,6 +178,8 @@ markers=(
   "x86: blk capacity="
   "x86: blk read sector 1=IRIX7-X86-DISK-OK"
   "x86: blk write readback ok"
+  "x86: config test.key=config-ok"
+  "x86: block service read/write ok"
   "x86: autoload mcp fetched "
   "x86: autoload mcp sha256 ok"
   "x86: autoload wasm fetched "

@@ -28,6 +28,8 @@ erofs-debug = ["dep:erofs"]
 
 [dependencies]
 irix7-fmt = { path = "../crates/irix7-fmt" }
+irix7-config = { path = "../crates/irix7-config" }
+module-block = { path = "../crates/module-block" }
 irix7-netif = { path = "../crates/irix7-netif" }
 agnostic-core = { path = "../crates/agnostic-core" }
 frame-alloc = { path = "../crates/frame-alloc" }

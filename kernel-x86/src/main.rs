@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use core::arch::asm;
 use core::panic::PanicInfo;
 
+mod config;
 mod fetch;
 mod heap;
 mod idt;
@@ -158,23 +159,50 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     serial::write_byte(b'\n');
 
     let _ = net::init();
-    let mut disk = virtio_blk::probe().unwrap_or_else(|| {
+    if !virtio_blk::init() {
         print_line(&[b"x86: blk: no virtio-blk device"]);
-        qemu_exit(1)
-    });
-    virtio_blk::selftest(&mut disk);
+        qemu_exit(1);
+    }
+    let disk = virtio_blk::disk().expect("x86: block device");
+    virtio_blk::selftest(disk);
+    let disk = virtio_blk::disk().expect("x86: block device");
+    config::init(disk);
+
+    let mut value = [0u8; 64];
+    let n = config::get(b"test.key", &mut value);
+    if n > 0 {
+        serial::write(b"x86: config test.key=");
+        serial::write(&value[..n as usize]);
+        serial::write_byte(b'\n');
+    }
+
+    // Exercise the block service a module uses: write and read back through
+    // the store mapping, not the raw driver.
+    let mut pattern = [0u8; virtio_blk::SECTOR];
+    for (i, byte) in pattern.iter_mut().enumerate() {
+        *byte = b"X86-STORE"[i % 9];
+    }
+    let mut readback = [0u8; virtio_blk::SECTOR];
+    // SAFETY: the buffers are local and the calls copy one sector each.
+    let wrote = unsafe { services::block_write(3, 8, pattern.as_ptr()) };
+    let read = unsafe { services::block_read(3, 8, readback.as_mut_ptr()) };
+    if wrote != 0 || read != 0 || readback != pattern {
+        print_line(&[b"x86: block service read/write failed"]);
+        qemu_exit(1);
+    }
+    print_line(&[b"x86: block service read/write ok"]);
     // Fetch both modules, then load them.  The MCP module initialises on the boot
     // stack, which is small and only runs its init.  The wasm policy module runs
     // on the large stack, because the Wasm runtime is deep.
     let mcp_bytes = fetch::image(
-        &mut disk,
+        virtio_blk::disk().expect("x86: block device"),
         "mcp",
         fetch::MCP_URL_SECTOR,
         module::MCP_HEADER_SECTOR,
         fetch::SLOT_MCP,
     );
     let wasm_bytes = fetch::image(
-        &mut disk,
+        virtio_blk::disk().expect("x86: block device"),
         "wasm",
         fetch::WASM_URL_SECTOR,
         module::WASM_HEADER_SECTOR,

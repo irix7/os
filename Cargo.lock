@@ -617,6 +617,10 @@ name = "irix-elf"
 version = "0.1.0"
 
 [[package]]
+name = "irix7-config"
+version = "0.1.0"
+
+[[package]]
 name = "irix7-fmt"
 version = "0.1.0"
 
@@ -648,6 +652,7 @@ dependencies = [
  "frame-alloc",
  "hpc3",
  "irix-elf",
+ "irix7-config",
  "irix7-fmt",
  "irix7-netif",
  "irix7-sha256",
@@ -655,6 +660,7 @@ dependencies = [
  "mesh-core",
  "mesh-service",
  "module-abi",
+ "module-block",
  "module-tcp",
  "platform-api",
  "rand_core",
@@ -672,10 +678,12 @@ name = "kernel-x86"
 version = "0.1.0"
 dependencies = [
  "frame-alloc",
+ "irix7-config",
  "irix7-fmt",
  "irix7-netif",
  "irix7-sha256",
  "module-abi",
+ "module-block",
  "module-tcp",
  "smoltcp",
 ]
@@ -838,6 +846,10 @@ dependencies = [
 name = "module-abi"
 version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.11.0#47546a72dc24bb93b1dd31ca05c2f18aa3b866d0"
+
+[[package]]
+name = "module-block"
+version = "0.1.0"
 
 [[package]]
 name = "module-resolver"

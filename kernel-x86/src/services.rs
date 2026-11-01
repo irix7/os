@@ -60,9 +60,19 @@ extern "C" fn poll() {
     crate::net::poll();
 }
 
-unsafe extern "C" fn config_get(_: *const u8, _: usize, _: *mut u8, _: usize) -> isize {
-    // No configuration store on this machine yet: every key is absent.
-    0
+unsafe extern "C" fn config_get(
+    key: *const u8,
+    key_len: usize,
+    out: *mut u8,
+    out_len: usize,
+) -> isize {
+    if key.is_null() || out.is_null() {
+        return REFUSED;
+    }
+    // SAFETY: the module owns both buffers for the call.
+    let key = unsafe { core::slice::from_raw_parts(key, key_len) };
+    let out = unsafe { core::slice::from_raw_parts_mut(out, out_len) };
+    crate::config::get(key, out)
 }
 
 stub!(console_read(u64, *mut u8, usize) -> isize = REFUSED);
@@ -96,8 +106,25 @@ unsafe extern "C" fn info(which: u32, out: *mut u8, len: usize) -> isize {
     count as isize
 }
 stub!(screen_read(u32, *mut u8, usize) -> isize = REFUSED);
-stub!(block_read(u8, u32, *mut u8) -> i32 = -1);
-stub!(block_write(u8, u32, *const u8) -> i32 = -1);
+/// The block service exposes only the epoch store, at target 3, mapped to a
+/// reserved region of the machine's disk.
+const STORE: module_block::Store = module_block::Store::mapped(3, crate::virtio_blk::STORE_OFFSET);
+
+pub(crate) unsafe extern "C" fn block_read(target: u8, lba: u32, ptr: *mut u8) -> i32 {
+    let Some(disk) = crate::virtio_blk::disk() else {
+        return -1;
+    };
+    // SAFETY: the module owns the destination for the call.
+    unsafe { STORE.read(disk, target, lba, ptr) }
+}
+
+pub(crate) unsafe extern "C" fn block_write(target: u8, lba: u32, ptr: *const u8) -> i32 {
+    let Some(disk) = crate::virtio_blk::disk() else {
+        return -1;
+    };
+    // SAFETY: the module owns the source for the call.
+    unsafe { STORE.write(disk, target, lba, ptr) }
+}
 stub!(module_arena(*mut ModuleArena) -> i32 = -1);
 stub!(module_load(*const ModuleLoad, *mut ModuleHandle) -> i32 = -1);
 stub!(module_execute(ModuleHandle, u32, *const ModuleContext, *mut i32) -> i32 = -1);

@@ -995,35 +995,35 @@ unsafe extern "C" fn service_screen_read(offset: u32, ptr: *mut u8, len: usize) 
     crate::gfx::shadow_read(offset as usize, buf) as isize
 }
 
-unsafe extern "C" fn service_block_read(target: u8, lba: u32, ptr: *mut u8) -> i32 {
-    if ptr.is_null() {
-        return -1;
+/// The Indy's block service device: SCSI, with the module's target passed
+/// straight through.
+struct ScsiBlock;
+
+impl module_block::Block for ScsiBlock {
+    fn read_sector(&mut self, target: u8, sector: u64, out: &mut [u8; 512]) -> bool {
+        u32::try_from(sector)
+            .map(|lba| crate::scsi::read_sector(target, lba, out).is_ok())
+            .unwrap_or(false)
     }
-    let mut sector = [0u8; 512];
-    match crate::scsi::read_sector(target, lba, &mut sector) {
-        Ok(()) => {
-            // SAFETY: the module passed a writable 512-byte buffer.
-            unsafe {
-                core::ptr::copy_nonoverlapping(sector.as_ptr(), ptr, sector.len());
-            }
-            0
-        }
-        Err(_) => -1,
+
+    fn write_sector(&mut self, target: u8, sector: u64, data: &[u8; 512]) -> bool {
+        u32::try_from(sector)
+            .map(|lba| crate::scsi::write_sector(target, lba, data).is_ok())
+            .unwrap_or(false)
     }
 }
 
+/// Every module target reaches the SCSI stack unchanged.
+const BLOCK_STORE: module_block::Store = module_block::Store::direct();
+
+unsafe extern "C" fn service_block_read(target: u8, lba: u32, ptr: *mut u8) -> i32 {
+    // SAFETY: the module owns the destination for the call.
+    unsafe { BLOCK_STORE.read(&mut ScsiBlock, target, lba, ptr) }
+}
+
 unsafe extern "C" fn service_block_write(target: u8, lba: u32, ptr: *const u8) -> i32 {
-    if ptr.is_null() {
-        return -1;
-    }
-    // SAFETY: the module passed a readable 512-byte buffer.
-    let sector = unsafe { core::slice::from_raw_parts(ptr, 512) };
-    let mut data = [0u8; 512];
-    data.copy_from_slice(sector);
-    match crate::scsi::write_sector(target, lba, &data) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
+    // SAFETY: the module owns the source for the call.
+    unsafe { BLOCK_STORE.write(&mut ScsiBlock, target, lba, ptr) }
 }
 
 unsafe extern "C" fn service_info(kind: u32, ptr: *mut u8, len: usize) -> isize {

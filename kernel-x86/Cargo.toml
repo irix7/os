@@ -7,6 +7,8 @@ description = "IRIX 7 x86_64 machine: boot path, traps and devices"
 
 [dependencies]
 irix7-fmt = { path = "../crates/irix7-fmt" }
+irix7-config = { path = "../crates/irix7-config" }
+module-block = { path = "../crates/module-block" }
 irix7-netif = { path = "../crates/irix7-netif" }
 module-tcp = { path = "../crates/module-tcp" }
 frame-alloc = { path = "../crates/frame-alloc" }

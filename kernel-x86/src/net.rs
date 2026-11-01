@@ -7,7 +7,7 @@ use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::dhcpv4;
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpCidr, Ipv4Address, Ipv4Cidr};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, Ipv4Address, Ipv4Cidr};
 
 use crate::timer;
 use crate::virtio_net::{Nic, MAX_FRAME};
