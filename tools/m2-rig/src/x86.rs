@@ -76,6 +76,30 @@ pub fn smoke(options: &Options) -> Result<i32, String> {
 /// Two x86 guests joined through the host relay: the M2 topology without the
 /// rest of the scenario.  Each node listens on 7000; the relay dials both
 /// forwards.  The check is the live `/mesh/join` counter and `/mesh/homes`.
+/// Wait until both guests report a two-member view, returning those views.
+fn wait_two_members(nodes: &[Node], timeout: Duration) -> Result<Vec<String>, String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut views = Vec::new();
+        let mut joined = true;
+        for node in nodes {
+            match crate::homes::fetch(node, "/mesh/homes", crate::timing::secs(5)) {
+                Ok(homes) if homes.status == 200 && homes.body.contains("members=2") => {
+                    views.push(format!("{}: {}", node.name, homes.body.trim()));
+                }
+                _ => joined = false,
+            }
+        }
+        if joined {
+            return Ok(views);
+        }
+        if Instant::now() >= deadline {
+            return Err("x86 guests did not both report a two-member view".into());
+        }
+        thread::sleep(Duration::from_millis(500));
+    }
+}
+
 pub fn mesh(options: &Options) -> Result<i32, String> {
     require_file(&options.rom, "kernel image (--rom)")?;
     require_file(&options.module, "MCP module (--module)")?;
@@ -115,37 +139,60 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
         for (node, _) in &children {
             wait_boot(&node.serial_log, crate::timing::secs(90))?;
         }
-        let _relay = crate::relay::MeshRelay::start(
+        let mut relay = Some(
+            crate::relay::MeshRelay::start(
+                (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+            )
+            .map_err(|error| format!("start mesh relay: {error}"))?,
+        );
+        let views = wait_two_members(&nodes, crate::timing::secs(120))?;
+        for view in views {
+            println!("x86-mesh: {view}");
+        }
+        // The epoch record must be on the host disk before the guest is
+        // stopped; otherwise a restart cannot restore it.
+        let disk = fs::read(nodes[1].state_dir.join("boot.img")).unwrap_or_default();
+        let at = (4096 + 8) * 512;
+        if disk.get(at..at + 8) != Some(b"I7EPST01") {
+            return Err("epoch record is not on the boot disk before the restart".into());
+        }
+
+        // Member restart: kill the guest, relaunch it on the same disk, and
+        // restart the relay.  The epoch store must restore, and both views
+        // must reconverge on the same two-member epoch.
+        let member = &nodes[1];
+        let (_, child) = children
+            .iter_mut()
+            .find(|(node, _)| node.instance == 1)
+            .ok_or("x86: member child missing")?;
+        let _ = child.kill();
+        let _ = child.wait();
+        drop(relay.take());
+        thread::sleep(crate::timing::secs(2));
+        let disk = member.state_dir.join("boot.img");
+        let restarted = launch(options, member, &disk)?;
+        if let Some(slot) = children.iter_mut().find(|(node, _)| node.instance == 1) {
+            slot.1 = restarted;
+        }
+        wait_boot(&member.serial_log, crate::timing::secs(90))?;
+        let _restart_relay = crate::relay::MeshRelay::start(
             (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
             (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
         )
-        .map_err(|error| format!("start mesh relay: {error}"))?;
-        // The root never sends a join request, so the request counter is not a
-        // two-node signal.  Wait for both live views to report the two-member
-        // epoch instead.
-        let deadline = Instant::now() + crate::timing::secs(120);
-        loop {
-            let mut views = Vec::new();
-            let mut joined = true;
-            for node in &nodes {
-                match crate::homes::fetch(node, "/mesh/homes", crate::timing::secs(5)) {
-                    Ok(homes) if homes.status == 200 && homes.body.contains("members=2") => {
-                        views.push(format!("{}: {}", node.name, homes.body.trim()));
-                    }
-                    _ => joined = false,
-                }
-            }
-            if joined {
-                for view in views {
-                    println!("x86-mesh: {view}");
-                }
-                return Ok(());
-            }
-            if Instant::now() >= deadline {
-                return Err("x86 guests did not both report a two-member view".into());
-            }
-            thread::sleep(Duration::from_millis(500));
+        .map_err(|error| format!("restart mesh relay: {error}"))?;
+        let views = wait_two_members(&nodes, crate::timing::secs(120))?;
+        for view in views {
+            println!("x86-mesh: after restart {view}");
         }
+        let serial = fs::read_to_string(&member.serial_log).unwrap_or_default();
+        if !serial.contains("epoch-store: restored epoch=2") {
+            return Err(format!(
+                "member did not restore epoch 2 after restart\n--- serial ---\n{serial}"
+            ));
+        }
+        println!("x86-mesh: member restart restored epoch 2 and both views reconverged");
+        Ok(())
     })();
 
     for (_, child) in children.iter_mut() {
@@ -183,7 +230,7 @@ fn derive_node(options: &Options, instance: u32) -> Result<Node, String> {
     node_id[..6].copy_from_slice(&mac);
     Ok(Node {
         name: format!("x{instance}"),
-        instance: 0,
+        instance,
         state_dir,
         config: options.node_config(instance),
         ci_socket: PathBuf::new(),
@@ -282,7 +329,7 @@ fn launch(options: &Options, node: &Node, disk: &Path) -> Result<Child, String> 
         ))
         .arg("-drive")
         .arg(format!(
-            "file={},if=none,id=disk0,format=raw",
+            "file={},if=none,id=disk0,format=raw,cache=writethrough",
             disk.display()
         ))
         .arg("-device")
