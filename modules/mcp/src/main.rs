@@ -48,8 +48,6 @@ const SCREEN_ROW_BYTES: usize = SCREEN_W as usize * 3;
 const SCREEN_DATA: u32 = SCREEN_W * SCREEN_H * 3;
 
 const PORT: u16 = 80;
-/// The second HTTP slot when the mesh owns slot 1.
-const HTTP_SECOND_SLOT: u32 = 2;
 const REQUEST_CAP: usize = 2048;
 
 static VTABLE: ModuleVtable = ModuleVtable {
@@ -533,7 +531,7 @@ static mut STAT_TEXT: [u8; 2048] = [0; 2048];
 /// one.  Alternating the two hides the close handshake from a back-to-back
 /// client.
 static mut CURRENT: u32 = 0;
-static mut NEXT: u32 = 1;
+static mut NEXT: u32 = 0;
 static mut NEXT_ARMED: bool = false;
 
 /// Deferred reset/poweroff: 0 none, 1 reset, 2 poweroff.  The response is
@@ -573,11 +571,12 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     // one, so it cannot collide with the HTTP server or the mesh listener.
     unsafe { netprobe::init(services) };
     if mesh_enabled {
-        // The mesh owns slot 1.  HTTP still needs a second slot so one socket
-        // can be listening while the other closes; slot 2 is free.
+        // One HTTP slot.  A second listener let a client connect while the
+        // first connection closed, and the rig's alternating current/stale
+        // requests were then answered from the wrong connection state.
         unsafe {
             CURRENT = mesh::HTTP_SLOT;
-            NEXT = HTTP_SECOND_SLOT;
+            NEXT = mesh::HTTP_SLOT;
             NEXT_ARMED = false;
         }
     }
@@ -652,6 +651,10 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     PHASE = WAIT_REQUEST;
                 }
+            } else if (services.tcp_state)(slot) != 0 {
+                // A half-open connection left by the host forward keeps the
+                // slot out of LISTEN.  Clear it; the next tick listens again.
+                (services.tcp_abort)(slot);
             } else if !unsafe { LISTEN_FAIL_LOGGED } {
                 unsafe {
                     LISTEN_FAIL_LOGGED = true;
@@ -726,6 +729,29 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     PHASE = ARM;
                 }
+            } else {
+                // `tcp_state` maps Listen, SynSent and SynReceived to 1.  A
+                // listening slot carries the LISTEN event; a half-open
+                // handshake does not.  Without this, a client that vanishes
+                // mid-handshake holds the slot forever.
+                const EV_LISTEN: u32 = 1 << 3;
+                if (services.tcp_events)(slot) & EV_LISTEN == 0 {
+                    if !unsafe { IN_CONN } {
+                        unsafe {
+                            IN_CONN = true;
+                            REQUEST_START_MS = (services.clock_ms)();
+                        }
+                    }
+                    if (services.clock_ms)().saturating_sub(unsafe { REQUEST_START_MS })
+                        >= REQUEST_TIMEOUT_MS
+                    {
+                        (services.tcp_abort)(slot);
+                        unsafe {
+                            IN_CONN = false;
+                            PHASE = ARM;
+                        }
+                    }
+                }
             }
         }
         SEND_SCREEN => {
@@ -764,7 +790,7 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                     SCREEN_STREAMING = false;
                 }
                 let next = unsafe { NEXT };
-                if (services.tcp_listen)(next, PORT) == 0 {
+                if next != slot && (services.tcp_listen)(next, PORT) == 0 {
                     unsafe {
                         NEXT_ARMED = true;
                     }
@@ -864,7 +890,7 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 // connection lands on a listening socket while this one
                 // finishes its close handshake.
                 let next = unsafe { NEXT };
-                if (services.tcp_listen)(next, PORT) == 0 {
+                if next != slot && (services.tcp_listen)(next, PORT) == 0 {
                     unsafe {
                         NEXT_ARMED = true;
                     }
