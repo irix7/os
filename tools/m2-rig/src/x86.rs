@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::fixture::Fixture;
-use crate::rig::{self, Node, Options};
+use crate::rig::{Node, Options};
 use crate::sha256;
 
 /// Boot disk size: 8 MiB, the same as the gate's image.
@@ -195,9 +195,9 @@ fn launch(options: &Options, node: &Node, disk: &Path) -> Result<Child, String> 
         .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|error| format!("start {}: {error}", options.qemu.display()))
-        .and_then(|child| {
+        .map(|child| {
             let _ = serial;
-            Ok(child)
+            child
         })
 }
 

@@ -1662,6 +1662,8 @@ mod tests {
             iris_ci: PathBuf::from("iris-ci"),
             rom: PathBuf::from("rom"),
             module: PathBuf::from("module"),
+            wasm: PathBuf::new(),
+            qemu: PathBuf::from("qemu-system-x86_64"),
             base_port: 9100,
             nodes: 2,
             hub: false,
