@@ -9,9 +9,9 @@
 //! service table rather than linking against kernel symbols, so the core and
 //! a module can be rebuilt independently.
 
-use irix7_sha256::Sha256;
 use alloc::alloc::{alloc, Layout};
 use core::mem::{align_of, size_of};
+use irix7_sha256::Sha256;
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::udp::{PacketBuffer, RecvError, SendError, Socket as UdpSocket, UdpMetadata};
 use smoltcp::storage::PacketMetadata;
@@ -1070,4 +1070,3 @@ unsafe extern "C" fn service_status(ptr: *mut u8, len: usize) -> isize {
     let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
     crate::status::text(buf) as isize
 }
-

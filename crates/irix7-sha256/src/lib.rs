@@ -243,7 +243,10 @@ mod tests {
     #[test]
     fn from_hex_round_trips_and_rejects_bad_input() {
         let digest = Sha256::digest(b"abc");
-        let text = core::str::from_utf8(&digest.to_hex()).unwrap().as_bytes().to_vec();
+        let text = core::str::from_utf8(&digest.to_hex())
+            .unwrap()
+            .as_bytes()
+            .to_vec();
         assert!(Sha256::from_hex(&text).unwrap().eq_digest(&digest));
         assert!(Sha256::from_hex(b"short").is_none());
         let mut bad = text.clone();

@@ -49,6 +49,12 @@ pub struct Slots<const SLOTS: usize, const BUFFER: usize> {
     tx: [[u8; BUFFER]; SLOTS],
 }
 
+impl<const SLOTS: usize, const BUFFER: usize> Default for Slots<SLOTS, BUFFER> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const SLOTS: usize, const BUFFER: usize> Slots<SLOTS, BUFFER> {
     /// An empty table.  Declare it as a `static` in the kernel.
     pub const fn new() -> Self {

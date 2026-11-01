@@ -508,7 +508,8 @@ static mut IN_CONN: bool = false;
 /// The pending response: a small header, then a body the handler owns.
 /// `SEND_RESPONSE` drains both across ticks, so a full transmit ring is a
 /// wait rather than a truncated response.
-static mut HEADER: [u8; 160] = [0; 160];
+const HEADER_CAP: usize = 160;
+static mut HEADER: [u8; HEADER_CAP] = [0; HEADER_CAP];
 static mut HEADER_LEN: usize = 0;
 static mut BODY_PTR: *const u8 = ptr::null();
 static mut BODY_LEN: usize = 0;
@@ -870,9 +871,7 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
             } else {
                 let offset = sent - header_len;
-                unsafe {
-                    (services.tcp_send)(slot, (unsafe { BODY_PTR }).add(offset), body_len - offset)
-                }
+                unsafe { (services.tcp_send)(slot, BODY_PTR.add(offset), body_len - offset) }
             };
             match n {
                 // A full ring is a wait: the next tick retries from `SENT`.
@@ -1125,7 +1124,7 @@ fn send_unauthorized(_services: &Services, _slot: u32) {
 fn begin_response(header: &[u8], body: *const u8, body_len: usize) {
     // SAFETY: single-threaded module; no other response is in flight.
     unsafe {
-        let copy = header.len().min(HEADER.len());
+        let copy = header.len().min(HEADER_CAP);
         HEADER[..copy].copy_from_slice(&header[..copy]);
         HEADER_LEN = copy;
         BODY_PTR = body;
@@ -1136,7 +1135,7 @@ fn begin_response(header: &[u8], body: *const u8, body_len: usize) {
             0
         } else {
             // SAFETY: the table is published before any request is served.
-            unsafe { ((*clock).clock_ms)() }
+            ((*clock).clock_ms)()
         };
         PHASE = SEND_RESPONSE;
     }
@@ -1272,7 +1271,7 @@ fn b64_encode(src: &[u8], dst: &mut [u8]) -> usize {
     out
 }
 
-fn screen_start(services: &Services, slot: u32) {
+fn screen_start(_services: &Services, _slot: u32) {
     let mut header = [0u8; 160];
     let mut w = Out::new(&mut header);
     w.push(b"HTTP/1.0 200 OK\r\nContent-Type: image/bmp\r\nContent-Length: ");
@@ -1318,7 +1317,13 @@ fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
     send_http_status(services, slot, 200, content_type, body);
 }
 
-fn send_http_status(services: &Services, slot: u32, status: u16, content_type: &[u8], body: &[u8]) {
+fn send_http_status(
+    _services: &Services,
+    _slot: u32,
+    status: u16,
+    content_type: &[u8],
+    body: &[u8],
+) {
     let reason: &[u8] = match status {
         200 => b"200 OK",
         202 => b"202 Accepted",

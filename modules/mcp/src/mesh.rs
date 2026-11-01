@@ -349,12 +349,6 @@ static mut READ_BUF: [u8; READ_CHUNK] = [0; READ_CHUNK];
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
 
-/// Whether the mesh listener is configured for this boot.
-pub fn enabled() -> bool {
-    // SAFETY: single-threaded kernel; the flag is written once at entry.
-    unsafe { ENABLED }
-}
-
 /// Initialise the listener and the join state from the service table.
 ///
 /// Returns false when `mesh.peer` is absent or the node identity cannot be

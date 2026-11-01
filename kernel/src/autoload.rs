@@ -11,8 +11,8 @@
 //! before the network path.
 
 use crate::nvram;
-use irix7_sha256::Sha256;
 use crate::{console_println, console_write, http, module, scsi, tls};
+use irix7_sha256::Sha256;
 
 /// Outcome of the boot-time module autoload.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -326,4 +326,3 @@ fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchRes
 fn parse_digest(hex: &[u8]) -> Option<Sha256> {
     Sha256::from_hex(hex)
 }
-

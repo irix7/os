@@ -146,7 +146,6 @@ fn parse_hex_digest(value: &[u8]) -> Option<[u8; 32]> {
     Some(digest)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;

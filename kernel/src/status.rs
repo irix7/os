@@ -30,7 +30,9 @@ impl<'a> Buf<'a> {
     }
 
     fn u32(&mut self, value: u32) {
-        irix7_fmt::decimal(u64::from(value), &mut |b| self.push(core::slice::from_ref(&b)));
+        irix7_fmt::decimal(u64::from(value), &mut |b| {
+            self.push(core::slice::from_ref(&b))
+        });
     }
 
     fn hex8(&mut self, value: u8) {

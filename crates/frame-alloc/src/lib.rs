@@ -164,6 +164,12 @@ pub struct Store<const DESCS: usize, const FRAMES: usize> {
     ready: bool,
 }
 
+impl<const DESCS: usize, const FRAMES: usize> Default for Store<DESCS, FRAMES> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<const DESCS: usize, const FRAMES: usize> Store<DESCS, FRAMES> {
     /// An empty store.  `init` must run before any allocation.
     pub const fn new() -> Self {
