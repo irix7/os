@@ -53,6 +53,7 @@
 - [Security](plan/security.md)
 - [Release engineering](plan/release.md)
 - [x86_64 machine](plan/x86.md)
+- [PowerBook G3 development shell](plan/powerbook-devshell.md)
 - [Legal and provenance](plan/legal.md)
 - [Community and governance](plan/community.md)
 - [Cost model](plan/cost.md)
