@@ -2063,6 +2063,30 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
 /// The MCP server has one HTTP slot while the mesh is enabled.  A single retry
 /// absorbs the iris forward's half-open connection without weakening the
 /// check.
+/// The guest HTTP probe crosses the console, the guest's NAT and the peer's
+/// single HTTP slot.  A malformed or late response on one attempt is a race,
+/// not a broken transport: retry before reporting.
+fn probe_http_with_retry(
+    node: &rig::Node,
+    host: std::net::Ipv4Addr,
+    port: u16,
+    timeout: std::time::Duration,
+) -> Result<probe::ProbeOutcome, probe::ProbeError> {
+    let mut last = None;
+    for attempt in 1..=3 {
+        match probe::probe_http(node, host, port, timeout) {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) => {
+                last = Some(error);
+                if attempt < 3 {
+                    std::thread::sleep(crate::timing::secs(2));
+                }
+            }
+        }
+    }
+    Err(last.expect("probe attempts are non-empty"))
+}
+
 fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
     // After a root restart the member's mesh link has timed out and both
     // nodes' mesh links may close again after the confirm/ack exchange.  Give
@@ -2098,7 +2122,7 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
     let relay_n1_n0 = Relay::start((Ipv4Addr::LOCALHOST, nodes[0].http_port).into())
         .map_err(|error| format!("start relay n1->n0: {error}"))?;
 
-    let result_n0_n1 = probe::probe_http(
+    let result_n0_n1 = probe_http_with_retry(
         &nodes[0],
         nodes[0].gateway,
         relay_n0_n1.port,
@@ -2117,7 +2141,7 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
         result_n0_n1,
     )];
 
-    let result_n1_n0 = probe::probe_http(
+    let result_n1_n0 = probe_http_with_retry(
         &nodes[1],
         nodes[1].gateway,
         relay_n1_n0.port,
