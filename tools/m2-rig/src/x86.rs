@@ -149,7 +149,9 @@ fn write_boot_disk(
 }
 
 fn launch(options: &Options, node: &Node, disk: &Path) -> Result<Child, String> {
-    let serial = fs::File::create(&node.serial_log)
+    // QEMU opens the serial log itself; create it first so a stale transcript
+    // cannot satisfy the readiness wait.
+    fs::File::create(&node.serial_log)
         .map_err(|error| format!("create {}: {error}", node.serial_log.display()))?;
     let stderr = fs::File::create(node.state_dir.join("qemu.stderr"))
         .map_err(|error| format!("create qemu stderr: {error}"))?;
@@ -195,10 +197,6 @@ fn launch(options: &Options, node: &Node, disk: &Path) -> Result<Child, String> 
         .stderr(Stdio::from(stderr))
         .spawn()
         .map_err(|error| format!("start {}: {error}", options.qemu.display()))
-        .map(|child| {
-            let _ = serial;
-            child
-        })
 }
 
 fn wait_boot(log: &Path, timeout: Duration) -> Result<(), String> {
