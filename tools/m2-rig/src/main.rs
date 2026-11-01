@@ -1124,12 +1124,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     };
     if matches!(options.fault, Fault::None | Fault::NoRoute) && join_error.is_none() {
         if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
-            home_inputs.after = Some(homes::collect_current_serial(
+            // Fetch the live table over HTTP.  The restarted member restores
+            // the same view and does not re-log the home table, so a serial
+            // parse of the post-restart transcript finds nothing.
+            home_inputs.after = Some(homes::collect_current(
                 &nodes,
                 &facts,
                 epoch,
                 digest,
                 &join.members,
+                crate::timing::secs(30),
             ));
         } else {
             homes_error = Some("join evidence has no epoch/digest for the rejoin homes".into());
