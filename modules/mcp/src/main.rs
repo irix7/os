@@ -984,6 +984,12 @@ fn handle_request(services: &Services, slot: u32) {
         send_http(services, slot, &b"text/plain"[..], &response[..n]);
         return;
     }
+    if !is_post && path == b"/mesh/join" {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::join_response(response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
+        return;
+    }
     if !is_post && (path == b"/mesh/homes" || path.starts_with(b"/mesh/homes?")) {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let (status, n) = mesh::homes_response(path, response);

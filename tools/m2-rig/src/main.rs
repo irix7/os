@@ -1391,19 +1391,6 @@ fn raw_count(text: &str, needle: &str) -> usize {
     text.lines().filter(|line| line.contains(needle)).count()
 }
 
-/// Convergence lines in a transcript: the member's own install of a view,
-/// whether first, duplicate or refreshed.
-fn rejoin_line_count(text: &str) -> usize {
-    [
-        "mesh-join: converged ",
-        "mesh-join: duplicate ",
-        "mesh-join: refreshed ",
-    ]
-    .iter()
-    .map(|needle| raw_count(text, needle))
-    .sum()
-}
-
 /// Wait until both transcripts carry a complete home group.
 fn wait_homes_serial(nodes: &[Node], timeout: Duration) {
     let deadline = Instant::now() + timeout;
@@ -1603,11 +1590,6 @@ fn restart_member(
         .and_then(join::JoinLine::parse)
         .ok_or_else(|| "n1 did not converge before the restart".to_string())?;
     let boot1_log = options.work.join("serial-n1-boot1.log");
-    // The restarted guest appends to the same log, so the pre-restart
-    // convergence line is still there.  Count convergence lines now and wait
-    // for one more after the restart; otherwise the wait returns immediately
-    // and the rejoin is compared before it happened.
-    let rejoin_lines_before = rejoin_line_count(&read_serial(node));
     // Pause the byte pump while the member is down.  Otherwise the supervisor
     // repeatedly connects to the live root's forward and drops the connection,
     // which leaves the iris forward holding half-open guest attempts.  The log
@@ -1719,15 +1701,26 @@ fn restart_member(
             *mesh_relay = Some(relay);
         }
     }
+    // The restarted guest logs a fresh boot, and the module suppresses routine
+    // join lines once a view is confirmed, so the serial transcript is not a
+    // reliable rejoin signal.  The module exposes the count of join requests it
+    // has sent for this boot; the restarted process starts at zero.
     let deadline = Instant::now() + crate::timing::secs(90);
+    let mut last_requests = 0u64;
     loop {
-        let text = read_serial(node);
-        if rejoin_line_count(&text) > rejoin_lines_before {
-            break;
+        if let Ok(response) = crate::homes::fetch(node, "/mesh/join", crate::timing::secs(3)) {
+            if response.status == 200 {
+                if let Some(value) = join::field_u64(&response.body, "requests=") {
+                    last_requests = value;
+                    if value > 0 {
+                        break;
+                    }
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "n1 did not rejoin before the deadline\n--- serial ---\n{}",
+                "n1 did not send a join request before the deadline (requests={last_requests})\n--- serial ---\n{}",
                 rig::tail(&read_serial(node), 40)
             ));
         }

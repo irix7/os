@@ -107,6 +107,16 @@ pub fn node_line(facts: &BootFacts, role: &str) -> Option<JoinLine> {
 }
 
 /// Parse a `last_epoch=` value out of a request or local line.
+/// Parse a `name=value` decimal u64 field from a report line.
+pub fn field_u64(line: &str, key: &str) -> Option<u64> {
+    let at = line.find(key)? + key.len();
+    let rest = &line[at..];
+    let end = rest
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(rest.len());
+    rest[..end].parse().ok()
+}
+
 pub fn field_u32(line: &str, key: &str) -> Option<u32> {
     line.split_whitespace()
         .find_map(|token| token.strip_prefix(key).and_then(|value| value.parse().ok()))

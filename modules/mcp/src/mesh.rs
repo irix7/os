@@ -222,6 +222,9 @@ struct Mesh {
     stats: Stats,
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
+    /// Join requests this boot has queued.  A restarted member starts at zero,
+    /// so a non-zero value proves it asked to rejoin.
+    join_requests: u64,
     /// Signed confirmed-epoch record on the scratch volume, when present.
     store: Option<EpochStore>,
     route: Option<RouteNode>,
@@ -448,6 +451,7 @@ pub unsafe fn init(services: *const Services) -> bool {
         stats: Stats::default(),
         heartbeat,
         join,
+        join_requests: 0,
         store,
         route,
         migrate,
@@ -800,6 +804,50 @@ fn bulk_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
 /// when the optional `epoch=` query equals that snapshot's epoch; an older
 /// epoch is a `409` with no object lines.
 #[inline(never)]
+/// Render `GET /mesh/join`: whether this boot has sent a join request, and the
+/// view it holds.  The two-node rig uses it to tell a quiet rejoin from a lost
+/// one without depending on the serial transcript.
+pub fn join_response(out: &mut [u8]) -> (u16, usize) {
+    // SAFETY: single-threaded module; `MESH` is written once at entry and no
+    // mutable reference is live here.
+    let mesh = unsafe { (&*core::ptr::addr_of!(MESH)).as_ref() };
+    let Some(mesh) = mesh else {
+        return line(out, 404, "mesh-join: disabled reason=peer\n");
+    };
+    let (epoch, members, digest) = match mesh.join.as_ref() {
+        Some(join) => {
+            let local;
+            let snapshot = match join.converged() {
+                Some(snapshot) => snapshot,
+                None => {
+                    local = join.snapshot();
+                    &local
+                }
+            };
+            (snapshot.epoch, snapshot.len(), snapshot.digest())
+        }
+        None => (0, 0, [0u8; 16]),
+    };
+    let mut body = Body::new(out);
+    body.str("mesh-join: requests=");
+    body.u64(mesh.join_requests);
+    body.str(" epoch=");
+    body.u64(epoch as u64);
+    body.str(" members=");
+    body.u64(members as u64);
+    body.str(" digest=");
+    body.digest(&digest);
+    body.push(b'\n');
+    (200, body.len())
+}
+
+fn line(out: &mut [u8], status: u16, text: &str) -> (u16, usize) {
+    let bytes = text.as_bytes();
+    let count = bytes.len().min(out.len());
+    out[..count].copy_from_slice(&bytes[..count]);
+    (status, count)
+}
+
 pub fn homes_response(path: &[u8], out: &mut [u8]) -> (u16, usize) {
     // SAFETY: the module is single-threaded and `MESH` is written once at
     // entry; no mutable reference to it is live here.
@@ -2831,6 +2879,9 @@ impl Mesh {
         now: u64,
         verbose: bool,
     ) {
+        if matches!(message, JoinMessage::Request(_)) {
+            self.join_requests = self.join_requests.saturating_add(1);
+        }
         // SAFETY: single-threaded module; JOIN_TX is the only encode buffer and
         // the bytes are copied into the send queue before the next message.
         let buffer = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_TX) };
