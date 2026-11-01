@@ -337,7 +337,7 @@ pub fn fetch_table(
 ) -> Result<(u16, HomeTable), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let error = match fetch(node, target, Duration::from_secs(10)).and_then(|response| {
+        let error = match fetch(node, target, crate::timing::secs(10)).and_then(|response| {
             HomeTable::parse(&response.body).map(|table| (response.status, table))
         }) {
             Ok(value) => return Ok(value),

@@ -95,7 +95,7 @@ fn accept_loop(listener: TcpListener, target: SocketAddr, log: SharedLog) {
         // parser, so a quiet target is treated as the end of the probe and
         // gets a FIN.  Five seconds covers a slow emulated response without
         // making a dead peer wait forever.
-        let _ = target_stream.set_read_timeout(Some(std::time::Duration::from_secs(5)));
+        let _ = target_stream.set_read_timeout(Some(crate::timing::secs(5)));
         note(&log, format!("relay connected to {target} for {peer}"));
         let (client_read, client_write) = match (stream.try_clone(), stream) {
             (Ok(read), write) => (read, write),
@@ -158,7 +158,7 @@ fn pump(mut from: TcpStream, mut to: TcpStream, direction: &str, log: SharedLog)
     // NAT relays the last host bytes on a later poll than the relay's socket
     // close; a short linger on the target->client half gives it time to drain.
     if direction == "down" {
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(crate::timing::secs(2));
     }
     let _ = to.shutdown(Shutdown::Write);
     drop(to);
@@ -170,13 +170,19 @@ fn pump(mut from: TcpStream, mut to: TcpStream, direction: &str, log: SharedLog)
 
 /// A persistent mesh link may legitimately be idle between heartbeats.  The
 /// probe relay's five-second quiet-period close is deliberately not reused.
-pub const MESH_IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+pub fn mesh_idle_timeout() -> Duration {
+    crate::timing::secs(120)
+}
 /// How long the relay waits for both guests to send their first frame.
-pub const MESH_FIRST_BYTE_TIMEOUT: Duration = Duration::from_secs(30);
+pub fn mesh_first_byte_timeout() -> Duration {
+    crate::timing::secs(30)
+}
 /// First reconnect delay for the mesh relay.
 pub const MESH_RETRY_MIN: Duration = Duration::from_millis(250);
 /// Reconnect delay cap for the mesh relay.
-pub const MESH_RETRY_MAX: Duration = Duration::from_secs(5);
+pub fn mesh_retry_max() -> Duration {
+    crate::timing::secs(5)
+}
 
 /// A bidirectional mesh relay between the two guest port-7000 forwards.
 ///
@@ -251,7 +257,7 @@ fn supervisor(
             }
             Err(error) => {
                 note(&log, format!("mesh-relay session failed: {error}"));
-                delay = (delay * 2).min(MESH_RETRY_MAX);
+                delay = (delay * 2).min(mesh_retry_max());
             }
         }
         // After the first attempt the guests are warm; later sessions must
@@ -291,8 +297,8 @@ fn session(
     let b = connect_retry(b, stop)?;
     let _ = a.set_nodelay(true);
     let _ = b.set_nodelay(true);
-    let _ = a.set_write_timeout(Some(Duration::from_secs(5)));
-    let _ = b.set_write_timeout(Some(Duration::from_secs(5)));
+    let _ = a.set_write_timeout(Some(crate::timing::secs(5)));
+    let _ = b.set_write_timeout(Some(crate::timing::secs(5)));
     note(log, "mesh-relay connected both forwards");
 
     let a_control = a
@@ -360,7 +366,7 @@ fn session(
     }
 
     let mut first = 0usize;
-    let deadline = Instant::now() + MESH_FIRST_BYTE_TIMEOUT + Duration::from_secs(5);
+    let deadline = Instant::now() + mesh_first_byte_timeout() + crate::timing::secs(5);
     while first < 2 {
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -390,7 +396,7 @@ fn session(
 }
 
 fn connect_retry(addr: SocketAddr, stop: &AtomicBool) -> Result<TcpStream, String> {
-    let deadline = Instant::now() + Duration::from_secs(20);
+    let deadline = Instant::now() + crate::timing::secs(20);
     loop {
         if stop.load(Ordering::SeqCst) {
             return Err("stopped".into());
@@ -429,7 +435,7 @@ fn pump_mesh(
             let mut first = vec![0u8; 8192];
             let mut first_len = 0usize;
             let mut opened = false;
-            let deadline = Instant::now() + MESH_FIRST_BYTE_TIMEOUT;
+            let deadline = Instant::now() + mesh_first_byte_timeout();
             loop {
                 if stop.load(Ordering::SeqCst) || fail.load(Ordering::SeqCst) {
                     break;
@@ -518,7 +524,7 @@ fn pump_mesh(
                     {
                         let now = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
                         let last = activity.load(Ordering::SeqCst);
-                        if now.saturating_sub(last) >= MESH_IDLE_TIMEOUT.as_millis() as u64 {
+                        if now.saturating_sub(last) >= mesh_idle_timeout().as_millis() as u64 {
                             note(
                                 &log,
                                 format!("mesh-relay {direction} idle after {total} bytes"),
@@ -602,11 +608,11 @@ mod tests {
         // right guest the left one.  Neither write happens before both reads,
         // which is the early-data guard the iris forward needs.
         assert_eq!(
-            left_rx.recv_timeout(std::time::Duration::from_secs(5)),
+            left_rx.recv_timeout(crate::timing::secs(5)),
             Ok(b'R')
         );
         assert_eq!(
-            right_rx.recv_timeout(std::time::Duration::from_secs(5)),
+            right_rx.recv_timeout(crate::timing::secs(5)),
             Ok(b'L')
         );
         drop(relay);

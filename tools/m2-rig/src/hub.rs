@@ -89,14 +89,14 @@ pub struct HubConfig {
 impl Default for HubConfig {
     fn default() -> Self {
         Self {
-            connect_timeout: Duration::from_secs(60),
+            connect_timeout: crate::timing::secs(60),
             read_timeout: Duration::from_millis(200),
-            idle_timeout: Duration::from_secs(300),
+            idle_timeout: crate::timing::secs(300),
             // Matches `mesh_transport::RECEIVE_DEADLINE_MS`.
-            receive_deadline: Duration::from_secs(10),
+            receive_deadline: crate::timing::secs(10),
             write_timeout: Duration::from_millis(500),
-            write_deadline: Duration::from_secs(60),
-            backpressure_deadline: Duration::from_secs(60),
+            write_deadline: crate::timing::secs(60),
+            backpressure_deadline: crate::timing::secs(60),
             queue_frames: 256,
             queue_bytes: 256 * 1024,
             max_record: MAX_RECORD,
@@ -625,7 +625,7 @@ fn connect(node: &Node, config: &HubConfig) -> Result<(TcpStream, TcpStream, Arc
     let address: SocketAddr = (Ipv4Addr::LOCALHOST, node.mesh_port).into();
     let deadline = Instant::now() + config.connect_timeout;
     loop {
-        match TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+        match TcpStream::connect_timeout(&address, crate::timing::secs(2)) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
                 let _ = stream.set_read_timeout(Some(config.read_timeout));
@@ -1005,13 +1005,13 @@ mod tests {
 
     fn test_config() -> HubConfig {
         HubConfig {
-            connect_timeout: Duration::from_secs(5),
+            connect_timeout: crate::timing::secs(5),
             read_timeout: Duration::from_millis(50),
-            idle_timeout: Duration::from_secs(5),
-            receive_deadline: Duration::from_secs(2),
+            idle_timeout: crate::timing::secs(5),
+            receive_deadline: crate::timing::secs(2),
             write_timeout: Duration::from_millis(50),
-            write_deadline: Duration::from_secs(5),
-            backpressure_deadline: Duration::from_secs(5),
+            write_deadline: crate::timing::secs(5),
+            backpressure_deadline: crate::timing::secs(5),
             queue_frames: 16,
             queue_bytes: 64 * 1024,
             max_record: MAX_RECORD,
@@ -1166,7 +1166,7 @@ mod tests {
 
         fn recv(&self) -> Vec<u8> {
             self.inbound
-                .recv_timeout(Duration::from_secs(3))
+                .recv_timeout(crate::timing::secs(3))
                 .expect("fake guest receive")
         }
 
@@ -1361,10 +1361,10 @@ mod tests {
         let stop = AtomicBool::new(false);
         let now = Instant::now();
         queue
-            .push(vec![1u8; 40], &stop, now + Duration::from_secs(1))
+            .push(vec![1u8; 40], &stop, now + crate::timing::secs(1))
             .unwrap();
         queue
-            .push(vec![2u8; 40], &stop, now + Duration::from_secs(1))
+            .push(vec![2u8; 40], &stop, now + crate::timing::secs(1))
             .unwrap();
         assert!(matches!(
             queue.push(
@@ -1382,7 +1382,7 @@ mod tests {
             .push(
                 vec![3u8; 40],
                 &stop,
-                Instant::now() + Duration::from_secs(1),
+                Instant::now() + crate::timing::secs(1),
             )
             .unwrap();
         let Pop::Frame(second) = queue.pop(Duration::from_millis(10)) else {

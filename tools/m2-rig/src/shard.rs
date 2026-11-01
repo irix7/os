@@ -352,7 +352,7 @@ fn decode_hex_16(text: &str) -> Option<[u8; 16]> {
 fn fetch_shard(node: &Node, target: &str, timeout: Duration) -> Result<(u16, ShardTable), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let error = match homes::fetch(node, target, Duration::from_secs(10)).and_then(|response| {
+        let error = match homes::fetch(node, target, crate::timing::secs(10)).and_then(|response| {
             ShardTable::parse(&response.body).map(|table| (response.status, table))
         }) {
             Ok(value) => return Ok(value),
@@ -385,7 +385,7 @@ fn root_epoch(node: &Node) -> Option<u32> {
 /// window with the node count and leave room for a run that is contended by
 /// other emulators.
 fn convergence_window(nodes: &[Node]) -> Duration {
-    Duration::from_secs(120 + 60 * nodes.len() as u64)
+    crate::timing::secs(120 + 60 * nodes.len() as u64)
 }
 
 /// Recover a host-hub session after a guest reports a transport disconnect.
@@ -432,16 +432,16 @@ impl LinkMonitor {
             // the node reaches the expected view; a node that has converged is
             // never disturbed by the monitor.
             let new_disconnect = count > self.disconnects[index];
-            let stalled = hub.node_stalled(node.node_id, Duration::from_secs(15));
+            let stalled = hub.node_stalled(node.node_id, crate::timing::secs(15));
             let stale = self.disconnects[index] > 0
                 && self.last_reconnect[index]
-                    .is_some_and(|last| last.elapsed() >= Duration::from_secs(60));
+                    .is_some_and(|last| last.elapsed() >= crate::timing::secs(60));
             if !new_disconnect && !stalled && !stale {
                 continue;
             }
             self.disconnects[index] = count;
             if let Some(last) = self.last_reconnect[index] {
-                if last.elapsed() < Duration::from_secs(5) {
+                if last.elapsed() < crate::timing::secs(5) {
                     continue;
                 }
             }
@@ -780,7 +780,7 @@ pub fn run(options: &Options) -> Result<i32, String> {
                 return Err(error);
             }
         }
-        if let Err(error) = crate::rig::wait_ci_ready(options, node, Duration::from_secs(20)) {
+        if let Err(error) = crate::rig::wait_ci_ready(options, node, crate::timing::secs(20)) {
             let _ = crate::rig::stop_nodes(options, &mut running);
             return Err(error);
         }
@@ -950,15 +950,15 @@ fn fetch_member_http(
     node: &Node,
     expected: &Expected,
 ) -> Result<(u16, ShardTable, u16, homes::HomeTable, u16, ShardTable), String> {
-    let (shard_status, table) = fetch_shard(node, "/mesh/shard", Duration::from_secs(10))?;
+    let (shard_status, table) = fetch_shard(node, "/mesh/shard", crate::timing::secs(10))?;
     let (homes_status, homes_table) =
-        homes::fetch_table(node, "/mesh/homes", Duration::from_secs(10))?;
+        homes::fetch_table(node, "/mesh/homes", crate::timing::secs(10))?;
     let stale_epoch = expected.epoch.saturating_sub(1).max(1);
     let stale_path = format!("/mesh/shard?epoch={stale_epoch}");
-    let (stale_status, stale_table) = fetch_shard(node, &stale_path, Duration::from_secs(10))?;
+    let (stale_status, stale_table) = fetch_shard(node, &stale_path, crate::timing::secs(10))?;
     let homes_stale_path = format!("/mesh/homes?epoch={stale_epoch}");
     let (homes_stale_status, homes_stale_table) =
-        homes::fetch_table(node, &homes_stale_path, Duration::from_secs(10))?;
+        homes::fetch_table(node, &homes_stale_path, crate::timing::secs(10))?;
     if homes_stale_status != 409
         || homes_stale_table.state != "stale"
         || !homes_stale_table.rows.is_empty()
@@ -988,7 +988,7 @@ fn run_started(
     first_member: usize,
 ) -> Result<i32, String> {
     let facts = wait_boot(options, running)?;
-    crate::wait_mesh_listen(nodes, Duration::from_secs(90));
+    crate::wait_mesh_listen(nodes, crate::timing::secs(90));
     let expected_epoch = nodes.len() as u32;
     let expected = Expected::build(nodes, expected_epoch)?;
 
@@ -1017,8 +1017,8 @@ fn run_started(
         // zero-window probe; keep the hub's per-record deadline in step with
         // the module's M3 deadline instead of the M2 10 s default.
         let hub_config = HubConfig {
-            receive_deadline: Duration::from_secs(120),
-            write_deadline: Duration::from_secs(120),
+            receive_deadline: crate::timing::secs(120),
+            write_deadline: crate::timing::secs(120),
             ..HubConfig::default()
         };
         let mut host_hub = MeshHub::start_with(nodes, first_member, hub_config)?;
@@ -1085,7 +1085,7 @@ fn run_started(
     // Fetch and verify every node's shard view.  Let the last join/refresh
     // settle first: the root may still be answering a member's refresh, and a
     // member's HTTP slot is polled by the same cooperative tick.
-    std::thread::sleep(Duration::from_secs(5));
+    std::thread::sleep(crate::timing::secs(5));
     let mut node_evidence = Vec::new();
     let mut http_members = 0usize;
     let mut serial_members = 0usize;
@@ -1093,15 +1093,15 @@ fn run_started(
         std::thread::sleep(Duration::from_millis(1000));
         let role = if index == 0 { "root" } else { "member" };
         let (table, homes_table, stale_table) = if index == 0 {
-            let (status, table) = fetch_shard(node, "/mesh/shard", Duration::from_secs(60))?;
+            let (status, table) = fetch_shard(node, "/mesh/shard", crate::timing::secs(60))?;
             checks.extend(verify_current(node, &table, status, &expected, role)?);
             let (homes_status, homes_table) =
-                homes::fetch_table(node, "/mesh/homes", Duration::from_secs(30))?;
+                homes::fetch_table(node, "/mesh/homes", crate::timing::secs(30))?;
             verify_m2_homes(node, homes_status, &homes_table, &expected)?;
             let stale_epoch = expected.epoch.saturating_sub(1).max(1);
             let stale_path = format!("/mesh/shard?epoch={stale_epoch}");
             let (stale_status, stale_table) =
-                fetch_shard(node, &stale_path, Duration::from_secs(10))?;
+                fetch_shard(node, &stale_path, crate::timing::secs(10))?;
             verify_stale(
                 node,
                 &stale_path,
@@ -1112,7 +1112,7 @@ fn run_started(
             )?;
             let homes_stale_path = format!("/mesh/homes?epoch={stale_epoch}");
             let (homes_stale_status, homes_stale_table) =
-                homes::fetch_table(node, &homes_stale_path, Duration::from_secs(20))?;
+                homes::fetch_table(node, &homes_stale_path, crate::timing::secs(20))?;
             if homes_stale_status != 409
                 || homes_stale_table.state != "stale"
                 || !homes_stale_table.rows.is_empty()
@@ -1180,18 +1180,18 @@ fn run_started(
     let wire_object =
         crate::route::first_object_for(&expected.members, &nodes[first_member].node_id_string())
             .ok_or_else(|| "no route object for the chosen member".to_string())?;
-    std::thread::sleep(Duration::from_secs(6));
+    std::thread::sleep(crate::timing::secs(6));
     let (command_status, command_body) =
-        crate::route::command(&nodes[0], 1, Duration::from_secs(10))?;
+        crate::route::command(&nodes[0], 1, crate::timing::secs(10))?;
     if command_status != 202 {
         return Err(format!(
             "route step 1 returned HTTP {command_status}: {}",
             command_body.trim()
         ));
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + crate::timing::secs(30);
     let root_report = loop {
-        if let Ok((_, root_report)) = crate::route::fetch_ready(&nodes[0], Duration::from_secs(10))
+        if let Ok((_, root_report)) = crate::route::fetch_ready(&nodes[0], crate::timing::secs(10))
         {
             let done = root_report.results.iter().any(|row| {
                 row.object == wire_object
@@ -1213,7 +1213,7 @@ fn run_started(
     // The root's result carries the value the member served.  The member's
     // own HTTP report is useful but not required: its inbound HTTP slot can
     // stall independently of the mesh route.
-    let member_report = crate::route::fetch_ready(&nodes[first_member], Duration::from_secs(10))
+    let member_report = crate::route::fetch_ready(&nodes[first_member], crate::timing::secs(10))
         .ok()
         .map(|(_, report)| report);
     let row = root_report

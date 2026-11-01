@@ -268,7 +268,7 @@ where
     let mut nodes = 2u32;
     let mut hub = false;
     let mut transport = Transport::Relay;
-    let mut timeout = Duration::from_secs(180);
+    let mut timeout = crate::timing::secs(180);
     let mut fault = Fault::None;
     let mut keep = false;
     let mut verbose = false;
@@ -309,7 +309,7 @@ where
                 let seconds: u64 = next_value(&mut iter, "--timeout")?
                     .parse()
                     .map_err(|_| "--timeout must be seconds".to_string())?;
-                timeout = Duration::from_secs(seconds.max(10));
+                timeout = crate::timing::secs(seconds.max(10));
             }
             "--fault" => {
                 let word = next_value(&mut iter, "--fault")?;
@@ -1505,7 +1505,7 @@ pub fn kill_node(running: &mut RunningNode) -> Result<(), String> {
         .child
         .kill()
         .map_err(|error| format!("kill {}: {error}", running.node.name))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::timing::secs(10);
     loop {
         match running.child.try_wait() {
             Ok(Some(_)) => return Ok(()),
@@ -1526,7 +1526,7 @@ pub fn stop_node(options: &Options, running: &mut RunningNode) -> Result<(), Str
             eprintln!("{}: clean quit failed: {error}", running.node.name);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::timing::secs(10);
     loop {
         match running.child.try_wait() {
             Ok(Some(_)) => return Ok(()),
@@ -1656,7 +1656,7 @@ mod tests {
             nodes: 2,
             hub: false,
             transport: Transport::Relay,
-            timeout: Duration::from_secs(1),
+            timeout: crate::timing::secs(1),
             fault: Fault::None,
             keep: false,
             verbose: false,

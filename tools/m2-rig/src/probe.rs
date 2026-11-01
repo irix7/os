@@ -58,7 +58,7 @@ pub fn probe_http(
 ) -> Result<ProbeOutcome, ProbeError> {
     let address: SocketAddr = (Ipv4Addr::LOCALHOST, node.telnet_port).into();
     let mut stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(5)).map_err(|error| {
+        TcpStream::connect_timeout(&address, crate::timing::secs(5)).map_err(|error| {
             ProbeError::new(
                 format!(
                     "connect to {} telnet {}: {error}",
@@ -71,11 +71,11 @@ pub fn probe_http(
         .set_read_timeout(Some(Duration::from_millis(250)))
         .map_err(|error| ProbeError::new(format!("set read timeout: {error}"), Vec::new()))?;
     stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
+        .set_write_timeout(Some(crate::timing::secs(2)))
         .map_err(|error| ProbeError::new(format!("set write timeout: {error}"), Vec::new()))?;
 
     let mut transcript = Vec::new();
-    read_banner(&mut stream, &mut transcript, Duration::from_secs(5))?;
+    read_banner(&mut stream, &mut transcript, crate::timing::secs(5))?;
 
     let command = format!("http {host}:{port}/\r\n");
     stream.write_all(command.as_bytes()).map_err(|error| {
