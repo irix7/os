@@ -91,6 +91,12 @@ pub fn serve(vtable: *const ModuleVtable) {
     serial::write(b"x86: module serving\n");
     // SAFETY: the vtable points into a loaded module image.
     let tick = unsafe { (*vtable).tick };
+    // Run one tick so the module arms its listeners, then announce readiness.
+    if let Some(tick) = tick {
+        // SAFETY: the module registered this tick and receives the same table.
+        let _ = unsafe { tick(&SERVICES) };
+    }
+    serial::write(b"BOOT-READY v=1 kernel=up network=up mcp=listening mesh=single\n");
     let start = timer::ticks();
     let mut ticking = tick.is_some();
     while timer::ticks().wrapping_sub(start) < SERVE_TICKS {

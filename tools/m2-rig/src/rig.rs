@@ -49,6 +49,8 @@ pub enum Action {
     Ports,
     /// Print the derived instance table without starting anything.
     PrintConfig,
+    /// Boot one x86 QEMU guest and check the module's status page.
+    X86Smoke,
     /// Remove the rig work directory.
     Clean,
 }
@@ -66,6 +68,7 @@ impl Action {
             "probe" => Self::Probe,
             "ports" => Self::Ports,
             "print-config" => Self::PrintConfig,
+            "x86-smoke" => Self::X86Smoke,
             "clean" => Self::Clean,
             _ => return None,
         })
@@ -185,10 +188,14 @@ pub struct Options {
     pub iris: PathBuf,
     /// `iris-ci` binary.
     pub iris_ci: PathBuf,
-    /// PROM image.
+    /// PROM image for iris, or the x86 kernel ELF for `x86-smoke`.
     pub rom: PathBuf,
     /// Fresh MCP module image.
     pub module: PathBuf,
+    /// Wasm module image (x86 autoload).
+    pub wasm: PathBuf,
+    /// qemu-system-x86_64 binary.
+    pub qemu: PathBuf,
     /// First monitor port block.
     pub base_port: u16,
     /// Number of nodes for the M3 shard scenario.
@@ -264,6 +271,8 @@ where
     let mut iris_ci = None;
     let mut rom = None;
     let mut module = None;
+    let mut wasm = None;
+    let mut qemu = None;
     let mut base_port = 9100u16;
     let mut nodes = 2u32;
     let mut hub = false;
@@ -284,6 +293,8 @@ where
             "--iris-ci" => iris_ci = Some(PathBuf::from(next_value(&mut iter, "--iris-ci")?)),
             "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
             "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
+            "--wasm" => wasm = Some(PathBuf::from(next_value(&mut iter, "--wasm")?)),
+            "--qemu" => qemu = Some(PathBuf::from(next_value(&mut iter, "--qemu")?)),
             "--base-port" => {
                 base_port = next_value(&mut iter, "--base-port")?
                     .parse()
@@ -355,6 +366,8 @@ where
         iris_ci,
         rom,
         module,
+        wasm: wasm.unwrap_or_default(),
+        qemu: qemu.unwrap_or_else(|| PathBuf::from("qemu-system-x86_64")),
         base_port,
         nodes,
         hub,

@@ -32,6 +32,7 @@ mod sha256;
 mod shard;
 mod timing;
 mod udp;
+mod x86;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -98,6 +99,7 @@ fn run() -> Result<i32, String> {
         Action::Status => status(&options),
         Action::Probe => probe_only(&options),
         Action::PrintConfig => print_config(&options),
+        Action::X86Smoke => x86::smoke(&options),
         Action::Clean => clean(&options),
     }
 }
