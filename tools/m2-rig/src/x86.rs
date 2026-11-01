@@ -14,7 +14,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::fixture::Fixture;
-use crate::rig::{Node, Options};
+use crate::rig::{self, Node, Options};
 use crate::sha256;
 
 /// Boot disk size: 8 MiB, the same as the gate's image.
@@ -33,7 +33,7 @@ pub fn smoke(options: &Options) -> Result<i32, String> {
     require_file(&options.module, "MCP module (--module)")?;
     require_file(&options.wasm, "wasm module (--wasm)")?;
 
-    let node = derive_node(options)?;
+    let node = derive_node(options, 0)?;
     fs::create_dir_all(&node.state_dir)
         .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
     let _ = fs::remove_file(&node.serial_log);
@@ -46,7 +46,7 @@ pub fn smoke(options: &Options) -> Result<i32, String> {
     let disk = node.state_dir.join("boot.img");
     write_boot_disk(
         &disk,
-        options,
+        &["test.key=config-ok".to_string()],
         (&mcp_module(options), mcp.port),
         (&wasm_module(options), wasm.port),
     )?;
@@ -73,6 +73,90 @@ pub fn smoke(options: &Options) -> Result<i32, String> {
     Ok(0)
 }
 
+/// Two x86 guests joined through the host relay: the M2 topology without the
+/// rest of the scenario.  Each node listens on 7000; the relay dials both
+/// forwards.  The check is the live `/mesh/join` counter and `/mesh/homes`.
+pub fn mesh(options: &Options) -> Result<i32, String> {
+    require_file(&options.rom, "kernel image (--rom)")?;
+    require_file(&options.module, "MCP module (--module)")?;
+    require_file(&options.wasm, "wasm module (--wasm)")?;
+    let nodes = [derive_node(options, 0)?, derive_node(options, 1)?];
+
+    let mcp = Fixture::start(fs::read(&options.module).map_err(|e| e.to_string())?)
+        .map_err(|error| format!("start MCP fixture: {error}"))?;
+    let wasm = Fixture::start(fs::read(&options.wasm).map_err(|e| e.to_string())?)
+        .map_err(|error| format!("start wasm fixture: {error}"))?;
+
+    let mcp_image = mcp_module(options);
+    let wasm_image = wasm_module(options);
+    let (environments, _authority, _wrong) =
+        rig::mesh_environments(&nodes, rig::Fault::None, rig::Transport::Relay);
+    let mut children = Vec::new();
+    for (node, environment) in nodes.iter().zip(environments.iter()) {
+        fs::create_dir_all(&node.state_dir)
+            .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
+        let mut lines = Vec::new();
+        if let Some(environment) = environment {
+            for (key, value) in node.environment(mcp.port, Some(environment)) {
+                lines.push(format!("{key}={value}"));
+            }
+        }
+        let disk = node.state_dir.join("boot.img");
+        write_boot_disk(
+            &disk,
+            &lines,
+            (&mcp_image, mcp.port),
+            (&wasm_image, wasm.port),
+        )?;
+        children.push((node, launch(options, node, &disk)?));
+    }
+
+    let result = (|| -> Result<(), String> {
+        for (node, _) in &children {
+            wait_boot(&node.serial_log, crate::timing::secs(90))?;
+        }
+        let _relay = crate::relay::MeshRelay::start(
+            (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+        )
+        .map_err(|error| format!("start mesh relay: {error}"))?;
+        // The root never sends a join request, so the request counter is not a
+        // two-node signal.  Wait for both live views to report the two-member
+        // epoch instead.
+        let deadline = Instant::now() + crate::timing::secs(120);
+        loop {
+            let mut views = Vec::new();
+            let mut joined = true;
+            for node in &nodes {
+                match crate::homes::fetch(node, "/mesh/homes", crate::timing::secs(5)) {
+                    Ok(homes) if homes.status == 200 && homes.body.contains("members=2") => {
+                        views.push(format!("{}: {}", node.name, homes.body.trim()));
+                    }
+                    _ => joined = false,
+                }
+            }
+            if joined {
+                for view in views {
+                    println!("x86-mesh: {view}");
+                }
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("x86 guests did not both report a two-member view".into());
+            }
+            thread::sleep(Duration::from_millis(500));
+        }
+    })();
+
+    for (_, child) in children.iter_mut() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result?;
+    println!("x86-mesh: pass");
+    Ok(0)
+}
+
 fn mcp_module(options: &Options) -> Vec<u8> {
     fs::read(&options.module).unwrap_or_default()
 }
@@ -91,17 +175,17 @@ fn require_file(path: &Path, what: &str) -> Result<(), String> {
 
 /// Node description for one x86 guest.  QEMU's user network gives the guest
 /// 10.0.2.15 and reaches the host at 10.0.2.2.
-fn derive_node(options: &Options) -> Result<Node, String> {
-    let state_dir = options.node_dir(0);
-    let serial_log = options.work.join("x86.serial");
-    let mac = [0x52, 0x54, 0x00, 0x00, 0x00, 0x01];
+fn derive_node(options: &Options, instance: u32) -> Result<Node, String> {
+    let state_dir = options.node_dir(instance);
+    let serial_log = options.work.join(format!("x86-{instance}.serial"));
+    let mac = [0x52, 0x54, 0x00, 0x00, 0x00, 0x01 + instance as u8];
     let mut node_id = [0u8; 16];
     node_id[..6].copy_from_slice(&mac);
     Ok(Node {
-        name: "x86".into(),
+        name: format!("x{instance}"),
         instance: 0,
         state_dir,
-        config: options.node_config(0),
+        config: options.node_config(instance),
         ci_socket: PathBuf::new(),
         serial_log,
         monitor: 0,
@@ -110,10 +194,10 @@ fn derive_node(options: &Options) -> Result<Node, String> {
         nat_subnet: "10.0.2.0/24".into(),
         gateway: std::net::Ipv4Addr::new(10, 0, 2, 2),
         guest: std::net::Ipv4Addr::new(10, 0, 2, 15),
-        telnet_port: options.telnet_port(0),
-        http_port: options.http_port(0),
-        mesh_port: options.mesh_port(0),
-        port_base: options.port_base(0),
+        telnet_port: options.telnet_port(instance),
+        http_port: options.http_port(instance),
+        mesh_port: options.mesh_port(instance),
+        port_base: options.port_base(instance),
     })
 }
 
@@ -121,13 +205,24 @@ fn derive_node(options: &Options) -> Result<Node, String> {
 /// the fixture URLs the guest fetches at boot.
 fn write_boot_disk(
     path: &Path,
-    _options: &Options,
+    config_lines: &[String],
     mcp: (&Vec<u8>, u16),
     wasm: (&Vec<u8>, u16),
 ) -> Result<(), String> {
     let mut disk = vec![0u8; DISK_SECTORS * SECTOR];
     disk[SECTOR..SECTOR + 17].copy_from_slice(b"IRIX7-X86-DISK-OK");
-    let config = b"test.key=config-ok\n";
+    let config: String = config_lines
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let config = config.as_bytes();
+    let capacity = 4 * SECTOR;
+    if config.len() > capacity {
+        return Err(format!(
+            "x86 boot config is {} bytes, over the {capacity}-byte block",
+            config.len()
+        ));
+    }
     disk[CONFIG_SECTOR * SECTOR..][..config.len()].copy_from_slice(config);
     let urls = [
         (MCP_URL_SECTOR, format!("10.0.2.2:{}/mcp.module", mcp.1)),

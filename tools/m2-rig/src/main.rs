@@ -100,6 +100,7 @@ fn run() -> Result<i32, String> {
         Action::Probe => probe_only(&options),
         Action::PrintConfig => print_config(&options),
         Action::X86Smoke => x86::smoke(&options),
+        Action::X86Mesh => x86::mesh(&options),
         Action::Clean => clean(&options),
     }
 }

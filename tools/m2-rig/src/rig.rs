@@ -51,6 +51,8 @@ pub enum Action {
     PrintConfig,
     /// Boot one x86 QEMU guest and check the module's status page.
     X86Smoke,
+    /// Boot two x86 QEMU guests and join them through the relay.
+    X86Mesh,
     /// Remove the rig work directory.
     Clean,
 }
@@ -69,6 +71,7 @@ impl Action {
             "ports" => Self::Ports,
             "print-config" => Self::PrintConfig,
             "x86-smoke" => Self::X86Smoke,
+            "x86-mesh" => Self::X86Mesh,
             "clean" => Self::Clean,
             _ => return None,
         })

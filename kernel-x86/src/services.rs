@@ -83,7 +83,10 @@ stub!(status(*mut u8, usize) -> isize = REFUSED);
 /// Machine information.  Query 1 is the node text the wasm policy module reads:
 /// `mac: aa:bb:cc:dd:ee:ff`.  Other queries are refused.
 unsafe extern "C" fn info(which: u32, out: *mut u8, len: usize) -> isize {
-    if which != 1 || out.is_null() {
+    // Query 0 is the machine status text the mesh reads for its identity;
+    // query 1 is the network text the wasm policy module reads.  Both carry
+    // the mac line this machine can answer.
+    if which > 1 || out.is_null() {
         return REFUSED;
     }
     let Some(mac) = crate::net::mac() else {
