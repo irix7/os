@@ -505,6 +505,11 @@ static mut THUMB_B64: [u8; 12000] = [0; 12000];
 static mut REQUEST: [u8; REQUEST_CAP] = [0; REQUEST_CAP];
 static mut REQ_LEN: usize = 0;
 static mut IN_CONN: bool = false;
+/// When the current request began.  A host forward can keep a guest-side
+/// connection open after the client is gone; the request must not hold a slot
+/// forever.
+static mut REQUEST_START_MS: u64 = 0;
+const REQUEST_TIMEOUT_MS: u64 = 10_000;
 /// The pending response: a small header, then a body the handler owns.
 /// `SEND_RESPONSE` drains both across ticks, so a full transmit ring is a
 /// wait rather than a truncated response.
@@ -672,7 +677,18 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                     unsafe {
                         REQ_LEN = 0;
                         IN_CONN = true;
+                        REQUEST_START_MS = (services.clock_ms)();
                     }
+                }
+                if (services.clock_ms)().saturating_sub(unsafe { REQUEST_START_MS })
+                    >= REQUEST_TIMEOUT_MS
+                {
+                    (services.tcp_abort)(slot);
+                    unsafe {
+                        IN_CONN = false;
+                        PHASE = ARM;
+                    }
+                    return 0;
                 }
                 let request = unsafe { &mut *core::ptr::addr_of_mut!(REQUEST) };
                 let used = unsafe { REQ_LEN };
