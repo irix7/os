@@ -4244,6 +4244,21 @@ fn write_epoch_store(services: &Services, kind: u8, body: &[u8]) -> Result<(), &
             return Err("write");
         }
     }
+    // Read the sectors back through the same service.  A store that reports
+    // success but cannot be restored must fail here, not at the next boot.
+    for sector in 0..STORE_SECTORS {
+        let offset = sector * 512;
+        let mut check = [0u8; 512];
+        let rc = unsafe {
+            (services.block_read)(STORE_TARGET, STORE_LBA + sector as u32, check.as_mut_ptr())
+        };
+        if rc != 0 {
+            return Err("verify-read");
+        }
+        if check != buffer[offset..offset + 512] {
+            return Err("verify");
+        }
+    }
     Ok(())
 }
 
