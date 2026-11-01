@@ -860,17 +860,19 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
                 return 0;
             }
-            match (services.tcp_state)(slot) {
-                3 => {
-                    (services.tcp_close)(slot);
-                    unsafe {
-                        PHASE = CLOSING;
-                    }
-                }
-                0 => unsafe {
+            // EV_CLOSED covers TimeWait as well as Closed.  Waiting for the
+            // coarse state to read zero means every request pays the 2 s
+            // abort, and the single slot refuses requests while it does.
+            const EV_CLOSED: u32 = 1 << 2;
+            if (services.tcp_events)(slot) & EV_CLOSED != 0 {
+                unsafe {
                     finish_close();
-                },
-                _ => {}
+                }
+            } else if (services.tcp_state)(slot) == 3 {
+                (services.tcp_close)(slot);
+                unsafe {
+                    PHASE = CLOSING;
+                }
             }
         }
         SEND_RESPONSE => {
@@ -940,7 +942,8 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
                 return 0;
             }
-            if (services.tcp_state)(slot) == 0 {
+            const EV_CLOSED: u32 = 1 << 2;
+            if (services.tcp_state)(slot) == 0 || (services.tcp_events)(slot) & EV_CLOSED != 0 {
                 (services.tcp_abort)(slot);
                 unsafe {
                     finish_close();

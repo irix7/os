@@ -76,6 +76,14 @@ pub fn smoke(options: &Options) -> Result<i32, String> {
 /// Two x86 guests joined through the host relay: the M2 topology without the
 /// rest of the scenario.  Each node listens on 7000; the relay dials both
 /// forwards.  The check is the live `/mesh/join` counter and `/mesh/homes`.
+/// Take a whitespace-delimited `name=value` field from a report line.
+fn field(body: &str, key: &str) -> Option<String> {
+    let at = body.find(key)? + key.len();
+    let rest = &body[at..];
+    let end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+    Some(rest[..end].to_string())
+}
+
 /// Wait until both guests report a two-member view, returning those views.
 fn wait_two_members(nodes: &[Node], timeout: Duration) -> Result<Vec<String>, String> {
     let deadline = Instant::now() + timeout;
@@ -205,6 +213,22 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
         for view in views {
             println!("x86-mesh: {view}");
         }
+        // Route/MOVED runs over the same HTTP surface the iris rig uses.
+        let homes = crate::homes::fetch(&nodes[0], "/mesh/homes", crate::timing::secs(10))?;
+        let digest = field(&homes.body, "digest=").ok_or("x86: homes view has no digest")?;
+        let members = vec![nodes[0].node_id_string(), nodes[1].node_id_string()];
+        let route = crate::route::run(
+            &nodes[0],
+            &nodes[1],
+            &members,
+            2,
+            &digest,
+            crate::timing::secs(60),
+        );
+        if !route.ok {
+            return Err(format!("x86 route: {}", route.message));
+        }
+        println!("x86-mesh: route {}", route.message);
 
         drop(relay);
         relay = restart_guest(
@@ -226,6 +250,7 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
         )?;
         println!("x86-mesh: root restart restored epoch 2 and both views reconverged");
         drop(relay);
+
         Ok(())
     })();
 

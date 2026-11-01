@@ -250,6 +250,25 @@ pub struct HttpResponse {
 
 /// Fetch one path from a node's host MCP forward.
 pub fn fetch(node: &Node, target: &str, timeout: Duration) -> Result<HttpResponse, String> {
+    // The guest has one HTTP slot and closes it between requests.  A fetch
+    // that lands in the close window can be reset before the guest reads it;
+    // retry transport failures so a caller sees a real status or a real error.
+    let mut last = None;
+    for attempt in 1..=3 {
+        match fetch_once(node, target, timeout) {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last = Some(error);
+                if attempt < 3 {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
+    }
+    Err(last.expect("fetch attempts are non-empty"))
+}
+
+fn fetch_once(node: &Node, target: &str, timeout: Duration) -> Result<HttpResponse, String> {
     let address: SocketAddr = (Ipv4Addr::LOCALHOST, node.http_port).into();
     let mut stream = TcpStream::connect_timeout(&address, timeout)
         .map_err(|error| format!("connect 127.0.0.1:{}: {error}", node.http_port))?;
