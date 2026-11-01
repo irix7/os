@@ -348,6 +348,24 @@ fn get_inner(
 
 /// Remove the socket so repeated fetches do not exhaust the set.
 fn cleanup(handle: smoltcp::iface::SocketHandle) {
+    // Removing a socket sends nothing, so the peer never sees a close and its
+    // single HTTP slot sits in CLOSING until its own timeout.  Ask for a
+    // graceful close, let the FIN drain, then remove the socket.
+    net::sockets_with(|sockets| {
+        let _ = sockets.get_mut::<TcpSocket>(handle).close();
+    });
+    let deadline = net::clock_now().total_millis() + 500;
+    loop {
+        net::poll();
+        let state = net::sockets_with(|sockets| sockets.get::<TcpSocket>(handle).state());
+        match state {
+            Some(State::Closed) | Some(State::TimeWait) | Some(State::LastAck) | None => break,
+            _ => {}
+        }
+        if net::clock_now().total_millis() > deadline {
+            break;
+        }
+    }
     net::sockets_with(|sockets| {
         let _ = sockets.remove(handle);
     });
