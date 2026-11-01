@@ -48,6 +48,8 @@ const SCREEN_ROW_BYTES: usize = SCREEN_W as usize * 3;
 const SCREEN_DATA: u32 = SCREEN_W * SCREEN_H * 3;
 
 const PORT: u16 = 80;
+/// The second HTTP slot when the mesh owns slot 1.
+const HTTP_SECOND_SLOT: u32 = 2;
 const REQUEST_CAP: usize = 2048;
 
 static VTABLE: ModuleVtable = ModuleVtable {
@@ -565,9 +567,11 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     // one, so it cannot collide with the HTTP server or the mesh listener.
     unsafe { netprobe::init(services) };
     if mesh_enabled {
+        // The mesh owns slot 1.  HTTP still needs a second slot so one socket
+        // can be listening while the other closes; slot 2 is free.
         unsafe {
             CURRENT = mesh::HTTP_SLOT;
-            NEXT = 1;
+            NEXT = HTTP_SECOND_SLOT;
             NEXT_ARMED = false;
         }
     }
@@ -742,12 +746,10 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     SCREEN_STREAMING = false;
                 }
-                if !mesh::enabled() {
-                    let next = unsafe { NEXT };
-                    if (services.tcp_listen)(next, PORT) == 0 {
-                        unsafe {
-                            NEXT_ARMED = true;
-                        }
+                let next = unsafe { NEXT };
+                if (services.tcp_listen)(next, PORT) == 0 {
+                    unsafe {
+                        NEXT_ARMED = true;
                     }
                 }
                 unsafe {
@@ -842,15 +844,12 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
             let body_len = unsafe { BODY_LEN };
             if sent >= header_len + body_len {
                 // Arm the other slot before the client closes, so the next
-                // connection lands on a listening socket.  With the mesh
-                // listener enabled slot 1 is reserved for port 7000, so HTTP
-                // re-arms slot 0 after the close handshake instead.
-                if !mesh::enabled() {
-                    let next = unsafe { NEXT };
-                    if (services.tcp_listen)(next, PORT) == 0 {
-                        unsafe {
-                            NEXT_ARMED = true;
-                        }
+                // connection lands on a listening socket while this one
+                // finishes its close handshake.
+                let next = unsafe { NEXT };
+                if (services.tcp_listen)(next, PORT) == 0 {
+                    unsafe {
+                        NEXT_ARMED = true;
                     }
                 }
                 (services.tcp_close)(slot);
