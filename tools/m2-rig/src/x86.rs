@@ -100,6 +100,63 @@ fn wait_two_members(nodes: &[Node], timeout: Duration) -> Result<Vec<String>, St
     }
 }
 
+/// Stop one guest, relaunch it on its own disk, and wait for both views to
+/// reconverge.  The store record must be on the host disk before the stop, and
+/// the restarted guest must log every marker in `expected`.
+fn restart_guest(
+    options: &Options,
+    nodes: &[Node; 2],
+    children: &mut [(&Node, Child)],
+    index: usize,
+    expected: &[&str],
+) -> Result<crate::relay::MeshRelay, String> {
+    let node = &nodes[index];
+    let disk = fs::read(node.state_dir.join("boot.img")).unwrap_or_default();
+    let at = (4096 + 8) * 512;
+    if disk.get(at..at + 8) != Some(b"I7EPST01") {
+        return Err(format!(
+            "{}: epoch record is not on the boot disk before the restart",
+            node.name
+        ));
+    }
+    let child = children
+        .iter_mut()
+        .find(|(child_node, _)| child_node.instance == node.instance)
+        .map(|(_, child)| child)
+        .ok_or_else(|| format!("x86: {} child missing", node.name))?;
+    let _ = child.kill();
+    let _ = child.wait();
+    thread::sleep(crate::timing::secs(2));
+    let image = node.state_dir.join("boot.img");
+    let restarted = launch(options, node, &image)?;
+    if let Some(slot) = children
+        .iter_mut()
+        .find(|(child_node, _)| child_node.instance == node.instance)
+    {
+        slot.1 = restarted;
+    }
+    wait_boot(&node.serial_log, crate::timing::secs(90))?;
+    let relay = crate::relay::MeshRelay::start(
+        (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+        (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+    )
+    .map_err(|error| format!("restart mesh relay: {error}"))?;
+    let views = wait_two_members(nodes, crate::timing::secs(120))?;
+    for view in views {
+        println!("x86-mesh: after {} restart {view}", node.name);
+    }
+    let serial = fs::read_to_string(&node.serial_log).unwrap_or_default();
+    for marker in expected {
+        if !serial.contains(marker) {
+            return Err(format!(
+                "{} did not log {marker:?} after restart\n--- serial ---\n{serial}",
+                node.name
+            ));
+        }
+    }
+    Ok(relay)
+}
+
 pub fn mesh(options: &Options) -> Result<i32, String> {
     require_file(&options.rom, "kernel image (--rom)")?;
     require_file(&options.module, "MCP module (--module)")?;
@@ -139,59 +196,36 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
         for (node, _) in &children {
             wait_boot(&node.serial_log, crate::timing::secs(90))?;
         }
-        let mut relay = Some(
-            crate::relay::MeshRelay::start(
-                (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-                (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-            )
-            .map_err(|error| format!("start mesh relay: {error}"))?,
-        );
+        let mut relay = crate::relay::MeshRelay::start(
+            (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+        )
+        .map_err(|error| format!("start mesh relay: {error}"))?;
         let views = wait_two_members(&nodes, crate::timing::secs(120))?;
         for view in views {
             println!("x86-mesh: {view}");
         }
-        // The epoch record must be on the host disk before the guest is
-        // stopped; otherwise a restart cannot restore it.
-        let disk = fs::read(nodes[1].state_dir.join("boot.img")).unwrap_or_default();
-        let at = (4096 + 8) * 512;
-        if disk.get(at..at + 8) != Some(b"I7EPST01") {
-            return Err("epoch record is not on the boot disk before the restart".into());
-        }
 
-        // Member restart: kill the guest, relaunch it on the same disk, and
-        // restart the relay.  The epoch store must restore, and both views
-        // must reconverge on the same two-member epoch.
-        let member = &nodes[1];
-        let (_, child) = children
-            .iter_mut()
-            .find(|(node, _)| node.instance == 1)
-            .ok_or("x86: member child missing")?;
-        let _ = child.kill();
-        let _ = child.wait();
-        drop(relay.take());
-        thread::sleep(crate::timing::secs(2));
-        let disk = member.state_dir.join("boot.img");
-        let restarted = launch(options, member, &disk)?;
-        if let Some(slot) = children.iter_mut().find(|(node, _)| node.instance == 1) {
-            slot.1 = restarted;
-        }
-        wait_boot(&member.serial_log, crate::timing::secs(90))?;
-        let _restart_relay = crate::relay::MeshRelay::start(
-            (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-        )
-        .map_err(|error| format!("restart mesh relay: {error}"))?;
-        let views = wait_two_members(&nodes, crate::timing::secs(120))?;
-        for view in views {
-            println!("x86-mesh: after restart {view}");
-        }
-        let serial = fs::read_to_string(&member.serial_log).unwrap_or_default();
-        if !serial.contains("epoch-store: restored epoch=2") {
-            return Err(format!(
-                "member did not restore epoch 2 after restart\n--- serial ---\n{serial}"
-            ));
-        }
+        drop(relay);
+        relay = restart_guest(
+            options,
+            &nodes,
+            &mut children,
+            1,
+            &["epoch-store: restored epoch=2", "source=confirmation"],
+        )?;
         println!("x86-mesh: member restart restored epoch 2 and both views reconverged");
+
+        drop(relay);
+        relay = restart_guest(
+            options,
+            &nodes,
+            &mut children,
+            0,
+            &["epoch-store: restored epoch=2", "source=root-record"],
+        )?;
+        println!("x86-mesh: root restart restored epoch 2 and both views reconverged");
+        drop(relay);
         Ok(())
     })();
 
