@@ -229,6 +229,18 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
             return Err(format!("x86 route: {}", route.message));
         }
         println!("x86-mesh: route {}", route.message);
+        let migration = crate::migrate::run(
+            &nodes[0],
+            &nodes[1],
+            &members,
+            2,
+            &digest,
+            crate::timing::secs(120),
+        );
+        if !migration.ok {
+            return Err(format!("x86 migration: {}", migration.message));
+        }
+        println!("x86-mesh: migration {}", migration.message);
 
         drop(relay);
         relay = restart_guest(

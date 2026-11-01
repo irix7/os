@@ -46,7 +46,7 @@ pub const WASM: Image = Image {
 };
 
 /// How long the MCP module serves before the boot ends: 60 s at 100 Hz.
-pub const SERVE_TICKS: u32 = 18_000;
+pub const SERVE_TICKS: u32 = 30_000;
 
 type Entry = unsafe extern "C" fn(*const module_abi::Services) -> *const ModuleVtable;
 
