@@ -166,8 +166,20 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     // Fetch both modules, then load them.  The MCP module initialises on the boot
     // stack, which is small and only runs its init.  The wasm policy module runs
     // on the large stack, because the Wasm runtime is deep.
-    let mcp_bytes = fetch::image(&mut disk, "mcp", fetch::MCP_URL_SECTOR, module::MCP_HEADER_SECTOR);
-    let wasm_bytes = fetch::image(&mut disk, "wasm", fetch::WASM_URL_SECTOR, module::WASM_HEADER_SECTOR);
+    let mcp_bytes = fetch::image(
+        &mut disk,
+        "mcp",
+        fetch::MCP_URL_SECTOR,
+        module::MCP_HEADER_SECTOR,
+        fetch::SLOT_MCP,
+    );
+    let wasm_bytes = fetch::image(
+        &mut disk,
+        "wasm",
+        fetch::WASM_URL_SECTOR,
+        module::WASM_HEADER_SECTOR,
+        fetch::SLOT_WASM,
+    );
     let mcp = module::load(&module::MCP, mcp_bytes);
     let mut wasm = core::ptr::null();
     stack::on_stack(&mut || {

@@ -22,8 +22,11 @@ use crate::virtio_blk::{Disk, SECTOR};
 pub const MCP_URL_SECTOR: u64 = 9;
 /// Disk sector holding the wasm module's URL.
 pub const WASM_URL_SECTOR: u64 = 11;
-/// The TCP slot the kernel's fetch uses.  It is free at boot, before any module.
-const SLOT: u32 = 7;
+/// TCP slots the kernel's fetches use.  They are free at boot, before any
+/// module.  Each image gets its own slot so a second fetch never races the
+/// first fetch's close.
+pub const SLOT_MCP: u32 = 7;
+pub const SLOT_WASM: u32 = 6;
 /// Largest image the fetch accepts: 2 MiB, one contiguous run of frames.
 const CAPACITY: usize = 2 * 1024 * 1024;
 /// Each network step gets this long before the fetch gives up: 30 s at 100 Hz.
@@ -37,6 +40,7 @@ pub fn image(
     name: &str,
     url_sector: u64,
     header_sector: u64,
+    slot: u32,
 ) -> &'static [u8] {
     let mut url_bytes = [0u8; SECTOR];
     if !disk.read(url_sector, &mut url_bytes) {
@@ -61,7 +65,7 @@ pub fn image(
     // physical address is a valid, unused buffer of CAPACITY bytes.
     let buffer = unsafe { core::slice::from_raw_parts_mut(base as usize as *mut u8, CAPACITY) };
 
-    let length = match get(address, port, path, buffer) {
+    let length = match get(slot, address, port, path, buffer) {
         Ok(length) => length,
         Err(message) => fail(message),
     };
@@ -119,14 +123,20 @@ fn wait(mut done: impl FnMut() -> bool) -> bool {
 
 /// HTTP/1.0 GET over the kernel's module slot.  The body is copied to the
 /// start of `out`, and its length is returned.
-fn get(address: Ipv4Address, port: u16, path: &str, out: &mut [u8]) -> Result<usize, &'static str> {
+fn get(
+    slot: u32,
+    address: Ipv4Address,
+    port: u16,
+    path: &str,
+    out: &mut [u8],
+) -> Result<usize, &'static str> {
     let octets = address.octets();
     let ip = u32::from_be_bytes(octets);
     // SAFETY: the slot is free at boot and the call matches the module ABI.
-    if unsafe { tcp::connect(SLOT, ip, port) } != 0 {
+    if unsafe { tcp::connect(slot, ip, port) } != 0 {
         return Err("x86: autoload: connect refused");
     }
-    if !wait(|| tcp::state(SLOT) == 2) {
+    if !wait(|| tcp::state(slot) == 2) {
         return Err("x86: autoload: connect timed out");
     }
 
@@ -137,7 +147,7 @@ fn get(address: Ipv4Address, port: u16, path: &str, out: &mut [u8]) -> Result<us
     let mut sent = 0;
     while sent < request.len() {
         // SAFETY: the request buffer lives for the call.
-        let n = unsafe { tcp::send(SLOT, request[sent..].as_ptr(), request.len() - sent) };
+        let n = unsafe { tcp::send(slot, request[sent..].as_ptr(), request.len() - sent) };
         if n > 0 {
             sent += n as usize;
         }
@@ -151,14 +161,14 @@ fn get(address: Ipv4Address, port: u16, path: &str, out: &mut [u8]) -> Result<us
             return Err("x86: autoload: image larger than the buffer");
         }
         // SAFETY: the destination is inside `out`, with room for the call.
-        let n = unsafe { tcp::recv(SLOT, out[received..].as_mut_ptr(), out.len() - received) };
+        let n = unsafe { tcp::recv(slot, out[received..].as_mut_ptr(), out.len() - received) };
         if n > 0 {
             received += n as usize;
             continue;
         }
         // A peer that has sent its whole response closes its side: smoltcp then
         // reports the receive as an error while the socket leaves Established.
-        if tcp::events(SLOT) & tcp::EV_CLOSED != 0 || (n < 0 && tcp::state(SLOT) != 2) {
+        if tcp::events(slot) & tcp::EV_CLOSED != 0 || (n < 0 && tcp::state(slot) != 2) {
             break;
         }
         if timer::ticks().wrapping_sub(start) >= TIMEOUT_TICKS * 4 {
@@ -166,7 +176,7 @@ fn get(address: Ipv4Address, port: u16, path: &str, out: &mut [u8]) -> Result<us
         }
         net::poll();
     }
-    tcp::close(SLOT);
+    tcp::close(slot);
 
     let response = &out[..received];
     let headers_end = response
