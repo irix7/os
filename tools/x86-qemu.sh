@@ -128,7 +128,7 @@ timeout 150 "$QEMU" \
   -device isa-debug-exit,iobase=0x501,iosize=0x04 \
   -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$HTTP_PORT-:80" \
   -device virtio-net-pci,netdev=net0,disable-modern=on \
-  -drive file="$DISK",if=none,id=disk0,format=raw \
+  -drive file="$DISK",if=none,id=disk0,format=raw,cache=writethrough \
   -device virtio-blk-pci,drive=disk0,disable-modern=on &
 QEMU_PID=$!
 

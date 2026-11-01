@@ -184,8 +184,11 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     }
     let mut readback = [0u8; virtio_blk::SECTOR];
     // SAFETY: the buffers are local and the calls copy one sector each.
-    let wrote = unsafe { services::block_write(3, 8, pattern.as_ptr()) };
-    let read = unsafe { services::block_read(3, 8, readback.as_mut_ptr()) };
+    // LBA 64 is inside the reserved store region but away from the epoch
+    // record at LBA 8; a self-test must not destroy persisted state.
+    const TEST_LBA: u32 = 64;
+    let wrote = unsafe { services::block_write(3, TEST_LBA, pattern.as_ptr()) };
+    let read = unsafe { services::block_read(3, TEST_LBA, readback.as_mut_ptr()) };
     if wrote != 0 || read != 0 || readback != pattern {
         print_line(&[b"x86: block service read/write failed"]);
         qemu_exit(1);
