@@ -283,7 +283,9 @@ fn poll_bulk(from: &Node, total: u32, chunk: u32) -> Result<(BulkRun, Stat), Str
 }
 
 /// Measure a control probe while a 256 KiB bulk transfer is in flight.
-fn control_during_bulk(from: &Node) -> Result<(ControlRun, crate::latency::LatencyEvidence), String> {
+fn control_during_bulk(
+    from: &Node,
+) -> Result<(ControlRun, crate::latency::LatencyEvidence), String> {
     start_bulk(from, CONTROL_BYTES, BULK_CHUNK)?;
     // Start the control probe after the bulk request is queued; both share the
     // one peer link and the bulk stream is credit-blocked after two chunks.
@@ -364,8 +366,8 @@ pub fn run(first: &Node, second: &Node) -> Result<BulkEvidence, String> {
     let total: u64 = runs.iter().map(|run| run.bytes as u64).sum();
     let elapsed: u64 = runs.iter().map(|run| run.elapsed_ms).sum();
     let mean = total as f64 / elapsed as f64 * 1000.0 / (1024.0 * 1024.0);
-    let baseline_rate = baseline.bytes as f64 / baseline.elapsed_ms as f64 * 1000.0
-        / (1024.0 * 1024.0);
+    let baseline_rate =
+        baseline.bytes as f64 / baseline.elapsed_ms as f64 * 1000.0 / (1024.0 * 1024.0);
     let (control, latency) = control_during_bulk(first)?;
     let cancel = cancel_bulk(first)?;
     let control_ok = latency.ok

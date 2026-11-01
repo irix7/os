@@ -1162,15 +1162,12 @@ pub fn record_boot_timings(node: &str, timings: BootTimings) {
 
 /// The recorded phases for a node, when its boot was timed.
 pub fn boot_timings_for(node: &str) -> Option<BootTimings> {
-    timing_table()
-        .lock()
-        .ok()
-        .and_then(|table| {
-            table
-                .iter()
-                .find(|(name, _)| name == node)
-                .map(|(_, timings)| *timings)
-        })
+    timing_table().lock().ok().and_then(|table| {
+        table
+            .iter()
+            .find(|(name, _)| name == node)
+            .map(|(_, timings)| *timings)
+    })
 }
 
 /// Boot markers extracted from one serial transcript.

@@ -607,14 +607,8 @@ mod tests {
         // The left guest must receive the right guest's first byte, and the
         // right guest the left one.  Neither write happens before both reads,
         // which is the early-data guard the iris forward needs.
-        assert_eq!(
-            left_rx.recv_timeout(crate::timing::secs(5)),
-            Ok(b'R')
-        );
-        assert_eq!(
-            right_rx.recv_timeout(crate::timing::secs(5)),
-            Ok(b'L')
-        );
+        assert_eq!(left_rx.recv_timeout(crate::timing::secs(5)), Ok(b'R'));
+        assert_eq!(right_rx.recv_timeout(crate::timing::secs(5)), Ok(b'L'));
         drop(relay);
     }
 }
