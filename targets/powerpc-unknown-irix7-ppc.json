@@ -1,0 +1,21 @@
+{
+  "arch": "powerpc",
+  "cpu": "750",
+  "crt-objects-fallback": "false",
+  "data-layout": "E-m:e-p:32:32-Fn32-i64:64-n32",
+  "dynamic-linking": false,
+  "eh-frame-header": false,
+  "emit-debug-gdb-scripts": false,
+  "linker": "rust-lld",
+  "linker-flavor": "gnu-lld",
+  "llvm-target": "powerpc-unknown-none-elf",
+  "max-atomic-width": 32,
+  "os": "none",
+  "panic-strategy": "abort",
+  "position-independent-executables": false,
+  "relocation-model": "static",
+  "static-position-independent-executables": false,
+  "target-endian": "big",
+  "target-pointer-width": 32,
+  "vendor": "unknown"
+}
