@@ -64,6 +64,52 @@ pub fn escc(client: &Client, macio: &MacIo) -> Option<u32> {
     Some(macio.base.wrapping_add(offset))
 }
 
+/// The interrupt controller built into the Mac I/O node.
+///
+/// The beige G3 Mac I/O controller is Heathrow, and the Heathrow interrupt
+/// controller is the first register block of the Mac I/O window.  It is not
+/// an OpenPIC: OpenPIC is the New World controller in KeyLargo, and neither
+/// this machine nor QEMU's `g3beige` model has one.  The `compatible`
+/// property selects the controller, so a machine with a different Mac I/O
+/// device fails here instead of writing Heathrow registers into an OpenPIC.
+pub struct Pic {
+    pub base: u32,
+}
+
+pub fn pic(client: &Client, macio: &MacIo) -> Option<Pic> {
+    let node = client.finddevice(b"/pci/mac-io\0")?;
+    let mut compatible = [0u8; 32];
+    let length = client.getprop(node, b"compatible\0", &mut compatible)?;
+    if length < 8 || &compatible[..8] != b"heathrow" {
+        return None;
+    }
+    Some(Pic { base: macio.base })
+}
+
+/// The CUDA, which carries the MOS 6522 VIA and its programmable timer.
+///
+/// `reg` holds the offset of the CUDA window inside Mac I/O.
+/// `AAPL,interrupts` holds the interrupt controller line the CUDA asserts.
+pub struct Cuda {
+    pub base: u32,
+    pub line: u32,
+}
+
+pub fn cuda(client: &Client, macio: &MacIo) -> Option<Cuda> {
+    let node = client.finddevice(b"/pci/mac-io/via-cuda\0")?;
+    let mut reg = [0u8; 8];
+    let length = client.getprop(node, b"reg\0", &mut reg)?;
+    if length < 4 {
+        return None;
+    }
+    let offset = u32::from_be_bytes([reg[0], reg[1], reg[2], reg[3]]);
+    let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
+    Some(Cuda {
+        base: macio.base.wrapping_add(offset),
+        line,
+    })
+}
+
 pub fn timebase(client: &Client) -> Option<u32> {
     let cpus = client.finddevice(b"/cpus\0")?;
     let cpu = client.child(cpus)?;

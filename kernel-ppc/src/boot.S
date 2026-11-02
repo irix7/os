@@ -65,11 +65,11 @@ of_call:
 /*
  * Exception vector targets.
  *
- * The 0x300, 0x400, 0x600, 0x700 and 0xC00 vectors each hold a branch to one
- * of these stubs.  A stub parks the interrupted r0 in SPRG0, puts its vector
- * number in r0 and falls into the common entry.  SPRG0 is kernel scratch and
- * is safe because the hardware clears MSR[EE] on exception entry, so a stub
- * cannot be interrupted by another exception.
+ * The 0x300, 0x400, 0x500, 0x600, 0x700 and 0xC00 vectors each hold a branch
+ * to one of these stubs.  A stub parks the interrupted r0 in SPRG0, puts its
+ * vector number in r0 and falls into the common entry.  SPRG0 is kernel
+ * scratch and is safe because the hardware clears MSR[EE] on exception entry,
+ * so a stub cannot be interrupted by another exception.
  *
  * The common entry saves every volatile register and the special registers,
  * calls trap_dispatch with the vector, the interrupted r3 and LR, writes the
@@ -154,6 +154,21 @@ isi_handler:
     li      0, 0x400
     b       trap_entry
 .size isi_handler, . - isi_handler
+
+/*
+ * External interrupt vector target.  The controller output is level
+ * sensitive, so the Rust handler clears the source and acknowledges the
+ * controller before returning through the common entry.
+ */
+.section .text
+.align 4
+.global external_handler
+.type external_handler, @function
+external_handler:
+    mtspr   272, 0
+    li      0, 0x500
+    b       trap_entry
+.size external_handler, . - external_handler
 
 .section .text
 .align 4

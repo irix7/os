@@ -1,11 +1,13 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the third boot slice of #287, tracked as #295, works. `kernel-ppc`
+**Status:** the fourth boot slice of #287, tracked as #301, works. `kernel-ppc`
 is loaded by OpenBIOS, reads the machine description from the device tree,
 installs its own BAT entries, points SDR1 at an empty table, prints to the ESCC
 serial port, takes ten decrementer ticks and prints `BOOT-OK`. It then proves
 the DSI, ISI, alignment, program and system-call vectors in order, prints
-`TRAPS-OK` and halts. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build.
+`TRAPS-OK`, takes ten external interrupts from the CUDA timer through the
+Heathrow interrupt controller at the `0x500` vector, prints `IRQ-OK count=10`
+and halts. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build.
 
 ## The `-kernel` path
 
@@ -65,7 +67,10 @@ mapping; see [The kernel's mapping](#the-kernels-mapping).
 |---|---|
 | `/memory:reg` | `[address, size]`; the RAM QEMU handed over |
 | `/pci/mac-io:assigned-addresses` | the Mac I/O PCI BAR assigned by OpenBIOS |
+| `/pci/mac-io:compatible` | `"heathrow"`; selects the interrupt controller |
 | `/pci/mac-io/escc:reg` | the ESCC offset inside the Mac I/O BAR (`0x13000`) |
+| `/pci/mac-io/via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
+| `/pci/mac-io/via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
 | `/cpus/PowerPC,750@0:timebase-frequency` | `16600000` Hz on g3beige |
 
 The Mac I/O BAR is assigned, not fixed. With no extra PCI devices it is
@@ -126,12 +131,14 @@ where `tlbie` invalidates the addressed entry.
 |---|---|---|
 | `0x300` | data storage | `dsi_handler` |
 | `0x400` | instruction storage | `isi_handler` |
+| `0x500` | external interrupt | `external_handler` |
 | `0x600` | alignment | `alignment_handler` |
 | `0x700` | program | `program_handler` |
 | `0x900` | decrementer | `decrementer_handler` |
 | `0xC00` | system call | `system_call_handler` |
 
-The five fault vectors share `trap_entry` in `boot.S`. Each stub parks the
+The five fault vectors, the system call and the external interrupt share
+`trap_entry` in `boot.S`. Each stub parks the
 interrupted r0 in SPRG0, puts its vector number in r0 and branches to the
 common entry. The entry saves r0 and r2-r12 plus CR, LR, CTR and XER in a
 128-byte frame, calls `trap_dispatch`, stores the returned r3 and restores the
@@ -143,11 +150,11 @@ stub cannot be interrupted by another exception.
 printed for the DSI and alignment vectors, the two memory faults:
 
 ```
-ppc: trap vector=0x300 srr0=0x10020a4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
+ppc: trap vector=0x300 srr0=0x1001d08 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
 ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
-ppc: trap vector=0x600 srr0=0x10020e8 srr1=0xa030 dsisr=0x40000060 dar=0x10200f1
-ppc: trap vector=0x700 srr0=0x100210c srr1=0x8a030
-ppc: trap vector=0xc00 srr0=0x100211c srr1=0xa030
+ppc: trap vector=0x600 srr0=0x1001d4c srr1=0xa030 dsisr=0x40000060 dar=0x1020121
+ppc: trap vector=0x700 srr0=0x1001d70 srr1=0x8a030
+ppc: trap vector=0xc00 srr0=0x1001d80 srr1=0xa030
 ppc: syscall call=0x2a result=0x2b
 ```
 
@@ -165,6 +172,10 @@ LR. It refuses an LR outside the image or not word aligned, prints
 `ppc: isi without a resume address` and halts instead of returning to an
 arbitrary address.
 
+An external interrupt is taken between instructions, so SRR0 is the
+instruction to resume at and is written back unchanged. There is no faulting
+instruction to step over and no LR fixup.
+
 The probes run after `BOOT-OK`, each marker after the faulting instruction has
 returned:
 
@@ -181,6 +192,51 @@ the gate uses and outside the PCI hole. DSISR bit 1 (`0x40000000`) is the
 translation-not-found load case. The alignment probe uses `lwarx` because
 QEMU's 750 model does not check a plain `lwz` for word alignment. The program
 probe's illegal-instruction cause appears in SRR1 bit 12 (`0x00080000`).
+
+## External interrupts
+
+The machine has no OpenPIC. QEMU's `g3beige` Mac I/O node is
+`compatible = "heathrow"`, and the same is true of the PowerBook G3 M4753: the
+interrupt controller is the Heathrow block at the start of the Mac I/O window,
+not the OpenPIC used by New World machines such as `mac99`. The kernel reads
+the Mac I/O BAR and the `compatible` property, refuses a controller it does
+not know, and treats Mac I/O offset zero as the Heathrow register block. That
+offset is part of the chip, not a firmware assignment.
+
+The controller has two banks. Bank 0 at `+0x10` carries sources 32..63 and
+bank 1 at `+0x20` carries 0..31; each bank has a pending-event register, a
+mask, an acknowledge port and a raw-level register. A source sets its event
+bit on the rising edge and stays pending until software writes that bit back
+to the acknowledge port. The mask has one bit per source, with one meaning
+enabled. The registers are little-endian on the Mac I/O bus, so the driver
+byte-reverses every 32-bit access.
+
+The timer is timer 1 in the CUDA's MOS 6522 VIA. The device tree gives its
+window (`reg = <0x16000 0x2000>`) and line (`AAPL,interrupts = <0x12>`); the
+VIA registers are 0x200 bytes apart inside that window. Timer 1 runs in
+continuous mode at 4.7 MHz / 6: a latch of 781 gives one interrupt about every
+millisecond. The handler clears the VIA's T1 flag, writes the event bit to the
+controller's acknowledge port, and checks that the next event read has the
+bit clear. That write is both the acknowledge and the end of interrupt.
+
+The `0x500` stub shares `trap_entry` with the fault vectors. An external
+interrupt is taken at an instruction boundary, so SRR0 already holds the
+instruction to resume at and the dispatcher writes it back unchanged. SRR1
+holds the interrupted MSR with `EE` set. The boot leaves the controller masked
+and the timer stopped while the fault probes run, then starts the timer,
+unmasks line `0x12` and collects ten interrupts:
+
+```
+ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
+...
+ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1002b20 srr1=0xa030
+...
+ppc: irq pending=0x0 ifr=0x0
+IRQ-OK count=10
+```
+
+The wait is bounded by two seconds of timebase, so a timer that never fires
+prints `ppc: irq stalled count=N` and halts instead of hanging the gate.
 
 ## Gate
 
@@ -206,8 +262,9 @@ order it must appear, then parses the exception reports:
 
 - the banner, memory map, tick count and `BOOT-OK` appear after
   `ppc: mmu enabled`;
-- `FAULT-OK`, `ISI-OK`, `ALIGN-OK`, `PROGRAM-OK`, `SYSCALL-OK`, `TRAPS-OK`
-  and `ppc: halted` follow in that order;
+- `FAULT-OK`, `ISI-OK`, `ALIGN-OK`, `PROGRAM-OK`, `SYSCALL-OK`, `TRAPS-OK`,
+  the external interrupt reports, `IRQ-OK` and `ppc: halted` follow in that
+  order;
 - every vector report matches `ppc: trap vector=0x... srr0=0x... srr1=0x...`,
   with `dsisr` and `dar` for the DSI and alignment vectors;
 - DSISR is a translation-not-found load, DAR is `0x20000000`, and the DSI
@@ -215,13 +272,19 @@ order it must appear, then parses the exception reports:
 - the ISI SRR0 is `0x20000000`, the alignment DAR is not word aligned, the
   program SRR1 carries the illegal-instruction cause, and the system call
   returns `0x2b` for call `0x2a`;
+- every external interrupt reports vector `0x500`, line `0x12` and a count
+  that runs from one without a gap; the saved SRR1 has `EE` set and the saved
+  SRR0 is inside the image BAT range;
+- at least four external interrupts were counted, `IRQ-OK` repeats the same
+  count, and the controller's pending-event and the timer's flag register are
+  both zero after the last acknowledge;
 - the image contains no FP instruction.
 
 Observed serial output:
 
 ```
 
->> [ppc] Kernel already loaded (0x01000000 + 0x0002043c) (initrd 0x00000000 + 0x00000000)
+>> [ppc] Kernel already loaded (0x01000000 + 0x000205f5) (initrd 0x00000000 + 0x00000000)
 >> [ppc] Kernel command line:
 >> switching to new context:
 ppc: mmu enabled sdr1=0x1010000
@@ -234,24 +297,31 @@ ppc: of client=0xfff025d0
 ppc: escc=0x81093000
 ppc: memory base=0x0 size=64 MiB
 ppc: timebase=16600000 Hz
+ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
 ppc: decrementer ticks=10
 BOOT-OK
 ppc: deliberate unmapped load
-ppc: trap vector=0x300 srr0=0x10020a4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
+ppc: trap vector=0x300 srr0=0x1001d08 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
 FAULT-OK
 ppc: deliberate unmapped fetch
 ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
 ISI-OK
 ppc: deliberate misaligned load
-ppc: trap vector=0x600 srr0=0x10020e8 srr1=0xa030 dsisr=0x40000060 dar=0x10200f1
+ppc: trap vector=0x600 srr0=0x1001d4c srr1=0xa030 dsisr=0x40000060 dar=0x1020121
 ALIGN-OK
 ppc: deliberate illegal instruction
-ppc: trap vector=0x700 srr0=0x100210c srr1=0x8a030
+ppc: trap vector=0x700 srr0=0x1001d70 srr1=0x8a030
 PROGRAM-OK
-ppc: trap vector=0xc00 srr0=0x100211c srr1=0xa030
+ppc: trap vector=0xc00 srr0=0x1001d80 srr1=0xa030
 ppc: syscall call=0x2a result=0x2b
 SYSCALL-OK
 TRAPS-OK
+ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1002b20 srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1002b20 srr1=0xa030
+...
+ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1002b20 srr1=0xa030
+ppc: irq pending=0x0 ifr=0x0
+IRQ-OK count=10
 ppc: halted
 ```
 
@@ -265,11 +335,14 @@ ppc: halted
   data, alignment or program fault is always stepped over, and an ISI resumes
   only through the LR fixup, so a real unexpected fault in arbitrary code would
   resume at a meaningless address rather than panic.
-- There is one kernel stack and no nested-exception frame. The fault handlers
-  run on the interrupted stack with `MSR[EE]` clear; a fault inside the handler
-  would recurse.
-- The only interrupt is the decrementer. There is no console input, block
-  device, network device, ADB or PMU.
+- There is one kernel stack and no nested-exception frame. The handlers run on
+  the interrupted stack with `MSR[EE]` clear; a fault inside a handler would
+  recurse.
+- The external interrupt path is the Heathrow controller and one timer source,
+  not a general interrupt layer. There is no console input, block device,
+  network device, ADB or PMU, and no handler is shared between devices.
+- The PowerBook G3 M4753 has no OpenPIC; a New World machine with the KeyLargo
+  OpenPIC needs a separate controller driver and a different machine tree.
 - The ESCC baud generator is not programmed; QEMU's model ignores it. Real
   hardware needs WR12/WR13/WR14 and the correct clock source.
 - The target is the 750 with the hard-float ABI. Kernel code avoids `f32` and
