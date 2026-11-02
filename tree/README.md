@@ -23,9 +23,9 @@ built the documentation, so it appears at `/os/tree/` alongside the book.
 
 ## Keeping it current
 
-`tree/sync.py` promotes milestone statuses from evidence, strongest first:
+`tree/sync.py` promotes statuses from evidence, strongest first:
 
-1. a release tag (`v0.1` … `v1.0`) exists;
+1. a release tag (`v0.1.0` … `v0.1.3`, or `v1.0`) marks that release done;
 2. the **IRIX 7 — Roadmap** Project says a phase is in progress, in review or
    done (requires a `PROJECT_TOKEN` secret with `project` scope);
 3. a milestone epic issue is closed (always available, via `GITHUB_TOKEN`).
@@ -75,13 +75,13 @@ a feature only needs a `parent` and a short `summary`.
 
 ```json
 {
-  "id": "m4-cache",
+  "id": "m3-join",
   "kind": "feature",
-  "parent": "m4",
-  "branch": "storage",
-  "status": "planned",
-  "title": "Block cache",
-  "summary": "An LRU cache with explicit DMA sync."
+  "parent": "m3",
+  "branch": "control",
+  "status": "done",
+  "title": "Join + epoch",
+  "summary": "Signed join and epoch convergence on two real kernels."
 }
 ```
 
@@ -92,8 +92,9 @@ through.
 
 ## Design
 
-- The canvas is a single generated SVG: roots (M0–M2), trunk (M3), boughs
-  (storage, compatibility, graphics, native), and the v1.0 sun in the canopy.
+- The canvas is a single generated SVG: the Indy baseline and the single-node
+  and two-node gates in the roots, the eight-node trunk, the scale, native,
+  display and runtime boughs, and the v1.0 sun in the canopy.
 - Dotted arcs are cross-branch dependencies. The gold arcs are the v1.0
   convergence.
 - The compost is deliberate: it records what v1.0 leaves out.

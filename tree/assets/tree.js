@@ -22,6 +22,7 @@
   const panelBody = document.getElementById("panel-body");
   const panelDoc = document.getElementById("panel-doc");
   const intro = document.getElementById("intro");
+  const focusId = document.getElementById("app")?.dataset.focus || "m2";
   const searchLayer = document.getElementById("search-layer");
   const searchInput = document.getElementById("search-input");
   const searchResults = document.getElementById("search-results");
@@ -721,7 +722,7 @@
       animateCamera(startCamera(), 1650);
       window.setTimeout(() => {
         // reveal the selected "now growing" node after the swoop
-        if (!selectedId) setActiveMilestone("m2");
+        if (!selectedId) setActiveMilestone(focusId);
         if (!panel.classList.contains("is-open")) stage.focus({ preventScroll: true });
       }, 1200);
     }
@@ -904,7 +905,7 @@
     setChromeInert(true);
     cam = introCamera();
     applyCamera();
-    setActiveMilestone("m2");
+    setActiveMilestone(focusId);
     growTree();
 
     const hash = location.hash.slice(1);

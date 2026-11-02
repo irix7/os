@@ -176,10 +176,9 @@ class ApplyTests(unittest.TestCase):
 
 
 class TagTests(unittest.TestCase):
-    def test_release_tag_promotes_release_and_milestone(self):
-        proposals, warnings = sync.tag_proposals({"v0.4"})
-        self.assertEqual(proposals["v0.4"]["status"], "done")
-        self.assertEqual(proposals["m7"]["status"], "done")
+    def test_release_tag_promotes_release(self):
+        proposals, warnings = sync.tag_proposals({"v0.1.3"})
+        self.assertEqual(proposals["v0.1.3"]["status"], "done")
         self.assertEqual(warnings, [])
 
     def test_unknown_tag_ignored(self):
