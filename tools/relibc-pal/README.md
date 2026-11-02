@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `5c78551d891fe199d9933638152f194c50c9c4f2` |
+| Commit | `729bdc3bbbc9c4cb1fc2ca1ffeac92ea7d551383` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex) |
-| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads) |
+| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..5c78551d` and applies
+The mirror is generated with `git format-patch a36041ac..729bdc3b` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -56,6 +56,21 @@ the branch commit, not the patch.
    `futex_wake` returns the kernel's woken count.  Before this, both calls were
    no-ops, so a mutex unlock had no waiter to tell and a wait reported success
    without blocking.
+10. pthreads.  `$28` still points at the 16-byte ABI header; relibc's `Tcb`
+    and `Pthread` records are appended after it, both for the main thread and
+    for mmap-allocated workers.  `pthread_self` and `__errno_location` are
+    therefore per-thread.  `pthread_create` keeps relibc's existing stack
+    frame and maps `SYS_THREAD_CREATE` through `rlct_clone`, recording the
+    returned kernel tid before the creator can yield.  `pthread_join` waits on
+    the thread's libc-owned exit word with `futex_wait`; the worker posts its
+    start routine's return value and retires with `SYS_THREAD_EXIT`.
+    `sched_yield` maps to `SYS_YIELD`, `exit_thread` to `SYS_THREAD_EXIT`, and
+    `gettid` reads the current thread's tid.  The mutex owner word is
+    therefore per-thread and the existing fast path and futex contention path
+    work.  Key maps, cleanup lists, thread-exit handlers and the C++ thread
+    destructor list live in the Pthread record.  The default stack is 64 KiB
+    because the kernel's anonymous heap is a fixed 1 MiB shared with the
+    allocator.
 
 `printf` uses the generic path and completes.
 
@@ -78,11 +93,11 @@ tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
-`libcrt0.a`, compiles the C probe, the thread probe and the futex probe,
-strips each ELF and pads 256 KiB `probe.raw`, `thread-probe.raw` and
-`futex-probe.raw` images.  It records the relibc commit in
-`BUILD-PROVENANCE.txt`.  An existing checkout needs its submodules initialised
-(`git submodule update --init --recursive`).
+`libcrt0.a`, compiles the C probe, the thread probe, the futex probe and the
+pthread probe, strips each ELF and pads 256 KiB `probe.raw`,
+`thread-probe.raw`, `futex-probe.raw` and `pthread-probe.raw` images.  It
+records the relibc commit in `BUILD-PROVENANCE.txt`.  An existing checkout
+needs its submodules initialised (`git submodule update --init --recursive`).
 
 ## Run
 
@@ -121,6 +136,18 @@ user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 ```
 
+The pthread probe (`pthread-probe.raw`) expects:
+
+```text
+PTHREAD-PROBE: start
+PTHREAD-PROBE: counter=64 expected=64
+PTHREAD-PROBE: main-self=0x10010E50 worker-self=0x20031060
+PTHREADS-OK
+PTHREAD-PROBE: checks=29 failures=0
+user: exit syscall code=0x00000000
+kernel: userland returned to kernel console
+```
+
 The probe keeps the startup checks (marker, `argc`/`argv`, `getpid`,
 `AT_PAGESZ`/`AT_ENTRY`/`AT_CLKTCK`, `$28`, `__errno_location`, `stat`,
 `fstat(999)` with `EBADF`, `stat("/missing")` with `ENOENT`) and the file
@@ -139,12 +166,16 @@ unlinked inode still readable through its descriptor, and `EEXIST`,
 
 ## Limits
 
-- No `pthread_create`: the PAL does not create threads yet, so relibc runs on
-  the main thread.  The kernel's cooperative thread and futex gates are
-  exercised by the thread and futex probes through raw gate stubs.
-- There is no timer wakeup.  `poll`, a blocking read or write and a futex wait
-  are bounded by the kernel's 100 ms poll limit; the libc re-parks a futex wait
-  whose bounded expiry precedes its deadline.
+- Threads are cooperative: no preemption and no timer wakeup.  A thread runs
+  until it yields, blocks on a futex, retires or the image exits.  A pthread
+  program must yield or block for its peers to make progress.
+- `poll`, a blocking read or write and a futex wait are bounded by the
+  kernel's 100 ms poll limit; the libc re-parks a futex wait whose bounded
+  expiry precedes its deadline.
+- `pthread_cancel` cannot deliver a signal, so cancellation with the target
+  enabled returns `ENOSYS`.  `pthread_key_delete` removes the key from the
+  calling thread's map only.  A detached thread's TCB and stack are not
+  reclaimed because the kernel's `munmap` is a bump-allocator no-op.
 - No signals, TLS block or process table.
 - `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
