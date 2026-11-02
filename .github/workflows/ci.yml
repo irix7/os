@@ -483,6 +483,10 @@ jobs:
         uses: irix7/iris/.github/actions/setup-iris@4b00413663a979d15b7ef8cd2208d95a030796a4
         with:
           version: v0.1.6+irix7
+      - name: REX3 engine gate
+        run: |
+          tools/rex3-gate.py --rom "$RUNNER_TEMP/irix7-rom.bin" --work "$RUNNER_TEMP/rex3-gate"
+
       - name: Boot ROM diskless and discover packages
         env:
           IRIS_NO_IDLE: "1"
