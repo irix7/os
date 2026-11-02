@@ -269,12 +269,45 @@ fn deadline_passed(now: u32, start: u32, limit: u32) -> bool {
     now.wrapping_sub(start) >= limit
 }
 
+/// Apply this cell's thread deadlines and return the frame to resume.
+///
+/// A process-level wake can belong to a thread other than the one that parked
+/// the cell: the cell's deadline is the earliest of its parked threads, and a
+/// sibling thread may own it.  This scan expires the cell's parked threads
+/// against the now-active address space (a futex waiter re-checks its word),
+/// then makes the first runnable thread current and returns its saved frame.
+pub(crate) fn resume_after_wake() -> Option<TrapFrame> {
+    expire_waiters();
+    // SAFETY: single-threaded kernel; the cell's table was just installed and
+    // no thread runs while this scan is in progress.
+    unsafe {
+        let threads = &mut *core::ptr::addr_of_mut!(THREADS);
+        let from = CURRENT;
+        let to = if matches!(threads[from].state, State::Runnable | State::Running) {
+            from
+        } else {
+            let mut found = None;
+            for step in 1..=MAX_THREADS {
+                let index = (from + step) % MAX_THREADS;
+                if threads[index].state == State::Runnable {
+                    found = Some(index);
+                    break;
+                }
+            }
+            found?
+        };
+        threads[to].state = State::Running;
+        CURRENT = to;
+        Some(threads[to].frame)
+    }
+}
+
 /// The earliest deadline of any parked thread, as a CP0 Count value.
 ///
 /// Every parked thread is bounded: a futex wait by the poll rule and a sleep
 /// by [`user::SLEEP_LIMIT_MS`].  The kernel can therefore always park until
 /// the nearest deadline instead of spinning when nothing is runnable.
-fn nearest_deadline() -> Option<u32> {
+pub(crate) fn nearest_deadline() -> Option<u32> {
     let mut nearest: Option<u32> = None;
     // SAFETY: single-threaded kernel; a plain read of the table.
     unsafe {
@@ -442,24 +475,65 @@ fn park_futex(
     crate::print_str("ms");
     crate::println("");
 
-    // SAFETY: the running thread's frame is saved before the switch; the
-    // waker writes the result into the saved frame while this thread cannot
-    // run.
+    prepare_park(tf, from, State::Blocked, address, expected, limit);
+    switch_to(tf, from, to);
+    Wait::Switched
+}
+
+/// Save `tf` into the current thread's slot and mark it parked.
+///
+/// The frame is completed before it is saved: `$v0`/`$v1` hold the result the
+/// thread sees when it resumes, and `EPC` is advanced past the gate so the
+/// exception return does not run the syscall again.
+fn prepare_park(
+    tf: &mut TrapFrame,
+    from: usize,
+    state: State,
+    address: u32,
+    expected: u32,
+    limit: u32,
+) {
+    // SAFETY: the running thread's frame is saved before the switch; a waker
+    // or the deadline scan writes the result into the saved frame while this
+    // thread cannot run.
     unsafe {
         let threads = &mut *core::ptr::addr_of_mut!(THREADS);
         threads[from].wait_addr = address;
         threads[from].wait_expected = expected;
         threads[from].wait_start = crate::traps::count_read();
         threads[from].wait_limit = limit;
-        threads[from].state = State::Blocked;
+        threads[from].state = state;
 
         tf.regs[2] = native_abi::status::CELL_OK as u64;
         tf.regs[3] = 0;
         tf.advance_epc();
         threads[from].frame = *tf;
     }
-    switch_to(tf, from, to);
-    Wait::Switched
+}
+
+/// Park the current thread on a sleep deadline without switching threads.
+///
+/// The caller hands the cell to [`crate::process::park_current`], which may
+/// install another cell.  If no cell is runnable the caller must not use this:
+/// the thread would stay parked in a table that nothing selects.
+pub(crate) fn prepare_sleep(tf: &mut TrapFrame, limit: u32) {
+    prepare_park(tf, unsafe { CURRENT }, State::Sleeping, 0, 0, limit);
+}
+
+/// Park the current thread on a futex word without switching threads.
+///
+/// Used when no sibling thread can run but another cell can.  The deadline
+/// scan re-checks the word when the cell wakes, so the futex contract is
+/// unchanged by the process-level park.
+pub(crate) fn prepare_futex(tf: &mut TrapFrame, address: u32, expected: u32, limit: u32) {
+    prepare_park(
+        tf,
+        unsafe { CURRENT },
+        State::Blocked,
+        address,
+        expected,
+        limit,
+    );
 }
 
 /// Wait alone, with no runnable thread that could wake this one.
@@ -496,13 +570,33 @@ fn bounded_wait(tf: &mut TrapFrame, address: u32, expected: u32, limit: u32) -> 
         if let Some(to) = next_runnable(from) {
             return park_futex(tf, from, to, address, expected, limit - elapsed);
         }
-        let own = start.wrapping_add(limit);
-        let wake = match nearest_deadline() {
-            Some(deadline) if (deadline.wrapping_sub(own) as i32) < 0 => deadline,
-            _ => own,
-        };
-        crate::traps::wait_until(wake);
+        // No sibling thread, but another cell may be runnable.  Park the cell
+        // with this thread's deadline and let it run; the cell's wake scan
+        // re-checks the word before the waiter resumes.
+        if crate::process::park_current(tf, |frame| {
+            prepare_futex(frame, address, expected, limit - elapsed)
+        }) {
+            return Wait::Switched;
+        }
+        crate::traps::wait_until(next_wake(start.wrapping_add(limit)));
     }
+}
+
+/// The earliest of `own`, a parked thread's deadline and a sleeping cell's
+/// deadline.  CPU parking must end at whichever comes first.
+fn next_wake(own: u32) -> u32 {
+    let mut wake = own;
+    if let Some(deadline) = nearest_deadline() {
+        if (deadline.wrapping_sub(wake) as i32) < 0 {
+            wake = deadline;
+        }
+    }
+    if let Some(deadline) = crate::process::nearest_deadline() {
+        if (deadline.wrapping_sub(wake) as i32) < 0 {
+            wake = deadline;
+        }
+    }
+    wake
 }
 
 /// Park the running thread until `limit` CP0 Count ticks have passed.
@@ -538,12 +632,13 @@ pub fn sleep_current(tf: &mut TrapFrame, limit: u32) -> Wait {
         if let Some(to) = next_runnable(from) {
             return park_sleep(tf, from, to, limit - elapsed);
         }
-        let own = start.wrapping_add(limit);
-        let wake = match nearest_deadline() {
-            Some(deadline) if (deadline.wrapping_sub(own) as i32) < 0 => deadline,
-            _ => own,
-        };
-        crate::traps::wait_until(wake);
+        // No thread in this cell can run, but another cell can.  Mark the
+        // cell sleeping and hand it the CPU; it resumes through the deadline
+        // scan with `CELL_OK`, and this thread's own slot expires with it.
+        if crate::process::park_current(tf, |frame| prepare_sleep(frame, limit - elapsed)) {
+            return Wait::Switched;
+        }
+        crate::traps::wait_until(next_wake(start.wrapping_add(limit)));
     }
 }
 
@@ -556,22 +651,7 @@ fn park_sleep(tf: &mut TrapFrame, from: usize, to: usize, limit: u32) -> Wait {
     crate::print_str("ms");
     crate::println("");
 
-    // SAFETY: the running thread's frame is saved before the switch.  The
-    // sleeper has no waker, so nothing writes into its slot until the
-    // deadline scan resumes it.
-    unsafe {
-        let threads = &mut *core::ptr::addr_of_mut!(THREADS);
-        threads[from].wait_addr = 0;
-        threads[from].wait_expected = 0;
-        threads[from].wait_start = crate::traps::count_read();
-        threads[from].wait_limit = limit;
-        threads[from].state = State::Sleeping;
-
-        tf.regs[2] = native_abi::status::CELL_OK as u64;
-        tf.regs[3] = 0;
-        tf.advance_epc();
-        threads[from].frame = *tf;
-    }
+    prepare_park(tf, from, State::Sleeping, 0, 0, limit);
     switch_to(tf, from, to);
     Wait::Switched
 }

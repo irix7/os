@@ -42,6 +42,9 @@ enum State {
     Running,
     /// Parked in `waitpid`; it is not selected until a child wakes it.
     Blocked,
+    /// Every thread is parked on a deadline and no thread is runnable.  The
+    /// cell is skipped until `sleep_deadline`; another cell may run instead.
+    Sleeping,
     /// Exited, status retained until the parent waits.
     Zombie,
 }
@@ -122,6 +125,9 @@ struct Process {
     asid: u32,
     wait: Option<WaitRequest>,
     pending_wait: Option<PendingWait>,
+    /// CP0 Count value at which a `Sleeping` cell may run again.  It is the
+    /// earliest deadline of the cell's parked threads.
+    sleep_deadline: u32,
 }
 
 impl Process {
@@ -139,6 +145,7 @@ impl Process {
         asid: 0,
         wait: None,
         pending_wait: None,
+        sleep_deadline: 0,
     };
 }
 
@@ -267,7 +274,7 @@ fn index_of_pid(pid: u32) -> Option<usize> {
         (*core::ptr::addr_of!(PROCESSES)).iter().position(|slot| {
             matches!(
                 slot.state,
-                State::Runnable | State::Running | State::Blocked
+                State::Runnable | State::Running | State::Blocked | State::Sleeping
             ) && slot.identity.pid == pid
         })
     }
@@ -320,6 +327,7 @@ pub fn start_first(
             asid,
             wait: None,
             pending_wait: None,
+            sleep_deadline: 0,
         };
         CURRENT = 0;
     }
@@ -388,6 +396,7 @@ pub fn fork(tf: &TrapFrame) -> SysResult<u32> {
             asid,
             wait: None,
             pending_wait: None,
+            sleep_deadline: 0,
         };
     }
     crate::print_str("fork: pid=");
@@ -561,7 +570,7 @@ pub fn wait(
     // parent's own address space when the exit event arrives.  Advance the
     // saved EPC now: the switch saves this same frame and the incoming frame
     // returns through the exception path rather than re-running the gate.
-    let Some(to) = next_runnable(from) else {
+    let Some(to) = next_runnable_or_expired(from) else {
         return Err(CELL_E_CHILD);
     };
     tf.advance_epc();
@@ -686,7 +695,7 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
         }
     }
 
-    let Some(to) = next_runnable(from) else {
+    let Some(to) = next_runnable_or_expired(from) else {
         // A blocked parent with no runnable child would otherwise abandon the
         // wait.  Wake the first blocked cell with ECHILD rather than leave it
         // parked forever; a later child exit cannot run without a scheduler.
@@ -722,7 +731,9 @@ fn first_blocked() -> Option<usize> {
     }
 }
 
+/// The next cell that may run, skipping sleepers until their deadline.
 fn next_runnable(from: usize) -> Option<usize> {
+    expire_sleepers();
     // SAFETY: single-threaded kernel.
     unsafe {
         let processes = &*core::ptr::addr_of!(PROCESSES);
@@ -736,12 +747,131 @@ fn next_runnable(from: usize) -> Option<usize> {
     None
 }
 
+/// Whether a deadline has been reached, wrap-safely.
+///
+/// Every parked interval is shorter than half the 32-bit Count range: a sleep
+/// is capped at `SLEEP_LIMIT_MS` (60 s) and a futex wait at the 100 ms poll
+/// bound.  The signed difference is therefore unambiguous across the wrap.
+fn deadline_reached(now: u32, deadline: u32) -> bool {
+    (now.wrapping_sub(deadline) as i32) >= 0
+}
+
+/// Return expired sleeping cells to the run queue.
+///
+/// The cell's threads keep their own deadlines; the thread scheduler applies
+/// them when the cell is installed again, so a futex waiter still re-checks
+/// its word and a sleeper still returns `CELL_OK`.  This scan only decides
+/// when the cell as a whole is eligible to run.
+fn expire_sleepers() {
+    let now = crate::traps::count_read();
+    // SAFETY: single-threaded kernel; no cell runs while the table is scanned.
+    unsafe {
+        let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
+        for slot in processes.iter_mut() {
+            if slot.state != State::Sleeping || !deadline_reached(now, slot.sleep_deadline) {
+                continue;
+            }
+            slot.state = State::Runnable;
+            crate::print_str("process: sleep expiry pid=");
+            print_dec(slot.identity.pid);
+            crate::print_str(" overrun=");
+            print_dec(now.wrapping_sub(slot.sleep_deadline) / crate::fd::TICKS_PER_MS);
+            crate::print_str("ms");
+            crate::println("");
+        }
+    }
+}
+
+/// The earliest deadline of a sleeping cell, as a CP0 Count value.
+pub(crate) fn nearest_deadline() -> Option<u32> {
+    let mut nearest: Option<u32> = None;
+    // SAFETY: single-threaded kernel; a plain read of the table.
+    unsafe {
+        for slot in (*core::ptr::addr_of!(PROCESSES)).iter() {
+            if slot.state != State::Sleeping {
+                continue;
+            }
+            let deadline = slot.sleep_deadline;
+            nearest = Some(match nearest {
+                Some(current) if (deadline.wrapping_sub(current) as i32) < 0 => deadline,
+                Some(current) => current,
+                None => deadline,
+            });
+        }
+    }
+    nearest
+}
+
+/// Park the current cell until its earliest thread deadline and switch away.
+///
+/// `prepare` runs only once a runnable target has been found; it marks the
+/// calling thread parked (`Sleeping` or `Blocked`), saves its frame with `EPC`
+/// advanced and writes its result word.  This function records the cell's
+/// deadline, marks it `Sleeping` and installs the target.  It returns `false`
+/// without changing anything when no other cell can run, so a caller with no
+/// peer falls through to a CPU timer wait instead of parking the thread in a
+/// table nothing selects.
+pub(crate) fn park_current<F>(tf: &mut TrapFrame, prepare: F) -> bool
+where
+    F: FnOnce(&mut TrapFrame),
+{
+    let Some(from) = current_index() else {
+        return false;
+    };
+    let Some(to) = next_runnable(from) else {
+        return false;
+    };
+    prepare(tf);
+    let now = crate::traps::count_read();
+    let deadline = thread::nearest_deadline().unwrap_or_else(|| now.wrapping_add(1));
+    // SAFETY: single-threaded kernel; the calling thread has already saved its
+    // frame and no cell can run between the save and the switch.
+    unsafe {
+        let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
+        processes[from].frame = *tf;
+        processes[from].threads = thread::snapshot();
+        processes[from].fds = fd::snapshot();
+        processes[from].state = State::Sleeping;
+        processes[from].sleep_deadline = deadline;
+    }
+    crate::print_str("process: sleep pid=");
+    print_dec(current_pid());
+    crate::print_str(" limit=");
+    print_dec(deadline.wrapping_sub(now) / crate::fd::TICKS_PER_MS);
+    crate::print_str("ms");
+    crate::println("");
+    switch_to(tf, from, to);
+    true
+}
+
+/// The next runnable cell, waiting out sleeping cells' deadlines.
+///
+/// Used by `waitpid` and `exit`: a sibling cell that is only sleeping must
+/// still be resumed at its deadline, even though it is not runnable now.  With
+/// no sleeping cell the function returns `None` immediately, so the callers'
+/// existing "no child"/"last cell" paths are unchanged.
+fn next_runnable_or_expired(from: usize) -> Option<usize> {
+    loop {
+        if let Some(index) = next_runnable(from) {
+            return Some(index);
+        }
+        let deadline = nearest_deadline()?;
+        crate::traps::wait_until(deadline);
+        expire_sleepers();
+    }
+}
+
 fn switch_to(tf: &mut TrapFrame, from: usize, to: usize) {
     // SAFETY: single-threaded kernel; `from` and `to` are table indices and no
     // other process can observe the table between the save and the return.
     unsafe {
         let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
-        if from != NO_PROCESS && matches!(processes[from].state, State::Running | State::Blocked) {
+        if from != NO_PROCESS
+            && matches!(
+                processes[from].state,
+                State::Running | State::Blocked | State::Sleeping
+            )
+        {
             processes[from].frame = *tf;
             processes[from].threads = thread::snapshot();
             processes[from].fds = fd::snapshot();
@@ -755,6 +885,14 @@ fn switch_to(tf: &mut TrapFrame, from: usize, to: usize) {
         thread::install(target.threads);
         fd::restore(target.fds);
         target.space.activate(target.asid);
+        // A cell woken at its deadline may owe its CPU to a different thread
+        // than the one that parked it (the earliest deadline can belong to a
+        // sibling thread).  Apply the thread deadlines against the target's
+        // own space now that it is active, and install the frame of whichever
+        // thread the cell should resume.
+        if let Some(frame) = thread::resume_after_wake() {
+            target.frame = frame;
+        }
         if let Some(pending) = target.pending_wait.take() {
             if pending.status_address != 0 {
                 // The parent's space is active again; a normal user-visible

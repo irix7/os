@@ -1639,12 +1639,17 @@ closed one is `POLLNVAL`.  Pipe readiness is: data available (`POLLIN`), space a
 input byte (PS/2 keyboard or serial receiver) is queued.  Regular files, `/dev/null`
 and directory descriptors are always ready.
 
-The kernel is single-threaded: no other thread can run while a descriptor is waiting.
-`poll` therefore treats a negative timeout (POSIX "no deadline") as a wait bounded by
-`WAIT_LIMIT_MS` (100 ms), and clamps a longer positive timeout to the same bound.  A
-zero timeout probes once.  Reads and writes use the same bound: a descriptor without
-`O_NONBLOCK` rechecks readiness for up to 100 ms and then returns `EAGAIN` rather than
-hanging the machine.
+A readiness wait is **syscall-local**.  The gate has no continuation, so `poll`, a
+blocking read and a blocking write cannot install another cell in the middle of the
+call and resume their scan afterwards.  They instead park the CPU on CP0 Compare for
+one-millisecond slices (`WAIT_SLICE_MS`) and recheck readiness between slices, so the
+wait costs no busy loop and a console or device interrupt ends a slice early.  The
+whole wait stays bounded by `WAIT_LIMIT_MS` (100 ms): `poll` treats a negative timeout
+(POSIX "no deadline") as that bound and clamps a longer positive timeout to it, a zero
+timeout probes once, and a descriptor without `O_NONBLOCK` reports `EAGAIN` when the
+bound expires.  `nanosleep` is the call that yields a cell; a wait queue that wakes a
+reader or poller when its producer acts is the M9.5 readiness model.  Non-blocking
+reads and writes never enter the wait and report `EAGAIN` immediately.
 
 `fcntl` implements `F_GETFD` and `F_SETFD` with real per-descriptor `FD_CLOEXEC` state,
 and `F_GETFL`/`F_SETFL` with the access mode and `O_NONBLOCK` per open file description.
@@ -1703,24 +1708,33 @@ relative: a negative field or `tv_nsec >= 1_000_000_000` is `CELL_E_INVAL`.  The
 no signals, so the call is never interrupted and the kernel reports no remaining time.
 One park lasts at most `SLEEP_LIMIT_MS` (60 s); a caller that wants longer re-arms with
 the remainder, which the libc does.  The bound keeps every deadline shorter than half
-the 32-bit Count range, so the wrapping comparison is unambiguous.  A sleeping thread
-is resumed by the deadline scan at a scheduling point, or, when nothing else is
-runnable, by the timer: the kernel arms Compare for the deadline, executes `wait`, and
-returns once Count has passed it.  A sleep therefore never spins the machine, and the
-timer interrupt is what ends a solo wait.  `clock_nanosleep` is a libc composition of
-`clock_gettime` and this call: `TIMER_ABSTIME` is turned into a relative interval.
+the 32-bit Count range, so the wrapping comparison is unambiguous.
+
+A sleep is both a thread park and, when the cell has no runnable thread left, a
+**cell park**.  The thread scheduler first looks for a runnable sibling thread.  With
+none, the process record is marked `Sleeping` with `sleep_deadline` set to the
+earliest deadline of the cell's parked threads, and a runnable local cell is installed.
+The cell is skipped by cell selection until that deadline; at expiry the cell becomes
+runnable, its thread deadlines are applied against its own address space, and the
+thread that owns the earliest deadline resumes.  When no cell is runnable the kernel
+arms Compare for the same deadline, executes `wait`, and returns once Count has passed
+it.  A sleep therefore never spins the machine and never starves a runnable sibling
+cell.  `clock_nanosleep` is a libc composition of `clock_gettime` and this call:
+`TIMER_ABSTIME` is turned into a relative interval.
 
 Every futex wait is bounded by the poll rule.  `timeout_ms` is a relative millisecond
 timeout; a negative value (POSIX "no deadline") is bounded by `WAIT_LIMIT_MS` (100 ms)
 and a longer positive value is clamped to the same bound.  Timeouts are applied at
 scheduling points (yield, block or exit), and the word is read again then: a changed
 value resumes the waiter with `CELL_E_AGAIN`, an unchanged one with `CELL_E_TIMEDOUT`.
-When no other thread is runnable no wake can arrive, so the kernel parks the CPU on the
-timer until the wait's deadline or a sleeping peer's earlier deadline.  If the sleeping
-peer expires first, the waiter parks for its own remaining budget and switches to the
-peer; the futex poll bound still limits every park.  The libc re-parks when a bounded
-expiry precedes a real deadline and when the caller asked to wait indefinitely; a wake
-is the normal path.
+When no sibling thread is runnable but another local cell is, the cell is parked with
+the wait's remaining budget and the other cell runs; the wake scan re-reads the word
+before the waiter resumes, so the futex contract is unchanged.  When no cell is
+runnable the kernel parks the CPU on the timer until the wait's deadline or a sleeping
+cell's earlier deadline.  If the sleeping cell expires first, the waiter parks for its
+own remaining budget and switches to it; the futex poll bound still limits every park.
+The libc re-parks when a bounded expiry precedes a real deadline and when the caller
+asked to wait indefinitely; a wake is the normal path.
 
 A thread exit does not abandon a parked peer.  When the last runnable thread exits
 while another thread is parked on a futex or a sleep, the kernel waits on the timer
@@ -1797,9 +1811,13 @@ an orphan that exits with no live parent is reclaimed immediately.
 
 **Scheduling.**  `sched_yield` first tries another thread in the current cell, then a
 runnable local cell.  A process switch saves the calling frame and installs the target's
-page tables, descriptor table and thread table.  A `nanosleep` parks the calling thread;
-another local cell runs at the next explicit process switch point (`wait`, `exit` or
-`sched_yield`), because the v0 process table has no per-cell sleep deadline.
+page tables, descriptor table and thread table.  A `nanosleep` parks the calling thread
+and, with no runnable thread left in the cell, the cell itself: the record carries the
+earliest parked-thread deadline, cell selection skips it until then, and a runnable
+local cell runs instead.  When nothing is runnable the CPU parks on CP0 Compare for the
+earliest cell or thread deadline.  A sleeping cell is therefore resumed at its
+deadline, not at the next unrelated process switch point.  A futex wait with no sibling
+thread uses the same cell park, and its expiry scan re-reads the word.
 
 **Mesh path (M4).**  A remote spawn, exec or wait is a **capability invocation routed to
 the cell's home**, not a second process-service RPC and not a replicated process table.

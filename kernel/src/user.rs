@@ -10,8 +10,8 @@
 use irix_elf::{Abi, Elf};
 
 use crate::syserr::{
-    SysResult, CELL_E_2BIG, CELL_E_FAULT, CELL_E_INVAL, CELL_E_NAMETOOLONG, CELL_E_NOEXEC,
-    CELL_E_NOMEM, CELL_E_OVERFLOW, CELL_E_SRCH,
+    SysResult, CELL_E_2BIG, CELL_E_AGAIN, CELL_E_FAULT, CELL_E_INVAL, CELL_E_NAMETOOLONG,
+    CELL_E_NOEXEC, CELL_E_NOMEM, CELL_E_OVERFLOW, CELL_E_SRCH,
 };
 
 use crate::{cache, fd, frames, process, ramfs, scsi, tlb, traps};
@@ -1015,10 +1015,17 @@ pub fn poll_user(address: u32, count: u32, timeout: i32) -> SysResult<u32> {
         if ready != 0 {
             return Ok(ready);
         }
-        if crate::traps::count_read().wrapping_sub(start) >= limit {
+        let elapsed = crate::traps::count_read().wrapping_sub(start);
+        if elapsed >= limit {
             return Ok(0);
         }
-        core::hint::spin_loop();
+        // Park the CPU on the timer instead of spinning.  This wait is
+        // syscall-local: the gate has no continuation, so it cannot install
+        // another cell and resume the scan afterwards.  The bound keeps the
+        // call finite and the timeout still means "no readiness in this
+        // window".
+        let slice = crate::fd::WAIT_SLICE_TICKS.min(limit - elapsed);
+        crate::traps::wait_until(crate::traps::count_read().wrapping_add(slice));
     }
 }
 
@@ -1229,16 +1236,47 @@ pub fn getdents_user(fd: u32, address: u32, length: u32) -> SysResult<u32> {
     Ok(total as u32)
 }
 
-/// Copy file contents from a descriptor into a validated user buffer.
+/// Read up to `length` bytes from a descriptor, parking the CPU between
+/// readiness checks.
+///
+/// `fd::read` never waits: an empty pipe or idle console is `CELL_E_AGAIN`.
+/// A blocking descriptor retries with a parked timer slice until the
+/// `WAIT_LIMIT_MS` bound, then reports `EAGAIN`; a non-blocking one reports it
+/// at once.  Once any bytes have been read a short count is returned rather
+/// than waiting for the rest, so a blocking read cannot lose data it already
+/// copied out.  The wait stays inside this gate: it cannot hand the CPU to
+/// another cell, which needs the M9.5 readiness wait queue.
 pub fn read_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
     if !range_ok(address, length) {
         return Err(CELL_E_FAULT);
     }
+    let start = crate::traps::count_read();
     let mut buffer = [0u8; 512];
     let mut total = 0usize;
     while total < length as usize {
         let chunk = (length as usize - total).min(buffer.len());
-        let count = crate::fd::read(fd as i32, &mut buffer[..chunk])?;
+        let count = match crate::fd::read(fd as i32, &mut buffer[..chunk]) {
+            Ok(count) => count,
+            Err(CELL_E_AGAIN) => {
+                // A short read is legal and avoids re-reading bytes that were
+                // already copied into the caller's buffer.
+                if total != 0 {
+                    break;
+                }
+                if crate::fd::nonblocking(fd as i32) {
+                    return Err(CELL_E_AGAIN);
+                }
+                let elapsed = crate::traps::count_read().wrapping_sub(start);
+                let limit = crate::fd::WAIT_LIMIT_MS * crate::fd::TICKS_PER_MS;
+                if elapsed >= limit {
+                    return Err(CELL_E_AGAIN);
+                }
+                let slice = crate::fd::WAIT_SLICE_TICKS.min(limit - elapsed);
+                crate::traps::wait_until(crate::traps::count_read().wrapping_add(slice));
+                continue;
+            }
+            Err(status) => return Err(status),
+        };
         if count == 0 {
             break;
         }
