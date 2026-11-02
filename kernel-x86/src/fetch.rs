@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use irix7_sha256::Sha256;
+use kernel_core::image;
 use smoltcp::wire::Ipv4Address;
 
 use crate::memory;
@@ -41,6 +41,7 @@ pub fn image(
     url_sector: u64,
     header_sector: u64,
     slot: u32,
+    capacity: usize,
 ) -> &'static [u8] {
     let mut url_bytes = [0u8; SECTOR];
     if !disk.read(url_sector, &mut url_bytes) {
@@ -55,8 +56,10 @@ pub fn image(
     if !disk.read(header_sector, &mut sector) {
         fail("x86: autoload: header unreadable");
     }
-    let mut digest = [0u8; 32];
-    digest.copy_from_slice(&sector[16..48]);
+    let header = match image::parse_header(&sector, capacity) {
+        Ok(header) => header,
+        Err(error) => fail(header_error_text(error)),
+    };
 
     let Some(base) = memory::alloc_frames(CAPACITY / 4096) else {
         fail("x86: autoload: no frames for the image");
@@ -76,7 +79,10 @@ pub fn image(
     crate::serial::write(b" bytes\n");
 
     let fetched = &buffer[..length];
-    if Sha256::digest(fetched).0 != digest {
+    if length != header.length as usize {
+        fail("x86: autoload length does not match the header");
+    }
+    if image::verify_digest(&header.digest, &image::digest(fetched)).is_err() {
         fail("x86: autoload digest mismatch");
     }
     crate::serial::write(b"x86: autoload ");
@@ -88,6 +94,14 @@ pub fn image(
 fn fail(message: &str) -> ! {
     crate::print_line(&[message.as_bytes()]);
     crate::qemu_exit(1)
+}
+
+fn header_error_text(error: image::HeaderError) -> &'static str {
+    match error {
+        image::HeaderError::Short => "x86: autoload: header sector is short",
+        image::HeaderError::Magic => "x86: autoload: header magic is not IRIX7MOD",
+        image::HeaderError::Length { .. } => "x86: autoload: header length does not fit the window",
+    }
 }
 
 /// Parse `a.b.c.d:port/path`.  The path keeps its leading slash.
@@ -133,7 +147,7 @@ fn get(
     let octets = address.octets();
     let ip = u32::from_be_bytes(octets);
     // SAFETY: the slot is free at boot and the call matches the module ABI.
-    if unsafe { tcp::connect(slot, ip, port) } != 0 {
+    if tcp::connect(slot, ip, port) != 0 {
         return Err("x86: autoload: connect refused");
     }
     if !wait(|| tcp::state(slot) == 2) {
@@ -146,8 +160,7 @@ fn get(
     request.extend_from_slice(b" HTTP/1.0\r\nHost: autoload\r\nConnection: close\r\n\r\n");
     let mut sent = 0;
     while sent < request.len() {
-        // SAFETY: the request buffer lives for the call.
-        let n = unsafe { tcp::send(slot, request[sent..].as_ptr(), request.len() - sent) };
+        let n = tcp::send(slot, &request[sent..]);
         if n > 0 {
             sent += n as usize;
         }
@@ -160,8 +173,7 @@ fn get(
         if received == out.len() {
             return Err("x86: autoload: image larger than the buffer");
         }
-        // SAFETY: the destination is inside `out`, with room for the call.
-        let n = unsafe { tcp::recv(slot, out[received..].as_mut_ptr(), out.len() - received) };
+        let n = tcp::recv(slot, &mut out[received..]);
         if n > 0 {
             received += n as usize;
             continue;

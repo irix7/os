@@ -33,6 +33,7 @@ irix7-config = { path = "../crates/irix7-config" }
 module-block = { path = "../crates/module-block" }
 irix7-netif = { path = "../crates/irix7-netif" }
 agnostic-core = { path = "../crates/agnostic-core" }
+kernel-core = { path = "../crates/kernel-core" }
 frame-alloc = { path = "../crates/frame-alloc" }
 irix7-sha256 = { path = "../crates/irix7-sha256" }
 module-tcp = { path = "../crates/module-tcp" }

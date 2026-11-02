@@ -322,9 +322,10 @@ throughput; Indy unchanged.
 
 **Status:** the first slice ([#266](https://github.com/irix7/os/issues/266))
 boots an x86_64 machine under QEMU's PVH path to a serial console with the
-loader's memory map, an IDT that reports a deliberate fault, and a PIT tick.
-UEFI, ACPI/APIC, the virtio devices and the shared core are still ahead; see
-[`x86.md`](x86.md).
+loader's memory map, an IDT that reports a deliberate fault, a PIT tick, the
+virtio net and block devices, the module loader protocol and service table from
+`kernel-core`, and the two-guest M2 gate. UEFI, ACPI/APIC, an x86 userland and a
+native syscall gate are still ahead; see [`x86.md`](x86.md).
 
 ### Phase 7 — Cloud VirtIO and 128-node gate
 

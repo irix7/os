@@ -196,6 +196,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         None => halt(),
     };
     let input = serial::init(escc.channels, escc.selected);
+    services::install();
 
     let memory = match platform::memory(&client) {
         Some(memory) => memory,

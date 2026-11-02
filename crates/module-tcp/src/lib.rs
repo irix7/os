@@ -208,6 +208,18 @@ impl<const SLOTS: usize, const BUFFER: usize> Slots<SLOTS, BUFFER> {
         }
     }
 
+    /// Receive into a safe buffer.  Returns the byte count, or -1.
+    pub fn recv_into<S: Stack>(&self, slot: u32, out: &mut [u8]) -> isize {
+        // SAFETY: `out` is a valid destination for its own length.
+        unsafe { self.recv::<S>(slot, out.as_mut_ptr(), out.len()) }
+    }
+
+    /// Send from a safe buffer.  Returns the byte count accepted, or -1.
+    pub fn send_from<S: Stack>(&mut self, slot: u32, bytes: &[u8]) -> isize {
+        // SAFETY: `bytes` is a valid source for its own length.
+        unsafe { self.send::<S>(slot, bytes.as_ptr(), bytes.len()) }
+    }
+
     /// Receive into `buffer`.  Returns the byte count, or -1.
     ///
     /// # Safety

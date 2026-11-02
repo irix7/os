@@ -14,6 +14,7 @@ module-tcp = { path = "../crates/module-tcp" }
 frame-alloc = { path = "../crates/frame-alloc" }
 module-abi.workspace = true
 irix7-sha256 = { path = "../crates/irix7-sha256" }
+kernel-core = { path = "../crates/kernel-core" }
 smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-dhcpv4", "socket-tcp"] }
 
 [[bin]]

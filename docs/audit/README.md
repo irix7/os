@@ -98,10 +98,13 @@ table keeps the audited 39 so the verdicts remain traceable.
    kseg0 index (`:370-404`) and implements 3 of 8 validation steps. The nine conformance
    tests pass against a separate crate that neither the ROM nor the kernel links. #33 is
    reopened.
-3. **x86_64 is a separate kernel, not the shared core.** `kernel-x86` does not depend on
-   `kernel` and carries its own module loader, services, net and TCP code
-   (`kernel-x86/Cargo.toml:8-17`, `docs/plan/x86.md:4-5`). The machine layer and M2 gate
-   are real. #266 is reopened.
+3. **x86_64 links the shared module core but has no userland.** `kernel-x86` now
+   depends on `crates/kernel-core` for the module header, digest, vtable and entry
+   rules and for the one `module_abi::Services` table; the Indy and PowerPC kernels
+   use the same crate (`docs/research/x86-shared-core.md`). The machine layer, virtio
+   devices, module load and M2 gate are real. There is still no x86 fd table, ramfs,
+   thread table or native syscall gate, so the machine is not at the Indy's
+   POSIX/IRIX contract level. #266 remains open for that half.
 4. **The REX3 self-test reads the CPU shadow.** `gfx.rs:475-479` reads `0x8870_0000`, not
    the engine, so a fill that only reached the red channel would pass. The FIFO check is a
    counter that `fill_span` guarantees. #118 is reopened.

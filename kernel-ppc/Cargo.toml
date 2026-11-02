@@ -8,6 +8,7 @@ description = "IRIX 7 PowerPC G3 machine: boot path, traps and devices"
 [dependencies]
 irix7-fmt = { path = "../crates/irix7-fmt" }
 irix7-sha256 = { path = "../crates/irix7-sha256" }
+kernel-core = { path = "../crates/kernel-core" }
 module-abi.workspace = true
 
 [[bin]]

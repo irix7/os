@@ -89,7 +89,7 @@ jobs:
       - name: cargo test
         run: |
           if [ -f Cargo.toml ]; then
-            cargo test -p kernel -p kernel-test -p boot-protocol-tests \
+            cargo test -p kernel -p kernel-core -p kernel-test -p boot-protocol-tests \
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-join \
               -p mesh-route -p mesh-service -p mesh-sim -p mesh-transport \

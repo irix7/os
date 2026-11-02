@@ -16,6 +16,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
   `0x883f_d000`, outside every module slot and arena region. Clearing or
   failing to reload slot B invalidates the record but keeps the adopted policy
   and prints `m1-reload: failed policy=retained`. See #213, #217 and #330.
+- Architecture-neutral kernel core crate (`crates/kernel-core`) for #266/#330.
+  It owns the module image protocol (canonical `IRIX7MOD` header, size and
+  SHA-256 checks, vtable bounds check and entry call) and the one
+  `module_abi::Services` table, with a `Platform` boundary each machine
+  implements. The Indy, x86_64 and PowerPC kernels link it and no longer carry
+  their own service tables. The x86 loader gains the vtable check it lacked,
+  and the x86 disk header becomes the canonical big-endian format the PowerPC
+  machine already used. The userland, fd table, ramfs and thread table remain
+  MIPS-only; x86 has no native syscall gate yet.
 - PowerPC G3 serial input and a boot monitor.  The ESCC receiver is enabled
   on both channels and polled on the channel the firmware selected, with
   channel A as the fallback when the firmware names no ESCC channel.  After

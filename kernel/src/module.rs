@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Loadable modules: flat images fetched into reserved RAM and called through
-//! a small C service table.
+//! Loadable modules: the Indy's slots, transport and tick loop.
 //!
 //! The compressed PROM image is meant to stop growing.  Code that belongs to
 //! the running system but is not needed to boot (the TLS client is the first
 //! candidate) can be linked at [`MODULE_BASE`], downloaded over the network,
 //! verified, and called in place.  Modules run in kernel mode and use the
-//! service table rather than linking against kernel symbols, so the core and
-//! a module can be rebuilt independently.
+//! shared service table rather than linking against kernel symbols.
+//!
+//! The entry checks, the vtable bounds check and the service table are
+//! `kernel-core`, the same code every machine runs.  This file keeps what is
+//! specific to the Indy: the two fixed boot slots, the SCSI and HTTP fetch
+//! transports, the runtime arena and the 10 ms tick loop.
 
-use alloc::alloc::{alloc, Layout};
-use core::mem::{align_of, size_of};
-use irix7_sha256::Sha256;
 use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::udp::{PacketBuffer, RecvError, SendError, Socket as UdpSocket, UdpMetadata};
 use smoltcp::storage::PacketMetadata;
@@ -19,13 +19,10 @@ use smoltcp::storage::PacketMetadata;
 /// The loadable-module ABI, shared with every module image.
 pub use module_abi::{
     ModuleArena, ModuleContext, ModuleEntry, ModuleExportBinding, ModuleHandle, ModuleInfo,
-    ModuleLoad, ModuleVtable, Services, ABI_VERSION, MODULE_BASE, MODULE_ERR_ARGUMENT,
-    MODULE_ERR_BUSY, MODULE_ERR_DIGEST, MODULE_ERR_LIMIT, MODULE_ERR_REGION, MODULE_ERR_STATE,
-    MODULE_LOAD_REPLACE, MODULE_MAX, MODULE_OK, MODULE_STATE_ENTERED, MODULE_STATE_LOADED,
+    ModuleLoad, MODULE_BASE, MODULE_ERR_ARGUMENT, MODULE_ERR_BUSY, MODULE_ERR_DIGEST,
+    MODULE_ERR_LIMIT, MODULE_ERR_REGION, MODULE_ERR_STATE, MODULE_LOAD_REPLACE, MODULE_MAX,
+    MODULE_OK, MODULE_STATE_ENTERED, MODULE_STATE_LOADED,
 };
-
-/// A module entry point.
-pub type Entry = unsafe extern "C" fn(*const Services) -> *const ModuleVtable;
 
 /// Fixed module slots in the 2 MiB module area.
 ///
@@ -95,49 +92,9 @@ pub const fn region_len(index: usize) -> usize {
     }
 }
 
-static SERVICES: Services = Services {
-    version: ABI_VERSION,
-    write: service_write,
-    clock_ms: service_clock_ms,
-    alloc: service_alloc,
-    poll: service_poll,
-    tcp_listen: service_tcp_listen,
-    tcp_state: service_tcp_state,
-    tcp_recv: service_tcp_recv,
-    tcp_send: service_tcp_send,
-    tcp_close: service_tcp_close,
-    tcp_abort: service_tcp_abort,
-    console_read: service_console_read,
-    console_total: service_console_total,
-    reset: service_reset,
-    poweroff: service_poweroff,
-    status: service_status,
-    config_get: service_config_get,
-    info: service_info,
-    screen_read: service_screen_read,
-    block_read: service_block_read,
-    block_write: service_block_write,
-    module_arena: service_module_arena,
-    module_load: service_module_load,
-    module_execute: service_module_execute,
-    module_find: service_module_find,
-    module_find_export: service_module_find_export,
-    module_query: service_module_query,
-    module_unload: service_module_unload,
-    tcp_connect: service_tcp_connect,
-    tcp_events: service_tcp_events,
-    tcp_slots: service_tcp_slots,
-    udp_open: service_udp_open,
-    udp_send: service_udp_send,
-    udp_recv: service_udp_recv,
-    udp_close: service_udp_close,
-    udp_slots: service_udp_slots,
-    udp_state: service_udp_state,
-};
-
 /// Periodic callbacks for every multiplexer region.
-static mut TICKS: [Option<unsafe extern "C" fn(*const Services) -> i32>; MODULE_REGION_COUNT] =
-    [None; MODULE_REGION_COUNT];
+static mut TICKS: [Option<unsafe extern "C" fn(*const module_abi::Services) -> i32>;
+    MODULE_REGION_COUNT] = [None; MODULE_REGION_COUNT];
 static mut LAST_TICKS: [u64; MODULE_REGION_COUNT] = [0; MODULE_REGION_COUNT];
 
 /// Drop a region's callback; used by load, unload and failed entries.
@@ -176,17 +133,34 @@ pub fn clear(slot: Slot) {
     crate::cache::sync();
 }
 
-fn vtable_in_slot(p: *const ModuleVtable, slot: Slot, len: usize) -> bool {
-    let index = slot as usize;
-    let base = region_base(index);
-    let image_len = len.min(region_len(index));
-    let a = p as usize;
-    if a < base || a % align_of::<ModuleVtable>() != 0 {
-        return false;
+/// The Indy's slot and kseg0 cache maintenance, for the shared entry call.
+pub(crate) struct IndyHost;
+
+impl kernel_core::image::Host for IndyHost {
+    fn clear(&mut self, image: &kernel_core::image::Image) {
+        // SAFETY: the caller reserved the window for modules.
+        unsafe {
+            core::ptr::write_bytes(image.base as *mut u8, 0, image.window);
+        }
+        crate::cache::dcache_writeback_invalidate(image.base, image.window);
+        crate::cache::sync();
     }
-    match a.checked_add(size_of::<ModuleVtable>()) {
-        Some(end) => end <= base + image_len,
-        None => false,
+
+    fn copy(&mut self, image: &kernel_core::image::Image, offset: usize, bytes: &[u8]) {
+        // SAFETY: the caller bounded `offset + bytes.len()` by the window.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (image.base as *mut u8).add(offset),
+                bytes.len(),
+            );
+        }
+    }
+
+    fn flush_code(&mut self, image: &kernel_core::image::Image, length: usize) {
+        crate::cache::dcache_writeback_invalidate(image.base, length);
+        crate::cache::icache_invalidate(image.base, length);
+        crate::cache::sync();
     }
 }
 
@@ -196,49 +170,33 @@ fn vtable_in_slot(p: *const ModuleVtable, slot: Slot, len: usize) -> bool {
 /// The caller must have verified the image and its hash; arbitrary code runs
 /// in kernel mode from here.
 pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
-    let base = slot_base(slot);
     let index = slot as usize;
-    if len == 0 || len > slot_size(slot) {
-        return -1;
-    }
-    // The image was written through the cacheable kseg0 mapping.  Write the
-    // data cache back to RAM and invalidate stale instruction lines before the
-    // first fetch of module code.
-    crate::cache::dcache_writeback_invalidate(base, len);
-    crate::cache::icache_invalidate(base, len);
-    crate::cache::sync();
-
     // A new image replaces any previous callback in this region.
     clear_tick(index);
-
-    let entry: Entry = core::mem::transmute(base);
-    let vtable = entry(&SERVICES);
-    if vtable.is_null() {
-        return 0;
+    let image = kernel_core::image::Image::new(slot_base(slot), slot_size(slot), "indy");
+    // SAFETY: the caller verified the image and its hash.
+    match unsafe { kernel_core::image::enter(&image, len, &mut IndyHost) } {
+        Ok(report) => {
+            if let Some(vtable) = report.vtable() {
+                // SAFETY: the vtable lives inside the verified image, and the
+                // kernel is single-threaded.
+                unsafe {
+                    LAST_TICKS[index] = crate::services::clock_ms();
+                    TICKS[index] = (*vtable).tick;
+                }
+            }
+            0
+        }
+        Err(kernel_core::image::Error::Status(status)) => status,
+        Err(_) => -1,
     }
-    if !vtable_in_slot(vtable, slot, len) {
-        return -1;
-    }
-    // SAFETY: the vtable lives inside the verified image; read it directly.
-    let status = unsafe { core::ptr::read(vtable).status };
-    if status != 0 {
-        return status;
-    }
-    // SAFETY: same verified image; single-threaded kernel.
-    unsafe {
-        let tick = (*vtable).tick;
-        LAST_TICKS[index] = service_clock_ms();
-        TICKS[index] = tick;
-    }
-    0
 }
 
-/// Run the periodic callbacks of every registered multiplexer region.
 /// Whether any module TCP slot has data, a closed connection or recovered
 /// transmit space.  Used by the idle loop to shorten the next wait.
 pub fn tcp_ready() -> bool {
     for slot in 0..MODULE_TCP_SLOTS as u32 {
-        let mask = service_tcp_events(slot);
+        let mask = tcp_events(slot);
         if mask & ((1 << 0) | (1 << 1) | (1 << 2)) != 0 {
             return true;
         }
@@ -252,13 +210,13 @@ static mut LAST_ACTIVITY_MS: u64 = 0;
 /// Whether a module did work recently enough that a short wait can catch the
 /// peer's next record.  This is a wake hint, not a work queue.
 pub fn recently_active() -> bool {
-    let now = service_clock_ms();
+    let now = crate::services::clock_ms();
     // SAFETY: single-threaded kernel.
     unsafe { now.saturating_sub(LAST_ACTIVITY_MS) < 50 }
 }
 
 pub fn poll() -> bool {
-    let now = service_clock_ms();
+    let now = crate::services::clock_ms();
     let ready = tcp_ready();
     let mut ran = false;
     for index in 0..MODULE_REGION_COUNT {
@@ -277,7 +235,7 @@ pub fn poll() -> bool {
         unsafe {
             LAST_TICKS[index] = now;
         }
-        let status = unsafe { tick(&SERVICES) };
+        let status = unsafe { tick(&kernel_core::service::SERVICES) };
         ran = true;
         if status != 0 {
             clear_tick(index);
@@ -343,10 +301,7 @@ impl LoadedModule {
 
 static mut MODULES: [LoadedModule; REGION_COUNT] = [LoadedModule::EMPTY; REGION_COUNT];
 
-unsafe extern "C" fn service_module_arena(out: *mut ModuleArena) -> i32 {
-    if out.is_null() {
-        return MODULE_ERR_ARGUMENT;
-    }
+pub(crate) fn module_arena(out: &mut ModuleArena) -> i32 {
     let mut used_lo = 0u32;
     let mut used_hi = 0u32;
     // SAFETY: single-threaded kernel.
@@ -360,7 +315,7 @@ unsafe extern "C" fn service_module_arena(out: *mut ModuleArena) -> i32 {
             }
         }
     }
-    let arena = ModuleArena {
+    *out = ModuleArena {
         base: ARENA_BASE as u32,
         length: (REGION_SIZE * REGION_COUNT) as u32,
         region_size: REGION_SIZE as u32,
@@ -370,19 +325,10 @@ unsafe extern "C" fn service_module_arena(out: *mut ModuleArena) -> i32 {
         flags: module_abi::MODULE_ARENA_EXECUTABLE,
         reserved: 0,
     };
-    unsafe { core::ptr::write(out, arena) };
     MODULE_OK
 }
 
-unsafe extern "C" fn service_module_load(
-    request: *const ModuleLoad,
-    out: *mut ModuleHandle,
-) -> i32 {
-    if request.is_null() || out.is_null() {
-        return MODULE_ERR_ARGUMENT;
-    }
-    // SAFETY: the manager supplies a complete request for this synchronous call.
-    let request = unsafe { &*request };
+pub(crate) fn module_load(request: &ModuleLoad, out: &mut ModuleHandle) -> i32 {
     if request.url.is_null()
         || request.url_len == 0
         || request.url_len > module_abi::MODULE_URL_MAX
@@ -419,7 +365,7 @@ unsafe extern "C" fn service_module_load(
         Ok(summary) => summary,
         Err(_) => return MODULE_ERR_STATE,
     };
-    if !summary.sha256.eq_digest(&Sha256(request.sha256)) {
+    if kernel_core::image::verify_digest(&request.sha256, &summary.sha256.0).is_err() {
         return MODULE_ERR_DIGEST;
     }
     let image_size = summary.body_len as u32;
@@ -485,17 +431,15 @@ unsafe extern "C" fn service_module_load(
         }
     }
     modules[region] = loaded;
-    let handle = ((generation as u64) << 32) | region as u64;
-    // SAFETY: out is a validated manager pointer.
-    unsafe { core::ptr::write(out, handle) };
+    *out = ((generation as u64) << 32) | region as u64;
     MODULE_OK
 }
 
-unsafe extern "C" fn service_module_execute(
+pub(crate) fn module_execute(
     handle: ModuleHandle,
     entry_offset: u32,
-    context: *const ModuleContext,
-    out_status: *mut i32,
+    context: Option<&ModuleContext>,
+    out_status: Option<&mut i32>,
 ) -> i32 {
     let region = (handle & 0xffff_ffff) as usize;
     let generation = (handle >> 32) as u32;
@@ -511,43 +455,33 @@ unsafe extern "C" fn service_module_execute(
     if entry_offset + 4 > module.image_size {
         return MODULE_ERR_ARGUMENT;
     }
-    let entry = ARENA_BASE + region * REGION_SIZE + entry_offset as usize;
-    crate::cache::dcache_writeback_invalidate(
-        ARENA_BASE + region * REGION_SIZE,
-        module.image_size as usize,
-    );
-    crate::cache::icache_invalidate(
-        ARENA_BASE + region * REGION_SIZE,
-        module.image_size as usize,
-    );
+    let base = ARENA_BASE + region * REGION_SIZE;
+    let entry = base + entry_offset as usize;
+    crate::cache::dcache_writeback_invalidate(base, module.image_size as usize);
+    crate::cache::icache_invalidate(base, module.image_size as usize);
     crate::cache::sync();
     // SAFETY: the region was verified and the offset is inside the image. The
     // manager owns the opaque context for the duration of the call.
     let entry: ModuleEntry = unsafe { core::mem::transmute(entry) };
-    let vtable = unsafe { entry(&SERVICES, context) };
+    let context = context.map_or(core::ptr::null(), |context| context as *const ModuleContext);
+    let vtable = unsafe { entry(&kernel_core::service::SERVICES, context) };
     module.state = MODULE_STATE_ENTERED;
     let tick_index = 2 + region;
     let status = if vtable.is_null() {
         clear_tick(tick_index);
         0
     } else {
-        let base = region_base(2 + region);
         let image_len = module.image_size as usize;
-        let address = vtable as usize;
-        if address < base
-            || address % align_of::<ModuleVtable>() != 0
-            || address
-                .checked_add(size_of::<ModuleVtable>())
-                .map_or(true, |end| end > base + image_len)
-        {
+        if !kernel_core::image::validate_vtable(vtable, base, image_len) {
             clear_tick(tick_index);
             MODULE_ERR_STATE
         } else {
             // SAFETY: the table is inside the verified image.
             let status = unsafe { (*vtable).status };
             if status == 0 {
+                // SAFETY: single-threaded kernel.
                 unsafe {
-                    LAST_TICKS[tick_index] = service_clock_ms();
+                    LAST_TICKS[tick_index] = crate::services::clock_ms();
                     TICKS[tick_index] = (*vtable).tick;
                 }
             } else {
@@ -556,15 +490,12 @@ unsafe extern "C" fn service_module_execute(
             status
         }
     };
-    if !out_status.is_null() {
-        // SAFETY: optional manager out pointer.
-        unsafe {
-            *out_status = if status == MODULE_ERR_STATE {
-                0
-            } else {
-                status
-            };
-        }
+    if let Some(out_status) = out_status {
+        *out_status = if status == MODULE_ERR_STATE {
+            0
+        } else {
+            status
+        };
     }
     if status == MODULE_ERR_STATE {
         MODULE_ERR_STATE
@@ -573,25 +504,14 @@ unsafe extern "C" fn service_module_execute(
     }
 }
 
-unsafe extern "C" fn service_module_find(
-    name: *const u8,
-    name_len: u32,
-    version: *const u8,
-    version_len: u32,
-    out: *mut ModuleHandle,
-) -> i32 {
-    if name.is_null()
-        || version.is_null()
-        || out.is_null()
-        || name_len == 0
-        || name_len > module_abi::MODULE_NAME_MAX
-        || version_len == 0
-        || version_len > module_abi::MODULE_VERSION_MAX
+pub(crate) fn module_find(name: &[u8], version: &[u8], out: &mut ModuleHandle) -> i32 {
+    if name.is_empty()
+        || name.len() > module_abi::MODULE_NAME_MAX as usize
+        || version.is_empty()
+        || version.len() > module_abi::MODULE_VERSION_MAX as usize
     {
         return MODULE_ERR_ARGUMENT;
     }
-    let name = unsafe { core::slice::from_raw_parts(name, name_len as usize) };
-    let version = unsafe { core::slice::from_raw_parts(version, version_len as usize) };
     // SAFETY: single-threaded kernel.
     let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
     for (region, module) in modules.iter().enumerate() {
@@ -599,28 +519,21 @@ unsafe extern "C" fn service_module_find(
             && &module.name[..module.name_len as usize] == name
             && &module.version[..module.version_len as usize] == version
         {
-            let handle = ((module.generation as u64) << 32) | region as u64;
-            unsafe { core::ptr::write(out, handle) };
+            *out = ((module.generation as u64) << 32) | region as u64;
             return MODULE_OK;
         }
     }
     MODULE_ERR_STATE
 }
 
-unsafe extern "C" fn service_module_find_export(
-    interface: *const u8,
-    interface_len: u32,
+pub(crate) fn module_find_export(
+    interface: &[u8],
     version: u16,
-    out: *mut ModuleExportBinding,
+    out: &mut ModuleExportBinding,
 ) -> i32 {
-    if interface.is_null()
-        || out.is_null()
-        || interface_len == 0
-        || interface_len > module_abi::MODULE_INTERFACE_MAX
-    {
+    if interface.is_empty() || interface.len() > module_abi::MODULE_INTERFACE_MAX as usize {
         return MODULE_ERR_ARGUMENT;
     }
-    let interface = unsafe { core::slice::from_raw_parts(interface, interface_len as usize) };
     // SAFETY: single-threaded kernel.
     let modules = unsafe { &*core::ptr::addr_of!(MODULES) };
     for (region, module) in modules.iter().enumerate() {
@@ -636,13 +549,12 @@ unsafe extern "C" fn service_module_find_export(
                 } else {
                     (ARENA_BASE + region * REGION_SIZE + export.offset as usize) as *const u8
                 };
-                let binding = ModuleExportBinding {
+                *out = ModuleExportBinding {
                     handle: ((module.generation as u64) << 32) | region as u64,
                     table,
                     version,
                     reserved: 0,
                 };
-                unsafe { core::ptr::write(out, binding) };
                 return MODULE_OK;
             }
         }
@@ -650,10 +562,7 @@ unsafe extern "C" fn service_module_find_export(
     MODULE_ERR_STATE
 }
 
-unsafe extern "C" fn service_module_query(handle: ModuleHandle, out: *mut ModuleInfo) -> i32 {
-    if out.is_null() {
-        return MODULE_ERR_ARGUMENT;
-    }
+pub(crate) fn module_query(handle: ModuleHandle, out: &mut ModuleInfo) -> i32 {
     let region = (handle & 0xffff_ffff) as usize;
     let generation = (handle >> 32) as u32;
     if region >= REGION_COUNT {
@@ -665,7 +574,7 @@ unsafe extern "C" fn service_module_query(handle: ModuleHandle, out: *mut Module
     if !module.live || module.generation != generation {
         return MODULE_ERR_STATE;
     }
-    let info = ModuleInfo {
+    *out = ModuleInfo {
         handle,
         base: (ARENA_BASE + region * REGION_SIZE) as u32,
         image_size: module.image_size,
@@ -674,11 +583,10 @@ unsafe extern "C" fn service_module_query(handle: ModuleHandle, out: *mut Module
         state: module.state,
         reserved: 0,
     };
-    unsafe { core::ptr::write(out, info) };
     MODULE_OK
 }
 
-unsafe extern "C" fn service_module_unload(handle: ModuleHandle) -> i32 {
+pub(crate) fn module_unload(handle: ModuleHandle) -> i32 {
     let region = (handle & 0xffff_ffff) as usize;
     let generation = (handle >> 32) as u32;
     if region >= REGION_COUNT {
@@ -705,39 +613,6 @@ unsafe extern "C" fn service_module_unload(handle: ModuleHandle) -> i32 {
     MODULE_OK
 }
 
-extern "C" fn service_write(ptr: *const u8, len: usize) {
-    if ptr.is_null() || len == 0 || len > 8192 {
-        return;
-    }
-    let data = unsafe { core::slice::from_raw_parts(ptr, len) };
-    crate::write_bytes(data);
-}
-
-extern "C" fn service_clock_ms() -> u64 {
-    let ms = crate::net::clock_now().total_millis();
-    if ms < 0 {
-        0
-    } else {
-        ms as u64
-    }
-}
-
-unsafe extern "C" fn service_alloc(size: usize, align: usize) -> *mut u8 {
-    if size == 0 {
-        return core::ptr::null_mut();
-    }
-    let align = align.max(1).next_power_of_two();
-    match Layout::from_size_align(size, align) {
-        Ok(layout) => alloc(layout),
-        Err(_) => core::ptr::null_mut(),
-    }
-}
-
-extern "C" fn service_poll() {
-    crate::net::poll();
-}
-
-/// Module TCP slots.  Two is enough for an HTTP server plus a client.
 /// The Indy's stack, for the shared module TCP slot table.
 struct IndyStack;
 
@@ -770,44 +645,42 @@ fn module_tcp() -> &'static mut module_tcp::Slots<MODULE_TCP_SLOTS, MODULE_TCP_B
     unsafe { &mut *core::ptr::addr_of_mut!(MODULE_TCP) }
 }
 
-unsafe extern "C" fn service_tcp_listen(slot: u32, port: u16) -> i32 {
+pub(crate) fn tcp_listen(slot: u32, port: u16) -> i32 {
     module_tcp().listen::<IndyStack>(slot, port)
 }
 
-unsafe extern "C" fn service_tcp_connect(slot: u32, address: u32, port: u16) -> i32 {
+pub(crate) fn tcp_connect(slot: u32, address: u32, port: u16) -> i32 {
     module_tcp().connect::<IndyStack>(slot, address, port)
 }
 
 /// Level-triggered readiness for one module TCP slot.  The bits are recomputed
 /// from the live socket; there is no event queue and no lost edge.
-extern "C" fn service_tcp_events(slot: u32) -> u32 {
+pub(crate) fn tcp_events(slot: u32) -> u32 {
     module_tcp().events::<IndyStack>(slot)
 }
 
 /// Number of module TCP slots the kernel provides.
-extern "C" fn service_tcp_slots() -> u32 {
+pub(crate) fn tcp_slots() -> u32 {
     module_tcp().slots()
 }
 
-extern "C" fn service_tcp_state(slot: u32) -> u32 {
+pub(crate) fn tcp_state(slot: u32) -> u32 {
     module_tcp().state::<IndyStack>(slot)
 }
 
-unsafe extern "C" fn service_tcp_recv(slot: u32, ptr: *mut u8, len: usize) -> isize {
-    // SAFETY: the module owns the destination buffer for the call.
-    unsafe { module_tcp().recv::<IndyStack>(slot, ptr, len) }
+pub(crate) fn tcp_recv(slot: u32, out: &mut [u8]) -> isize {
+    module_tcp().recv_into::<IndyStack>(slot, out)
 }
 
-unsafe extern "C" fn service_tcp_send(slot: u32, ptr: *const u8, len: usize) -> isize {
-    // SAFETY: the module owns the source buffer for the call.
-    unsafe { module_tcp().send::<IndyStack>(slot, ptr, len) }
+pub(crate) fn tcp_send(slot: u32, bytes: &[u8]) -> isize {
+    module_tcp().send_from::<IndyStack>(slot, bytes)
 }
 
-extern "C" fn service_tcp_close(slot: u32) {
+pub(crate) fn tcp_close(slot: u32) {
     module_tcp().close::<IndyStack>(slot);
 }
 
-extern "C" fn service_tcp_abort(slot: u32) {
+pub(crate) fn tcp_abort(slot: u32) {
     module_tcp().abort::<IndyStack>(slot);
 }
 
@@ -853,7 +726,7 @@ fn clear_udp_slot(slot: usize) {
     }
 }
 
-unsafe extern "C" fn service_udp_open(slot: u32, port: u16) -> i32 {
+pub(crate) fn udp_open(slot: u32, port: u16) -> i32 {
     let slot_usize = slot as usize;
     if slot_usize >= MODULE_UDP_SLOTS || port == 0 {
         return -1;
@@ -879,65 +752,52 @@ unsafe extern "C" fn service_udp_open(slot: u32, port: u16) -> i32 {
     0
 }
 
-unsafe extern "C" fn service_udp_send(
-    slot: u32,
-    address: u32,
-    port: u16,
-    ptr: *const u8,
-    len: usize,
-) -> isize {
-    if ptr.is_null() || len == 0 || address == 0 || port == 0 {
+pub(crate) fn udp_send(slot: u32, address: u32, port: u16, bytes: &[u8]) -> isize {
+    if bytes.is_empty() || address == 0 || port == 0 {
         return -1;
     }
     let Some(handle) = udp_handle(slot) else {
         return -1;
     };
-    // SAFETY: the module owns the source buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts(ptr, len) };
     // `address` is the IPv4 address in network byte order.
     let octets = address.to_be_bytes();
     let remote = smoltcp::wire::Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]);
     let result = crate::net::sockets_with(|sockets| {
         sockets
             .get_mut::<UdpSocket>(handle)
-            .send_slice(buf, (smoltcp::wire::IpAddress::Ipv4(remote), port))
+            .send_slice(bytes, (smoltcp::wire::IpAddress::Ipv4(remote), port))
     });
     match result {
-        Some(Ok(())) => len as isize,
+        Some(Ok(())) => bytes.len() as isize,
         // The socket buffer is full: the module retries after the next poll.
         Some(Err(SendError::BufferFull)) => 0,
         _ => -1,
     }
 }
 
-unsafe extern "C" fn service_udp_recv(
+pub(crate) fn udp_recv(
     slot: u32,
-    ptr: *mut u8,
-    len: usize,
-    src_address: *mut u32,
-    src_port: *mut u16,
+    out: &mut [u8],
+    src_address: Option<&mut u32>,
+    src_port: Option<&mut u16>,
 ) -> isize {
-    if ptr.is_null() || len == 0 {
+    if out.is_empty() {
         return -1;
     }
     let Some(handle) = udp_handle(slot) else {
         return -1;
     };
-    // SAFETY: the module owns the destination buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
     let result =
-        crate::net::sockets_with(|sockets| sockets.get_mut::<UdpSocket>(handle).recv_slice(buf));
+        crate::net::sockets_with(|sockets| sockets.get_mut::<UdpSocket>(handle).recv_slice(out));
     match result {
         Some(Ok((n, meta))) => {
             if let smoltcp::wire::IpAddress::Ipv4(address) = meta.endpoint.addr {
                 let octets = address.octets();
-                if !src_address.is_null() {
-                    // SAFETY: the caller passed a writable u32 out-parameter.
-                    unsafe { *src_address = u32::from_be_bytes(octets) };
+                if let Some(src_address) = src_address {
+                    *src_address = u32::from_be_bytes(octets);
                 }
-                if !src_port.is_null() {
-                    // SAFETY: the caller passed a writable u16 out-parameter.
-                    unsafe { *src_port = meta.endpoint.port };
+                if let Some(src_port) = src_port {
+                    *src_port = meta.endpoint.port;
                 }
             }
             n as isize
@@ -949,7 +809,7 @@ unsafe extern "C" fn service_udp_recv(
     }
 }
 
-extern "C" fn service_udp_close(slot: u32) {
+pub(crate) fn udp_close(slot: u32) {
     let slot = slot as usize;
     if slot < MODULE_UDP_SLOTS {
         clear_udp_slot(slot);
@@ -957,11 +817,11 @@ extern "C" fn service_udp_close(slot: u32) {
 }
 
 /// Number of module UDP slots the kernel provides.
-extern "C" fn service_udp_slots() -> u32 {
+pub(crate) fn udp_slots() -> u32 {
     MODULE_UDP_SLOTS as u32
 }
 
-extern "C" fn service_udp_state(slot: u32, address: *mut u32, port: *mut u16) -> i32 {
+pub(crate) fn udp_state(slot: u32, address: Option<&mut u32>, port: Option<&mut u16>) -> i32 {
     let Some(handle) = udp_handle(slot) else {
         return -1;
     };
@@ -969,119 +829,12 @@ extern "C" fn service_udp_state(slot: u32, address: *mut u32, port: *mut u16) ->
     let Some(endpoint) = endpoint else {
         return -1;
     };
-    if !port.is_null() {
-        // SAFETY: the caller passed a writable u16 out-parameter.
-        unsafe { *port = endpoint.port };
+    if let Some(port) = port {
+        *port = endpoint.port;
     }
-    if !address.is_null() {
+    if let Some(address) = address {
         let local = crate::net::ip_addr().map(|ip| u32::from_be_bytes(ip.octets()));
-        // SAFETY: the caller passed a writable u32 out-parameter.
-        unsafe { *address = local.unwrap_or(0) };
+        *address = local.unwrap_or(0);
     }
     0
-}
-
-unsafe extern "C" fn service_console_read(offset: u64, ptr: *mut u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    // SAFETY: the module owns the destination buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    crate::console_read(offset, buf) as isize
-}
-
-extern "C" fn service_console_total() -> u64 {
-    crate::console_total()
-}
-
-extern "C" fn service_reset() {
-    crate::reboot();
-}
-
-extern "C" fn service_poweroff() {
-    crate::poweroff();
-}
-
-unsafe extern "C" fn service_screen_read(offset: u32, ptr: *mut u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    crate::gfx::shadow_read(offset as usize, buf) as isize
-}
-
-/// The Indy's block service device: SCSI, with the module's target passed
-/// straight through.
-struct ScsiBlock;
-
-impl module_block::Block for ScsiBlock {
-    fn read_sector(&mut self, target: u8, sector: u64, out: &mut [u8; 512]) -> bool {
-        u32::try_from(sector)
-            .map(|lba| crate::scsi::read_sector(target, lba, out).is_ok())
-            .unwrap_or(false)
-    }
-
-    fn write_sector(&mut self, target: u8, sector: u64, data: &[u8; 512]) -> bool {
-        u32::try_from(sector)
-            .map(|lba| crate::scsi::write_sector(target, lba, data).is_ok())
-            .unwrap_or(false)
-    }
-}
-
-/// Every module target reaches the SCSI stack unchanged.
-const BLOCK_STORE: module_block::Store = module_block::Store::direct();
-
-unsafe extern "C" fn service_block_read(target: u8, lba: u32, ptr: *mut u8) -> i32 {
-    // SAFETY: the module owns the destination for the call.
-    unsafe { BLOCK_STORE.read(&mut ScsiBlock, target, lba, ptr) }
-}
-
-unsafe extern "C" fn service_block_write(target: u8, lba: u32, ptr: *const u8) -> i32 {
-    // SAFETY: the module owns the source for the call.
-    unsafe { BLOCK_STORE.write(&mut ScsiBlock, target, lba, ptr) }
-}
-
-unsafe extern "C" fn service_info(kind: u32, ptr: *mut u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    let n = match kind {
-        0 => crate::status::text(buf),
-        1 => crate::status::net(buf),
-        2 => crate::status::mem(buf),
-        3 => crate::status::time(buf),
-        _ => return -1,
-    };
-    n as isize
-}
-
-unsafe extern "C" fn service_config_get(
-    name: *const u8,
-    name_len: usize,
-    out: *mut u8,
-    out_len: usize,
-) -> isize {
-    if name.is_null() || out.is_null() || name_len == 0 || name_len > 64 || out_len == 0 {
-        return -1;
-    }
-    // SAFETY: the module owns both buffers for the duration.
-    let name = unsafe { core::slice::from_raw_parts(name, name_len) };
-    let Ok(name) = core::str::from_utf8(name) else {
-        return -1;
-    };
-    let out = unsafe { core::slice::from_raw_parts_mut(out, out_len) };
-    match crate::nvram::get(name, out) {
-        Some(n) => n as isize,
-        None => -1,
-    }
-}
-
-unsafe extern "C" fn service_status(ptr: *mut u8, len: usize) -> isize {
-    if ptr.is_null() || len == 0 {
-        return -1;
-    }
-    // SAFETY: the module owns the destination buffer for the duration.
-    let buf = unsafe { core::slice::from_raw_parts_mut(ptr, len) };
-    crate::status::text(buf) as isize
 }
