@@ -220,6 +220,12 @@ catch corruption. See the endian matrix in `docs/plan/milestones.md`.
 The 128-node gate may use a simulator plus QEMU, but 1/2-node gates must run on
 real kernels.
 
+On M1 the kernel bootstraps a native namespace/CAS, actor and capability
+policy. When the optional slot-B Wasm guest commits, the kernel adopts the
+guest root, actor, root capability rights and home as its live `Local` state
+and reports `m1: ... policy=wasm`. A failed slot-B reload leaves that adopted
+policy in place.
+
 ## 10. Non-goals and open decisions
 
 Non-goals for v1:

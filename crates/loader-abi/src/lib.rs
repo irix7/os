@@ -19,8 +19,12 @@ pub const TABLE_ADDR: usize = 0x883f_f000;
 
 /// Arena base, after the 256 KiB runtime-manager image in slot B.
 pub const ARENA_BASE: usize = 0x884c_0000;
+/// Size of one runtime arena region.
+pub const ARENA_REGION_SIZE: usize = 0x0004_0000;
+/// Number of runtime arena regions.
+pub const ARENA_REGION_COUNT: usize = 5;
 /// Arena length; slot B ends at `0x8860_0000`.
-pub const ARENA_LEN: usize = 0x0014_0000;
+pub const ARENA_LEN: usize = ARENA_REGION_SIZE * ARENA_REGION_COUNT;
 
 /// Fixed status block used by the runtime manager and MCP.
 pub const STATUS_ADDR: usize = 0x883f_e000;

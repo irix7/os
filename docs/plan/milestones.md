@@ -103,7 +103,14 @@ remains the module probe. The slot-B Wasm module now runs the local policy
 from a Rust guest: it stages `/etc` and `/etc/motd`, derives the actor, chooses
 and checks the capability rights, and commits atomically. Its
 `m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence has a distinct
-guest root and actor; rights and home match the native `m1:` line, while MCP remains loaded in slot A; the released v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers. The fixed-region module multiplexer is implemented: A, B and five arena regions can each carry a verified module and tick; dynamic relocation is still missing. The
+guest root and actor; rights and home match the first, bootstrap `m1:` line.
+After the guest commits, the kernel adopts its root, actor, root capability
+rights and home into the live `Local` state and prints a second `m1:` line with
+`policy=wasm`, while MCP remains loaded in slot A. A failed slot-B reload keeps
+that adopted policy and prints `m1-reload: failed policy=retained`. The released
+v0.1.3 MCP artifact has a known HTTP bug, while a current-tree build answers.
+The fixed-region module multiplexer is implemented: A, B and five arena regions
+can each carry a verified module and tick; dynamic relocation is still missing. The
 kernel has no mesh transport; the counters are self-tested and the M1 lines assert zero (a construction invariant, not packet-level instrumentation).
 
 **PROM budget finding:** the first shim slice left the compressed PROM at
@@ -146,11 +153,15 @@ path reports `autoload: wasm took 2140 ms` over local HTTP and 1600 ms from the
 local SCSI cache, with `wasm: runtime=0 ms`; fetch/copy dominate. The
 network-off/local-SCSI boot also exercises the Wasm policy with
 `mcp=disabled`. The full-path load time is recorded as an observation under
-issue #214, not a gate; the local cache is the preferred optional source. The live
-Wasm-policy bridge is now adopted for the userland `/etc/motd` path: the
-kernel validates the fixed bridge and reads that object through the committed
-guest policy, with the native kernel policy as fallback. The actor/run-queue
-and full resident authority remains Phase 5 work (#213). **Real-Indy
+issue #214, not a gate; the local cache is the preferred optional source. The
+kernel adopts the committed guest policy as its live `Local` state: the guest
+root, actor, root capability rights and home replace the bootstrap values, the
+`/etc/motd` and `/dev/null` paths read through the committed policy, and a
+second `m1:` line reports `policy=wasm`. The native policy is the pre-Wasm
+bootstrap only. A failed slot-B reload keeps the adopted policy and prints
+`m1-reload: failed policy=retained`. A resident, multiplexed policy service
+beyond the M1 single-actor shape remains Phase 5 work (#213).
+**Real-Indy
 execution was not available in this workspace.** The exact limitation is hardware-specific: no physical Indy IP24
 or self-hosted lab runner was attached, so the gate cannot validate the real
 SCC, Seeq DMA, SCSI, REX3 or DS1386 timing and cache behaviour. The gate is

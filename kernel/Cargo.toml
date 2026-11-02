@@ -45,6 +45,7 @@ mesh-core = { path = "../crates/mesh-core" }
 native-abi = { path = "../crates/native-abi" }
 m1-policy-bridge = { path = "../crates/m1-policy-bridge" }
 mesh-service = { path = "../crates/mesh-service", default-features = false }
+wasm-policy-host = { path = "../crates/wasm-policy-host" }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384", "rsa"] }

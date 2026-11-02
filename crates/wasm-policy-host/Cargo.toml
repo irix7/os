@@ -13,7 +13,7 @@ agnostic-core = { path = "../agnostic-core" }
 cas-core = { path = "../cas-core" }
 cas-store = { path = "../cas-store" }
 mesh-core = { path = "../mesh-core" }
-mesh-service = { path = "../mesh-service" }
+mesh-service = { path = "../mesh-service", default-features = false }
 sys-primitives = { path = "../sys-primitives" }
 
 [dev-dependencies]

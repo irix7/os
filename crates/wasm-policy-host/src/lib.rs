@@ -17,7 +17,7 @@
 
 extern crate alloc;
 
-use agnostic_core::{ActorTable, RunQueue};
+use agnostic_core::{ActorState, ActorTable, RunQueue};
 use cas_core::ObjectKind;
 use cas_store::Namespace;
 use mesh_core::{home_for, MembershipView};
@@ -86,6 +86,23 @@ pub enum PolicyError {
     CapTableFull,
     /// The committed root is not a directory object.
     BadRoot,
+}
+
+/// The live values a committed policy hands to the kernel.
+///
+/// This is the single actor, root capability and home shape the M1 policy
+/// requires. Adoption fails closed when the committed policy has a different
+/// shape; it does not guess which actor or capability is authoritative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Identity {
+    /// Committed namespace root OID.
+    pub root: ObjectId,
+    /// The single spawned, placed and queued actor.
+    pub actor: ActorId,
+    /// Capability rights over the root.
+    pub rights: u32,
+    /// The root's rendezvous home.
+    pub home: NodeId,
 }
 
 /// A four-word policy summary for the guest's evidence line.
@@ -346,6 +363,42 @@ impl Policy {
     /// Whether a policy is committed.
     pub const fn is_committed(&self) -> bool {
         self.committed.is_some()
+    }
+
+    /// The committed root, single actor, root rights and home.
+    ///
+    /// Returns `None` before commit, for a multi-actor policy, or when the
+    /// actor is not placed at the root's rendezvous home. The kernel uses this
+    /// to replace its bootstrap `Local` state with the guest's choice.
+    pub fn committed_identity(&self) -> Option<Identity> {
+        let committed = self.committed.as_ref()?;
+        let root = committed.namespace.root();
+        let home = home_for(&root, &self.view)?;
+        let mut actors = committed.actors.ids();
+        let actor = actors.next()?;
+        if actors.next().is_some() {
+            return None;
+        }
+        let record = committed.actors.get(actor)?;
+        if record.home != home || record.host != home || record.state != ActorState::Running {
+            return None;
+        }
+        let rights = committed
+            .caps
+            .entries
+            .get(1..)?
+            .iter()
+            .find(|entry| entry.live && entry.object == root)?
+            .rights;
+        if rights == 0 || rights & !RIGHTS_ALL != 0 {
+            return None;
+        }
+        Some(Identity {
+            root,
+            actor,
+            rights,
+            home,
+        })
     }
 
     fn current(&self) -> Option<Current<'_>> {
@@ -651,6 +704,51 @@ mod tests {
             policy.cap_rights(handle, &root),
             Some(RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE)
         );
+    }
+
+    #[test]
+    fn committed_identity_reports_the_guest_choice() {
+        let mut policy = Policy::new(node(), 0);
+        assert_eq!(policy.committed_identity(), None);
+        policy.begin().expect("begin");
+        policy.mkdir("/etc").expect("mkdir");
+        let motd = policy.put("/etc/motd", KIND_BLOB, MOTD).expect("put");
+        let root = policy.root().expect("root");
+        policy.actor_spawn(actor()).expect("spawn");
+        policy.actor_place(actor(), node()).expect("place");
+        policy.actor_queue(actor()).expect("queue");
+        let rights = RIGHT_READ | RIGHT_WRITE | RIGHT_INVOKE;
+        policy
+            .cap_issue(root, rights, [0x33; 32], node())
+            .expect("cap");
+        assert_eq!(policy.committed_identity(), None);
+        policy.commit().expect("commit");
+        assert_eq!(
+            policy.committed_identity(),
+            Some(Identity {
+                root,
+                actor: actor(),
+                rights,
+                home: node(),
+            })
+        );
+        assert_eq!(policy.lookup("/etc/motd"), Ok(motd));
+    }
+
+    #[test]
+    fn committed_identity_rejects_an_unplaced_actor() {
+        let mut policy = Policy::new(node(), 0);
+        policy.begin().expect("begin");
+        policy.mkdir("/etc").expect("mkdir");
+        let root = policy.root().expect("root");
+        policy.actor_spawn(actor()).expect("spawn");
+        policy.actor_queue(actor()).expect("queue");
+        policy
+            .cap_issue(root, RIGHT_READ, [0x33; 32], node())
+            .expect("cap");
+        // Commit checks the queue relation, not that the actor was placed.
+        policy.commit().expect("commit");
+        assert_eq!(policy.committed_identity(), None);
     }
 
     #[test]

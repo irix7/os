@@ -670,6 +670,7 @@ dependencies = [
  "rand_core",
  "smoltcp",
  "sys-primitives",
+ "wasm-policy-host",
  "x509-cert",
 ]
 
@@ -685,6 +686,10 @@ dependencies = [
 [[package]]
 name = "kernel-test"
 version = "0.1.0"
+dependencies = [
+ "loader-abi",
+ "m1-policy-bridge",
+]
 
 [[package]]
 name = "kernel-x86"
