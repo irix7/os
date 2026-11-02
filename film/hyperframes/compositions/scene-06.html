@@ -1,0 +1,158 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s6-world { position: absolute; inset: 0; transform-origin: 52% 52%; }
+    .s6-head { position: absolute; left: 104px; top: 92px; width: 600px; z-index: 9; }
+    .s6-head .display { margin-top: 22px; font-size: 96px; }
+    .s6-sub { margin-top: 24px; max-width: 500px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s6-ring { position: absolute; left: 980px; top: 560px; width: 0; height: 0; }
+    .s6-node { position: absolute; width: 92px; height: 92px; margin: -46px 0 0 -46px; border-radius: 50%; background: var(--paper-light); border: 2px solid var(--indigo); display: grid; place-items: center; font-family: var(--mono); font-size: 15px; color: var(--indigo); box-shadow: 6px 6px 0 rgba(23,26,36,.12); z-index: 3; }
+    .s6-node::after { content: ""; position: absolute; width: 11px; height: 11px; border-radius: 50%; background: var(--orange); bottom: 11px; }
+    .s6-node.home { background: var(--indigo); color: var(--paper-light); border-color: var(--indigo-deep); }
+    .s6-node.home::after { background: var(--green); }
+    .s6-node.failed { background: var(--paper-deep); color: #8a8f98; border-color: #8a8f98; }
+    .s6-node.failed::after { background: #8a8f98; }
+    .s6-node .x { position: absolute; inset: 0; display: grid; opacity: 0; place-items: center; font-family: var(--sans); font-size: 44px; color: var(--orange); }
+    .s6-n0 { left: 0; top: -240px; }
+    .s6-n1 { left: 170px; top: -170px; }
+    .s6-n2 { left: 240px; top: 0; }
+    .s6-n3 { left: 170px; top: 170px; }
+    .s6-n4 { left: 0; top: 240px; }
+    .s6-n5 { left: -170px; top: 170px; }
+    .s6-n6 { left: -240px; top: 0; }
+    .s6-n7 { left: -170px; top: -170px; }
+    .s6-rings { position: absolute; left: 980px; top: 560px; width: 0; height: 0; z-index: 2; }
+    .s6-rings::before, .s6-rings::after { content: ""; position: absolute; border-radius: 50%; border: 1px solid rgba(52,55,140,.35); }
+    .s6-rings::before { width: 480px; height: 480px; left: -240px; top: -240px; }
+    .s6-rings::after { width: 600px; height: 600px; left: -300px; top: -300px; border-style: dashed; opacity: .5; }
+    .s6-links { position: absolute; left: 980px; top: 560px; width: 0; height: 0; overflow: visible; z-index: 1; }
+    .s6-links path { fill: none; stroke: rgba(52,55,140,.35); stroke-width: 1.5; }
+    .s6-frame { position: absolute; left: 820px; top: 440px; width: 320px; z-index: 5; }
+    .s6-frame .frame-object { width: 100%; border-width: 6px; }
+    .s6-beam { position: absolute; left: 980px; top: 560px; width: 240px; height: 2px; background: var(--orange); transform-origin: left center; transform: rotate(45deg); z-index: 4; }
+    .s6-beam::after { content: ""; position: absolute; right: -1px; top: -7px; width: 16px; height: 16px; border-top: 2px solid var(--orange); border-right: 2px solid var(--orange); transform: rotate(45deg); }
+    .s6-lease { position: absolute; left: 820px; top: 852px; width: 320px; z-index: 5; }
+    .s6-lease .bar { height: 8px; background: rgba(23,26,36,.12); border: 1px solid var(--ink); }
+    .s6-lease .fill { height: 100%; width: 100%; background: var(--orange); transform-origin: left; }
+    .s6-lease .lbl { display: flex; justify-content: space-between; margin-top: 6px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s6-table { position: absolute; left: 1350px; top: 180px; width: 470px; z-index: 6; }
+    .s6-table .head { display: flex; justify-content: space-between; padding: 12px 14px; background: var(--indigo); color: var(--paper-light); font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; }
+    .s6-table .row { display: grid; grid-template-columns: 1fr 90px 70px; gap: 8px; padding: 10px 14px; border-bottom: 1px solid rgba(23,26,36,.16); background: var(--paper-light); font-family: var(--mono); font-size: 13px; color: var(--ink-soft); }
+    .s6-table .row b { color: var(--ink); font-weight: 500; }
+    .s6-table .row .home { color: var(--orange); }
+    .s6-table .foot { padding: 12px 14px; font-family: var(--mono); font-size: 11px; line-height: 1.6; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s6-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 7; }
+    .s6-label b { color: var(--ink); font-weight: 500; }
+    .s6-epoch { position: absolute; left: 1350px; top: 140px; font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+    .s6-epoch b { color: var(--orange); font-weight: 500; }
+    .s6-note { position: absolute; left: 104px; top: 700px; width: 500px; font-family: var(--mono); font-size: 13px; line-height: 1.7; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s6-note b { color: var(--indigo); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-06" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 06 / PLACEMENT</p>
+      <div class="s6-world" id="s6-world">
+        <div class="s6-head" id="s6-head">
+          <p class="eyebrow" id="s6-eyebrow"><span class="num">06</span> / PLACEMENT</p>
+          <h1 class="display" id="s6-title">Where things<br />live.</h1>
+          <p class="s6-sub" id="s6-sub">Every object has a home: one node that owns its current state. The home is chosen by rendezvous hashing over the membership.</p>
+        </div>
+
+        <div class="s6-rings"></div>
+        <div class="s6-ring">
+          <div class="s6-node s6-n0" id="s6-n0">n0</div>
+          <div class="s6-node s6-n1" id="s6-n1">n1</div>
+          <div class="s6-node s6-n2" id="s6-n2">n2</div>
+          <div class="s6-node s6-n3" id="s6-n3">n3<span class="x">×</span></div>
+          <div class="s6-node s6-n4" id="s6-n4">n4</div>
+          <div class="s6-node s6-n5" id="s6-n5">n5</div>
+          <div class="s6-node s6-n6" id="s6-n6">n6</div>
+          <div class="s6-node s6-n7" id="s6-n7">n7</div>
+        </div>
+
+        <div class="s6-beam" id="s6-beam"></div>
+
+        <div class="s6-frame" id="s6-frame">
+          <div class="frame-object bare">
+            <div class="frame-art">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s6-lease" id="s6-lease">
+          <div class="bar"><div class="fill" id="s6-lease-fill"></div></div>
+          <div class="lbl"><span id="s6-lease-label">write lease · n3</span><span id="s6-lease-time">6s</span></div>
+        </div>
+
+        <div class="s6-epoch" id="s6-epoch">MEMBERSHIP EPOCH <b id="s6-epoch-n">08</b></div>
+        <div class="s6-table" id="s6-table">
+          <div class="head"><span>OBJECT</span><span>HOME</span><span>LEASE</span></div>
+          <div class="row" id="s6-row1"><b>frame:0001</b><span class="home" id="s6-home1">n3</span><span>6s</span></div>
+          <div class="row" id="s6-row2"><b>motd</b><span class="home">n6</span><span>12s</span></div>
+          <div class="row" id="s6-row3"><b>cell:motd</b><span class="home">n1</span><span>9s</span></div>
+          <div class="row" id="s6-row4"><b>snapshot:01</b><span class="home">n6</span><span>24s</span></div>
+          <div class="row" id="s6-row5"><b>gpu:indigo</b><span class="home">n2</span><span>6s</span></div>
+          <div class="foot">every node computes this table from the same membership snapshot</div>
+        </div>
+
+        <div class="s6-label" id="s6-label-a" style="left: 1180px; top: 748px"><b>HOME n3</b> / current root</div>
+        <div class="s6-label" id="s6-label-b" style="left: 610px; top: 480px"><b>SHARD n3</b> / 4 objects</div>
+        <div class="s6-label" id="s6-label-c" style="left: 800px; top: 500px"><b>HOME n6</b> / current root</div>
+        <div class="s6-note" id="s6-note"><b>THE TABLE IS THE DIRECTORY</b><br />EVERY NODE KEEPS ITS OWN COPY</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s6-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s6-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s6-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s6-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 5.8);
+
+    tl.fromTo(".s6-node", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, stagger: 0.08, ease: "power3.out" }, 0.8);
+        tl.fromTo(".s6-rings", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.8, ease: "power2.out" }, 1.2);
+    tl.fromTo("#s6-frame", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 1.6);
+
+    tl.fromTo("#s6-beam", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 1, duration: 1.0, ease: "power2.inOut" }, 3.0);
+    tl.to("#s6-frame", { x: 170, y: 170, scale: 0.78, duration: 1.6, ease: "power3.inOut" }, 4.0);
+    tl.to("#s6-n3", { backgroundColor: "#34378c", color: "#f7f4ea", duration: 0.3 }, 4.6);
+    tl.fromTo("#s6-lease-fill", { scaleX: 0 }, { scaleX: 1, duration: 1.4, ease: "power2.out" }, 4.2);
+    tl.fromTo("#s6-lease", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 4.0);
+    tl.fromTo("#s6-label-a", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 5.0);
+
+    tl.fromTo("#s6-row1", { opacity: 0, x: 16 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 6.0);
+    tl.fromTo("#s6-row2", { opacity: 0, x: 16 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 6.4);
+    tl.fromTo("#s6-row3", { opacity: 0, x: 16 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 6.8);
+    tl.fromTo("#s6-row4", { opacity: 0, x: 16 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 7.2);
+    tl.fromTo("#s6-row5", { opacity: 0, x: 16 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 7.6);
+    tl.fromTo("#s6-label-b", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.4 }, 8.0);
+    tl.to("#s6-world", { scale: 0.96, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 7.0);
+
+    tl.to("#s6-n3", { backgroundColor: "#c7cec8", color: "#8a8f98", borderColor: "#8a8f98", duration: 0.35 }, 14.0);
+    tl.to("#s6-n3 .x", { opacity: 1, duration: 0.2 }, 14.0);
+    tl.to("#s6-lease-fill", { scaleX: 0, duration: 0.8, ease: "power2.in" }, 14.1);
+    tl.to("#s6-lease-label", { textContent: "lease lost · n3", duration: 0.01 }, 14.1);
+    tl.to("#s6-frame", { x: -240, y: 0, scale: 0.78, duration: 1.8, ease: "power3.inOut" }, 15.2);
+    tl.to("#s6-n6", { backgroundColor: "#34378c", color: "#f7f4ea", duration: 0.3 }, 16.2);
+    tl.to("#s6-home1", { textContent: "n6", duration: 0.01 }, 16.4);
+    tl.to("#s6-epoch-n", { textContent: "09", duration: 0.01 }, 16.4);
+    tl.fromTo("#s6-lease", { opacity: 1 }, { opacity: 0, duration: 0.35, immediateRender: false }, 16.2);
+    tl.to("#s6-label-a", { opacity: 0, duration: 0.25 }, 16.2);
+    tl.fromTo("#s6-label-c", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.35 }, 16.8);
+
+    tl.fromTo("#s6-note", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.5 }, 18.0);
+    tl.to("#s6-world", { scale: 1.03, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 20.0);
+    tl.to("#s6-table", { y: -10, duration: 6, ease: "power2.inOut" }, 21.0);
+    tl.to("#s6-frame", { scale: 0.86, duration: 4, ease: "power2.inOut" }, 23.0);
+
+    window.__timelines["scene-06"] = tl;
+  </script>
+</template>

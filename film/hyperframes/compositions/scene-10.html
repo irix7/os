@@ -1,0 +1,126 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s10-world { position: absolute; inset: 0; transform-origin: 55% 45%; }
+    .s10-head { position: absolute; left: 104px; top: 92px; width: 620px; z-index: 9; }
+    .s10-head .display { margin-top: 22px; font-size: 100px; }
+    .s10-sub { margin-top: 24px; max-width: 500px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s10-indy { position: absolute; left: 700px; top: 170px; width: 800px; height: 700px; z-index: 4; }
+    .s10-indy svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    .s10-indy svg .line { fill: none; stroke: var(--indigo); stroke-width: 3; }
+    .s10-indy svg .thin { fill: none; stroke: rgba(52,55,140,.4); stroke-width: 1.5; stroke-dasharray: 8 7; }
+    .s10-indy svg .screen { fill: #101a2e; stroke: var(--ink); stroke-width: 4; }
+    .s10-screen { position: absolute; left: 28.75%; top: 12.85%; width: 42.5%; height: 35.7%; background: #101a2e; border: 3px solid var(--ink); overflow: hidden; }
+    .s10-screen .frame-art { position: absolute; inset: 0; }
+    .s10-boot { position: absolute; left: 29.5%; top: 14%; width: 41%; height: 33%; padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.65; color: #b9f7c9; white-space: pre-wrap; z-index: 3; }
+    .s10-boot .dim { color: rgba(185,247,201,.55); }
+    .s10-card { position: absolute; left: 1500px; width: 290px; height: 96px; border: 2px solid var(--indigo); background: var(--paper-light); z-index: 6; padding: 10px 14px; }
+    .s10-card b { display: block; font-family: var(--mono); font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--indigo); }
+    .s10-card span { display: block; margin-top: 5px; font-family: var(--mono); font-size: 11px; line-height: 1.4; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-soft); }
+    .s10-card::after { content: ""; position: absolute; left: 12px; bottom: 9px; width: 8px; height: 8px; border-radius: 50%; background: rgba(23,26,36,.2); }
+    .s10-card.on { border-color: var(--orange); }
+    .s10-card.on::after { background: var(--orange); }
+    .s10-card.c1 { top: 170px; }
+    .s10-card.c2 { top: 290px; }
+    .s10-card.c3 { top: 410px; }
+    .s10-card.c4 { top: 530px; }
+    .s10-card.c5 { top: 650px; }
+    .s10-prop { position: absolute; left: 1480px; top: 148px; font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 7; }
+    .s10-stamp { position: absolute; left: 104px; top: 690px; transform: rotate(-3deg); }
+    .s10-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 8; }
+    .s10-label b { color: var(--ink); font-weight: 500; }
+    .s10-note { position: absolute; left: 104px; top: 780px; width: 520px; font-family: var(--mono); font-size: 13px; line-height: 1.7; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s10-note b { color: var(--orange); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-10" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 10 / THE 1994 MACHINE</p>
+      <div class="s10-world" id="s10-world">
+        <div class="s10-head" id="s10-head">
+          <p class="eyebrow" id="s10-eyebrow"><span class="num">10</span> / THE MACHINE</p>
+          <h1 class="display" id="s10-title">The 1994<br />machine.</h1>
+          <p class="s10-sub" id="s10-sub">The first target is the machine on the desk: a 1994 SGI Indy. A MIPS R4400, 256 megabytes, Newport graphics, Seeq Ethernet, WD33C93 SCSI.</p>
+        </div>
+
+        <div class="s10-indy" id="s10-indy">
+          <svg viewBox="0 0 800 700" preserveAspectRatio="xMidYMid meet">
+            <rect x="200" y="60" width="400" height="340" rx="18" class="line" />
+            <rect x="230" y="90" width="340" height="250" rx="6" class="screen" />
+            <path d="M320 400v40h160v-40" class="line" />
+            <rect x="240" y="440" width="320" height="100" rx="10" class="line" />
+            <rect x="262" y="540" width="280" height="80" rx="8" class="line" />
+            <circle cx="540" cy="470" r="6" fill="#e85d2a" />
+            <path d="M200 60 L230 90M600 60 L570 90M200 400 L230 340M600 400 L570 340" class="thin" />
+            <path d="M680 470 C760 470 760 560 700 600" class="thin" />
+          </svg>
+          <div class="s10-screen" id="s10-screen">
+            <div class="frame-art" id="s10-frame">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+              <div class="fa-top"><span>FRAME 0001</span><span>640 × 480</span></div>
+              <div class="fa-meta"><span>SGI INDY · NEWPORT</span><span>RGB · 24-BIT</span></div>
+            </div>
+          </div>
+          <pre class="s10-boot" id="s10-boot"><span class="dim">SGI ARCS · INDY IP24</span>
+CPU : MIPS R4400 200 MHz
+Memory Test : 262144K OK
+Newport XL ... 24-bit
+Seeq 8003 ... link up
+ROM 520,312 / 524,288 bytes
+kernel ... BOOT-READY<span class="dim">_</span></pre>
+        </div>
+
+        <div class="s10-prop" id="s10-prop">HARDWARE</div>
+        <div class="s10-card c1" id="s10-c1"><b>ROM</b><span>sizes DRAM · tests every byte<br />decompresses the kernel · jumps</span></div>
+        <div class="s10-card c2" id="s10-c2"><b>KERNEL</b><span>n32 · REX3 console<br />network · telnet · modules</span></div>
+        <div class="s10-card c3" id="s10-c3"><b>REX3</b><span>Newport graphics<br />framebuffer · 24-bit RGB</span></div>
+        <div class="s10-card c4" id="s10-c4"><b>SEEQ</b><span>Ethernet<br />DHCP · DNS · NTP</span></div>
+        <div class="s10-card c5" id="s10-c5"><b>WD33C93</b><span>SCSI<br />target 2 · std image</span></div>
+
+        <div class="s10-stamp stamp" id="s10-stamp">v0.1.3 · iris · 25 OCT 2026</div>
+        <div class="s10-label" id="s10-label-a" style="left: 700px; top: 842px"><b>ONE MACHINE</b> / one frame</div>
+        <div class="s10-note" id="s10-note"><b>THE FIRST TARGET</b><br />A MACHINE FROM 1994, BOOTING A SYSTEM FROM 2026</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s10-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s10-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s10-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s10-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 6.6);
+
+    tl.fromTo("#s10-indy", { opacity: 0, y: 20, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.7, ease: "power3.out" }, 1.0);
+    tl.fromTo("#s10-frame", { opacity: 0 }, { opacity: 1, duration: 0.6 }, 5.4);
+    tl.to("#s10-boot", { opacity: 0, duration: 0.45 }, 5.0);
+    tl.fromTo("#s10-boot", { opacity: 0, clipPath: "inset(0 0 100% 0)" }, { opacity: 1, clipPath: "inset(0 0 0% 0)", duration: 2.2, ease: "steps(18)" }, 2.4);
+
+    tl.fromTo("#s10-prop", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 4.2);
+    tl.fromTo(".s10-card", { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: 0.45, stagger: 0.12, ease: "power3.out" }, 4.6);
+
+    tl.to("#s10-c1", { borderColor: "#e85d2a", duration: 0.25 }, 6.6);
+        tl.to("#s10-c2", { borderColor: "#e85d2a", duration: 0.25 }, 8.4);
+    tl.to("#s10-c3", { borderColor: "#e85d2a", duration: 0.25 }, 10.2);
+    tl.to("#s10-c4", { borderColor: "#e85d2a", duration: 0.25 }, 12.0);
+    tl.to("#s10-c5", { borderColor: "#e85d2a", duration: 0.25 }, 13.8);
+
+    tl.to("#s10-world", { scale: 1.04, duration: 6, ease: "power2.inOut", overwrite: "auto" }, 7.0);
+    tl.to("#s10-world", { scale: 1.12, x: -60, duration: 5, ease: "power2.inOut", overwrite: "auto" }, 15.0);
+    tl.fromTo("#s10-stamp", { opacity: 0, rotate: -8, scale: 0.9 }, { opacity: 1, rotate: -3, scale: 1, duration: 0.35, ease: "power3.out" }, 16.0);
+    tl.fromTo("#s10-note", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.4 }, 17.0);
+
+    tl.to("#s10-world", { scale: 1.02, x: 0, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 21.0);
+    tl.to("#s10-indy", { rotate: 1.2, duration: 6, ease: "power2.inOut" }, 22.0);
+    tl.to("#s10-frame", { scale: 1.02, duration: 4, ease: "power2.inOut" }, 23.0);
+    tl.to("#s10-label-a", { opacity: 0, duration: 0.3 }, 24.0);
+    tl.fromTo("#s10-label-a", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.35 }, 24.5);
+
+    window.__timelines["scene-10"] = tl;
+  </script>
+</template>

@@ -1,0 +1,173 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s3-bg { position: absolute; inset: 0; background: radial-gradient(80% 70% at 50% 42%, #2a2d6b 0%, #1d1f4c 48%, #121433 100%); }
+    .s3-bg::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(223,226,222,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(223,226,222,.08) 1px, transparent 1px); background-size: 72px 72px; mask-image: radial-gradient(75% 70% at 50% 50%, #000 30%, transparent 100%); }
+    .s3-head { position: absolute; left: 104px; top: 96px; width: 800px; z-index: 8; }
+    .s3-head .display { margin-top: 22px; color: var(--paper-light); font-size: 96px; }
+    .s3-head .display .accent { color: var(--orange); }
+    .s3-sub { margin-top: 24px; max-width: 560px; font-size: 25px; line-height: 1.45; color: rgba(223,226,222,.75); }
+    .s3-counter { position: absolute; right: 112px; top: 100px; text-align: right; z-index: 8; }
+    .s3-counter .n { font-family: var(--sans); font-weight: 500; font-size: 132px; line-height: .85; letter-spacing: -.06em; color: var(--paper-light); }
+    .s3-counter .u { margin-top: 10px; font-family: var(--mono); font-size: 17px; letter-spacing: .16em; text-transform: uppercase; color: var(--orange-soft); }
+    .s3-counter .note { margin-top: 14px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: rgba(223,226,222,.55); }
+    .s3-stage { position: absolute; inset: 0; transform-origin: 50% 50%; }
+    .s3-camera { position: absolute; inset: 0; transform-origin: 50% 50%; }
+    .s3-core { position: absolute; left: 50%; top: 50%; width: 620px; height: 620px; margin: -310px 0 0 -310px; border-radius: 50%; border: 1px dashed rgba(223,226,222,.45); display: block; text-align: center; padding-top: 20px; color: var(--paper-light); z-index: 4; }
+    .s3-core b { display: block; font-family: var(--mono); font-size: 14px; letter-spacing: .14em; font-weight: 500; background: var(--indigo-deep); padding: 0 10px; }
+    .s3-core span { display: block; margin-top: 7px; font-family: var(--mono); font-size: 10px; letter-spacing: .1em; color: var(--orange-soft); }
+    .s3-frame { position: absolute; left: 50%; top: 50%; width: 420px; margin: -157px 0 0 -210px; z-index: 5; transform-origin: 50% 50%; }
+    .s3-frame .frame-object { width: 100%; border-color: var(--paper-light); box-shadow: 16px 16px 0 rgba(0,0,0,.18); }
+    .s3-node { position: absolute; width: 92px; height: 92px; margin: -46px 0 0 -46px; border-radius: 50%; background: var(--paper-light); border: 2px solid var(--indigo); color: var(--indigo); display: grid; place-items: center; font-family: var(--mono); font-size: 15px; z-index: 3; box-shadow: 6px 6px 0 rgba(0,0,0,.2); }
+    .s3-node::after { content: ""; position: absolute; width: 12px; height: 12px; border-radius: 50%; background: var(--orange); bottom: 12px; }
+    .s3-node.core-node { background: var(--orange); color: var(--ink); border-color: var(--paper-light); }
+    .s3-node.core-node::after { background: var(--indigo); }
+    .s3-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+    .s3-links path { fill: none; stroke: rgba(223,226,222,.45); stroke-width: 1.6; }
+    .s3-links path.hot { stroke: var(--orange); stroke-width: 2.2; opacity: 0; }
+    .s3-dense { position: absolute; left: 50%; top: 50%; width: 0; height: 0; z-index: 2; opacity: 0; }
+    .s3-dense i { position: absolute; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: var(--paper-light); opacity: .7; }
+    .s3-label { position: absolute; opacity: 0; font-family: var(--mono); font-size: 14px; letter-spacing: .1em; text-transform: uppercase; color: rgba(223,226,222,.65); z-index: 6; }
+    .s3-label b { color: var(--paper-light); font-weight: 500; }
+    .s3-legend { position: absolute; left: 104px; bottom: 150px; font-family: var(--mono); font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: rgba(223,226,222,.55); z-index: 6; }
+    .s3-legend b { color: var(--orange-soft); font-weight: 500; }
+    .s3-rule { position: absolute; left: 104px; top: 520px; width: 420px; height: 1px; background: rgba(223,226,222,.28); transform-origin: left; }
+  </style>
+
+  <div id="root" data-composition-id="scene-03" data-width="1920" data-height="1080">
+    <div class="scene">
+      <div class="s3-bg"></div>
+      <div class="s3-head" id="s3-head">
+        <p class="eyebrow" id="s3-eyebrow" style="color: var(--orange-soft)"><span class="num">03</span> / THE IDEA</p>
+        <h1 class="display" id="s3-title">One computer,<br /><span class="accent">many boxes.</span></h1>
+        <p class="s3-sub" id="s3-sub">IRIX 7 starts with a different unit: the logical computer. One node is complete. A hundred and twenty-eight nodes are still one computer.</p>
+      </div>
+
+      <div class="s3-counter" id="s3-counter">
+        <div class="n" id="s3-count">1</div>
+        <div class="u" id="s3-unit">node</div>
+        <div class="note" id="s3-note">one complete computer</div>
+      </div>
+
+      <div class="s3-stage" id="s3-stage">
+        <div class="s3-camera" id="s3-camera">
+          <svg class="s3-links" viewBox="0 0 1920 1080">
+            <path id="s3-l1" d="M960 540 C820 470 760 430 700 390" />
+            <path id="s3-l2" d="M960 540 C1100 470 1160 430 1220 390" />
+            <path id="s3-l3" d="M960 540 C780 560 700 600 640 660" />
+            <path id="s3-l4" d="M960 540 C1140 560 1220 600 1280 660" />
+            <path id="s3-l5" d="M960 540 C860 690 800 740 740 800" />
+            <path id="s3-l6" d="M960 540 C1060 690 1120 740 1180 800" />
+            <path id="s3-l7" d="M960 540 C960 400 960 340 960 280" />
+            <path id="s3-l8" d="M960 540 C960 680 960 740 960 800" />
+            <path id="s3-hot" d="M960 540 C760 420 700 360 620 320" class="hot" />
+          </svg>
+
+          <div class="s3-frame" id="s3-frame">
+            <div class="frame-object bare">
+              <div class="frame-art">
+                <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="fa-circle"></div>
+                <div class="fa-cross"></div>
+                <div class="fa-top"><span>FRAME 0001</span><span>640 × 480</span></div>
+                <div class="fa-meta"><span>ONE OBJECT</span><span>GLOBAL SPACE</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="s3-core" id="s3-core"></div>
+
+          <div class="s3-node" id="s3-n1" style="left: 700px; top: 390px">n0</div>
+          <div class="s3-node" id="s3-n2" style="left: 1220px; top: 390px">n1</div>
+          <div class="s3-node" id="s3-n3" style="left: 640px; top: 660px">n2</div>
+          <div class="s3-node" id="s3-n4" style="left: 1280px; top: 660px">n3</div>
+          <div class="s3-node" id="s3-n5" style="left: 740px; top: 800px">n4</div>
+          <div class="s3-node" id="s3-n6" style="left: 1180px; top: 800px">n5</div>
+          <div class="s3-node" id="s3-n7" style="left: 960px; top: 280px">n6</div>
+          <div class="s3-node" id="s3-n8" style="left: 960px; top: 800px">n7</div>
+
+          <div class="s3-dense" id="s3-dense"></div>
+        </div>
+      </div>
+
+      <div class="s3-label" id="s3-label-a" style="left: 560px; top: 326px"><b>NATIVE SHIM</b> / hardware</div>
+      <div class="s3-label" id="s3-label-b" style="left: 1290px; top: 326px"><b>SAME CORE</b> / every node</div>
+      <div class="s3-label" id="s3-label-c" style="left: 560px; top: 832px"><b>OBJECT SPACE</b> / one set of names</div>
+      <div class="s3-rule" id="s3-rule"></div>
+      <div class="s3-legend" id="s3-legend"><b>1 NODE</b> = complete computer</div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const dense = document.querySelector("#s3-dense");
+    for (let i = 0; i < 128; i += 1) {
+      const a = (i / 128) * Math.PI * 2 + (i % 7) * 0.07;
+      const r = 290 + (i % 5) * 36 + (i % 11) * 8;
+      const dot = document.createElement("i");
+      dot.style.left = `${Math.cos(a) * r}px`;
+      dot.style.top = `${Math.sin(a) * r * 0.72}px`;
+      dot.style.opacity = `${0.25 + (i % 6) * 0.1}`;
+      dense.appendChild(dot);
+    }
+
+    tl.fromTo("#s3-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s3-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s3-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.fromTo("#s3-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.6, ease: "power2.inOut" }, 1.1);
+    tl.fromTo("#s3-legend", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4 }, 1.5);
+
+    tl.fromTo("#s3-core", { opacity: 0, scale: 0.82 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 0.8);
+    tl.fromTo("#s3-frame", { opacity: 0, scale: 0.88, rotate: -3 }, { opacity: 1, scale: 1, rotate: 0, duration: 0.7, ease: "power3.out" }, 0.35);
+    tl.fromTo("#s3-n1", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 0.55);
+    tl.fromTo("#s3-l1", { strokeDashoffset: 320, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.8, ease: "power2.inOut" }, 0.6);
+    tl.fromTo("#s3-hot", { strokeDashoffset: 320, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 0.7);
+
+    tl.to("#s3-camera", { scale: 0.94, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 1.0);
+    tl.fromTo("#s3-n2", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.45, ease: "power3.out" }, 6.6);
+    tl.fromTo("#s3-l2", { strokeDashoffset: 320, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.8, ease: "power2.inOut" }, 6.8);
+    tl.to("#s3-camera", { scale: 0.86, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 7.6);
+    tl.to("#s3-count", { textContent: "2", duration: 0.01 }, 7.0);
+    tl.to("#s3-unit", { textContent: "nodes", duration: 0.01 }, 7.0);
+    tl.to("#s3-note", { textContent: "two kernels, one space", duration: 0.01 }, 7.0);
+
+    tl.fromTo("#s3-n3", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, stagger: 0.14, ease: "power3.out" }, 13.2);
+    tl.fromTo("#s3-n4", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 13.5);
+    tl.fromTo("#s3-n5", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 13.8);
+    tl.fromTo("#s3-n6", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 14.1);
+    tl.fromTo("#s3-n7", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 14.4);
+    tl.fromTo("#s3-n8", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 14.7);
+    tl.fromTo("#s3-l3", { strokeDashoffset: 340, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 13.6);
+    tl.fromTo("#s3-l4", { strokeDashoffset: 340, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 14.0);
+    tl.fromTo("#s3-l5", { strokeDashoffset: 340, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 14.4);
+    tl.fromTo("#s3-l6", { strokeDashoffset: 340, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 14.8);
+    tl.fromTo("#s3-l7", { strokeDashoffset: 300, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 15.2);
+    tl.fromTo("#s3-l8", { strokeDashoffset: 300, opacity: 0 }, { strokeDashoffset: 0, opacity: 1, duration: 0.9, ease: "power2.inOut" }, 15.6);
+    tl.to("#s3-camera", { scale: 0.72, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 15.0);
+    tl.to("#s3-count", { textContent: "8", duration: 0.01 }, 13.0);
+    tl.to("#s3-note", { textContent: "one object space", duration: 0.01 }, 13.0);
+
+    tl.fromTo("#s3-dense", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 1.8, ease: "power2.out" }, 21.0);
+    tl.to("#s3-camera", { scale: 0.58, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 21.5);
+    tl.to("#s3-count", { textContent: "128", duration: 0.01 }, 22.5);
+    tl.to("#s3-unit", { textContent: "replicas", duration: 0.01 }, 22.5);
+    tl.to("#s3-note", { textContent: "still one computer", duration: 0.01 }, 22.5);
+
+    tl.to("#s3-frame", { scale: 0.62, duration: 3.5, ease: "power2.inOut" }, 23.0);
+    tl.to("#s3-core", { scale: 0.68, duration: 3.5, ease: "power2.inOut" }, 23.0);
+    tl.to("#s3-dense", { rotate: 24, duration: 9, ease: "none" }, 21.0);
+    tl.to("#s3-dense", { opacity: .55, duration: 3, ease: "power2.inOut" }, 27.0);
+
+    tl.to("#s3-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 7.0);
+    tl.to("#s3-counter", { opacity: 0, duration: 0.4 }, 27.0);
+    tl.fromTo("#s3-label-a", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.4 }, 16.2);
+    tl.fromTo("#s3-label-b", { opacity: 0, x: 12 }, { opacity: 1, x: 0, duration: 0.4 }, 16.6);
+    tl.fromTo("#s3-label-c", { opacity: 0, x: -12 }, { opacity: 1, x: 0, duration: 0.4 }, 17.0);
+
+    tl.to("#s3-camera", { scale: 0.9, duration: 3.4, ease: "power3.in", overwrite: "auto" }, 28.0);
+    tl.to("#s3-frame", { scale: 1.05, opacity: 0, duration: 0.5, ease: "power2.in" }, 30.2);
+
+    window.__timelines["scene-03"] = tl;
+  </script>
+</template>

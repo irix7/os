@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <title>The Logical Computer</title>
+    <script src="assets/vendor/gsap.min.js"></script>
+    <script>if (!window.__hyperframes) document.write('<script src="runtime.js"><\/script>');</script>
+    <link rel="stylesheet" href="assets/film.css" />
+    <style>
+      #root { position: absolute; inset: 0; background: var(--paper); }
+      .caption { z-index: 60; pointer-events: none; }
+    </style>
+  </head>
+  <body>
+    <div
+      id="root"
+      data-composition-id="main"
+      data-root="true"
+      data-start="0"
+      data-duration="358"
+      data-width="1920"
+      data-height="1080"
+    >
+      <div id="scene-01" data-composition-id="scene-01" data-title="A frame on a desk" data-composition-src="compositions/scene-01.html" data-start="0" data-duration="24" data-track-index="0" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-02" data-composition-id="scene-02" data-title="The machine has a border" data-composition-src="compositions/scene-02.html" data-start="24" data-duration="32" data-track-index="1" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-03" data-composition-id="scene-03" data-title="One computer, many boxes" data-composition-src="compositions/scene-03.html" data-start="56" data-duration="30" data-track-index="2" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-04" data-composition-id="scene-04" data-title="Everything gets a name" data-composition-src="compositions/scene-04.html" data-start="86" data-duration="30" data-track-index="3" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-05" data-composition-id="scene-05" data-title="Who gets to say yes" data-composition-src="compositions/scene-05.html" data-start="116" data-duration="30" data-track-index="4" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-06" data-composition-id="scene-06" data-title="Where things live" data-composition-src="compositions/scene-06.html" data-start="146" data-duration="30" data-track-index="5" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-07" data-composition-id="scene-07" data-title="A call across the room" data-composition-src="compositions/scene-07.html" data-start="176" data-duration="30" data-track-index="6" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-08" data-composition-id="scene-08" data-title="Pulling the plug" data-composition-src="compositions/scene-08.html" data-start="206" data-duration="32" data-track-index="7" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-09" data-composition-id="scene-09" data-title="Old programs, new machine" data-composition-src="compositions/scene-09.html" data-start="238" data-duration="32" data-track-index="8" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-10" data-composition-id="scene-10" data-title="The 1994 machine" data-composition-src="compositions/scene-10.html" data-start="270" data-duration="32" data-track-index="9" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-11" data-composition-id="scene-11" data-title="What actually runs" data-composition-src="compositions/scene-11.html" data-start="302" data-duration="30" data-track-index="10" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+      <div id="scene-12" data-composition-id="scene-12" data-title="The network is the computer" data-composition-src="compositions/scene-12.html" data-start="332" data-duration="26" data-track-index="11" data-track-kind="graphics" data-width="1920" data-height="1080"></div>
+
+      <p class="clip caption" id="cap-01" data-start="1" data-duration="4.5"><span class="ch">01</span>1994. An SGI Indy sits on a desk.</p>
+      <p class="clip caption" id="cap-02" data-start="5.7" data-duration="4.6"><span class="ch">01</span>On the screen, a frame appears: a grid of coloured pixels.</p>
+      <p class="clip caption" id="cap-03" data-start="10.5" data-duration="4.6"><span class="ch">01</span>The frame lives in one machine, in one framebuffer, inside one operating system.</p>
+      <p class="clip caption" id="cap-04" data-start="15.3" data-duration="4.6"><span class="ch">01</span>If the machine stops, the frame stops with it.</p>
+      <p class="clip caption" id="cap-05" data-start="20.1" data-duration="3.6"><span class="ch">01</span>That was the deal: one computer, one box.</p>
+
+      <p class="clip caption" id="cap-06" data-start="24.5" data-duration="4.8"><span class="ch">02</span>A regular operating system is built around one machine.</p>
+      <p class="clip caption" id="cap-07" data-start="29.5" data-duration="4.6"><span class="ch">02</span>One kernel owns the processor, the memory, the devices and the processes.</p>
+      <p class="clip caption" id="cap-08" data-start="34.3" data-duration="4.6"><span class="ch">02</span>To use a second machine, you add a second kernel.</p>
+      <p class="clip caption" id="cap-09" data-start="39.1" data-duration="5.6"><span class="ch">02</span>Then you build a distributed system above both: a network file system, a message queue, a cluster.</p>
+      <p class="clip caption" id="cap-10" data-start="44.9" data-duration="4.6"><span class="ch">02</span>The frame can cross the border, but it needs a new layer to carry it.</p>
+      <p class="clip caption" id="cap-11" data-start="49.7" data-duration="4.6"><span class="ch">02</span>Every layer brings its own idea of identity, naming and failure.</p>
+
+      <p class="clip caption" id="cap-12" data-start="56.5" data-duration="4.4"><span class="ch">03</span>IRIX 7 starts with a different unit: the logical computer.</p>
+      <p class="clip caption" id="cap-13" data-start="61.1" data-duration="4.2"><span class="ch">03</span>One node is a complete computer.</p>
+      <p class="clip caption" id="cap-14" data-start="65.5" data-duration="4.4"><span class="ch">03</span>A hundred and twenty-eight nodes are still one computer.</p>
+      <p class="clip caption" id="cap-15" data-start="70.1" data-duration="4.6"><span class="ch">03</span>Every node runs the same core; a native shim owns its hardware.</p>
+      <p class="clip caption" id="cap-16" data-start="74.9" data-duration="4.4"><span class="ch">03</span>The frame becomes an object in a global space.</p>
+      <p class="clip caption" id="cap-17" data-start="79.5" data-duration="4.4"><span class="ch">03</span>Objects, actors and devices share one set of names.</p>
+
+      <p class="clip caption" id="cap-18" data-start="86.5" data-duration="4.2"><span class="ch">04</span>The frame is an object.</p>
+      <p class="clip caption" id="cap-19" data-start="90.9" data-duration="5.0"><span class="ch">04</span>Its name is computed from its contents: a BLAKE3 hash over kind, length and bytes.</p>
+      <p class="clip caption" id="cap-20" data-start="96.1" data-duration="4.6"><span class="ch">04</span>An immutable object can be copied, cached and verified by anyone.</p>
+      <p class="clip caption" id="cap-21" data-start="100.9" data-duration="4.6"><span class="ch">04</span>A mutable object keeps a stable identity, and one home owns its current root.</p>
+      <p class="clip caption" id="cap-22" data-start="105.7" data-duration="4.6"><span class="ch">04</span>A file, a directory, a device, an actor: each is an object with a name.</p>
+      <p class="clip caption" id="cap-23" data-start="110.5" data-duration="4.4"><span class="ch">04</span>The frame has a name now. The system can find it anywhere.</p>
+
+      <p class="clip caption" id="cap-24" data-start="116.5" data-duration="4.6"><span class="ch">05</span>A path gives the frame a location. Permission is a separate question.</p>
+      <p class="clip caption" id="cap-25" data-start="121.3" data-duration="4.8"><span class="ch">05</span>IRIX 7 answers it with a capability: a signed token that names the object, the holder and the rights.</p>
+      <p class="clip caption" id="cap-26" data-start="126.3" data-duration="4.6"><span class="ch">05</span>The token carries the frame's home, its epoch, an expiry and a signature.</p>
+      <p class="clip caption" id="cap-27" data-start="131.1" data-duration="4.4"><span class="ch">05</span>You can pass on a weaker copy of your capability.</p>
+      <p class="clip caption" id="cap-28" data-start="135.7" data-duration="4.6"><span class="ch">05</span>Revocation moves the object's epoch, and the old tokens stop working.</p>
+      <p class="clip caption" id="cap-29" data-start="140.5" data-duration="4.4"><span class="ch">05</span>Authority is explicit, signed, and small enough to carry in a message.</p>
+
+      <p class="clip caption" id="cap-30" data-start="146.5" data-duration="4.2"><span class="ch">06</span>Every object has a home: one node that owns its current state.</p>
+      <p class="clip caption" id="cap-31" data-start="150.9" data-duration="4.6"><span class="ch">06</span>The home is chosen by rendezvous hashing over the nodes in the membership.</p>
+      <p class="clip caption" id="cap-32" data-start="155.7" data-duration="4.4"><span class="ch">06</span>Every node computes the same table from the same snapshot.</p>
+      <p class="clip caption" id="cap-33" data-start="160.3" data-duration="4.4"><span class="ch">06</span>A node's shard is the set of objects whose home it is.</p>
+      <p class="clip caption" id="cap-34" data-start="164.9" data-duration="5.6"><span class="ch">06</span>When an object moves, the old lease ends, the epoch advances, and the next request retries at the new home.</p>
+      <p class="clip caption" id="cap-35" data-start="170.7" data-duration="4.4"><span class="ch">06</span>The table is the directory. Every node keeps its own copy.</p>
+
+      <p class="clip caption" id="cap-36" data-start="176.5" data-duration="4.8"><span class="ch">07</span>A program asks for the frame. The frame may be on this node, or on another one.</p>
+      <p class="clip caption" id="cap-37" data-start="181.5" data-duration="4.2"><span class="ch">07</span>Both calls use the same invocation model.</p>
+      <p class="clip caption" id="cap-38" data-start="185.9" data-duration="5.4"><span class="ch">07</span>A local call stays inside the node. A remote call carries a header: source, destination, home, route and epoch.</p>
+      <p class="clip caption" id="cap-39" data-start="191.5" data-duration="4.6"><span class="ch">07</span>The fabric carries tags, streams, deadlines, dependencies and trace context.</p>
+      <p class="clip caption" id="cap-40" data-start="196.3" data-duration="4.6"><span class="ch">07</span>A GPU on another node is still an object: submit a command buffer, receive the result.</p>
+      <p class="clip caption" id="cap-41" data-start="201.1" data-duration="4.2"><span class="ch">07</span>The frame comes back, and appears on the screen.</p>
+
+      <p class="clip caption" id="cap-42" data-start="206.5" data-duration="4.4"><span class="ch">08</span>Now unplug the home node.</p>
+      <p class="clip caption" id="cap-43" data-start="211.1" data-duration="4.6"><span class="ch">08</span>The membership changes. The epoch advances. The old lease is fenced.</p>
+      <p class="clip caption" id="cap-44" data-start="215.9" data-duration="4.0"><span class="ch">08</span>The frame moves to a new home.</p>
+      <p class="clip caption" id="cap-45" data-start="220.1" data-duration="4.8"><span class="ch">08</span>A partition can make the frame unavailable. The epoch keeps one home authoritative.</p>
+      <p class="clip caption" id="cap-46" data-start="225.1" data-duration="4.0"><span class="ch">08</span>The screen freezes for a moment, then resumes.</p>
+      <p class="clip caption" id="cap-47" data-start="229.3" data-duration="4.2"><span class="ch">08</span>Failure is a state the system knows how to handle.</p>
+
+      <p class="clip caption" id="cap-48" data-start="238.5" data-duration="4.6"><span class="ch">09</span>The frame was drawn by a program written for IRIX 6.5.</p>
+      <p class="clip caption" id="cap-49" data-start="243.3" data-duration="4.2"><span class="ch">09</span>IRIX 7 keeps POSIX and the IRIX ABI native.</p>
+      <p class="clip caption" id="cap-50" data-start="247.7" data-duration="4.4"><span class="ch">09</span>The new core sits beside them, managing policy, namespace and placement.</p>
+      <p class="clip caption" id="cap-51" data-start="252.3" data-duration="4.6"><span class="ch">09</span>A C probe boots. The o32 loader runs open, read, write, close and exit.</p>
+      <p class="clip caption" id="cap-52" data-start="257.1" data-duration="4.6"><span class="ch">09</span>An actual IRIX binary, TLS and the full container are still ahead.</p>
+      <p class="clip caption" id="cap-53" data-start="261.9" data-duration="4.4"><span class="ch">09</span>The old program and the new system meet at the frame.</p>
+
+      <p class="clip caption" id="cap-54" data-start="270.5" data-duration="4.6"><span class="ch">10</span>The first target is the machine on the desk: a 1994 SGI Indy.</p>
+      <p class="clip caption" id="cap-55" data-start="275.3" data-duration="4.8"><span class="ch">10</span>A MIPS R4400, 256 megabytes, Newport graphics, Seeq Ethernet, WD33C93 SCSI.</p>
+      <p class="clip caption" id="cap-56" data-start="280.3" data-duration="4.8"><span class="ch">10</span>An assembly ROM sizes the memory, tests every byte, brings up serial, decompresses the kernel and jumps.</p>
+      <p class="clip caption" id="cap-57" data-start="285.3" data-duration="4.8"><span class="ch">10</span>The kernel brings up the network, the boot log, the telnet console and module loading.</p>
+      <p class="clip caption" id="cap-58" data-start="290.3" data-duration="4.6"><span class="ch">10</span>v0.1.3 boots on iris. Real Indy hardware is the next step.</p>
+      <p class="clip caption" id="cap-59" data-start="295.1" data-duration="4.4"><span class="ch">10</span>The frame returns to the screen where it started.</p>
+
+      <p class="clip caption" id="cap-60" data-start="302.5" data-duration="4.4"><span class="ch">11</span>In November 2026, one node works on iris.</p>
+      <p class="clip caption" id="cap-61" data-start="307.1" data-duration="4.8"><span class="ch">11</span>Two nodes work on two real kernels: join, placement, routing, migration and failure fencing.</p>
+      <p class="clip caption" id="cap-62" data-start="312.1" data-duration="4.6"><span class="ch">11</span>Eight nodes are in progress; the first slice runs on two real kernels.</p>
+      <p class="clip caption" id="cap-63" data-start="316.9" data-duration="4.2"><span class="ch">11</span>A hundred and twenty-eight nodes are planned.</p>
+      <p class="clip caption" id="cap-64" data-start="321.3" data-duration="4.2"><span class="ch">11</span>Each number has evidence behind it.</p>
+      <p class="clip caption" id="cap-65" data-start="325.7" data-duration="4.2"><span class="ch">11</span>The work continues from here.</p>
+
+      <p class="clip caption" id="cap-66" data-start="332.5" data-duration="4.4"><span class="ch">12</span>The frame is still on the Indy.</p>
+      <p class="clip caption" id="cap-67" data-start="337.1" data-duration="4.0"><span class="ch">12</span>The same object is on every node that needs it.</p>
+      <p class="clip caption" id="cap-68" data-start="341.3" data-duration="4.0"><span class="ch">12</span>The computer is the network.</p>
+      <p class="clip caption" id="cap-69" data-start="345.5" data-duration="4.4"><span class="ch">12</span>IRIX 7. One logical computer.</p>
+      <p class="clip caption" id="cap-70" data-start="350.1" data-duration="4.4"><span class="ch">12</span>From one machine to one hundred and twenty-eight.</p>
+    </div>
+    <script>
+      const tl = gsap.timeline({ paused: true });
+      window.__timelines["main"] = tl;
+      tl.seek(0);
+    </script>
+  </body>
+</html>

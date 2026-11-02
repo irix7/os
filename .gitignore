@@ -59,3 +59,7 @@ rom/src/boot/payload.S
 
 # Release build output
 /dist/
+
+# HyperFrames preview artefacts
+/film/hyperframes/.hyperframes/
+/film/hyperframes/renders/

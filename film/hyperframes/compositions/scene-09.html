@@ -1,0 +1,145 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s9-world { position: absolute; inset: 0; }
+    .s9-head { position: absolute; left: 104px; top: 92px; width: 640px; z-index: 9; }
+    .s9-head .display { margin-top: 22px; font-size: 92px; }
+    .s9-sub { margin-top: 24px; max-width: 520px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s9-term { position: absolute; left: 120px; top: 380px; width: 560px; z-index: 6; }
+    .s9-term .terminal { position: relative; width: 100%; }
+    .s9-term .term-body { min-height: 300px; font-size: 17px; }
+    .s9-term .screen-frame { position: absolute; left: 26px; right: 26px; bottom: 22px; height: 170px; background: #0b1220; border: 1px solid rgba(126,240,160,.32); overflow: hidden; opacity: 0; }
+    .s9-term .screen-frame .frame-art { position: absolute; inset: 0; }
+    .s9-container { position: absolute; left: 780px; top: 240px; width: 600px; height: 520px; border: 2px solid var(--ink); background: var(--paper-light); box-shadow: 14px 14px 0 rgba(23,26,36,.14); z-index: 5; }
+    .s9-container .head { display: flex; justify-content: space-between; padding: 14px 18px; border-bottom: 2px solid var(--ink); font-family: var(--mono); font-size: 14px; letter-spacing: .1em; text-transform: uppercase; }
+    .s9-container .head b { color: var(--orange); font-weight: 500; }
+    .s9-layer { position: absolute; left: 26px; right: 26px; height: 58px; border: 1px solid var(--indigo); display: flex; align-items: center; justify-content: space-between; padding: 0 16px; font-family: var(--mono); font-size: 14px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s9-layer b { color: var(--ink); font-weight: 500; }
+    .s9-layer.l1 { top: 90px; }
+    .s9-layer.l2 { top: 160px; }
+    .s9-layer.l3 { top: 230px; }
+    .s9-layer.l4 { top: 300px; }
+    .s9-layer .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--orange); }
+    .s9-container .foot { position: absolute; left: 26px; right: 26px; bottom: 26px; font-family: var(--mono); font-size: 12px; line-height: 1.6; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s9-core { position: absolute; left: 1480px; top: 320px; width: 320px; height: 320px; border: 2px solid var(--indigo-deep); background: var(--indigo); color: var(--paper-light); z-index: 5; box-shadow: 12px 12px 0 rgba(29,31,76,.18); }
+    .s9-core .head { padding: 12px 16px; border-bottom: 2px solid var(--orange); font-family: var(--mono); font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--orange-soft); }
+    .s9-core ul { margin: 16px 18px; padding: 0; list-style: none; font-family: var(--mono); font-size: 14px; line-height: 2.1; color: rgba(247,244,234,.82); }
+    .s9-core ul li::before { content: "·"; margin-right: 9px; color: var(--orange); }
+    .s9-core .oid { position: absolute; left: 16px; right: 16px; bottom: 14px; font-family: var(--mono); font-size: 10px; letter-spacing: .08em; color: rgba(247,244,234,.5); }
+    .s9-packet { position: absolute; left: 660px; top: 560px; width: 22px; height: 16px; background: var(--orange); z-index: 8; }
+    .s9-policy { position: absolute; left: 1380px; top: 470px; width: 100px; height: 3px; background: repeating-linear-gradient(90deg, var(--orange) 0 9px, transparent 9px 16px); z-index: 4; }
+    .s9-ahead { position: absolute; left: 780px; top: 800px; width: 600px; z-index: 6; }
+    .s9-ahead .bar { height: 9px; border: 1px solid var(--ink); background: rgba(23,26,36,.08); }
+    .s9-ahead .fill { width: 42%; height: 100%; background: var(--orange); transform-origin: left; }
+    .s9-ahead .lbl { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s9-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 8; }
+    .s9-label b { color: var(--ink); font-weight: 500; }
+    .s9-note { position: absolute; left: 104px; top: 830px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s9-note b { color: var(--orange); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-09" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 09 / COMPATIBILITY</p>
+      <div class="s9-world" id="s9-world">
+        <div class="s9-head" id="s9-head">
+          <p class="eyebrow" id="s9-eyebrow"><span class="num">09</span> / COMPATIBILITY</p>
+          <h1 class="display" id="s9-title">Old programs,<br />new machine.</h1>
+          <p class="s9-sub" id="s9-sub">The frame was drawn by a program written for IRIX 6.5. IRIX 7 keeps POSIX and the IRIX ABI native.</p>
+        </div>
+
+        <div class="s9-term" id="s9-term">
+          <div class="terminal">
+            <div class="term-bar"><i></i><i></i><i></i><span>indy · irix 6.5</span></div>
+            <div class="term-body"><span class="dim">$</span> cc -o draw draw.c
+<span class="dim">$</span> ./draw
+<span class="hi">open("/dev/newport")</span>
+<span class="hi">write(frame, 640, 480)</span>
+<span class="dim">$</span> <span id="s9-cursor" class="cursor"></span></div>
+            <div class="screen-frame" id="s9-screen-frame">
+              <div class="frame-art">
+                <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="fa-circle"></div>
+                <div class="fa-cross"></div>
+                <div class="fa-top"><span>FRAME 0001</span><span>DRAWN BY DRAW.C</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s9-container" id="s9-container">
+          <div class="head"><span>IRIX 6.5 COMPATIBILITY CONTAINER</span><b>NATIVE</b></div>
+          <div class="s9-layer l1"><span><b>libc</b> / POSIX</span><i class="dot"></i></div>
+          <div class="s9-layer l2"><span><b>rld</b> / dynamic loader</span><i class="dot"></i></div>
+          <div class="s9-layer l3"><span><b>sproc</b> / processes</span><i class="dot"></i></div>
+          <div class="s9-layer l4"><span><b>o32</b> / system calls</span><i class="dot"></i></div>
+          <div class="foot">open · read · write · close · exit<br />the binary stays native</div>
+        </div>
+
+        <div class="s9-core" id="s9-core">
+          <div class="head">WASM CORE</div>
+          <ul><li>policy</li><li>namespace</li><li>placement</li><li>scheduling</li></ul>
+          <div class="oid">one BLAKE3 OID · every node</div>
+        </div>
+        <div class="s9-policy" id="s9-policy"></div>
+
+        <div class="s9-ahead" id="s9-ahead">
+          <div class="bar"><div class="fill" id="s9-ahead-fill"></div></div>
+          <div class="lbl"><span>actual IRIX binary · TLS · stat · full container</span><span>ahead</span></div>
+        </div>
+
+        <div class="s9-packet" id="s9-packet"></div>
+
+        <div class="s9-label" id="s9-label-a" style="left: 120px; top: 790px"><b>PROGRAM</b> / written for IRIX 6.5</div>
+        <div class="s9-label" id="s9-label-b" style="left: 780px; top: 210px"><b>CONTAINER</b> / native ABI</div>
+        <div class="s9-label" id="s9-label-c" style="left: 1480px; top: 660px"><b>CORE</b> / policy only</div>
+        <div class="s9-note" id="s9-note"><b>THE OLD PROGRAM AND THE NEW SYSTEM MEET AT THE FRAME</b></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s9-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s9-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s9-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s9-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 6.4);
+
+    tl.fromTo("#s9-term", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo(".s9-term .term-body", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 2.0, ease: "steps(18)" }, 1.0);
+    tl.fromTo("#s9-container", { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, 1.2);
+    tl.fromTo("#s9-label-b", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.35 }, 1.8);
+    tl.fromTo(".s9-layer", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.35, stagger: 0.12, ease: "power2.out" }, 2.0);
+
+    tl.fromTo("#s9-screen-frame", { opacity: 0, clipPath: "inset(100% 0 0 0)" }, { opacity: 1, clipPath: "inset(0% 0 0 0)", duration: 1.4, ease: "power2.inOut" }, 3.2);
+    tl.fromTo("#s9-cursor", { opacity: 1 }, { opacity: .2, duration: .2, repeat: 12, yoyo: true, ease: "steps(1)" }, 2.8);
+
+    tl.fromTo("#s9-packet", { x: 0, y: 0, opacity: 0 }, { opacity: 1, duration: 0.2 }, 4.4);
+    tl.to("#s9-packet", { x: 250, y: 20, duration: 1.0, ease: "power1.inOut" }, 4.6);
+    tl.to("#s9-packet", { x: 520, y: 40, duration: 1.0, ease: "power1.inOut" }, 5.6);
+    tl.to("#s9-packet", { opacity: 0, duration: 0.25 }, 6.6);
+
+    tl.to("#s9-world", { scale: 0.96, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 5.6);
+    tl.fromTo("#s9-core", { opacity: 0, x: 24 }, { opacity: 1, x: 0, duration: 0.6, ease: "power3.out" }, 6.8);
+    tl.fromTo("#s9-policy", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 1, duration: 0.8, ease: "power2.inOut" }, 7.4);
+    tl.fromTo("#s9-label-c", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.35 }, 7.8);
+    tl.fromTo("#s9-note", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 8.0);
+    tl.fromTo(".s9-core li", { opacity: 0, x: -8 }, { opacity: 1, x: 0, duration: 0.3, stagger: 0.1 }, 7.2);
+
+    tl.to("#s9-container", { y: -10, duration: 5, ease: "power2.inOut" }, 10.2);
+    tl.to("#s9-term", { y: -10, duration: 5, ease: "power2.inOut" }, 10.2);
+
+    tl.fromTo("#s9-ahead", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.5 }, 14.0);
+    tl.fromTo("#s9-ahead-fill", { scaleX: 0 }, { scaleX: 1, duration: 1.6, ease: "power2.out" }, 14.4);
+    tl.to("#s9-world", { scale: 1.02, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 16.0);
+    tl.to("#s9-core", { y: -8, duration: 4, ease: "power2.inOut" }, 18.0);
+    tl.to("#s9-container", { y: -18, duration: 5, ease: "power2.inOut" }, 19.0);
+    tl.to("#s9-container", { y: -24, duration: 3, yoyo: true, repeat: 2, ease: "sine.inOut", overwrite: "auto" }, 24.2);
+    tl.to("#s9-core", { y: -18, duration: 3, yoyo: true, repeat: 2, ease: "sine.inOut", overwrite: "auto" }, 24.4);
+
+    window.__timelines["scene-09"] = tl;
+  </script>
+</template>

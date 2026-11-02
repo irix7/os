@@ -24,9 +24,9 @@ node, without an application-level remote-mount or RPC protocol.
 > is the living roadmap. The implementation plan is in
 > [`docs/plan/milestones.md`](docs/plan/milestones.md).
 >
-> **The Logical Computer** — [a 12-chapter animated documentary](https://irix7.github.io/os/film/)
-> makes the design argument from first principles. Its notes and chapter
-> transcript are in [`docs/documentary.md`](docs/documentary.md).
+> **The Logical Computer** — [a 12-chapter documentary](https://irix7.github.io/os/film/)
+> follows one frame from a 1994 Indy through the system and back. Its notes and
+> chapter list are in [`docs/documentary.md`](docs/documentary.md).
 
 ## Architecture
 

@@ -5,371 +5,407 @@
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
   const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  const finePointer = window.matchMedia("(pointer: fine)").matches;
 
-  const sceneEls = $$(".scene");
+  const player = $("#player");
   const poster = $("#poster");
-  const film = $("#film");
   const playBtn = $("[data-play]");
-  const timeNow = $("#time-now");
-  const timeTotal = $("#time-total");
-  const runtime = $("#runtime");
-  const scrub = $("#scrub");
-  const scrubSegments = $("#scrub-segments");
-  const scrubFill = $("#scrub-fill");
-  const scrubHead = $("#scrub-head");
-  const captionBar = $("#caption-bar");
-  const captionKicker = $("#caption-kicker");
-  const captionText = $("#caption-text");
   const chapterIndex = $("#chapter-index");
   const chapterName = $("#chapter-name");
   const chapterMenu = $("#chapter-menu");
   const chapterGrid = $("#chapter-grid");
   const transcript = $("#transcript");
   const transcriptBody = $("#transcript-body");
-  const topbar = $(".topbar");
-
-  const scenes = sceneEls.map((el, i) => {
-    const duration = Number(el.dataset.duration) || 20;
-    return {
-      el,
-      index: i,
-      number: el.dataset.scene || String(i + 1),
-      chapter: el.dataset.chapter || String(i + 1).padStart(2, "0"),
-      title: el.dataset.title || "",
-      duration,
-      start: 0,
-      cues: $$(".cue", el).map((cue) => ({
-        at: Number(cue.dataset.at) || 0,
-        text: cue.textContent.trim(),
-      })),
-    };
-  });
-  let cursor = 0;
-  for (const scene of scenes) {
-    scene.start = cursor;
-    cursor += scene.duration;
-  }
-  const total = cursor;
-
-  sceneEls.forEach((el) => el.setAttribute("aria-hidden", "true"));
-  film.setAttribute("aria-hidden", "true");
+  const scrub = $("#scrub");
+  const scrubFill = $("#scrub-fill");
+  const scrubHead = $("#scrub-head");
+  const timeNow = $("#time-now");
+  const timeTotal = $("#time-total");
+  const runtime = $("#runtime");
 
   const state = {
-    elapsed: 0,
-    playing: false,
+    ready: false,
     started: false,
-    scene: -1,
-    last: 0,
-    raf: 0,
-    caption: "",
-    seeking: false,
+    playing: false,
+    time: 0,
+    duration: 358,
+    chapter: 0,
+    pending: null,
+    pendingSeek: null,
+    scrubbing: false,
+    wasPlaying: false,
+    hashHandled: false,
   };
 
+  let chapters = [];
+  let captions = [];
+
+  const fallbackChapters = [
+    ["A frame on a desk", 24],
+    ["The machine has a border", 32],
+    ["One computer, many boxes", 30],
+    ["Everything gets a name", 30],
+    ["Who gets to say yes", 30],
+    ["Where things live", 30],
+    ["A call across the room", 30],
+    ["Pulling the plug", 32],
+    ["Old programs, new machine", 32],
+    ["The 1994 machine", 32],
+    ["What actually runs", 30],
+    ["The network is the computer", 26],
+  ].map(([title, duration]) => ({ title, duration, start: 0, captions: [] }));
+
+  let cursor = 0;
+  for (const chapter of fallbackChapters) {
+    chapter.start = cursor;
+    cursor += chapter.duration;
+  }
+  const fallbackDuration = cursor;
+
   const format = (seconds) => {
-    const s = Math.max(0, Math.floor(seconds));
+    const s = Math.max(0, Math.floor(seconds || 0));
     return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   };
-  const runtimeLabel = () => {
-    const m = Math.floor(total / 60);
-    const s = total % 60;
+  const formatLong = (seconds) => {
+    const m = Math.floor(seconds / 60);
+    const s = Math.round(seconds % 60);
     return `${m} min ${String(s).padStart(2, "0")} sec`;
   };
 
-  timeTotal.textContent = format(total);
-  runtime.textContent = runtimeLabel();
-  if (reduced) {
-    const note = document.createElement("p");
-    note.className = "poster-note";
-    note.textContent = "Reduced motion is on — the film will run as a captioned slideshow.";
-    $(".poster-actions").after(note);
-  }
-
-  /* ---------------------------------------------------------------- backdrop */
-  const starField = $(".stars");
-  for (let i = 0; i < 110; i += 1) {
-    const star = document.createElement("i");
-    star.className = "star";
-    star.style.left = `${Math.random() * 100}%`;
-    star.style.top = `${Math.random() * 100}%`;
-    star.style.setProperty("--t", `${(4 + Math.random() * 8).toFixed(1)}s`);
-    star.style.setProperty("--d", `${(-Math.random() * 8).toFixed(1)}s`);
-    star.style.opacity = (0.15 + Math.random() * 0.6).toFixed(2);
-    starField.append(star);
-  }
-  const warp = $(".warp");
-  for (let i = 0; i < 30; i += 1) {
-    const streak = document.createElement("i");
-    streak.className = "warp-streak";
-    streak.style.setProperty("--a", `${(i / 30) * 360 + Math.random() * 8}deg`);
-    streak.style.setProperty("--l", `${35 + Math.random() * 35}%`);
-    streak.style.setProperty("--w", `${0.5 + Math.random() * 1.4}px`);
-    streak.style.setProperty("--d", `${(1.1 + Math.random() * 1.4).toFixed(2)}s`);
-    streak.style.setProperty("--delay", `${(-Math.random() * 2).toFixed(2)}s`);
-    warp.append(streak);
-  }
-
-  /* ------------------------------------------------------------------- build */
-  scenes.forEach((scene, i) => {
-    const seg = document.createElement("div");
-    seg.className = "scrub-seg";
-    seg.style.flex = `${scene.duration} 1 0`;
-    seg.dataset.index = String(i);
-    seg.title = `${scene.chapter} · ${scene.title} · ${format(scene.duration)}`;
-    scrubSegments.append(seg);
-
-    const card = document.createElement("button");
-    card.className = "chapter-card";
-    card.type = "button";
-    card.dataset.index = String(i);
-    card.innerHTML = `
-      <span class="ch-art" aria-hidden="true"></span>
-      <span class="ch-no">${scene.chapter}</span>
-      <span class="ch-title">${scene.title}</span>
-      <span class="ch-time">${format(scene.duration)}</span>`;
-    card.addEventListener("click", () => {
-      closeChapters();
-      startAtChapter(i);
-    });
-    chapterGrid.append(card);
-
-    const article = document.createElement("article");
-    article.className = "tr-chapter";
-    article.innerHTML = `<h3>${scene.chapter} · ${format(scene.duration)}</h3><h4>${scene.title}</h4>`;
-    for (const cue of scene.cues) {
-      const p = document.createElement("p");
-      p.textContent = cue.text;
-      article.append(p);
-    }
-    transcriptBody.append(article);
-  });
-
-  /* ------------------------------------------------------------------ helpers */
-  const currentScene = (elapsed) => {
-    for (let i = scenes.length - 1; i >= 0; i -= 1) {
-      if (elapsed >= scenes[i].start) return i;
+  const currentChapter = (time) => {
+    if (!chapters.length) return 0;
+    for (let i = chapters.length - 1; i >= 0; i -= 1) {
+      if (time >= chapters[i].start) return i;
     }
     return 0;
   };
 
-  const activateScene = (index) => {
-    if (state.scene === index) return;
-    state.scene = index;
-    scenes.forEach((scene, i) => {
-      const active = i === index;
-      if (active) {
-        scene.el.classList.remove("is-active");
-        void scene.el.offsetWidth;
-        scene.el.classList.add("is-active");
-        scene.el.setAttribute("aria-hidden", "false");
-      } else {
-        scene.el.classList.remove("is-active");
-        scene.el.setAttribute("aria-hidden", "true");
+  const updateCaption = () => {
+    const text = $("#mobile-caption-text");
+    const kicker = $("#mobile-caption-kicker");
+    if (!text || !captions.length) return;
+    let current = captions[0];
+    for (const caption of captions) {
+      if (caption.start <= state.time) current = caption;
+      else break;
+    }
+    if (current && text.textContent !== current.text) {
+      text.textContent = current.text;
+      const index = currentChapter(state.time);
+      if (kicker && chapters[index]) {
+        kicker.textContent = `${String(index + 1).padStart(2, "0")} · ${chapters[index].title}`;
       }
-    });
-    const scene = scenes[index];
-    chapterIndex.textContent = scene.chapter;
-    chapterName.textContent = scene.title;
-    $$(".chapter-card", chapterGrid).forEach((card, i) => {
-      card.classList.toggle("is-current", i === index);
-    });
-    state.caption = "";
-    animateCounters(scene.el);
-    updateCaption(scene, 0);
-    try { history.replaceState(null, "", `${location.pathname}${location.search}#chapter-${index + 1}`); } catch (_) {}
-  };
-
-  const animateCounters = (root) => {
-    $$("[data-count]", root).forEach((el) => {
-      const target = Number(el.dataset.count) || 0;
-      const comma = el.dataset.format === "comma";
-      const formatNumber = (v) => (comma ? Math.round(v).toLocaleString("en-AU") : String(Math.round(v)));
-      if (el._countRaf) cancelAnimationFrame(el._countRaf);
-      if (reduced) {
-        el.textContent = formatNumber(target);
-        return;
-      }
-      el.textContent = "0";
-      const start = performance.now();
-      const duration = target > 1000 ? 1700 : 1300;
-      const tick = (now) => {
-        const k = clamp((now - start) / duration, 0, 1);
-        const eased = 1 - Math.pow(1 - k, 3);
-        el.textContent = formatNumber(target * eased);
-        if (k < 1) el._countRaf = requestAnimationFrame(tick);
-      };
-      el._countRaf = requestAnimationFrame(tick);
-    });
-  };
-
-  const updateCaption = (scene, sceneTime) => {
-    let cue = scene.cues[0];
-    for (const c of scene.cues) if (sceneTime >= c.at) cue = c;
-    if (!cue) return;
-    if (cue.text !== state.caption) {
-      state.caption = cue.text;
-      captionText.textContent = cue.text;
-      captionKicker.textContent = `${scene.chapter} · ${scene.title}`;
-      captionBar.classList.remove("is-changing");
-      void captionBar.offsetWidth;
-      captionBar.classList.add("is-changing");
     }
   };
 
-  const updateUI = () => {
-    const index = currentScene(state.elapsed);
-    const scene = scenes[index];
-    if (index !== state.scene) activateScene(index);
-    const sceneTime = state.elapsed - scene.start;
-    updateCaption(scene, sceneTime);
-    const pct = total ? (state.elapsed / total) * 100 : 0;
-    scrubFill.style.width = `${pct}%`;
-    scrubHead.style.left = `${pct}%`;
-    scrub.setAttribute("aria-valuenow", pct.toFixed(1));
-    timeNow.textContent = format(state.elapsed);
-    $$(".scrub-seg", scrubSegments).forEach((seg, i) => {
-      seg.classList.toggle("seen", state.elapsed >= scenes[i].start + scenes[i].duration);
-    });
+  const updateProgress = () => {
+    const pct = state.duration ? (state.time / state.duration) * 100 : 0;
+    const p = clamp(pct, 0, 100);
+    scrubFill.style.width = `${p}%`;
+    scrubHead.style.left = `${p}%`;
+    scrub.setAttribute("aria-valuenow", p.toFixed(1));
+    timeNow.textContent = format(state.time);
+    timeTotal.textContent = format(state.duration);
+    updateCaption();
+    const index = currentChapter(state.time);
+    if (index !== state.chapter) {
+      state.chapter = index;
+      const chapter = chapters[index];
+      if (chapter) {
+        chapterIndex.textContent = String(index + 1).padStart(2, "0");
+        chapterName.textContent = chapter.title;
+        $$(".chapter-card", chapterGrid).forEach((card, i) => {
+          card.classList.toggle("is-current", i === index);
+        });
+        try {
+          history.replaceState(null, "", `#chapter-${index + 1}`);
+        } catch (_) {}
+      }
+    }
   };
 
-  const tick = (now) => {
-    if (!state.playing) return;
-    const delta = (now - state.last) / 1000;
-    state.last = now;
-    state.elapsed += delta;
-    if (state.elapsed >= total) {
-      state.elapsed = total;
-      updateUI();
-      pause(true);
-      return;
+  const setPlaying = (playing) => {
+    state.playing = playing;
+    document.body.classList.toggle("is-playing", playing);
+    playBtn.setAttribute("aria-label", playing ? "Pause" : "Play");
+    if (!playing && state.time >= state.duration - 0.05) {
+      playBtn.setAttribute("aria-label", "Replay");
     }
-    updateUI();
-    state.raf = requestAnimationFrame(tick);
+  };
+
+  const hidePoster = () => {
+    poster.classList.add("is-hidden");
+    poster.setAttribute("aria-hidden", "true");
+    state.started = true;
+    document.body.classList.add("started");
   };
 
   const play = () => {
-    if (!state.started) {
-      startFilm(true);
+    if (!state.ready) {
+      state.pending = "play";
       return;
     }
-    if (state.elapsed >= total) {
-      state.elapsed = 0;
-      state.scene = -1;
-      updateUI();
+    hidePoster();
+    if (state.time >= state.duration - 0.05) {
+      state.time = 0;
+      player.currentTime = 0;
+      updateProgress();
     }
-    state.playing = true;
-    state.last = performance.now();
-    document.body.classList.add("is-playing");
-    document.body.classList.remove("is-ended");
-    playBtn.setAttribute("aria-label", "Pause");
-    cancelAnimationFrame(state.raf);
-    state.raf = requestAnimationFrame(tick);
+    const result = player.play();
+    if (result && typeof result.catch === "function") {
+      result.catch(() => setPlaying(false));
+    }
+    setPlaying(true);
   };
 
-  const pause = (ended = false) => {
-    state.playing = false;
-    cancelAnimationFrame(state.raf);
-    document.body.classList.remove("is-playing");
-    playBtn.setAttribute("aria-label", ended ? "Replay" : "Play");
-    if (ended) document.body.classList.add("is-ended");
+  const pause = () => {
+    if (!state.ready) return;
+    player.pause();
+    setPlaying(false);
   };
 
-  const seek = (seconds, keepPlaying = state.playing) => {
-    state.elapsed = clamp(seconds, 0, total);
-    if (state.elapsed < total) document.body.classList.remove("is-ended");
-    state.scene = -1;
-    updateUI();
-    if (keepPlaying) {
-      state.playing = true;
-      state.last = performance.now();
-      cancelAnimationFrame(state.raf);
-      state.raf = requestAnimationFrame(tick);
-    }
+  const seek = (time) => {
+    const next = clamp(time, 0, state.duration);
+    state.time = next;
+    if (state.ready) player.currentTime = next;
+    else state.pendingSeek = next;
+    updateProgress();
+  };
+
+  const handleHash = () => {
+    if (state.hashHandled) return;
+    const hash = location.hash.match(/^#chapter-(\d+)$/);
+    if (!hash) return;
+    if (!chapters.length) return;
+    state.hashHandled = true;
+    const i = clamp(Number(hash[1]) - 1, 0, chapters.length - 1);
+    hidePoster();
+    seek(chapters[i].start);
+    pause();
   };
 
   const startAtChapter = (index, autoplay = true) => {
-    if (!state.started) startFilm(false);
-    seek(scenes[index].start, false);
+    if (!chapters.length) return;
+    const i = clamp(index, 0, chapters.length - 1);
+    hidePoster();
+    seek(chapters[i].start);
     if (autoplay) play();
     else pause();
+    closeChapters();
   };
 
-  const startFilm = (autoplay = true) => {
-    if (state.started) {
-      if (autoplay) play();
-      return;
+  const onReady = () => {
+    if (state.ready) return;
+    state.ready = true;
+    state.duration = Number(player.duration) || fallbackDuration;
+    if (state.pendingSeek != null) {
+      player.currentTime = state.pendingSeek;
+      state.pendingSeek = null;
     }
-    state.started = true;
-    document.body.classList.add("started");
-    poster.classList.add("is-hidden");
-    poster.setAttribute("aria-hidden", "true");
-    film.removeAttribute("aria-hidden");
-    film.focus({ preventScroll: true });
-    seek(0, false);
-    if (autoplay) play();
-    else pause();
+    runtime.textContent = formatLong(state.duration);
+    updateProgress();
+    if (state.pending === "play") {
+      state.pending = null;
+      play();
+    }
+    handleHash();
   };
+
+  const buildUI = () => {
+    if (!chapters.length) chapters = fallbackChapters;
+    chapterGrid.innerHTML = "";
+    transcriptBody.innerHTML = "";
+
+    chapters.forEach((chapter, i) => {
+      const card = document.createElement("button");
+      card.className = "chapter-card";
+      card.type = "button";
+      card.dataset.index = String(i);
+      card.innerHTML = `<span class="ch-no">${String(i + 1).padStart(2, "0")}</span><span class="ch-title"></span><span class="ch-time">${format(chapter.duration)}</span>`;
+      $(".ch-title", card).textContent = chapter.title;
+      card.addEventListener("click", () => startAtChapter(i, true));
+      chapterGrid.append(card);
+
+      const article = document.createElement("article");
+      article.className = "tr-chapter";
+      const h3 = document.createElement("h3");
+      h3.textContent = `${String(i + 1).padStart(2, "0")} · ${format(chapter.duration)}`;
+      const h4 = document.createElement("h4");
+      h4.textContent = chapter.title;
+      article.append(h3, h4);
+      for (const caption of chapter.captions) {
+        const p = document.createElement("p");
+        p.textContent = caption;
+        article.append(p);
+      }
+      transcriptBody.append(article);
+    });
+
+    const initial = currentChapter(state.time);
+    state.chapter = initial;
+    chapterIndex.textContent = String(initial + 1).padStart(2, "0");
+    chapterName.textContent = chapters[initial]?.title || "";
+    $$(".chapter-card", chapterGrid).forEach((card, i) => {
+      card.classList.toggle("is-current", i === initial);
+    });
+  };
+
+  const loadData = async () => {
+    try {
+      const res = await fetch("hyperframes/index.html", { cache: "no-cache" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const doc = new DOMParser().parseFromString(text, "text/html");
+      const hosts = [...doc.querySelectorAll("[data-composition-id^='scene-']")];
+      const parsed = hosts.map((host, i) => ({
+        title: host.dataset.title || fallbackChapters[i]?.title || `Chapter ${i + 1}`,
+        start: Number(host.dataset.start) || 0,
+        duration: Number(host.dataset.duration) || 0,
+        captions: [],
+      }));
+      if (!parsed.length) throw new Error("No chapters");
+      const parsedCaptions = [...doc.querySelectorAll(".caption")].map((el) => {
+        const clone = el.cloneNode(true);
+        clone.querySelectorAll(".ch").forEach((ch) => ch.remove());
+        return {
+          start: Number(el.dataset.start) || 0,
+          text: clone.textContent.replace(/\s+/g, " ").trim(),
+        };
+      }).filter((c) => c.text);
+      for (const caption of parsedCaptions) {
+        let index = 0;
+        for (let i = parsed.length - 1; i >= 0; i -= 1) {
+          if (caption.start >= parsed[i].start) {
+            index = i;
+            break;
+          }
+        }
+        parsed[index].captions.push(caption.text);
+      }
+      chapters = parsed;
+      const total = parsed.reduce((sum, c) => sum + c.duration, 0);
+      state.duration = total || fallbackDuration;
+      captions = parsedCaptions;
+    } catch (_) {
+      chapters = fallbackChapters;
+      state.duration = fallbackDuration;
+      captions = [];
+    }
+    runtime.textContent = formatLong(state.duration);
+    timeTotal.textContent = format(state.duration);
+    buildUI();
+    updateProgress();
+    handleHash();
+  };
+
+  /* ------------------------------------------------------------------ player */
+  if (player) {
+    player.addEventListener("ready", onReady);
+    player.addEventListener("timeupdate", (event) => {
+      const time = event.detail?.currentTime;
+      if (typeof time === "number" && !state.scrubbing) {
+        state.time = time;
+        updateProgress();
+      }
+    });
+    player.addEventListener("play", () => setPlaying(true));
+    player.addEventListener("pause", () => setPlaying(false));
+    player.addEventListener("ended", () => {
+      setPlaying(false);
+      state.time = state.duration;
+      updateProgress();
+      playBtn.setAttribute("aria-label", "Replay");
+    });
+    if (player.ready) onReady();
+  }
 
   /* ----------------------------------------------------------------- controls */
   playBtn.addEventListener("click", () => {
-    if (!state.started) startFilm(true);
-    else if (state.playing) pause();
-    else play();
-  });
-
-  $("[data-prev]").addEventListener("click", () => {
-    const i = currentScene(state.elapsed);
-    const target = state.elapsed - scenes[i].start > 3 ? i : Math.max(0, i - 1);
-    startAtChapter(target, state.playing);
-  });
-  $("[data-next]").addEventListener("click", () => {
-    const i = currentScene(state.elapsed);
-    startAtChapter(Math.min(scenes.length - 1, i + 1), state.playing);
-  });
-
-  $("[data-start]").addEventListener("click", () => startFilm(true));
-
-  scrub.addEventListener("click", (e) => {
-    if (!state.started) startFilm(false);
-    const rect = scrub.getBoundingClientRect();
-    const p = clamp((e.clientX - rect.left) / rect.width, 0, 1);
-    seek(p * total, state.playing);
-  });
-  scrub.addEventListener("keydown", (e) => {
-    if (e.key === "ArrowRight") {
-      e.preventDefault();
-      seek(state.elapsed + 10, state.playing);
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      seek(state.elapsed - 10, state.playing);
-    } else if (e.key === "Home") {
-      e.preventDefault();
-      seek(0, state.playing);
-    } else if (e.key === "End") {
-      e.preventDefault();
-      seek(total, false);
+    if (!state.started) {
+      play();
+    } else if (state.playing) {
+      pause();
+    } else {
+      play();
     }
   });
 
+  $("[data-start]")?.addEventListener("click", play);
+
+  $("[data-prev]").addEventListener("click", () => {
+    const i = currentChapter(state.time);
+    const target = state.time - chapters[i].start > 3 ? i : Math.max(0, i - 1);
+    startAtChapter(target, state.playing);
+  });
+  $("[data-next]").addEventListener("click", () => {
+    const i = currentChapter(state.time);
+    startAtChapter(Math.min(chapters.length - 1, i + 1), state.playing);
+  });
+
+  const seekFromEvent = (event) => {
+    const rect = scrub.getBoundingClientRect();
+    const x = "clientX" in event ? event.clientX : event.touches?.[0]?.clientX;
+    if (x == null) return;
+    const p = clamp((x - rect.left) / rect.width, 0, 1);
+    seek(p * state.duration);
+  };
+
+  scrub.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    state.scrubbing = true;
+    state.wasPlaying = state.playing;
+    if (state.playing) pause();
+    scrub.setPointerCapture?.(event.pointerId);
+    seekFromEvent(event);
+  });
+  scrub.addEventListener("pointermove", (event) => {
+    if (state.scrubbing) seekFromEvent(event);
+  });
+  const endScrub = () => {
+    if (!state.scrubbing) return;
+    state.scrubbing = false;
+    if (state.wasPlaying) play();
+    state.wasPlaying = false;
+  };
+  scrub.addEventListener("pointerup", endScrub);
+  scrub.addEventListener("pointercancel", endScrub);
+  scrub.addEventListener("click", (event) => {
+    if (!state.scrubbing) seekFromEvent(event);
+  });
+  scrub.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seek(state.time + 10);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seek(state.time - 10);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      seek(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      seek(state.duration);
+    }
+  });
+
+  /* ------------------------------------------------------------------ chapters */
   const openChapters = () => {
     if (state.playing) pause();
     chapterMenu.hidden = false;
-    const current = currentScene(state.elapsed);
-    $$(".chapter-card", chapterGrid).forEach((card, i) => card.classList.toggle("is-current", i === current));
-    $("[data-open-chapters]").setAttribute("aria-expanded", "true");
-    const active = $(".chapter-card.is-current", chapterGrid);
-    if (active) active.focus({ preventScroll: true });
+    $("[data-open-chapters]")?.setAttribute("aria-expanded", "true");
+    const current = $(".chapter-card.is-current", chapterGrid);
+    current?.focus({ preventScroll: true });
   };
   const closeChapters = () => {
     chapterMenu.hidden = true;
-    $("[data-open-chapters]").setAttribute("aria-expanded", "false");
+    $("[data-open-chapters]")?.setAttribute("aria-expanded", "false");
   };
   $("[data-open-chapters]").addEventListener("click", openChapters);
   $$("[data-close-chapters]").forEach((b) => b.addEventListener("click", closeChapters));
-  chapterMenu.addEventListener("click", (e) => {
-    if (e.target === chapterMenu) closeChapters();
+  chapterMenu.addEventListener("click", (event) => {
+    if (event.target === chapterMenu) closeChapters();
   });
 
+  /* ---------------------------------------------------------------- transcript */
   let transcriptReturn = null;
   const openTranscript = () => {
     if (state.playing) pause();
@@ -381,7 +417,7 @@
   const closeTranscript = () => {
     transcript.classList.remove("is-open");
     transcript.setAttribute("aria-hidden", "true");
-    if (transcriptReturn && transcriptReturn.focus) {
+    if (transcriptReturn?.focus) {
       try { transcriptReturn.focus({ preventScroll: true }); } catch (_) {}
     }
     transcriptReturn = null;
@@ -389,6 +425,7 @@
   $$("[data-open-transcript]").forEach((b) => b.addEventListener("click", openTranscript));
   $$("[data-close-transcript]").forEach((b) => b.addEventListener("click", closeTranscript));
 
+  /* ---------------------------------------------------------------- fullscreen */
   $("[data-fullscreen]").addEventListener("click", async () => {
     try {
       if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
@@ -396,87 +433,57 @@
     } catch (_) {}
   });
 
-  /* -------------------------------------------------------------------- tilt */
-  if (finePointer && !reduced) {
-    $$(".tilt").forEach((card) => {
-      card.addEventListener("pointermove", (e) => {
-        const rect = card.getBoundingClientRect();
-        const x = (e.clientX - rect.left) / rect.width - 0.5;
-        const y = (e.clientY - rect.top) / rect.height - 0.5;
-        card.style.transform = `perspective(900px) rotateY(${x * 9}deg) rotateX(${-y * 9}deg)`;
-      });
-      card.addEventListener("pointerleave", () => {
-        card.style.transform = "";
-      });
-    });
-  }
-
   /* ----------------------------------------------------------------- keyboard */
-  document.addEventListener("keydown", (e) => {
+  document.addEventListener("keydown", (event) => {
     const typing = /input|textarea|select/i.test(document.activeElement?.tagName || "");
     if (typing) return;
-    if (e.key === "Escape") {
+    if (event.key === "Escape") {
       if (!chapterMenu.hidden) { closeChapters(); return; }
       if (transcript.classList.contains("is-open")) { closeTranscript(); return; }
-      if (!state.started) return;
-      pause();
+      if (state.started) pause();
       return;
     }
-    if (e.key === " " || e.key === "k") {
-      if (/button|a/i.test(document.activeElement?.tagName || "") && e.key === " ") return;
-      e.preventDefault();
+    if (event.key === " " || event.key.toLowerCase() === "k") {
+      if (/button|a/i.test(document.activeElement?.tagName || "") && event.key === " ") return;
+      event.preventDefault();
       playBtn.click();
-    } else if (e.key === "ArrowRight") {
-      e.preventDefault();
-      seek(state.elapsed + 10, state.playing);
-    } else if (e.key === "ArrowLeft") {
-      e.preventDefault();
-      seek(state.elapsed - 10, state.playing);
-    } else if (e.key === "ArrowDown") {
-      e.preventDefault();
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      seek(state.time + 10);
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      seek(state.time - 10);
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
       $("[data-next]").click();
-    } else if (e.key === "ArrowUp") {
-      e.preventDefault();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
       $("[data-prev]").click();
-    } else if (e.key.toLowerCase() === "c") {
+    } else if (event.key.toLowerCase() === "c") {
       if (chapterMenu.hidden) openChapters(); else closeChapters();
-    } else if (e.key.toLowerCase() === "t") {
+    } else if (event.key.toLowerCase() === "t") {
       if (transcript.classList.contains("is-open")) closeTranscript(); else openTranscript();
-    } else if (e.key.toLowerCase() === "f") {
+    } else if (event.key.toLowerCase() === "f") {
       $("[data-fullscreen]").click();
-    } else if (e.key === "Home") {
-      if (state.started) seek(0, state.playing);
+    } else if (event.key === "Home" && state.started) {
+      seek(0);
     }
   });
 
-  window.addEventListener("resize", () => updateUI());
-  document.addEventListener("visibilitychange", () => {
-    if (document.hidden && state.playing) pause();
+  window.addEventListener("resize", updateProgress);
+  window.addEventListener("hashchange", () => {
+    state.hashHandled = false;
+    handleHash();
   });
 
-  /* -------------------------------------------------------------------- boot */
-  const hash = location.hash.match(/^#chapter-(\d+)$/);
-  if (hash) {
-    const i = clamp(Number(hash[1]) - 1, 0, scenes.length - 1);
-    state.started = true;
-    document.body.classList.add("started");
-    poster.classList.add("is-hidden");
-    poster.setAttribute("aria-hidden", "true");
-    film.removeAttribute("aria-hidden");
-    seek(scenes[i].start, false);
-    pause();
-  } else {
-    setActivePreview();
+  /* ------------------------------------------------------------------- start */
+  if (reduced) {
+    const note = document.createElement("p");
+    note.className = "poster-meta";
+    note.textContent = "The film uses motion throughout. Pause any time.";
+    $(".poster-actions").after(note);
   }
 
-  function setActivePreview() {
-    scenes[0].el.classList.add("is-active");
-    scenes[0].el.setAttribute("aria-hidden", "false");
-    state.scene = 0;
-    chapterIndex.textContent = scenes[0].chapter;
-    chapterName.textContent = scenes[0].title;
-  }
-
-  updateUI();
-  $$(".chapter-card", chapterGrid)[0]?.classList.add("is-current");
+  updateProgress();
+  loadData();
 })();

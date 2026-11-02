@@ -1,0 +1,144 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s5-world { position: absolute; inset: 0; transform-origin: 50% 50%; }
+    .s5-head { position: absolute; left: 104px; top: 92px; width: 660px; z-index: 9; }
+    .s5-head .display { margin-top: 22px; font-size: 118px; }
+    .s5-sub { margin-top: 24px; max-width: 520px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s5-table { position: absolute; left: 690px; top: 150px; width: 1120px; height: 720px; }
+    .s5-table::before { content: ""; position: absolute; inset: 24px; border: 1px solid rgba(23,26,36,.2); background: repeating-linear-gradient(90deg, transparent 0 47px, rgba(23,26,36,.05) 47px 48px), repeating-linear-gradient(180deg, transparent 0 47px, rgba(23,26,36,.05) 47px 48px); }
+    .s5-card { position: absolute; left: 34px; top: 78px; width: 540px; background: var(--paper-light); border: 2px solid var(--ink); box-shadow: 18px 18px 0 rgba(23,26,36,.14); z-index: 6; transform-origin: 50% 50%; }
+    .s5-card .head { display: flex; justify-content: space-between; padding: 16px 20px; border-bottom: 2px solid var(--ink); font-family: var(--mono); font-size: 16px; letter-spacing: .12em; text-transform: uppercase; }
+    .s5-card .head b { color: var(--orange); font-weight: 500; }
+    .s5-row { display: flex; justify-content: space-between; gap: 18px; padding: 12px 20px; border-bottom: 1px solid rgba(23,26,36,.16); font-family: var(--mono); font-size: 16px; }
+    .s5-row span { color: var(--ink-soft); }
+    .s5-row b { font-weight: 500; color: var(--ink); }
+    .s5-rights { display: flex; gap: 8px; padding: 14px 20px; }
+    .s5-rights span { padding: 7px 9px; border: 1px solid var(--indigo); color: var(--indigo); font-family: var(--mono); font-size: 13px; letter-spacing: .08em; }
+    .s5-rights span.off { opacity: .18; text-decoration: line-through; }
+    .s5-sign { position: relative; height: 54px; margin: 0 20px 16px; border-top: 1px solid rgba(23,26,36,.16); }
+    .s5-sign svg { position: absolute; left: 0; top: 6px; width: 100%; height: 36px; overflow: visible; }
+    .s5-sign path { fill: none; stroke: var(--indigo); stroke-width: 2; stroke-linecap: round; }
+    .s5-sign .cap { position: absolute; right: 0; bottom: 0; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-soft); }
+    .s5-layer { position: absolute; width: 540px; height: 360px; background: var(--paper-light); border: 2px solid var(--indigo); z-index: 3; }
+    .s5-layer.l1 { left: 52px; top: 96px; }
+    .s5-layer.l2 { left: 70px; top: 114px; }
+    .s5-layer.l3 { left: 88px; top: 132px; }
+    .s5-layer span { position: absolute; left: 12px; top: 10px; font-family: var(--mono); font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--indigo); }
+    .s5-node { position: absolute; right: 42px; top: 300px; width: 300px; height: 300px; border-radius: 50%; border: 2px solid var(--indigo); display: grid; place-items: center; z-index: 3; }
+    .s5-node::before { content: ""; position: absolute; inset: 26px; border-radius: 50%; border: 1px dashed rgba(52,55,140,.4); }
+    .s5-node b { font-family: var(--mono); font-size: 16px; letter-spacing: .12em; color: var(--indigo); }
+    .s5-node span { position: absolute; bottom: 48px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-soft); }
+    .s5-beam { position: absolute; left: 560px; top: 360px; width: 172px; height: 3px; background: var(--orange); transform-origin: left center; z-index: 4; }
+    .s5-beam::after { content: ""; position: absolute; right: -1px; top: -7px; width: 16px; height: 16px; border-top: 3px solid var(--orange); border-right: 3px solid var(--orange); transform: rotate(45deg); }
+    .s5-copy { position: absolute; right: 96px; top: 338px; width: 280px; background: var(--paper-light); border: 2px solid var(--ink); box-shadow: 10px 10px 0 rgba(23,26,36,.14); z-index: 6; }
+    .s5-copy .head { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 2px solid var(--ink); font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; }
+    .s5-copy .head b { color: var(--orange); font-weight: 500; }
+    .s5-copy .row { display: flex; justify-content: space-between; padding: 7px 14px; border-bottom: 1px solid rgba(23,26,36,.14); font-family: var(--mono); font-size: 12px; }
+    .s5-copy .row span { color: var(--ink-soft); }
+    .s5-copy .rights { display: flex; gap: 5px; padding: 10px 14px; }
+    .s5-copy .rights span { padding: 4px 6px; border: 1px solid var(--indigo); font-family: var(--mono); font-size: 10px; color: var(--indigo); }
+    .s5-copy .rights span.off { opacity: .18; text-decoration: line-through; }
+    .s5-revoked { position: absolute; right: 104px; top: 396px; z-index: 8; opacity: 0; }
+    .s5-revoked .stamp { padding: 10px 14px; border-color: var(--orange); color: var(--orange); font-size: 26px; }
+    .s5-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 7; }
+    .s5-label b { color: var(--ink); font-weight: 500; }
+    .s5-note { position: absolute; left: 104px; top: 690px; width: 540px; font-family: var(--mono); font-size: 13px; line-height: 1.7; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s5-note b { color: var(--orange); font-weight: 500; }
+    .s5-epoch { position: absolute; right: 34px; top: 32px; font-family: var(--mono); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+    .s5-epoch b { color: var(--indigo); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-05" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 05 / AUTHORITY</p>
+      <div class="s5-world" id="s5-world">
+        <div class="s5-head" id="s5-head">
+          <p class="eyebrow" id="s5-eyebrow"><span class="num">05</span> / AUTHORITY</p>
+          <h1 class="display" id="s5-title">Who gets<br />to say yes.</h1>
+          <p class="s5-sub" id="s5-sub">A path gives the frame a location. Permission is a separate question, and IRIX 7 answers it with a signed capability.</p>
+        </div>
+
+        <div class="s5-table">
+          <div class="s5-epoch" id="s5-epoch">OBJECT EPOCH <b id="s5-epoch-n">08</b></div>
+
+          <div class="s5-layer l3" id="s5-layer3"><span style="opacity:0">issuer</span></div>
+          <div class="s5-layer l2" id="s5-layer2"><span style="opacity:0">subject</span></div>
+          <div class="s5-layer l1" id="s5-layer1"><span style="opacity:0">object</span></div>
+
+          <div class="s5-card" id="s5-card">
+            <div class="head"><span>CAPABILITY</span><b>320 B</b></div>
+            <div class="s5-row"><span>object</span><b>frame:0001</b></div>
+            <div class="s5-row"><span>issuer</span><b>root:irix7</b></div>
+            <div class="s5-row"><span>subject</span><b>cell:motd</b></div>
+            <div class="s5-rights" id="s5-rights"><span>READ</span><span>WRITE</span><span>EXECUTE</span><span>INVOKE</span></div>
+            <div class="s5-row"><span>home</span><b>node 3 · epoch 8</b></div>
+            <div class="s5-row"><span>validity</span><b>60 seconds</b></div>
+            <div class="s5-sign">
+              <svg viewBox="0 0 500 36" preserveAspectRatio="none"><path id="s5-sig" d="M4 26 C60 2 80 34 120 18 S180 8 210 22 S270 34 300 12 S360 4 402 24 S460 30 496 10" pathLength="100" stroke-dasharray="100" stroke-dashoffset="100" /></svg>
+              <span class="cap">ed25519 · 64 bytes</span>
+            </div>
+          </div>
+
+          <div class="s5-beam" id="s5-beam"></div>
+          <div class="s5-node" id="s5-node"><b>NODE B</b><span>subject · cell:motd</span></div>
+
+          <div class="s5-copy" id="s5-copy">
+            <div class="head"><span>CAPABILITY · COPY</span><b>READ</b></div>
+            <div class="row"><span>object</span><b>frame:0001</b></div>
+            <div class="row"><span>subject</span><b>cell:motd</b></div>
+            <div class="rights"><span>READ</span><span class="off">WRITE</span><span class="off">EXECUTE</span><span class="off">INVOKE</span></div>
+          </div>
+          <div class="s5-revoked" id="s5-revoked"><div class="stamp">REVOKED</div></div>
+
+          <div class="s5-label" id="s5-label-a" style="left: 34px; top: 620px"><b>ONE TOKEN</b> / object, holder, rights</div>
+          <div class="s5-label" id="s5-label-b" style="right: 42px; top: 640px"><b>WEAKER COPY</b> / read only</div>
+        </div>
+
+        <div class="s5-note" id="s5-note"><b>AUTHORITY IS EXPLICIT</b><br />SIGNED · ATTENUABLE · REVOCABLE</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s5-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s5-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s5-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s5-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 5.8);
+
+    tl.fromTo("#s5-card", { opacity: 0, y: 26, rotate: -2 }, { opacity: 1, y: 0, rotate: 0, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s5-layer1", { opacity: 0, x: -14, y: -14 }, { opacity: 1, x: 0, y: 0, duration: 0.5, ease: "power2.out" }, 1.4);
+    tl.fromTo("#s5-layer2", { opacity: 0, x: -14, y: -14 }, { opacity: 1, x: 0, y: 0, duration: 0.5, ease: "power2.out" }, 1.6);
+    tl.fromTo("#s5-layer3", { opacity: 0, x: -14, y: -14 }, { opacity: 1, x: 0, y: 0, duration: 0.5, ease: "power2.out" }, 1.8);
+    tl.fromTo("#s5-sig", { strokeDashoffset: 100 }, { strokeDashoffset: 0, duration: 1.6, ease: "power2.inOut" }, 2.2);
+
+    tl.to("#s5-layer1", { x: -28, y: -22, duration: 3.2, ease: "power2.inOut" }, 5.2);
+    tl.to("#s5-layer2", { x: -56, y: -42, duration: 3.2, ease: "power2.inOut" }, 5.4);
+    tl.to("#s5-layer3", { x: -84, y: -62, duration: 3.2, ease: "power2.inOut" }, 5.6);
+    tl.fromTo("#s5-label-a", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4 }, 5.8);
+
+    tl.fromTo("#s5-beam", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 1, duration: 0.7, ease: "power2.inOut" }, 8.2);
+    tl.fromTo("#s5-copy", { opacity: 0, x: -40, scale: 0.9 }, { opacity: 1, x: 0, scale: 1, duration: 0.55, ease: "power3.out" }, 8.6);
+    tl.fromTo("#s5-label-b", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4 }, 9.2);
+
+    tl.to("#s5-copy", { scale: 0.86, x: -20, duration: 2.8, ease: "power2.inOut" }, 11.4);
+
+    tl.to("#s5-copy", { rotate: -2, duration: 0.3 }, 15.0);
+    tl.fromTo("#s5-revoked", { opacity: 0, scale: 1.4, rotate: -10 }, { opacity: 1, scale: 1, rotate: -4, duration: 0.35, ease: "power4.out" }, 15.4);
+    tl.to("#s5-epoch-n", { textContent: "09", duration: 0.01 }, 15.5);
+    tl.fromTo("#s5-world", { scale: 1 }, { scale: 1.04, duration: 5.5, ease: "power2.inOut", overwrite: "auto" }, 16.0);
+
+    tl.fromTo("#s5-note", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.5 }, 19.0);
+    tl.to("#s5-layer1", { x: 0, y: 0, duration: 3, ease: "power2.inOut" }, 21.0);
+    tl.to("#s5-layer2", { x: 0, y: 0, duration: 3, ease: "power2.inOut" }, 21.2);
+    tl.to("#s5-layer3", { x: 0, y: 0, duration: 3, ease: "power2.inOut" }, 21.4);
+    tl.to("#s5-card", { rotate: 2, duration: 5, ease: "power2.inOut" }, 22.0);
+    tl.to("#s5-world", { scale: 1.08, duration: 4, ease: "power2.in" }, 26.0);
+
+    window.__timelines["scene-05"] = tl;
+  </script>
+</template>

@@ -1,0 +1,165 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s7-world { position: absolute; inset: 0; transform-origin: 50% 50%; }
+    .s7-head { position: absolute; left: 104px; top: 92px; width: 640px; z-index: 9; }
+    .s7-head .display { margin-top: 22px; font-size: 92px; }
+    .s7-sub { margin-top: 24px; max-width: 520px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s7-term { position: absolute; left: 168px; top: 440px; width: 500px; z-index: 6; }
+    .s7-term .terminal { position: relative; width: 100%; }
+    .s7-term .term-body { min-height: 300px; font-size: 17px; }
+    .s7-term .screen-frame { position: absolute; left: 26px; right: 26px; bottom: 22px; height: 150px; background: #0b1220; border: 1px solid rgba(126,240,160,.25); overflow: hidden; opacity: 0; }
+    .s7-term .screen-frame .frame-art { position: absolute; inset: 0; }
+    .s7-node { position: absolute; left: 1450px; top: 460px; width: 300px; height: 300px; border-radius: 50%; border: 2px solid var(--indigo); display: grid; place-items: center; z-index: 4; }
+    .s7-node::before { content: ""; position: absolute; inset: 28px; border-radius: 50%; border: 1px dashed rgba(52,55,140,.4); }
+    .s7-node b { position: absolute; top: 34px; font-family: var(--mono); font-size: 14px; letter-spacing: .12em; color: var(--indigo); }
+    .s7-node .frame-object { width: 180px; border-width: 4px; box-shadow: 5px 5px 0 rgba(23,26,36,.16); }
+    .s7-node span { position: absolute; bottom: 36px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-soft); }
+    .s7-path { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+    .s7-path path { fill: none; stroke: var(--indigo); stroke-width: 2; opacity: .4; }
+    .s7-path path.hot { stroke: var(--orange); stroke-width: 2.2; opacity: .85; stroke-dasharray: 8 8; }
+    .s7-packet { position: absolute; left: 668px; top: 640px; width: 34px; height: 24px; background: var(--paper-light); border: 2px solid var(--orange); z-index: 7; }
+    .s7-packet::after { content: "F"; position: absolute; left: 6px; top: 0; font-family: var(--mono); font-size: 11px; color: var(--orange); }
+    .s7-header { position: absolute; left: 700px; top: 170px; width: 620px; background: var(--paper-light); border: 2px solid var(--ink); box-shadow: 12px 12px 0 rgba(23,26,36,.12); z-index: 8; opacity: 0; }
+    .s7-header .head { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 2px solid var(--ink); font-family: var(--mono); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; }
+    .s7-header .head b { color: var(--orange); font-weight: 500; }
+    .s7-header .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 22px; padding: 14px 16px; }
+    .s7-header .grid div { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid rgba(23,26,36,.12); font-family: var(--mono); font-size: 13px; }
+    .s7-header .grid span { color: var(--ink-soft); }
+    .s7-header .grid b { color: var(--ink); font-weight: 500; }
+    .s7-local { position: absolute; left: 700px; top: 710px; width: 200px; z-index: 6; }
+    .s7-local .loop { width: 120px; height: 50px; border: 2px solid var(--indigo); border-left: 0; border-radius: 0 28px 28px 0; opacity: .65; }
+    .s7-local .label { margin-top: 6px; }
+    .s7-gpu { position: absolute; left: 1450px; top: 790px; width: 300px; height: 96px; border: 2px solid var(--indigo); background: var(--paper-light); display: grid; place-items: center; font-family: var(--mono); font-size: 12px; letter-spacing: .1em; color: var(--indigo); z-index: 5; }
+    .s7-gpu::after { content: ""; position: absolute; inset: 8px; border: 1px dashed rgba(52,55,140,.35); }
+    .s7-gpu b { font-weight: 500; }
+    .s7-gpu span { position: absolute; bottom: 6px; font-size: 9px; color: var(--ink-soft); }
+    .s7-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 7; }
+    .s7-label b { color: var(--ink); font-weight: 500; }
+    .s7-note { position: absolute; left: 104px; top: 840px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s7-note b { color: var(--orange); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-07" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 07 / THE FABRIC</p>
+      <div class="s7-world" id="s7-world">
+        <div class="s7-head" id="s7-head">
+          <p class="eyebrow" id="s7-eyebrow"><span class="num">07</span> / CALLS</p>
+          <h1 class="display" id="s7-title">A call across<br />the room.</h1>
+          <p class="s7-sub" id="s7-sub">A program asks for the frame. The frame may be on this node, or on another one. Both calls use the same invocation model.</p>
+        </div>
+
+        <svg class="s7-path" viewBox="0 0 1920 1080">
+          <path id="s7-path-line" d="M668 650 C820 420 1120 420 1450 610" />
+          <path id="s7-path-hot" class="hot" d="M668 650 C820 420 1120 420 1450 610" />
+        </svg>
+
+        <div class="s7-term" id="s7-term">
+          <div class="terminal">
+            <div class="term-bar"><i></i><i></i><i></i><span>iris · node a</span></div>
+            <div class="term-body"><span class="dim">$</span> open frame:0001
+<span class="dim">$</span> read 0 65536
+<span class="dim">…</span>
+<span class="dim">$</span> <span id="s7-cursor" class="cursor"></span></div>
+            <div class="screen-frame" id="s7-screen-frame">
+              <div class="frame-art">
+                <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                <div class="fa-circle"></div>
+                <div class="fa-cross"></div>
+                <div class="fa-top"><span>FRAME 0001</span><span>READ · 65536 B</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s7-node" id="s7-node">
+          <b>NODE B</b>
+          <div class="frame-object bare">
+            <div class="frame-art">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+              <div class="fa-top"><span>FRAME 0001</span><span>HOME n3</span></div>
+            </div>
+          </div>
+          <span>home · node 3 / epoch 8</span>
+        </div>
+
+        <div class="s7-packet" id="s7-packet"></div>
+
+        <div class="s7-header" id="s7-header">
+          <div class="head"><span>MESSAGE FRAME</span><b>tag 0x4f2</b></div>
+          <div class="grid">
+            <div><span>stream</span><b>7</b></div><div><span>deadline</span><b>12 ms</b></div>
+            <div><span>deps</span><b>3</b></div><div><span>flow</span><b>credit 64</b></div>
+            <div><span>source</span><b>node a</b></div><div><span>dest</span><b>node b</b></div>
+            <div><span>home</span><b>node 3</b></div><div><span>epoch</span><b>8</b></div>
+            <div><span>trace</span><b>00-4bf9…</b></div><div><span>route</span><b>1 hop</b></div>
+          </div>
+        </div>
+
+        <div class="s7-local" id="s7-local">
+          <div class="loop"></div>
+          <div class="label up">local · bypass</div>
+        </div>
+
+        <div class="s7-gpu" id="s7-gpu"><b>GPU · n2</b><span>object · command buffer</span></div>
+
+        <div class="s7-label" id="s7-label-a" style="left: 180px; top: 750px"><b>CALLER</b> / node a</div>
+        <div class="s7-label" id="s7-label-b" style="left: 1440px; top: 380px"><b>HOME</b> / node 3</div>
+        <div class="s7-note" id="s7-note"><b>ONE MODEL</b> · LOCAL OR REMOTE</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s7-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s7-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s7-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s7-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 5.8);
+
+    tl.fromTo("#s7-term", { opacity: 0, y: 22 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s7-node", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 1.2);
+    tl.fromTo("#s7-path-line", { strokeDashoffset: 900, opacity: 0 }, { strokeDashoffset: 0, opacity: .4, duration: 1.4, ease: "power2.inOut" }, 1.6);
+    tl.fromTo("#s7-path-hot", { strokeDashoffset: 900, opacity: 0 }, { strokeDashoffset: 0, opacity: .85, duration: 1.4, ease: "power2.inOut" }, 1.8);
+    tl.fromTo("#s7-label-a", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 2.4);
+    tl.fromTo("#s7-label-b", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 2.8);
+
+    tl.fromTo("#s7-packet", { x: 0, y: 0, opacity: 0 }, { opacity: 1, duration: 0.2 }, 4.2);
+    tl.to("#s7-packet", { x: 220, y: -170, duration: 1.2, ease: "power1.inOut" }, 4.4);
+    tl.to("#s7-packet", { x: 520, y: -200, duration: 1.2, ease: "power1.inOut" }, 5.6);
+    tl.to("#s7-packet", { x: 782, y: -20, duration: 1.2, ease: "power1.inOut" }, 6.8);
+    tl.to("#s7-packet", { opacity: 0, duration: 0.25 }, 8.0);
+    tl.fromTo("#s7-header", { opacity: 0, y: 18, scale: 0.96 }, { opacity: 1, y: 0, scale: 1, duration: 0.55, ease: "power3.out" }, 6.2);
+    tl.fromTo("#s7-header .grid div", { opacity: 0, y: 6 }, { opacity: 1, y: 0, duration: 0.25, stagger: 0.05 }, 6.6);
+    tl.to("#s7-header", { opacity: 0, y: -12, duration: 0.4, ease: "power2.in" }, 11.2);
+
+    tl.fromTo("#s7-screen-frame", { opacity: 0, clipPath: "inset(0 0 100% 0)" }, { opacity: 1, clipPath: "inset(0 0 0% 0)", duration: 1.4, ease: "power2.inOut" }, 9.0);
+    tl.fromTo("#s7-cursor", { opacity: 1 }, { opacity: 0.2, duration: 0.2, repeat: 10, yoyo: true, ease: "steps(1)" }, 8.8);
+
+    tl.to("#s7-packet", { opacity: 1, duration: 0.01 }, 12.4);
+    tl.to("#s7-packet", { x: 520, y: -200, duration: 1.1, ease: "power1.inOut" }, 12.5);
+    tl.to("#s7-packet", { x: 0, y: 0, duration: 1.4, ease: "power1.inOut" }, 13.6);
+    tl.to("#s7-packet", { opacity: 0, duration: 0.25 }, 15.0);
+
+    tl.fromTo("#s7-local", { opacity: 0, x: -14 }, { opacity: 1, x: 0, duration: 0.4 }, 15.8);
+    tl.fromTo("#s7-local .loop", { scaleX: 0 }, { scaleX: 1, duration: 0.8, ease: "power2.inOut" }, 16.0);
+
+    tl.fromTo("#s7-gpu", { opacity: 0, y: 16 }, { opacity: 1, y: 0, duration: 0.45, ease: "power3.out" }, 17.2);
+    tl.fromTo("#s7-packet", { x: 782, y: -20, opacity: 0 }, { opacity: 1, duration: 0.2, immediateRender: false }, 17.8);
+    tl.to("#s7-packet", { x: 800, y: 170, duration: 1.2, ease: "power1.inOut" }, 18.0);
+    tl.to("#s7-packet", { opacity: 0, duration: 0.25 }, 19.2);
+    tl.fromTo("#s7-gpu", { boxShadow: "0 0 0 rgba(232,93,42,0)" }, { boxShadow: "8px 8px 0 rgba(232,93,42,.25)", duration: 1.2, yoyo: true, repeat: 1 }, 19.2);
+
+    tl.fromTo("#s7-note", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.4 }, 21.0);
+    tl.to("#s7-world", { scale: 1.04, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 21.5);
+    tl.to("#s7-node", { rotate: 1.5, duration: 6, ease: "power2.inOut" }, 22.0);
+
+    window.__timelines["scene-07"] = tl;
+  </script>
+</template>
