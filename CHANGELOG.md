@@ -9,7 +9,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 ### Added
 
 - PowerPC G3 flat-module load. `kernel-ppc` reserves a 2 MiB slot at
-  `0x0300_0000` under IBAT2/DBAT2, reads a big-endian `IRIX7MOD` header and
+  `0x0180_0000` under IBAT2/DBAT2, reads a big-endian `IRIX7MOD` header and
   image from ATA LBAs 6 and 16, checks the image with `irix7-sha256`, zeroes
   the slot, copies, writes the data cache back and invalidates the instruction
   cache before calling the entry with the shared `module_abi::Services` table.
@@ -22,6 +22,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
   and no-FP checks and the floppy image build are unchanged. A single slot, no
   network, block or allocation service, and a disk-header digest remain; see
   #309.
+- PowerPC G3 console on both ESCC channels. `kernel-ppc` reads the `ch-a` and
+  `ch-b` children of the Mac I/O ESCC node, checks their register addresses
+  against the window, reads `/options:output-device` and `/chosen:stdout-path`,
+  and logs the resolved channel. It programs both channels for 38400 8N1 from
+  the 3.6864 MHz clock and mirrors every byte to both, so the PowerBook G3
+  M4753 Geoport (channel A) and internal IR link (channel B) both show the boot
+  log. The QEMU gate captures two serial files, asserts the channel addresses
+  and the firmware selection, and requires channel B's kernel log to match
+  channel A byte for byte. See #313.
 - PowerPC G3 ATA disk read. `kernel-ppc` finds the `ata-3` channel with a disk
   child in the Mac I/O device tree, takes its task-file window from `reg`, runs
   polled `IDENTIFY DEVICE` and one LBA28 `READ SECTORS`, and checks

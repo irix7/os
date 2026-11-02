@@ -1371,6 +1371,7 @@ jobs:
           if-no-files-found: warn
           path: |
             ${{ runner.temp }}/powerpc-qemu/serial.log
+            ${{ runner.temp }}/powerpc-qemu/serial-b.log
             ${{ runner.temp }}/irix7-powerpc-floppy.img
 
   x86:

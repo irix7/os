@@ -128,10 +128,15 @@ bs=512` is the direct alternative; check the device with `diskutil list` before
 writing.  The boot command is `boot fd2:,\IRIX7.XCF` with the module in the
 left MediaBay.
 
-The image has not been booted on real hardware yet.  The kernel's console is
-the ESCC channel named by the device tree; if the Geoport is on the other
-channel the boot will be silent, so capture the Open Firmware output before
-changing the console path.
+The image has not been booted on real hardware yet.  The kernel initialises
+both ESCC channels, programs both for 38400 8N1 and mirrors the boot log to
+both, so the Geoport and the internal IR link both show it.  It also reports
+the firmware's `/options:output-device` (or `/chosen:stdout-path`) selection at
+boot.  The M4753 developer note wires the IR link to serial port B and the
+external Geoport to port A; the mirror makes the wiring choice irrelevant to
+whether the banner appears.  The hardware check is the Geoport at 38400 8N1;
+channel B is the IR link, so proving it needs the IR transceiver or a logic
+probe rather than a serial cable.
 
 ## Bring-up slices
 
@@ -150,6 +155,10 @@ window from the device tree, runs `IDENTIFY DEVICE` and one PIO `READ SECTORS`
 through the Mac I/O ATA controller, and checks the model, capacity and a
 signature sector in the QEMU gate. It is polled, LBA28 and read-only; DMA, the
 interrupt path, ATAPI and the module loader follow.
+
+Slice 5's serial half is in place: #313 reads the ESCC `ch-a`/`ch-b` child
+nodes and the firmware console property, programs both channels for 38400 8N1
+and mirrors the boot log to both. The framebuffer console remains.
 
 ## Repository layout
 
