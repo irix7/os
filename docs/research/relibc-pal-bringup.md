@@ -1,8 +1,9 @@
 # relibc PAL on the native n32 kernel
 
 Status: **bring-up result**. 2026-11-02.  Tracks
-[irix7/os#288](https://github.com/irix7/os/issues/288) and
-[irix7/os#302](https://github.com/irix7/os/issues/302).  Supersedes the
+[irix7/os#288](https://github.com/irix7/os/issues/288),
+[irix7/os#302](https://github.com/irix7/os/issues/302) and
+[irix7/os#306](https://github.com/irix7/os/issues/306).  Supersedes the
 scaffold limits recorded in
 [`relibc-n32-bringup.md`](relibc-n32-bringup.md) and
 [`c-probe-bringup.md`](c-probe-bringup.md).
@@ -10,39 +11,38 @@ scaffold limits recorded in
 ## Result
 
 A C program linked against `librelibc.a` from the `irix7-pal` branch boots on
-iris 0.1.13 through SCSI target 2, prints `IRIX7-RELIB-PROBE-3`, exercises the
-native file and readiness surface and exits 0:
+iris 0.1.13 through SCSI target 2, prints `IRIX7-RELIB-PROBE-4`, exercises the
+native file, readiness and writable-ramfs surface and exits 0:
 
 ```text
 kernel: starting userland from SCSI target 2
 userelf: entry=0x10000000
 user: entering user mode
-IRIX7-RELIB-PROBE-3
-IRIX7-RELIB-PROBE-3: stat size=28 mode=100644 blksize=4096 blocks=1
-IRIX7-RELIB-PROBE-3: tp=0x1002c7e0 auxv pagesz=4096
-IRIX7-RELIB-PROBE-3: checks=142 failures=0
+IRIX7-RELIB-PROBE-4
+IRIX7-RELIB-PROBE-4: stat size=28 mode=100644 blksize=4096 blocks=1
+IRIX7-RELIB-PROBE-4: tp=0x1002f3b0 auxv pagesz=4096
+IRIX7-RELIB-PROBE-4: checks=226 failures=0
 user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
-sash> m1-post: mesh=0/0/0 actor=08006912345600000000000000000001
 ```
 
-The image was run on the kernel built from this tree at `cd48028` plus this
-slice.  The ROM is 487,180 bytes with SHA-256
-`930494bd6db328484ec2f766632a800b79da0aa85aaefcdce7c175f23a35dd0d`.  The
-pinned probe build (`probe.raw`) is 248,092 bytes with SHA-256
-`71c586d738a3722aacd17a12a356dbee6ec126c29b9ec9d008c60bcecf160371`; it
-embeds relibc `acd6c496` and 142 checks passed on it.
+The ROM is 489,540 bytes with SHA-256
+`6d0b92d8aa2265babec89b42180fd11ab912af467d1317d2cb81d8c058af32fa`.  The
+pinned probe build (`probe.raw`) is a 259,316-byte ELF padded to 256 KiB, with
+SHA-256 `d936cb8d45cdd5eb9d059660d9596e4c1f56cbd02f57a39f5fc9f38a53fa5cf2`;
+it embeds relibc `2a345f78` and 226 checks passed on it.
 
-The earlier `IRIX7-RELIB-PROBE-2` result and its hashes are recorded in the
-previous revision of this file; those 110 checks are a subset of this run.
+The earlier `IRIX7-RELIB-PROBE-3` result (142 checks, relibc `acd6c496`) and
+`IRIX7-RELIB-PROBE-2` (110 checks) are subsets of this run; their hashes are
+recorded in the previous revision of this file.
 
 ## Fork
 
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` in <https://github.com/irix7/relibc> |
-| Commit | `acd6c4966c249510154158e05c19b8f846a70bb5` |
-| Parent | `d5fd3d04c88fac4117132ae25d3959f6e55277b7` |
+| Commit | `2a345f7802615633115ea55b8c7f010d2b13dfb6` |
+| Parent | `acd6c4966c249510154158e05c19b8f846a70bb5` |
 | DCO | `Signed-off-by: Jupiter Belic <belikh@users.noreply.github.com>` |
 | Mirror | [`tools/relibc-pal/patches/`](../../tools/relibc-pal/patches/) |
 
@@ -86,9 +86,16 @@ script; the patches are review mirror only.
    description; `dup` shares them.  A non-blocking read of an empty pipe or an
    idle console is `EAGAIN`; a blocking one rechecks readiness for the kernel's
    fixed 100 ms bound and then does the same.
+9. **Writable ramfs.** `openat` passes the creation mode and applies the
+   process umask; the kernel honours `O_CREAT`, `O_EXCL`, `O_TRUNC` and
+   `O_APPEND` and truncates regular files only.  `unlinkat` maps to `unlink`,
+   or to `rmdir` when `AT_REMOVEDIR` is set; other flags are `EINVAL`.
+   `mkdirat` maps to `mkdir`, `renameat2` maps to `rename` when its flags are
+   zero, and `ftruncate` splits the 64-bit length across two argument
+   registers.  `umask` keeps process state.
 
 The first five items are the `d484536c` commit.  Items 5–7 and the file calls
-are `d5fd3d04`.  Item 8 is `acd6c496`.
+are `d5fd3d04`.  Item 8 is `acd6c496`.  Item 9 is `2a345f78`.
 
 The first commit also carries two follow-on fixes:
 
@@ -118,7 +125,7 @@ export RELIBC_SRC=/tmp/opencode/relibc-pal-src
 tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 ```
 
-The script verifies `acd6c496`, builds `librelibc.a` and `libcrt0.a`, then
+The script verifies `2a345f78`, builds `librelibc.a` and `libcrt0.a`, then
 links [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c) with
 `--gc-sections`.  The unstripped link is about 260 KiB; stripping leaves a
 241 KiB ELF and the 256 KiB raw image is padded.
@@ -158,8 +165,9 @@ GIO-timeout loop on this kernel.
 - **A relibc-linked C binary, not the shim.** The image calls relibc's
   `write`, `stat`, `fstat`, `getpid`, `getauxval`, `__errno_location`, `open`,
   `lseek`, `pread`, `pwrite`, `dup`, `dup2`, `fcntl`, `pipe`, `pipe2`, `poll`,
-  `opendir`, `readdir`, `seekdir`, `telldir` and `posix_getdents`, and enters
-  through relibc's `crt0::_start`.  `_Static_assert`s pin the 136-byte `stat`,
+  `opendir`, `readdir`, `seekdir`, `telldir`, `posix_getdents`, `unlink`,
+  `rmdir`, `mkdir`, `rename`, `ftruncate`, `truncate`, `chdir` and `getcwd`,
+  and enters through relibc's `crt0::_start`.  `_Static_assert`s pin the 136-byte `stat`,
   the 280-byte `dirent`, the 8-byte `pollfd` and their field offsets at compile
   time.
 - **The gate and its error channel.** `fstat(999)` returns status
@@ -211,6 +219,31 @@ GIO-timeout loop on this kernel.
   reach the same entries through the wrapper.
 - **The loader path is unchanged.** The image is a padded 256 KiB raw SCSI
   target-2 file, like `user/c-probe` and `std-hello`.
+- **The ramfs is writable.** `open(O_CREAT|O_TRUNC)` creates `/probe.txt`,
+  `write` and `read` round-trip eleven bytes, `fstat` reports the growing and
+  truncated size, `ftruncate(5)` and then `ftruncate(0)` take effect, and
+  `O_TRUNC` clears the file before a second write.  `O_APPEND` writes at
+  end-of-file: seven bytes plus one byte read back as `renamed!`.
+  `truncate(path, 4)` shrinks it to `rena`.
+- **Names are live state.** `rename` moves `/probe.txt` to `/moved.txt`; the
+  old name is `ENOENT` and the new one has the content.  `mkdir` creates
+  `/probe-dir` and a nested `sub`; `rmdir` of the parent is `ENOTEMPTY` until
+  `sub` is removed.  A second `mkdir` is `EEXIST`; `rmdir` of a file is
+  `ENOTDIR`; `unlink` of a directory is `EISDIR`; `read` on a directory is
+  `EISDIR`; `open(O_DIRECTORY)` on a file and a file used as a directory
+  component are `ENOTDIR`.
+- **`getdents` walks the live tree.** A 2048-byte `posix_getdents` over `/`
+  sees seven records after the creations: the three fixtures, `moved.txt` and
+  `probe-dir`, with distinct `d_ino` values and `d_type` 8/4.  After the
+  entries are removed the same walk returns the five fixture records again.
+- **A created directory is a working directory.** `chdir("/work")`,
+  `getcwd` -> `/work`, `open("item", O_CREAT)`, `stat("item")` and
+  `stat("../moved.txt")` all resolve, and `chdir("/")` restores the root.
+- **ENOSPC is bounded capacity.** A file accepts 4096 bytes, the next write is
+  `ENOSPC`, and `ftruncate(4097)` is `ENOSPC` without changing the size.
+- **Unlink-while-open.** After `unlink`, `stat` on the name is `ENOENT` while
+  the descriptor that had it open still seeks and reads its bytes; the inode
+  is freed when the last descriptor closes.
 
 ## `std-hello` regression
 
@@ -225,7 +258,7 @@ user: entering user mode
 hello from std
 arg=hello
 slept_ms=10
-time=1793604922
+time=1793608117
 file=hello from the IRIX 7 ramfs
 write=ok
 after_write=rewritten by std
@@ -281,8 +314,19 @@ either source makes `POLLIN` true.
 - `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.
-- The console/ramfs fd table is the only filesystem; there is no file creation,
-  unlinking or permissions.
+- The console, `/dev` and the ramfs are the only filesystem.  The ramfs has a
+  fixed 32 inodes, 4096 bytes per regular file and 63-byte names.  There are no
+  hard links, symbolic links, permissions, ownership, timestamps or storage
+  beyond RAM; a full table or capacity is `ENOSPC`.  Inode numbers are reused
+  after an unlinked node is freed.
+- `/etc/motd` is served from the logical policy namespace and is read-only;
+  writing or truncating it is `EROFS`.
+- A directory's `getdents` cookie is its position in inode order.  Creating or
+  removing entries between calls can repeat or skip a record; there is no
+  stable snapshot.
+- `renameat2` supports only zero flags; `RENAME_NOREPLACE` and
+  `RENAME_EXCHANGE` are `EINVAL`.  `link`, `symlink`, `chmod`, `chown` and
+  `utimensat` remain `ENOSYS`.
 - `uname` describes the ABI, not the running kernel; there is no `uname`
   syscall.
 - The fork's Linux/QEMU gate still builds but was not re-run under

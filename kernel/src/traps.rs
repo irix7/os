@@ -827,7 +827,8 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                     return;
                 }
                 5 => {
-                    let (result, error) = legacy_fd(crate::user::open_path(tf.arg(4), tf.arg(5)));
+                    let (result, error) =
+                        legacy_fd(crate::user::open_path(tf.arg(4), tf.arg(5), tf.arg(6)));
                     tf.set_result(result);
                     tf.regs[7] = error as u64;
                     tf.advance_epc();
@@ -880,7 +881,9 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             6 => {
-                tf.set_result(crate::user::open_path(tf.arg(4), tf.arg(5)).unwrap_or(-1) as u32);
+                tf.set_result(
+                    crate::user::open_path(tf.arg(4), tf.arg(5), tf.arg(6)).unwrap_or(-1) as u32,
+                );
                 tf.advance_epc();
             }
             7 => {

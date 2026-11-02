@@ -1568,6 +1568,31 @@ success.  `SYS_EXIT` does not return.
 | 28 | `dup2` | `fd`, `new_fd` |
 | 29 | `pipe2` | `int[2]`, `flags` |
 | 30 | `getdents` | `fd`, `buf`, `len` |
+| 31 | `unlink` | `path` |
+| 32 | `rename` | `old_path`, `new_path` |
+| 33 | `mkdir` | `path`, `mode` |
+| 34 | `rmdir` | `path` |
+| 35 | `ftruncate` | `fd`, `length_lo`, `length_hi` |
+| 36 | `truncate` | `path`, `length_lo`, `length_hi` |
+
+The namespace behind these calls is the in-memory ramfs: a mutable tree of
+inodes with names, sizes and permissions.  `open` takes the path, flags and
+creation mode; `O_CREAT`, `O_EXCL`, `O_TRUNC` and `O_APPEND` are honoured, and
+`O_TRUNC` applies to regular files only.  `unlink` and `rmdir` remove a name;
+an unlinked inode stays readable through an open descriptor until the last one
+closes.  `rename` replaces an existing destination of the same type and refuses
+to move a directory inside itself.  `mkdir` creates a directory, `rmdir`
+requires it to be empty, and `ftruncate`/`truncate` set a regular file's length
+(zero-filling when it grows).
+
+The v0 limits are 32 inodes, 4096 bytes per regular file and 63-byte names.  A
+full inode table, a write past a file's capacity or a `truncate` beyond it is
+`ENOSPC`.  Error mapping: `EEXIST` for an existing name or `O_CREAT|O_EXCL`,
+`ENOTEMPTY` for `rmdir` of a non-empty directory, `EISDIR` for a write or a
+write-open of a directory, `ENOTDIR` for a file used as a directory component
+or `O_DIRECTORY` on a file, `ENOENT` for a missing path, and `ENAMETOOLONG` for
+a name the tree cannot store.  `/etc/motd` is served from the logical policy
+namespace: it is readable and cannot be truncated or written.
 
 The flat gate has four 32-bit argument registers and a 64-bit `off_t`.  `lseek` takes
 the offset as two words (`offset_lo` in `$a1`, `offset_hi` in `$a2`, the two's-complement
