@@ -44,8 +44,10 @@ SECTIONS
 
     __kernel_end = .;
 
-    /* The image, .bss and the boot stack share one BAT block. */
-    ASSERT(__kernel_end <= 0x02000000, "kernel image exceeds the first 16 MiB")
+    /* The image, .bss and the boot stack share one BAT block.  The flat module
+       slot begins at 0x0180_0000 (module.rs SLOT_BASE); the image must end
+       below it or the loader would overwrite part of the kernel. */
+    ASSERT(__kernel_end <= 0x01800000, "kernel image overlaps the module slot at 0x01800000")
 
     /DISCARD/ : {
         *(.eh_frame)
