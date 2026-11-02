@@ -139,6 +139,103 @@ jobs:
           STD_SPIKE_WORK: ${{ runner.temp }}/std-spike
         run: tools/std-spike/build-std.sh
 
+  relibc:
+    name: relibc (n32 PAL probes)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install the repository and relibc toolchains
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          rustup toolchain install nightly-2026-10-03 \
+            --component rust-src --component llvm-tools-preview
+          # relibc's rust-toolchain.toml selects this nightly for the PAL.
+          rustup toolchain install nightly-2026-05-24 --component rust-src
+          rustup default nightly-2026-10-03
+      - name: Restore the pinned relibc build
+        id: relibc-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/relibc-pal/out
+          # The key covers the pinned relibc commit (build.sh), the target
+          # spec and every probe source.  A cache hit skips the clone, the
+          # Bootlin download and the relibc build; a source change rebuilds.
+          key: relibc-pal-${{ runner.os }}-2026.08-1-${{ hashFiles('tools/relibc-pal/build.sh', 'targets/mips3-sgi-irix7-native-n32.json', 'user/relibc-*/**') }}
+      - name: Build the pinned relibc probes
+        env:
+          RELIBC_COMMIT: 8a7e044f584945dbf5fdbad11fd76e16daa420b9
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/relibc-pal"
+          out="$work/out"
+          src="$work/src"
+          if [ -s "$out/BUILD-PROVENANCE.txt" ]; then
+            echo "restored the cached relibc probe build"
+            cat "$out/BUILD-PROVENANCE.txt"
+          else
+            toolchain="$work/toolchain"
+            if [ ! -x "$toolchain/bin/mips64-buildroot-linux-uclibc-gcc" ]; then
+              rm -rf "$toolchain"
+              mkdir -p "$toolchain"
+              curl -fsSL \
+                https://toolchains.bootlin.com/downloads/releases/toolchains/mips64-n32/tarballs/mips64-n32--uclibc--stable-2026.08-1.tar.xz \
+                | tar -xJ -C "$toolchain" --strip-components=1
+            fi
+            if [ ! -d "$src/.git" ]; then
+              git clone --recurse-submodules --branch irix7-pal \
+                https://github.com/irix7/relibc "$src"
+            fi
+            # A fresh clone lands on the branch head; the build script only
+            # accepts the pinned commit, so check it out explicitly.
+            git -C "$src" fetch --quiet origin "$RELIBC_COMMIT" || true
+            git -C "$src" checkout --detach "$RELIBC_COMMIT"
+            git -C "$src" submodule update --init --recursive
+            CARGO_TARGET_DIR="$work/target" \
+            RELIBC_SRC="$src" \
+            MIPS_CC="$toolchain/bin/mips64-buildroot-linux-uclibc-gcc" \
+            MIPS_AR="$toolchain/bin/mips64-buildroot-linux-uclibc-ar" \
+            CARGO=cargo \
+              tools/relibc-pal/build.sh "$out"
+          fi
+          grep -q '^relibc=8a7e044f584945dbf5fdbad11fd76e16daa420b9$' \
+            "$out/BUILD-PROVENANCE.txt"
+          for probe in probe thread-probe futex-probe pthread-probe sleep-probe \
+            forkexec-probe forkexec-child; do
+            test -s "$out/$probe.raw"
+          done
+      - name: Build the kernel and PROM
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/m2-rig/build.sh "$RUNNER_TEMP/relibc-rig"
+      - name: Setup IRIS
+        id: iris
+        uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
+        with:
+          version: v0.1.13+irix7
+      - name: Boot every probe
+        run: |
+          set -euo pipefail
+          tools/relibc-pal/boot-probes.sh \
+            "$RUNNER_TEMP/relibc-pal/out" \
+            "$RUNNER_TEMP/relibc-rig/irix7-rom.bin" \
+            "$RUNNER_TEMP/relibc-boot"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: relibc-probes
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/relibc-pal/out/BUILD-PROVENANCE.txt
+            ${{ runner.temp }}/relibc-pal/out/SHA256SUMS
+            ${{ runner.temp }}/relibc-boot/*/serial.log
+            ${{ runner.temp }}/relibc-boot/*/iris.out
+
   cross:
     name: Cross-build (M0 gate)
     runs-on: ubuntu-latest
@@ -657,6 +754,7 @@ jobs:
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
+            --scsi2 "$RUNNER_TEMP/user-hello/hello-disk.raw" \
             --nvram "$work/nvram.bin" \
             --ci-socket "$socket" --monitor-port 18891 \
             --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
@@ -677,6 +775,12 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
+          # The user image on target 2 runs before the kernel console.  This is
+          # the serial half of the unified-console assertion; the telnet and
+          # MCP halves run below once the control plane is up.
+          iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
+          iris-ci --socket "$socket" serial-wait \
+            'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
 
           mcp_sha="$(sha256sum "$http/c" | awk '{print $1}')"
@@ -727,6 +831,84 @@ jobs:
           grep -q 'status=ok root=demo-root@1.0.0 nodes=2 signatures=ed25519' "$work/mcp-modules.txt"
           grep -q 'demo-dep@1.0.0 region=0' "$work/mcp-modules.txt"
           grep -q 'demo-root@1.0.0 region=1' "$work/mcp-modules.txt"
+
+          # #115: the same user write must reach telnet and the MCP serial
+          # ring, not only the serial port.  `userelf` re-runs the target-2
+          # image through the telnet console once the MCP module is resident;
+          # the ring and the telnet queue both receive that run's stdout.
+          python3 - <<'PY'
+          import json
+          import socket
+          import time
+          import urllib.request
+
+          def read_until(sock, marker, timeout):
+              sock.settimeout(timeout)
+              data = b""
+              while marker not in data:
+                  chunk = sock.recv(4096)
+                  if not chunk:
+                      break
+                  data += chunk
+              return data
+
+          sock = None
+          for attempt in range(5):
+              try:
+                  sock = socket.create_connection(("127.0.0.1", 2325), timeout=10)
+                  break
+              except OSError:
+                  if attempt == 4:
+                      raise
+                  time.sleep(2)
+          with sock:
+              read_until(sock, b"sash> ", 30)
+              sock.sendall(b"userelf\r\n")
+              telnet = read_until(
+                  sock, b"user: exit syscall code=0x0000002A", 120
+              )
+          if b"hello from user" not in telnet:
+              raise SystemExit(
+                  "telnet did not mirror user stdout: %r" % telnet[-400:]
+              )
+          if b"hello from user\r\n" not in telnet:
+              raise SystemExit(
+                  "telnet output is not CRLF-framed: %r" % telnet[-400:]
+              )
+          print("telnet console: user stdout mirrored")
+
+          body = json.dumps(
+              {
+                  "jsonrpc": "2.0",
+                  "id": 1,
+                  "method": "tools/call",
+                  "params": {"name": "serial.read", "arguments": {"length": 1024}},
+              }
+          ).encode()
+          request = urllib.request.Request(
+              "http://127.0.0.1:8090/mcp",
+              data=body,
+              headers={"Content-Type": "application/json"},
+          )
+          document = None
+          for attempt in range(3):
+              try:
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      document = json.loads(response.read())
+                  break
+              except Exception:
+                  if attempt == 2:
+                      raise
+                  time.sleep(2)
+          text = "".join(
+              part.get("text", "") for part in document["result"]["content"]
+          )
+          if "hello from user" not in text:
+              raise SystemExit(
+                  "MCP serial.read did not contain user stdout: %r" % text
+              )
+          print("MCP serial.read: user stdout visible")
+          PY
 
           iris-ci --socket "$socket" quit
           wait "$pid"
@@ -1434,7 +1616,7 @@ jobs:
   mesh-real:
     name: Mesh two-kernel (M2 gate)
     runs-on: ubuntu-24.04
-    timeout-minutes: 75
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7
       - name: Install rustup
@@ -1485,20 +1667,23 @@ jobs:
           run_mode() {
             mode="$1"
             base="$2"
+            transport="${3:-relay}"
+            fault="${4:-$mode}"
             work="$RUNNER_TEMP/m2-run-$mode"
-            echo "::group::m2-rig $mode (base port $base)"
+            echo "::group::m2-rig $mode (base port $base, transport $transport, fault $fault)"
             "$bin" run \
               --work "$work" \
               --rom "$build/irix7-rom.bin" \
               --module "$build/mcp.module" \
               --iris "$iris_bin" --iris-ci "$iris_ci" \
-              --base-port "$base" --timeout 240 --fault "$mode"
+              --base-port "$base" --timeout 240 \
+              --transport "$transport" --fault "$fault"
             echo "::endgroup::"
           }
           cleanup() {
             status=$?
             trap - EXIT
-            for mode in none no-peer kill-peer partition udp demo; do
+            for mode in none no-peer kill-peer partition udp direct demo; do
               work="$RUNNER_TEMP/m2-run-$mode"
               if [ -d "$work" ]; then
                 "$bin" down --work "$work" \
@@ -1523,6 +1708,11 @@ jobs:
           # non-blocking Seeq transmit path across two real kernels
           # (M3-ADR-0006).  It runs no join.
           run_mode udp 10100
+          # The direct gate removes the host relay from the mesh path: the
+          # lower NodeId calls tcp_connect through its own NAT peer forward
+          # and the higher NodeId listens.  Join, homes, route, migration and
+          # both restarts run on that link (#245).
+          run_mode direct 10200 direct none
       - name: One-computer M2 transcript
         run: |
           set -euo pipefail
@@ -1544,7 +1734,7 @@ jobs:
           set -euo pipefail
           out="$RUNNER_TEMP/m2-evidence"
           mkdir -p "$out"
-          for mode in none no-peer kill-peer partition udp demo; do
+          for mode in none no-peer kill-peer partition udp direct demo; do
             work="$RUNNER_TEMP/m2-run-$mode"
             if [ -d "$work/evidence" ]; then
               cp -a "$work/evidence" "$out/$mode"

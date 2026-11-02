@@ -23,7 +23,7 @@ connection between the two kernels.
 
 1. **Add one module service, `tcp_connect(slot, address, port)` (ABI 13).**  `address` is
    an IPv4 address in network byte order.  The kernel creates the slot with the same
-   bounded 32 KiB RX / 32 KiB TX rings and the mesh socket policy as `tcp_listen`,
+   bounded 16 KiB RX / 16 KiB TX rings and the mesh socket policy as `tcp_listen`,
    chooses an ephemeral local port, and queues the SYN.  There is no general socket API,
    no bind, no non-blocking accept and no callback in the kernel.
 

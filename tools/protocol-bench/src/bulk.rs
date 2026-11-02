@@ -122,9 +122,12 @@ pub fn run() {
         read_per_tick: 8 * 1024,
     };
     let tuned = Config {
-        name: "#247 (16 KiB RX, burst 15, 16 KiB/tick)",
+        // The shipped Seeq driver clamps the advertised window to seven
+        // segments (10,220 bytes); the socket ring is 16 KiB, so the clamp,
+        // not the ring, is the bound.
+        name: "#247 (16 KiB RX, burst 7, 16 KiB/tick)",
         socket_rx: 16 * 1024,
-        burst: 15,
+        burst: 7,
         read_per_tick: 16 * 1024,
     };
 
@@ -163,7 +166,10 @@ pub fn run() {
             "{:.2}x",
             tuned.bytes_per_tick() as f64 / baseline.bytes_per_tick() as f64
         ),
-        format!("{:.2}x", baseline.ticks_for(TOTAL_BYTES) as f64 / tuned.ticks_for(TOTAL_BYTES) as f64),
+        format!(
+            "{:.2}x",
+            baseline.ticks_for(TOTAL_BYTES) as f64 / tuned.ticks_for(TOTAL_BYTES) as f64
+        ),
         String::new(),
         format!("{:.2}x", tuned_rate / baseline_rate),
     ]);
