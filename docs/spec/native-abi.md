@@ -1427,6 +1427,7 @@ than the method's minimum is `E_INVAL`.
 | 50 | `CELL_E_2BIG` | `E2BIG` |
 | 51 | `CELL_E_MFILE` | `EMFILE` |
 | 52 | `CELL_E_NFILE` | `ENFILE` |
+| 53 | `CELL_E_NOEXEC` | `ENOEXEC` |
 
 `$v1` is zero on error and is never a negative errno.  The kernel does not know the
 libc's `errno` numbering; the mapping table is generated from the `native-abi` crate and
@@ -1579,6 +1580,12 @@ success.  `SYS_EXIT` does not return.
 | 39 | `thread_exit` | `status` |
 | 40 | `futex_wait` | `uaddr`, `expected`, `timeout_ms` |
 | 41 | `futex_wake` | `uaddr`, `count` |
+| 42 | `fork` | — |
+| 43 | `execve` | `path`, `argv`, `envp` |
+| 44 | `waitpid` | `pid`, `status`, `options` |
+| 45 | `wait4` | `pid`, `status`, `options`, `rusage` |
+| 46 | `getppid` | — |
+| 47 | `cell_id` | `struct cell_id *` |
 
 The namespace behind these calls is the in-memory ramfs: a mutable tree of
 inodes with names, sizes and permissions.  `open` takes the path, flags and
@@ -1725,7 +1732,82 @@ id is unique only while its thread is alive; dead slots are reused.  The kernel 
 join primitive: the exit status stays in the slot until the slot is reused.  The libc
 implements `pthread_join` in userland by recording the start routine's return value in
 a libc-owned write word and waking the joiner with `futex_wake` when the thread
-retires.  Preemption and a process table are later slices.
+retires.  Preemption is a later slice.
+
+### 5.10 v0 process gate, cells and mesh identity
+
+IRIX 7 is one logical computer of 1–128 replicas with a global object space, a global
+namespace and a global actor directory ([`system.md`](system.md)).  The native process
+is **one cell with a Unix personality** (D3): `fork` clones the cell, `exec` replaces
+its image, file descriptors are capability handles exposed as fds, and `wait` consumes
+the child's exit event.
+
+The kernel's process table is a **per-replica owner/cache of local cells**, not the
+global process namespace.  Every record carries the cell's global identity from
+creation, plus a local Unix `pid` for the personality view:
+
+```c
+struct cell_id {            /* 80 bytes, 4-byte aligned */
+    uint8_t  job[32];       /* 0x00: mutable Job object identity */
+    uint8_t  actor[16];     /* 0x20: actor instance */
+    uint8_t  home[16];      /* 0x30: node that owns the Job record */
+    uint32_t home_epoch;    /* 0x40: home assignment epoch */
+    uint32_t object_epoch;  /* 0x44: Job generation; exec advances it */
+    int32_t  pid;           /* 0x48: local POSIX pid */
+    uint32_t reserved;      /* 0x4c: zero */
+};
+```
+
+`cell_id(struct cell_id *)` copies the record.  `getpid()` and `getppid()` return only
+the local personality pids; they are not unique across the mesh and are never used as
+object identity.  The table is bounded at eight local cells in v0.  There is no global
+process directory and no `(node, pid)` namespace.
+
+**Creation.**  A new cell gets a fresh `Job` OID and `ActorId`; the home is the actor's
+rendezvous home and the epochs are those the local membership view is routing at.  In
+the single-node base case `home = self` and `home_epoch = 0`.  A child whose rendezvous
+home is a different node must commit its Job at that home before it becomes visible, so
+the local fork fails closed with `CELL_E_NOTSUP` until the routed spawn path exists.
+
+**`fork`.**  Clones the calling cell: every mapped user page, the range list, the heap
+window, the descriptor table (sharing open file descriptions with incremented reference
+counts) and the calling thread's trap frame.  The child has its own address space; no
+copy-on-write in v0.  It returns `0` in the child and the child's local pid in the
+parent.  Threads other than the caller are not cloned, matching `fork`.  The v0 TLB
+switch installs the whole user TLB set (ASID 0) on every process switch; distinct per-cell
+ASIDs are a later optimisation.
+
+**`execve(path, argv, envp)`.**  Resolves a ramfs path, parses the ELF image, builds a
+complete new address space and argv/envp/auxv stack **before** releasing the old one, so
+a load failure leaves the caller's image intact.  The `Job` and `ActorId` are preserved
+and `object_epoch` advances; the image's entry point is entered without returning.  A
+non-ELF image is `CELL_E_NOEXEC` (status 53, errno `ENOEXEC`).  Descriptors with
+`FD_CLOEXEC` are closed; other descriptors and their shared offsets survive.  The v0
+closure stages the second image from SCSI target 3 as `/bin/child`; any ramfs `Image`
+node is a valid path-based target.
+
+**`waitpid` / `wait4`.**  The local fast path over the child's exit event.  The kernel
+blocks the parent, switches to a runnable child and resumes the parent when the child
+exits.  The wait status is `(exit_status & 0xff) << 8`; a child that has exited and not
+been reaped is a zombie and is consumed by the successful wait.  `WNOHANG` probes and
+returns 0 without blocking; pid `-1` (and `0`, which has no process groups in v0) matches
+any child; a non-child is `ECHILD`.  `wait4` accepts the fourth `rusage` pointer and
+zero-fills 144 bytes.  A parent that exits first leaves the child reparented to pid 0;
+an orphan that exits with no live parent is reclaimed immediately.
+
+**Mesh path (M4).**  A remote spawn, exec or wait is a **capability invocation routed to
+the cell's home**, not a second process-service RPC and not a replicated process table.
+The handle is the `Job`/actor identity, home, home epoch and object epoch in the token;
+the home validates them against its actor directory.  A stale home epoch or object
+epoch, and any handle whose actor record is absent after a node restart, is refused
+rather than retried blindly.  The 128-node acceptance is the global actor
+directory/placement and capability routing; each replica owns only its local process
+table.
+
+**Deliberately local in v0.**  No remote spawn/wait/exec, no distributed process table,
+no COW, no signals, no job control, no more than eight local cells, and no dynamic
+linking.  `irix7-pal` maps `fork`, `execve`, `waitpid` and `getppid` onto this local
+fast path; the POSIX surface does not expose the cell handle yet.
 
 ---
 

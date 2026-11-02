@@ -61,6 +61,7 @@ pub const CELL_E_NOTBLK: u32 = 49;
 pub const CELL_E_2BIG: u32 = 50;
 pub const CELL_E_MFILE: u32 = 51;
 pub const CELL_E_NFILE: u32 = 52;
+pub const CELL_E_NOEXEC: u32 = 53;
 
 /// Map a native status to the libc `errno` value.
 ///
@@ -122,6 +123,7 @@ pub const fn status_to_errno(status: u32) -> c_int {
         CELL_E_2BIG => 7,
         CELL_E_MFILE => 24,
         CELL_E_NFILE => 23,
+        CELL_E_NOEXEC => 8,
         _ => 5, // EIO for an unknown status; never guessed as success.
     }
 }

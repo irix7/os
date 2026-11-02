@@ -28,7 +28,7 @@ set -eu
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT=${1:-$REPO/target/relibc-pal}
 SRC=${RELIBC_SRC:-/tmp/opencode/relibc-pal-src}
-PINNED=bf5fee5e29a7a5054fa3cf82f6c5916de4b45b19
+PINNED=8a7e044f584945dbf5fdbad11fd76e16daa420b9
 WANT=${RELIBC_COMMIT:-$PINNED}
 REMOTE=${RELIBC_REMOTE:-https://github.com/irix7/relibc}
 TARGET="$REPO/targets/mips3-sgi-irix7-native-n32.json"
@@ -37,6 +37,8 @@ THREAD_PROBE="$REPO/user/relibc-thread-probe"
 FUTEX_PROBE="$REPO/user/relibc-futex-probe"
 PTHREAD_PROBE="$REPO/user/relibc-pthread-probe"
 SLEEP_PROBE="$REPO/user/relibc-sleep-probe"
+FORKEXEC_PROBE="$REPO/user/relibc-forkexec-probe"
+FORKEXEC_CHILD="$REPO/user/relibc-forkexec-child"
 LINKER="$PROBE/linker.ld"
 CARGO=${CARGO:-cargo}
 TARGET_DIR=${CARGO_TARGET_DIR:-$OUT/target}
@@ -75,7 +77,7 @@ else
     exit 2
 fi
 
-if [ ! -d "$SRC/.git" ]; then
+if [ ! -e "$SRC/.git" ]; then
     echo "build-relibc-probe: cloning $REMOTE into $SRC"
     git clone --recurse-submodules --branch irix7-pal "$REMOTE" "$SRC"
 fi
@@ -156,6 +158,23 @@ LDFLAGS="-mabi=n32 -march=mips3 -msoft-float -mno-abicalls -fno-pic \
     -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
     -Wl,--end-group
 
+# The fork/exec probe is two images: the parent at target 2 and the child at
+# target 3.  Both use the same relibc and linker script.
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$FORKEXEC_PROBE/probe.c" -o "$OUT/forkexec-probe.o"
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/forkexec-probe.elf" \
+    "$OUT/forkexec-probe.o" \
+    -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$FORKEXEC_CHILD/probe.c" -o "$OUT/forkexec-child.o"
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/forkexec-child.elf" \
+    "$OUT/forkexec-child.o" \
+    -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+
 # The kernel's ELF loader reads a 256 KiB raw target-2 image.  The linked
 # segment ends well inside the slot, but the unstripped symbol table pushes the
 # file over it; strip before padding.
@@ -186,6 +205,8 @@ thread_size=$(finish_image "$OUT/thread-probe.elf" "$OUT/thread-probe.raw")
 futex_size=$(finish_image "$OUT/futex-probe.elf" "$OUT/futex-probe.raw")
 pthread_size=$(finish_image "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw")
 sleep_size=$(finish_image "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw")
+forkexec_size=$(finish_image "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw")
+forkexec_child_size=$(finish_image "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw")
 
 {
     echo "relibc=$have"
@@ -196,12 +217,16 @@ sleep_size=$(finish_image "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw")
     echo "futex_probe_elf=$futex_size bytes"
     echo "pthread_probe_elf=$pthread_size bytes"
     echo "sleep_probe_elf=$sleep_size bytes"
+    echo "forkexec_probe_elf=$forkexec_size bytes"
+    echo "forkexec_child_elf=$forkexec_child_size bytes"
 } >"$OUT/BUILD-PROVENANCE.txt"
 sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
     "$OUT/thread-probe.elf" "$OUT/thread-probe.raw" \
     "$OUT/futex-probe.elf" "$OUT/futex-probe.raw" \
     "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw" \
-    "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw" >"$OUT/SHA256SUMS"
+    "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw" \
+    "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw" \
+    "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw" >"$OUT/SHA256SUMS"
 
 echo "build-relibc-probe: ELF $OUT/probe.elf"
 echo "build-relibc-probe: raw $OUT/probe.raw"
@@ -213,4 +238,8 @@ echo "build-relibc-probe: pthread ELF $OUT/pthread-probe.elf"
 echo "build-relibc-probe: pthread raw $OUT/pthread-probe.raw"
 echo "build-relibc-probe: sleep ELF $OUT/sleep-probe.elf"
 echo "build-relibc-probe: sleep raw $OUT/sleep-probe.raw"
+echo "build-relibc-probe: forkexec ELF $OUT/forkexec-probe.elf"
+echo "build-relibc-probe: forkexec raw $OUT/forkexec-probe.raw"
+echo "build-relibc-probe: forkexec child ELF $OUT/forkexec-child.elf"
+echo "build-relibc-probe: forkexec child raw $OUT/forkexec-child.raw"
 cat "$OUT/BUILD-PROVENANCE.txt"

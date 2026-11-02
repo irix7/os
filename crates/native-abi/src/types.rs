@@ -113,6 +113,40 @@ pub struct io_at {
     pub offset: off_t,
 }
 
+/// The global identity of a native process (one cell with a Unix personality).
+///
+/// The process table is a per-replica owner/cache of local cells; the global
+/// identity is the `Job` object, its actor instance, the home that owns it and
+/// the home/object epochs that fence stale handles.  `pid` is the local Unix
+/// personality view and is not unique across the mesh.
+///
+/// `SYS_CELL_ID` copies this 80-byte record into a caller buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct cell_id {
+    /// The mutable `Job` object identity.
+    pub job: [u8; 32],
+    /// The actor instance that executes the cell.
+    pub actor: [u8; 16],
+    /// The node that owns the `Job` record.
+    pub home: [u8; 16],
+    /// Home assignment epoch.
+    pub home_epoch: u32,
+    /// Job object generation; `exec` advances it.
+    pub object_epoch: u32,
+    /// Local POSIX process id (personality view).
+    pub pid: c_int,
+    /// Reserved; must be zero.
+    pub reserved: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<cell_id>() == 80);
+const _: () = assert!(core::mem::offset_of!(cell_id, actor) == 32);
+const _: () = assert!(core::mem::offset_of!(cell_id, home) == 48);
+const _: () = assert!(core::mem::offset_of!(cell_id, home_epoch) == 64);
+const _: () = assert!(core::mem::offset_of!(cell_id, object_epoch) == 68);
+const _: () = assert!(core::mem::offset_of!(cell_id, pid) == 72);
+
 /// The first 16 bytes of a thread's TCB; every thread's `$28` points here.
 ///
 /// The libc allocates the TCB and appends its own key table.  The kernel

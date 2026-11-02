@@ -81,3 +81,19 @@ pub const SYS_FUTEX_WAIT: u32 = 40;
 /// `futex_wake(uaddr, count)`; make up to `count` waiters on `uaddr` runnable
 /// and return how many were woken.
 pub const SYS_FUTEX_WAKE: u32 = 41;
+/// `fork()`; clone the calling cell and return the child's local pid in the
+/// parent and 0 in the child.
+pub const SYS_FORK: u32 = 42;
+/// `execve(path, argv, envp)`; replace the cell image from a ramfs path and
+/// enter the new image.  Does not return on success.
+pub const SYS_EXECVE: u32 = 43;
+/// `waitpid(pid, status, options)`; reap a local child, blocking until it
+/// exits unless `WNOHANG` is set.
+pub const SYS_WAITPID: u32 = 44;
+/// `wait4(pid, status, options, rusage)`; the `waitpid` fast path with the
+/// `rusage` argument accepted and zero-filled in v0.
+pub const SYS_WAIT4: u32 = 45;
+/// `getppid()`; the local parent pid, or 0 when there is no live parent.
+pub const SYS_GETPPID: u32 = 46;
+/// `cell_id(struct cell_id *)`; copy the mesh-qualified process identity.
+pub const SYS_CELL_ID: u32 = 47;

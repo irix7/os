@@ -557,6 +557,13 @@ and COW requires page-table manipulation that the SAS kernel does not otherwise 
 The native libc should prefer `posix_spawn`/`exec` for new processes; `fork` remains for
 compatibility with Unix-shaped code and for the IRIX container.
 
+The v0 implementation is a per-replica process table of local cells; every record
+carries the global `Job`/actor identity, home and epochs, and the Unix `pid` is only the
+personality view.  It is not a global process directory: a remote spawn, exec or wait
+is a capability invocation routed to the cell's home.  The gate, the `cell_id` record
+and the deliberate local limits are in
+[`native-abi.md` §5.10](native-abi.md#510-v0-process-gate-cells-and-mesh-identity).
+
 ### 5.5 Unix-shaped libc
 
 The native libc is a separate library from the IRIX libc. Its normative API baseline is

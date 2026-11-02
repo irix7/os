@@ -82,6 +82,27 @@ pub fn user_abi() -> UserAbi {
     unsafe { USER_ABI }
 }
 
+/// Select the ABI for the process that is about to run.
+pub(crate) fn set_user_abi(abi: UserAbi) {
+    // SAFETY: single-threaded kernel; a process switch installs its own ABI
+    // before the trap epilogue returns to user mode.
+    unsafe {
+        USER_ABI = abi;
+    }
+}
+
+/// The status word for a fresh user frame.
+///
+/// The exception return path restores this word and `eret` clears `EXL`; the
+/// frame therefore holds user mode, 64-bit addressing and interrupts enabled,
+/// with every exception-bit cleared.
+pub(crate) fn user_entry_status() -> u64 {
+    let mut status = status_read();
+    status &= !(STATUS_KSU_MASK | STATUS_ERL | STATUS_EXL);
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15);
+    status as u64
+}
+
 const CAUSE_BD: u32 = 0x8000_0000; // Branch Delay slot
 
 // Exception codes.
@@ -180,10 +201,10 @@ static mut LL_SCRATCH: u64 = 0;
 /// Separate kernel stack for the exception handler.  A user exception may
 /// arrive with an untrusted `$sp`; the handler must not run on it.
 #[repr(align(16))]
-struct TrapStack([u8; 16 * 1024]);
+struct TrapStack([u8; 64 * 1024]);
 
 #[no_mangle]
-static mut TRAP_STACK: TrapStack = TrapStack([0; 16 * 1024]);
+static mut TRAP_STACK: TrapStack = TrapStack([0; 64 * 1024]);
 
 /// Kernel `$sp`/`$ra` to restore when a user exit returns to the console.
 #[no_mangle]
@@ -523,7 +544,8 @@ trap_entry:
        the frame and is restored below. */
     lui     $sp, %hi(TRAP_STACK)
     addiu   $sp, $sp, %lo(TRAP_STACK)
-    addiu   $sp, $sp, 16384
+    lui     $k1, 1
+    addu    $sp, $sp, $k1
 
     move    $a0, $k0
     jal     trap_handler
@@ -846,7 +868,11 @@ pub(crate) fn thread_entry_status(saved: u64) -> u64 {
     status as u64
 }
 
-/// Return from a user exit syscall to the kernel console trampoline.
+/// Return from the last process exit to the kernel console trampoline.
+///
+/// The process table has already released the address space, descriptors and
+/// threads.  This only restores the console caller's saved context and switches
+/// the frame back to kernel mode.
 pub(crate) fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
     crate::thread::exit_all();
     crate::user::cleanup();
@@ -1277,6 +1303,7 @@ pub fn tlb_self_test() -> bool {
 /// [`user_from_console`] and returns there after the exit syscall.
 #[no_mangle]
 pub extern "C" fn user_smoke() -> ! {
+    crate::user::cleanup();
     let code_phys = crate::frames::alloc_frame().expect("user smoke: code frame");
     let stack_phys = crate::frames::alloc_frame().expect("user smoke: stack frame");
     let code_phys = code_phys as u32;
@@ -1302,24 +1329,26 @@ pub extern "C" fn user_smoke() -> ! {
     crate::cache::dcache_writeback_invalidate(code_alias as usize, code.len() * 4);
     crate::cache::sync();
 
-    crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
-    crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
-    crate::user::record_range(0x1000_0000, 0x1000_2000);
-    crate::user::record_range(0x1000_2000, 0x1000_3000);
+    let mut space = crate::user::Space::EMPTY;
+    if !space.install_page(0x1000_0000, code_phys as u64)
+        || !space.install_page(0x1000_2000, stack_phys as u64)
+    {
+        crate::println("user smoke: mapping failed");
+        crate::user::cleanup();
+        loop {
+            core::hint::spin_loop();
+        }
+    }
 
-    run_user(0x1000_0000, 0x1000_2000, 0, 0, 0, 0)
+    run_user_abi(space, UserAbi::N32, 0x1000_0000, 0x1000_2000, 0, 0, 0, 0);
+    loop {
+        core::hint::spin_loop();
+    }
 }
 
-/// Enter user mode at `entry` with `user_sp`, `argc`, `argv`, `envp` and
-/// `auxv` (the System V auxiliary-vector pointer).
-///
-/// This is the native n32 entry; the legacy loader uses [`run_user_abi`].
-pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32, auxv: u32) -> ! {
-    run_user_abi(UserAbi::N32, entry, user_sp, argc, argv, envp, auxv)
-}
-
-/// Enter user mode with an explicit ABI.
+/// Enter user mode with an explicit ABI and a prepared address space.
 pub fn run_user_abi(
+    space: crate::user::Space,
     abi: UserAbi,
     entry: u32,
     user_sp: u32,
@@ -1327,19 +1356,24 @@ pub fn run_user_abi(
     argv: u32,
     envp: u32,
     auxv: u32,
-) -> ! {
-    // SAFETY: single-threaded kernel; the trap handler reads this.
-    unsafe {
-        USER_ABI = abi;
-    }
+) {
     let kernel_gp: u32;
     unsafe {
         core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
         USER_KERNEL_GP = kernel_gp;
     }
 
-    // A fresh image starts with tid 1 as its only running thread.
-    crate::thread::reset();
+    // Install the first process, its thread table and its TLB set.  A failure
+    // here leaves the console owning the machine.
+    if let Err(status) =
+        crate::process::start_first(space, abi, entry, user_sp, argc, argv, envp, auxv)
+    {
+        crate::print_str("userelf: process start failed: 0x");
+        crate::print_hex32(status);
+        crate::println("");
+        crate::user::cleanup();
+        return;
+    }
 
     // Set up the user entry with interrupts masked by EXL.  If IE is enabled
     // before EPC is set, a timer interrupt can overwrite EPC; the following
@@ -1348,6 +1382,7 @@ pub fn run_user_abi(
     status &= !(STATUS_KSU_MASK | STATUS_ERL | STATUS_IE);
     status_write(status);
     epc_write(entry);
+    entryhi_write(crate::process::current_asid() & 0xFF);
     status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15) | STATUS_EXL;
     status_write(status);
 

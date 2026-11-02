@@ -12,12 +12,13 @@
 //! it returns [`Gate::Resume`] and the epilogue must not advance it again.
 
 use native_abi::syscall::{
-    SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXIT, SYS_FCNTL, SYS_FSTAT,
-    SYS_FTRUNCATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY,
-    SYS_GETPID, SYS_LSEEK, SYS_MKDIR, SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN,
-    SYS_PIPE, SYS_PIPE2, SYS_POLL, SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME,
-    SYS_RMDIR, SYS_SIGNAL, SYS_STAT, SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE,
-    SYS_THREAD_EXIT, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SYS_YIELD,
+    SYS_CELL_ID, SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXECVE, SYS_EXIT,
+    SYS_FCNTL, SYS_FORK, SYS_FSTAT, SYS_FTRUNCATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETCWD,
+    SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_GETPPID, SYS_LSEEK, SYS_MKDIR, SYS_MMAP,
+    SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL, SYS_PREAD,
+    SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SIGNAL, SYS_STAT,
+    SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TRUNCATE,
+    SYS_UNLINK, SYS_WAIT4, SYS_WAITPID, SYS_WRITE, SYS_YIELD,
 };
 
 use crate::syserr::{SysResult, CELL_E_NOSYS};
@@ -42,8 +43,52 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
     let a3 = tf.arg(7);
 
     if number == SYS_EXIT {
-        crate::traps::finish_user_exit(tf, a0);
-        return Gate::Resume;
+        return match crate::process::exit_current(tf, a0) {
+            crate::process::Exit::Switched => Gate::Resume,
+            crate::process::Exit::Last => {
+                crate::traps::finish_user_exit(tf, a0);
+                Gate::Resume
+            }
+        };
+    }
+
+    if number == SYS_FORK {
+        return match crate::process::fork(tf) {
+            Ok(pid) => {
+                tf.regs[2] = native_abi::status::CELL_OK as u64;
+                tf.regs[3] = pid as u64;
+                Gate::Continue
+            }
+            Err(status) => {
+                tf.regs[2] = status as u64;
+                tf.regs[3] = 0;
+                Gate::Continue
+            }
+        };
+    }
+
+    if number == SYS_EXECVE {
+        return match crate::process::exec(tf, a0, a1, a2) {
+            Ok(()) => Gate::Resume,
+            Err(status) => {
+                tf.regs[2] = status as u64;
+                tf.regs[3] = 0;
+                Gate::Continue
+            }
+        };
+    }
+
+    if number == SYS_WAITPID || number == SYS_WAIT4 {
+        let rusage = if number == SYS_WAIT4 { a3 } else { 0 };
+        return match crate::process::wait(tf, a0 as i32, a1, a2 as i32, rusage) {
+            Ok(crate::process::Wait::Switched) => Gate::Resume,
+            Ok(crate::process::Wait::Continue) => Gate::Continue,
+            Err(status) => {
+                tf.regs[2] = status as u64;
+                tf.regs[3] = 0;
+                Gate::Continue
+            }
+        };
     }
 
     if number == SYS_YIELD {
@@ -61,10 +106,13 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
     if number == SYS_THREAD_EXIT {
         return match crate::thread::exit_current(tf, a0) {
             Exit::Switched => Gate::Resume,
-            Exit::Last => {
-                crate::traps::finish_user_exit(tf, a0);
-                Gate::Resume
-            }
+            Exit::Last => match crate::process::exit_current(tf, a0) {
+                crate::process::Exit::Switched => Gate::Resume,
+                crate::process::Exit::Last => {
+                    crate::traps::finish_user_exit(tf, a0);
+                    Gate::Resume
+                }
+            },
         };
     }
 
@@ -114,7 +162,9 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         SYS_POLL => crate::user::poll_user(a0, a1, a2 as i32).map(|ready| ready as u64),
         SYS_GETENTROPY => crate::user::entropy_user(a0, a1).map(|()| 0),
         SYS_CLOCK_GETTIME => crate::user::clock_user(a0, a1).map(|()| 0),
-        SYS_GETPID => Ok(1),
+        SYS_GETPID => Ok(crate::process::current_pid() as u64),
+        SYS_GETPPID => Ok(crate::process::current_ppid() as u64),
+        SYS_CELL_ID => crate::user::cell_id_user(a0).map(|()| 0),
         SYS_FSTAT => crate::user::fstat_user(a0, a1).map(|()| 0),
         SYS_STAT => crate::user::stat_user(a0, a1).map(|()| 0),
         SYS_READDIR => {
