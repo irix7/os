@@ -243,6 +243,13 @@ fn error_reason(step: &Step) -> Reason {
     }
 }
 
+fn reject_reason(step: &Step) -> Option<Reason> {
+    step.events.iter().find_map(|event| match event {
+        Event::Reject { reason, .. } => Some(*reason),
+        _ => None,
+    })
+}
+
 #[test]
 fn remote_operation_completes_at_the_confirmed_home() {
     let mut pair = Pair::new();
@@ -1309,6 +1316,45 @@ fn the_write_lease_is_shorter_than_the_failure_window() {
     const HEARTBEAT_MS: u64 = 5_000;
     const _: () = assert!(WRITE_LEASE_MS < FAIL_AFTER_MS);
     const _: () = assert!(HEARTBEAT_MS + WRITE_LEASE_MS < FAIL_AFTER_MS);
+}
+
+#[test]
+fn a_named_object_moves_to_the_requested_home() {
+    let mut pair = Pair::new();
+    let object = remote_object();
+    assert_eq!(pair.a.current_home(&object), Some((B, 2)));
+    let step = pair.a.move_object(object, A, pair.now, &pair.signer);
+    let wire = step.send.as_ref().expect("the move directive");
+    assert_eq!(wire.dst, B);
+    assert!(step.events.iter().any(|event| matches!(
+        event,
+        Event::Move {
+            object: moved,
+            from: B,
+            to: A,
+            role: "new",
+            ..
+        } if *moved == object
+    )));
+    assert_eq!(pair.a.current_home(&object), Some((A, 3)));
+}
+
+#[test]
+fn moving_an_object_to_its_current_home_is_refused() {
+    let mut pair = Pair::new();
+    let local = local_object();
+    let step = pair.a.move_object(local, A, pair.now, &pair.signer);
+    assert_eq!(reject_reason(&step), Some(Reason::BadMove));
+    assert!(step.send.is_none());
+}
+
+#[test]
+fn only_the_authority_root_moves_an_object() {
+    let mut pair = Pair::new();
+    let object = local_object();
+    let step = pair.b.move_object(object, B, pair.now, &pair.signer);
+    assert_eq!(reject_reason(&step), Some(Reason::WrongSubject));
+    assert!(step.send.is_none());
 }
 
 #[test]

@@ -2,7 +2,8 @@
 
 **Status:** working and in CI; M2-1 transport, M2-2 join/epoch with a signed persistent
 epoch store, M2-3 rendezvous homes, the M2-4 remote capability route, M2-5 L0 actor
-migration and the M2-6 failure/fence/partition slice
+migration, the M2-6 failure/fence/partition slice and the one-computer M2 transcript
+(#329)
 **Scope:** M2-0 foundation, the M2-1 framed mesh transport, the M2-2 join, the M2-3
 rendezvous homes, the M2-4 remote capability route, the M2-5 two-way L0 stackless-actor
 migration and the M2-6 failure, lease-fencing and partition modes. The rig starts two independent kernels, proves both reach `BOOT-READY`
@@ -45,7 +46,7 @@ The decisions behind the rig are [M2-ADR-0001](../adr/m2-0001-two-node-rig.md),
 
 - The pinned Rust nightly with `rust-src` (see `rust-toolchain.toml`).
 - An `iris` binary with instance support (`--instance`, `--print-instance`; the
-  `0.1.7+irix7` tree has it, and CI pins `v0.1.10+irix7`).
+  `0.1.7+irix7` tree has it, and CI pins `v0.1.13+irix7`).
 - The matching `iris-ci` binary from the same release.
 - The repository's `targets/mips3-sgi-irix7-n32.json` and the kernel/ROM/MCP sources.
 - No root, no `CAP_NET_RAW` and no pcap feature are required.
@@ -377,6 +378,12 @@ the route policy chooses the first fixture object with the required confirmed ho
 | 3 | n0 repeats the stat on its stale n1 route; n1 answers `MOVED`; n0 retries once locally and completes. |
 | 4 | n0 signs a move of the first n0-homed fixture object to n1. |
 | 5 | n0 repeats the stat on its stale n0 route; the local old home answers `MOVED`; n0 retries once at n1 and completes. |
+
+The one-computer console (#329) uses the same policy through a named object instead of the
+fixed steps: `GET /mesh/route?op=stat&object=<hex>` and
+`GET /mesh/route?op=move&object=<hex>`.  `move` always moves the object to the node that
+receives the request.  The fixed `?step=N` surface remains the M2-4 lab control; there is
+no second directory and no second lease path.
 
 The MCP HTTP slot keeps its close handshake for up to 5 s. The rig waits 10 s after the
 join/homes serial group before the first control-plane fetch and 6 s before each
@@ -754,6 +761,63 @@ sha256: ...
 
 The 38-byte body is the MCP status page (`IRIX 7 module HTTP server\nuptime: N s\n`). The
 digest changes with the uptime; the status and byte count are the pass criteria.
+
+## One-computer transcript (#329)
+
+`m2-rig demo` is the operator-facing M2 object/actor proof.  It uses the same two iris
+processes and the same MCP module, but starts them with `mesh.route=2` and `mesh.fail=1`
+and prints one prompt.  The command text never names a node, a route, a port or an HTTP
+path:
+
+```text
+irix7> nodes
+irix7> homes
+irix7> stat <object>
+irix7> move <object>
+irix7> actor
+irix7> move actor
+irix7> fail
+irix7> nodes
+irix7> homes
+irix7> stat <object>
+irix7> recover
+irix7> nodes
+irix7> homes
+irix7> actor
+irix7> stat <object>
+irix7>
+```
+
+`stat` and `move` use the named route operations
+`GET /mesh/route?op=stat&object=<hex>` and `?op=move&object=<hex>`.  `move` always moves
+the named object to the node answering the prompt, so the target is implicit.  `move
+actor` uses the existing `/mesh/migrate?step=2|7` surface and picks the direction from the
+actor's current host.  `fail` sends `SIGKILL` to the member and drops the host relay;
+`recover` starts the member through the rig's process helpers, resets the survivor's guest
+link with `mesh.reconnect`, starts a fresh relay and requires both ends to report the same
+epoch and digest before returning the prompt.
+
+The run writes `<work>/demo/transcript.txt`, `summary.md`, `checks.txt`, `commands.txt`,
+the current serial logs and `serial-n1-before-failure.log`.  A sample pass is
+[`tools/one-computer/transcript.txt`](../../tools/one-computer/transcript.txt).  The
+assertions are:
+
+- the same `irix7> ` prompt before and after the failure and at the end;
+- no user-facing command contains a node name, NodeId, route, HTTP path or port;
+- the named object was read at the peer and moved to the console node; a following read
+  consumed exactly one `MOVED` and retried;
+- the L0 actor moved root to member and back with the same state hash;
+- the peer-homed witness object failed closed as unavailable immediately after the kill;
+- the survivor reported suspect, failed and removed, advanced one epoch, fenced six cached
+  routes and re-homed every object locally;
+- the restarted member sent a fresh join request and both nodes converged at epoch 4 with
+  the same two-member table and digest;
+- the actor state hash on the survivor was unchanged.
+
+The module code path is the real route and migration policy; the console only selects the
+object and actor fixture.  This is not fork/exec over cells, process migration or a POSIX
+session.  The actor is not persisted across a member crash; the transcript returns it to
+the survivor before the kill.
 
 ## Known limitations
 

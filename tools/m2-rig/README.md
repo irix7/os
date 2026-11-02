@@ -52,6 +52,7 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
 | `probe` | Probe HTTP, mesh framing, join, homes and the route against running nodes; no restart. |
+| `demo` | Start two real kernels with `mesh.route=2` and `mesh.fail=1`, then run the one-computer M2 object/actor transcript and write `<work>/demo/`.  See [`../one-computer/README.md`](../one-computer/README.md). |
 | `down` | Stop both through their CI sockets. |
 | `print-config` | Print the derived instance, port and NVRAM table. |
 | `clean` | Remove the work directory (stop the nodes first). |
@@ -141,6 +142,39 @@ The kernel's `BOOT-READY` still says `mesh=single`: that is the M1 bootstrap vie
 before any module runs. The confirmed membership is the module's `mesh-join: converged`
 line. The rig never uses `mesh-sim` as evidence.
 
+## One-computer transcript (#329)
+
+`demo` is the human-facing M2 proof.  It starts the same two kernels and module, then
+prints one prompt:
+
+```text
+irix7> nodes
+irix7> homes
+irix7> stat <object>
+irix7> move <object>
+irix7> actor
+irix7> move actor
+irix7> fail
+irix7> nodes
+irix7> homes
+irix7> stat <object>
+irix7> recover
+irix7> nodes
+irix7> homes
+irix7> actor
+irix7> stat <object>
+irix7>
+```
+
+`stat` and `move` use `GET /mesh/route?op=stat|move&object=<hex>`; `move` moves the named
+object to the node answering the prompt.  `move actor` uses the M2-5
+`/mesh/migrate?step=2|7` surface and chooses the direction from the actor's host.  `fail`
+kills the member with `SIGKILL` and drops the host relay; `recover` restarts it through
+the rig's process helpers, resets the survivor's guest link and waits for a two-ended
+epoch/digest match.  The transcript and `summary.md` are written under `<work>/demo/`.
+This is the M2 object/actor proof, not fork/exec over cells; that path lands after
+#326/#327.
+
 ## NVRAM keys
 
 | Key | Meaning |
@@ -196,6 +230,7 @@ and the actor state/migration/duplicate/capability tests are in `crates/mesh-mig
 | `src/route.rs` | Route report codec, independent value oracle and five-step driver. |
 | `src/migrate.rs` | Migration report codec, independent actor/hash oracle and eleven-step driver. |
 | `src/failure.rs` | M2-6 kill-peer/partition scenario, expected views and checks. |
+| `src/demo.rs` | The one-computer M2 transcript: prompt, named-object route, actor moves, kill/rejoin and the transcript assertions. |
 | `src/relay.rs` | HTTP relay and the persistent mesh relay. |
 | `src/evidence.rs` | `summary.md`, `run.json` and the deterministic `manifest.json`. |
 | `src/fixture.rs` | Loopback HTTP module fixture. |

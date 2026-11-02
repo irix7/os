@@ -1241,16 +1241,24 @@ fn migrate_line(out: &mut [u8], status: u16, state: &str) -> (u16, usize) {
 /// a `MOVED` was consumed), and the refusal/timeout counters.  `?step=N`
 /// drives one rig step (`1` remote stat, `2` move peer->self, `3` stale stat,
 /// `4` move self->peer, `5` stale stat).  The rig chooses the order; the route
-/// policy chooses the object from the confirmed rendezvous view.  It is not a
-/// directory and it is not persisted.
+/// policy chooses the object from the confirmed rendezvous view.
+///
+/// `?op=stat&object=<hex>` and `?op=move&object=<hex>` are the same policy
+/// through a named object: the one-computer console uses them instead of the
+/// fixed rig steps.  `move` always moves the object to the node that received
+/// the request, which is the console's node.  It is not a directory and it is
+/// not persisted.
 #[inline(never)]
 pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
-    let step = match route_step(path) {
-        Ok(step) => step,
+    let query = match route_query(path) {
+        Ok(query) => query,
         Err(()) => return route_line(out, 400, "state=bad-request reason=query"),
     };
-    if let Some(step) = step {
-        return route_command(services, step, out);
+    match query {
+        RouteQuery::Step(step) => return route_command(services, step, out),
+        RouteQuery::Stat(object) => return route_object_command(services, object, false, out),
+        RouteQuery::Move(object) => return route_object_command(services, object, true, out),
+        RouteQuery::Report => {}
     }
     // SAFETY: the module is single-threaded and `MESH` is written once at
     // entry; no mutable reference to it is live here.
@@ -1357,24 +1365,120 @@ pub fn route_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16,
     (200, body.len())
 }
 
-fn route_step(path: &[u8]) -> Result<Option<u8>, ()> {
+enum RouteQuery {
+    Report,
+    Step(u8),
+    Stat(ObjectId),
+    Move(ObjectId),
+}
+
+fn route_query(path: &[u8]) -> Result<RouteQuery, ()> {
     if path == b"/mesh/route" {
-        return Ok(None);
+        return Ok(RouteQuery::Report);
     }
     let Some(query) = path.strip_prefix(b"/mesh/route?") else {
         return Err(());
     };
-    let Some(value) = query.strip_prefix(b"step=") else {
+    if let Some(value) = query.strip_prefix(b"step=") {
+        if value.is_empty() || value.len() > 2 || !value.iter().all(|byte| byte.is_ascii_digit()) {
+            return Err(());
+        }
+        let mut step = 0u8;
+        for byte in value {
+            step = step.saturating_mul(10).saturating_add(*byte - b'0');
+        }
+        return Ok(RouteQuery::Step(step));
+    }
+    let Some(rest) = query.strip_prefix(b"op=") else {
         return Err(());
     };
-    if value.is_empty() || value.len() > 2 || !value.iter().all(|byte| byte.is_ascii_digit()) {
+    let Some(separator) = rest.iter().position(|byte| *byte == b'&') else {
         return Err(());
+    };
+    let (operation, rest) = rest.split_at(separator);
+    let Some(value) = rest.get(1..).and_then(|rest| rest.strip_prefix(b"object=")) else {
+        return Err(());
+    };
+    let object = parse_object_hex(value).ok_or(())?;
+    match operation {
+        b"stat" => Ok(RouteQuery::Stat(object)),
+        b"move" => Ok(RouteQuery::Move(object)),
+        _ => Err(()),
     }
-    let mut step = 0u8;
-    for byte in value {
-        step = step.saturating_mul(10).saturating_add(*byte - b'0');
+}
+
+fn parse_object_hex(bytes: &[u8]) -> Option<ObjectId> {
+    if bytes.len() != 64 {
+        return None;
     }
-    Ok(Some(step))
+    let mut object = [0u8; 32];
+    for (index, byte) in object.iter_mut().enumerate() {
+        let high = hex_value(bytes[index * 2])?;
+        let low = hex_value(bytes[index * 2 + 1])?;
+        *byte = (high << 4) | low;
+    }
+    Some(ObjectId::from_bytes(object))
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+#[inline(never)]
+fn route_object_command(
+    services: &Services,
+    object: ObjectId,
+    move_object: bool,
+    out: &mut [u8],
+) -> (u16, usize) {
+    // SAFETY: the module tick is single-threaded and no other reference to
+    // `MESH` is live while the HTTP handler runs.
+    let Some(mesh) = (unsafe { (&mut *core::ptr::addr_of_mut!(MESH)).as_mut() }) else {
+        return route_line(out, 404, "state=disabled reason=peer");
+    };
+    let now = (services.clock_ms)();
+    let self_id = mesh.self_id;
+    let Some(join) = mesh.join.as_ref() else {
+        return route_line(out, 404, "state=disabled reason=join");
+    };
+    let signer = JoinSigner(join);
+    let Some(route) = mesh.route.as_mut() else {
+        return route_line(out, 404, "state=disabled reason=config");
+    };
+    let step_result = if move_object {
+        route.move_object(object, self_id, now, &signer)
+    } else {
+        route.begin_operation(object, now, &signer)
+    };
+    let rejected = step_result.events.iter().find_map(|event| match event {
+        mesh_route::Event::Reject { reason, .. } => Some(*reason),
+        _ => None,
+    });
+    mesh.dispatch_route(services, step_result, now);
+    let mut body = Body::new(out);
+    body.str("mesh-route: ");
+    if rejected.is_some() {
+        body.str("rejected op=");
+    } else {
+        body.str("started op=");
+    }
+    body.str(if move_object { "move" } else { "stat" });
+    body.str(" object=");
+    body.hex(object.as_bytes());
+    if let Some(reason) = rejected {
+        body.str(" reason=");
+        body.str(reason.as_str());
+        body.push(b'\n');
+        (409, body.len())
+    } else {
+        body.push(b'\n');
+        (202, body.len())
+    }
 }
 
 #[inline(never)]

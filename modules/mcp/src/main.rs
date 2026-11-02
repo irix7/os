@@ -521,7 +521,11 @@ static mut SENT: usize = 0;
 /// single HTTP slot: the send aborts after `SEND_TIMEOUT_MS` and re-arms.
 static mut SEND_START_MS: u64 = 0;
 const SEND_TIMEOUT_MS: u64 = 10_000;
-static mut RESPONSE: [u8; 16384] = [0; 16384];
+// Slot A is fixed at 512 KiB and the M2 route surface now carries a named
+// object operation.  The response buffer is the largest static with slack
+// beyond the 8 KiB tool limit; 14 KiB keeps the JSON wrapper and escaping
+// headroom while leaving the flat image and .bss inside the slot.
+static mut RESPONSE: [u8; 14336] = [0; 14336];
 /// Scratch for the `fs.stat` JSON text before it is embedded in a `text`
 /// field; a link target is bounded by [`LINK_MAX`] so the buffer cannot
 /// overflow.

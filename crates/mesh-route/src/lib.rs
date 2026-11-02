@@ -1384,6 +1384,56 @@ impl RouteNode {
             .find(|object| home_for(object, &self.view) == Some(home))
     }
 
+    /// The current home and home epoch for `object`, including a route lease.
+    ///
+    /// A draining old home reports the new home: that is where a client must
+    /// go.  The old home's own lease state is a protocol detail, not a second
+    /// authoritative home.
+    pub fn current_home(&self, object: &ObjectId) -> Option<(NodeId, u32)> {
+        if let Some(lease) = self.home_lease(object) {
+            return match lease.state {
+                LeaseState::Active => Some((lease.home, lease.home_epoch)),
+                LeaseState::Draining => Some((lease.new_home, lease.new_home_epoch)),
+            };
+        }
+        // The cache is a route hint, not authority.  A move is based on the
+        // confirmed rendezvous home, so an expired lease reverts to it rather
+        // than making a stale hint the new authority.
+        home_for(object, &self.view).map(|home| (home, self.epoch))
+    }
+
+    /// Move `object` to `target` from its current home.
+    ///
+    /// This is the one-object move behind `GET /mesh/route?op=move`.  The
+    /// authority root signs the lease; the destination must be this node or its
+    /// configured peer.  An object already at `target` is refused instead of
+    /// re-signed.
+    #[inline(never)]
+    pub fn move_object(
+        &mut self,
+        object: ObjectId,
+        target: NodeId,
+        now_ms: u64,
+        signer: &dyn RouteSigner,
+    ) -> Step {
+        if self.pending.is_some() {
+            return reject(Some(object), Reason::Busy);
+        }
+        if !self.is_fixture_object(&object) {
+            return reject(Some(object), Reason::Fixture);
+        }
+        if !self.view.contains(target) {
+            return reject(Some(object), Reason::PeerMismatch);
+        }
+        let Some((old_home, old_home_epoch)) = self.current_home(&object) else {
+            return reject(Some(object), Reason::Fixture);
+        };
+        if old_home == target {
+            return reject(Some(object), Reason::BadMove);
+        }
+        self.start_move(object, old_home, target, old_home_epoch, now_ms, signer)
+    }
+
     /// Run one rig step.  This is the lab control surface behind
     /// `GET /mesh/route?step=N`; the rig chooses the order and the policy
     /// chooses the object from the confirmed view.

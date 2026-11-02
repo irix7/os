@@ -13,6 +13,7 @@
 //! `mesh.epoch`) are the handoff to M2-1.
 
 mod bulk;
+mod demo;
 mod evidence;
 mod failure;
 mod fixture;
@@ -102,6 +103,7 @@ fn run() -> Result<i32, String> {
         Action::X86Smoke => x86::smoke(&options),
         Action::X86Mesh => x86::mesh(&options),
         Action::X86Mixed => x86::mixed(&options),
+        Action::Demo => demo::run(&options),
         Action::Clean => clean(&options),
     }
 }
@@ -121,6 +123,7 @@ Commands:
   down          stop both nodes through their CI sockets
   status        show lifecycle state and boot markers
   probe         probe HTTP and mesh framing against running nodes
+  demo          run the one-computer M2 transcript over two real kernels
   print-config  print the derived instance and NVRAM table
   clean         remove the rig work directory
 

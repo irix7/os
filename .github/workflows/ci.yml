@@ -1498,7 +1498,7 @@ jobs:
           cleanup() {
             status=$?
             trap - EXIT
-            for mode in none no-peer kill-peer partition udp; do
+            for mode in none no-peer kill-peer partition udp demo; do
               work="$RUNNER_TEMP/m2-run-$mode"
               if [ -d "$work" ]; then
                 "$bin" down --work "$work" \
@@ -1523,16 +1523,34 @@ jobs:
           # non-blocking Seeq transmit path across two real kernels
           # (M3-ADR-0006).  It runs no join.
           run_mode udp 10100
+      - name: One-computer M2 transcript
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          iris_bin="$(command -v iris)"
+          iris_ci="$(command -v iris-ci)"
+          build="$RUNNER_TEMP/m2-build"
+          harness="$RUNNER_TEMP/m2-rig-harness"
+          bin="$harness/release/m2-rig"
+          "$bin" demo \
+            --work "$RUNNER_TEMP/m2-run-demo" \
+            --rom "$build/irix7-rom.bin" \
+            --module "$build/mcp.module" \
+            --iris "$iris_bin" --iris-ci "$iris_ci" \
+            --base-port 10400 --timeout 240
       - name: Collect evidence
         if: always()
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/m2-evidence"
           mkdir -p "$out"
-          for mode in none no-peer kill-peer partition udp; do
+          for mode in none no-peer kill-peer partition udp demo; do
             work="$RUNNER_TEMP/m2-run-$mode"
             if [ -d "$work/evidence" ]; then
               cp -a "$work/evidence" "$out/$mode"
+            fi
+            if [ -d "$work/demo" ]; then
+              cp -a "$work/demo" "$out/$mode/demo"
             fi
             if [ -d "$work" ]; then
               for node in n0 n1; do

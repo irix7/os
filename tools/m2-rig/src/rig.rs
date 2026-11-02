@@ -55,6 +55,8 @@ pub enum Action {
     X86Mesh,
     /// Join one Indy guest and one x86 guest through the relay.
     X86Mixed,
+    /// Run the one-computer M2 transcript: one prompt over two real kernels.
+    Demo,
     /// Remove the rig work directory.
     Clean,
 }
@@ -75,6 +77,7 @@ impl Action {
             "x86-smoke" => Self::X86Smoke,
             "x86-mesh" => Self::X86Mesh,
             "x86-mixed" => Self::X86Mixed,
+            "demo" => Self::Demo,
             "clean" => Self::Clean,
             _ => return None,
         })
