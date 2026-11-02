@@ -11,8 +11,9 @@ with distinct identities, proves a two-way HTTP exchange through the chosen path
 the two guest mesh listeners so the kernels exchange framed `MeshEnvelope` records, drives
 the signed join handshake until both nodes report the same membership epoch and snapshot,
 and fetches the rendezvous home table from both kernels.  The separate `bulk` command
-runs three 64 KiB bulk transfers in alternating directions (#247): the module streams four
-16 KiB chunks on one logical record, reports the mesh start/finish time and the
+runs three 64 KiB bulk transfers in alternating directions (#247): the module streams
+bounded chunks on one logical record (16 KiB is the transport maximum; the rig's current
+default is 4 KiB), reports the mesh start/finish time and the
 `writes`/`batched`/`peak_queue`/`peak_decoder` counters, and the rig checks the exact byte
 and chunk count.  In the default route mode it then
 issues a capability at n0, serves the remote stat at n1, performs a controlled root-signed

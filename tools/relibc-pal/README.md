@@ -100,6 +100,15 @@ export RELIBC_SRC=/tmp/opencode/relibc-pal-src
 tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 ```
 
+The `relibc` CI job builds the pinned commit with the Bootlin toolchain and
+boots the probe, thread, futex, pthread and sleep images, then the fork/exec
+parent with its child image on SCSI target 3, all on iris v0.1.13 with
+`tools/relibc-pal/boot-probes.sh`.  Each image must print its pass marker and
+exit 0 on the serial port and the serial-log mirror; the counter probes also
+assert `failures=0`, while the fork/exec pair asserts `CHILD-OK` and
+`FORK-EXEC-OK`.  The build output is cached by the pin and the probe sources,
+so an unrelated job does not rebuild it.
+
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
 `libcrt0.a`, compiles the C probe, the thread probe, the futex probe, the

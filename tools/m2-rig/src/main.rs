@@ -1846,21 +1846,27 @@ fn restart_root(
     mcp_tool(&nodes[1], "mesh.reconnect")?;
     std::thread::sleep(crate::timing::secs(1));
     std::thread::sleep(crate::timing::secs(2));
-    if let Some(log) = relay_log {
-        let relay = MeshRelay::start_with_log(
-            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-            log,
-        )
-        .map_err(|error| format!("restart mesh relay: {error}"))?;
-        *mesh_relay = Some(relay);
+    if options.transport == Transport::Relay {
+        if let Some(log) = relay_log {
+            let relay = MeshRelay::start_with_log(
+                (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+                log,
+            )
+            .map_err(|error| format!("restart mesh relay: {error}"))?;
+            *mesh_relay = Some(relay);
+        } else {
+            let relay = MeshRelay::start(
+                (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+                (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+            )
+            .map_err(|error| format!("restart mesh relay: {error}"))?;
+            *mesh_relay = Some(relay);
+        }
     } else {
-        let relay = MeshRelay::start(
-            (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-        )
-        .map_err(|error| format!("restart mesh relay: {error}"))?;
-        *mesh_relay = Some(relay);
+        // A direct link reconnects from the initiator after the root restarts.
+        // Starting a relay here would silently replace the path under test.
+        std::thread::sleep(crate::timing::secs(3));
     }
 
     // Wait for the restored root view, the member's re-presentation of the

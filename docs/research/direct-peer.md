@@ -39,6 +39,13 @@ no host relay):
 The `direct_fail` mode points the initiator at `gateway:1`; it logs
 `mesh-transport: direct fallback listen` and no join occurs.
 
+The `mesh-real` CI job runs `m2-rig run --transport direct --fault none`
+alongside the relay modes on every push.  That run drives join, homes, the
+one-hop route/`MOVED`, L0 migration, the member restart and the root restart on
+the guest-initiated TCP link, so the direct path is a real two-kernel gate
+rather than a manual transcript.  It does not gate throughput; the `bulk`
+command remains a manual measurement.
+
 ## 3. What is not claimed
 
 - The guest two-way HTTP probe passed on the rebased `206d19a` run; the earlier

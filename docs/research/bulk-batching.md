@@ -16,12 +16,18 @@ M2 or M3 gate.
 |---|---|---|
 | Kernel Seeq driver | `max_burst_size` 1 → 7 (the ring stays at the shipped 8 descriptors) | The advertised TCP window is about 10 KiB instead of one 1,460-byte segment; a 16-descriptor ring broke the slot-B Wasm autoload and is not used. |
 | Kernel receive copy | Per-byte `read_volatile` → one `copy_nonoverlapping` from the uncached DMA buffer | Removes one uncached load per received byte. |
-| Kernel module socket | RX 2 KiB → 16 KiB, TX stays 16 KiB per slot; no Nagle/ACK timing change | The RX ring holds one 8 KiB chunk plus framing; the stack default preserved the slot-B Wasm autoload. |
+| Kernel module socket | RX 2 KiB → 16 KiB, TX stays 16 KiB per slot; no Nagle/ACK timing change | Both module socket rings are 16 KiB.  The RX ring holds one 8 KiB chunk plus framing; the stack default preserved the slot-B Wasm autoload. |
 | `sys-primitives` | 16-entry nibble CRC32C table (same polynomial, same bytes on the wire) | Two dependent shift rounds per byte become two table lookups; 64 bytes of `.rodata`, not 1 KiB. |
 | `mesh-transport` | Fixed-capacity `StreamDecoder` and `SendQueue`; compaction instead of growth; 8 KiB control reserve for data records; `flush` reports writes and peak queue | The bump allocator does not grow a `Vec` on the data path; bulk cannot starve control. |
-| MCP module | 4 × 4 KiB reads per tick; one flush per tick (intermediate flushes removed); 32 KiB decoder/queue; 16,404-byte frame body buffer; bulk measurement path | One `tcp_send` per tick in the steady state; a 64 KiB *logical* record is four 16 KiB chunks. |
+| MCP module | 8 × 4 KiB reads per tick; one flush per tick (intermediate flushes removed); fixed-capacity decoder and send queue; 16,404-byte frame body buffer; bulk measurement path | One `tcp_send` per tick in the steady state.  A 64 KiB *logical* record is streamed in bounded chunks, not one wire record. |
 | Host benchmark | `protocol-bench bulk` | Pins the window model and counts records per sink write. |
 | Rig | `m2-rig bulk`: three 64 KiB transfers in both directions after join | Real-kernel throughput, chunk count and module counters in `bulk-evidence.json`. |
+
+The RX/TX wording in the #247 PR text and issue comment is not the merged
+configuration.  Both module socket rings are **16 KiB**
+(`kernel/src/module.rs:748`), and this note plus the code are the record.  The
+transport decoder and send queue are separate fixed arenas; they are not socket
+rings.
 
 The mesh wire format did not change.  A bulk chunk uses the existing
 `FrameHeader.offset`, `FrameHeader.length` and `flags::MORE`/`EOS`; the body is
@@ -37,8 +43,13 @@ assumption as the wire study.
 | configuration | window B | bytes/tick | 64 KiB ticks | 64 KiB p50 ms | MB/s |
 |---|---:|---:|---:|---:|---:|
 | M2 shipped (2 KiB RX, burst 1, 8 KiB/tick) | 1,460 | 1,460 | 45 | 450.0 | 0.146 |
-| #247 (16 KiB RX, burst 15, 16 KiB/tick) | 16,384 | 16,384 | 4 | 40.0 | 1.638 |
-| ratio | 11.22× | 11.22× | 11.25× | — | **11.25×** |
+| #247 (16 KiB RX, burst 7, 16 KiB/tick) | 10,220 | 10,220 | 7 | 70.0 | 0.936 |
+| ratio | 7.00× | 7.00× | 6.43× | — | **6.43×** |
+
+The shipped Seeq driver clamps the advertised window to seven segments
+(`kernel/src/net.rs:265`), so 10,220 bytes — not the 16 KiB ring — is the bound
+on this path.  A 16-descriptor ring would lift the clamp, but it reproducibly
+broke the slot-B Wasm autoload and is not used.
 
 Measured `SendQueue` batching (host, release):
 
@@ -48,9 +59,10 @@ Measured `SendQueue` batching (host, release):
 | 4,076 | 4,400 | 16 | 1.64 | 16 | 4,400 |
 
 
-The model is deliberately pessimistic.  It does not credit the second
+The model is a bound, not a measurement.  It does not credit the second
 `net::poll` in the event-driven slice, the reduced copy cost, or a shorter
-effective RTT.  The real-kernel numbers are the authority.
+effective RTT, so it must not be read as a throughput promise.  The real-kernel
+numbers are the authority.
 
 ## 3. Real two-kernel transfer
 
@@ -77,15 +89,27 @@ bulk: baseline 0.072 MiB/s at 1024 B chunks; tuned 0.326 MiB/s at 8192 B chunks 
 
 The same-host baseline uses 1,024-byte chunks, one chunk per module tick: it
 reproduces the M2 small-window/batching shape on the same code and the same
-hub.  The tuned path uses 8,192-byte chunks.  p50 for the three tuned runs was
+hub.  The recorded tuned path uses 8,192-byte chunks; the rig's current default
+is 4,096 bytes (`BULK_CHUNK` in `tools/m2-rig/src/bulk.rs`), and the transport
+accepts up to 16 KiB per chunk.  p50 for the three recorded 8 KiB runs was
 121 ms (0.517 MiB/s); the 344 ms reverse-direction run is a tail on a shared
 host, not a different code path.
 
-A later run on the same host at load average 6.75 (another two-kernel rig in
-parallel) measured 2.81×; the path is sensitive to host CPU contention, and the
-committed evidence bundle records the load and the raw per-run counters.  The
-64 KiB logical record is eight chunks, not one 64 KiB wire record; the module
-streams it for the memory and head-of-line reasons in §4.
+Two throughput ratios are on record for this path:
+
+| Run | Baseline | Tuned | Ratio |
+|---|---:|---:|---:|
+| Recorded above | 0.072 MiB/s at 1 KiB chunks | 0.326 MiB/s at 8 KiB chunks | **4.52×** |
+| Later, load average 6.75 | same baseline | not recorded as an absolute rate | **2.81×** |
+
+The 2.81× run ran with another two-kernel rig in parallel; the committed
+evidence bundle records the load and the raw per-run counters.  Neither ratio
+is a stable property of the code: the path is sensitive to host CPU contention,
+and the 4× acceptance is an observation on this host, not a CI gate.  The
+`bulk` command remains a manual rig measurement; CI gates the two-kernel direct
+transport (#245), not the throughput number.  The 64 KiB logical record is
+streamed in bounded chunks, not one 64 KiB wire record, for the memory and
+head-of-line reasons in §4.
 
 
 ## 4. Memory and PROM
@@ -101,12 +125,14 @@ The module linker now asserts that image + `.bss` stays below slot B
 (`0x8848_0000`).  The previous module had no such assertion; a larger static
 buffer could silently overwrite the next module region.
 
-The 64 KiB logical record is streamed in four 16 KiB chunks.  A single 64 KiB
-wire record is still inside `mesh-transport::MAX_RECORD_LEN` (65,536) and is
-accepted by the transport crate, but the module does not allocate a 64 KiB
-reassembly buffer: slot A does not have that much headroom left, and a single
-record would also head-of-line block control traffic for its whole transfer.
-This is the documented memory limit, not a silent truncation.
+The 64 KiB logical record is streamed in bounded chunks.  The transport accepts
+up to 16 KiB per chunk; the recorded run used 8 KiB and the rig's current
+default is 4 KiB.  A single 64 KiB wire record is still inside
+`mesh-transport::MAX_RECORD_LEN` (65,536) and is accepted by the transport
+crate, but the module does not allocate a 64 KiB reassembly buffer: slot A does
+not have that much headroom left, and a single record would also head-of-line
+block control traffic for its whole transfer.  This is the documented memory
+limit, not a silent truncation.
 
 ## 5. Limits
 
