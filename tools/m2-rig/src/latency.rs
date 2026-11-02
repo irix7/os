@@ -86,6 +86,37 @@ fn fetch_retry(node: &Node, path: &str) -> Result<HttpResponse, String> {
     Err(last)
 }
 
+/// Read the current latency report without starting a new series.
+pub fn read_status(node: &Node) -> Result<LatencyEvidence, String> {
+    let response = fetch_retry(node, "/mesh/latency?status=1")?;
+    let mut evidence = parse(&response.body)?;
+    if evidence.ok && evidence.received >= 1 {
+        evidence.message = format!(
+            "{} samples: p50 {} ms, p95 {} ms, min {} ms, max {} ms",
+            evidence.received, evidence.p50_ms, evidence.p95_ms, evidence.min_ms, evidence.max_ms
+        );
+    }
+    Ok(evidence)
+}
+
+/// Wait for a series that was started by another request.
+pub fn wait_done(node: &Node, count: u32) -> Result<LatencyEvidence, String> {
+    let deadline = Instant::now() + crate::timing::secs(30);
+    loop {
+        let evidence = read_status(node)?;
+        if evidence.ok && evidence.received >= count {
+            return Ok(evidence);
+        }
+        if Instant::now() >= deadline {
+            return Err(format!(
+                "{} latency probe did not finish: received={} count={}",
+                node.name, evidence.received, count
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// Run one latency series against the live mesh on `node`.
 pub fn run(node: &Node) -> Result<LatencyEvidence, String> {
     run_with(node, COUNT)

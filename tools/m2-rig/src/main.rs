@@ -93,6 +93,7 @@ fn run() -> Result<i32, String> {
         Action::Run if options.fault == Fault::Udp => udp_run(&options),
         Action::Run => run_and_probe(&options),
         Action::Bulk => bulk_run(&options),
+        Action::Stream => stream_run(&options),
         Action::Shard => shard::run(&options),
         Action::Ports => ports_run(&options),
         Action::Up => up(&options),
@@ -118,6 +119,7 @@ Usage:
 Commands:
   run           start both M2 nodes, probe HTTP/mesh/join/route, write evidence
   bulk          drive the #247 64 KiB bulk measurement through the bounded hub
+  stream        drive the #337 control-during-bulk, cancel and reuse gate
   shard         start the M3 shard slice (two real kernels by default)
   up            start both nodes and leave them running
   down          stop both nodes through their CI sockets
@@ -779,12 +781,15 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
     }
     if let Some(control) = &evidence.control {
         println!(
-            "control during bulk: {} B in {} chunks, bulk {} ms, p50 {} ms, p95 {} ms",
+            "control during bulk: {} B in {} chunks, bulk {} ms, p50 {} ms, p95 {} ms \
+             (idle p50 {} ms, p95 {} ms)",
             control.bytes,
             control.chunks,
             control.bulk_ms,
             control.control_p50_ms,
-            control.control_p95_ms
+            control.control_p95_ms,
+            control.baseline_p50_ms,
+            control.baseline_p95_ms
         );
     }
     if let Some(cancel) = &evidence.cancel {
@@ -823,8 +828,14 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
     json.push_str(",\n  \"control\": ");
     match &evidence.control {
         Some(control) => json.push_str(&format!(
-            "{{\"bytes\": {}, \"chunks\": {}, \"bulk_ms\": {}, \"control_p50_ms\": {}, \"control_p95_ms\": {}}}",
-            control.bytes, control.chunks, control.bulk_ms, control.control_p50_ms, control.control_p95_ms
+            "{{\"bytes\": {}, \"chunks\": {}, \"bulk_ms\": {}, \"control_p50_ms\": {}, \"control_p95_ms\": {}, \"baseline_p50_ms\": {}, \"baseline_p95_ms\": {}}}",
+            control.bytes,
+            control.chunks,
+            control.bulk_ms,
+            control.control_p50_ms,
+            control.control_p95_ms,
+            control.baseline_p50_ms,
+            control.baseline_p95_ms
         )),
         None => json.push_str("null"),
     }
@@ -867,6 +878,155 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
     }
     println!("evidence: {}", path.display());
     Ok(if evidence.ok { 0 } else { 1 })
+}
+
+fn stream_run(options: &Options) -> Result<i32, String> {
+    let (_module, rom_sha, module_sha) = check_prerequisites(options)?;
+    let module = fs::read(&options.module).map_err(|error| format!("read module: {error}"))?;
+    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let nodes = derive_nodes(options)?;
+    let mut running = Vec::new();
+    let module_sha_text = sha256::hex(&module_sha);
+    start_all(
+        options,
+        &nodes,
+        fixture.port,
+        &module_sha_text,
+        &mut running,
+    )?;
+    let result = (|| -> Result<bulk::StreamEvidence, String> {
+        let _facts = wait_boot(options, &mut running)?;
+        std::thread::sleep(crate::timing::secs(10));
+        let _hub = match options.transport {
+            Transport::Relay => Some(hub::MeshHub::start_with(
+                &nodes,
+                1,
+                hub::HubConfig::default(),
+            )?),
+            Transport::Direct => None,
+            Transport::DirectFail => {
+                return Err("stream gate needs a joined link; direct-fail has none".into());
+            }
+        };
+        match options.transport {
+            Transport::Relay | Transport::Direct => {
+                wait_join(&nodes, crate::timing::secs(60));
+                wait_join_ack(&nodes, crate::timing::secs(20));
+            }
+            Transport::DirectFail => unreachable!(),
+        }
+        std::thread::sleep(crate::timing::secs(10));
+        bulk::run_gate(&nodes[0], &nodes[1])
+    })();
+    let stop_errors = rig::stop_nodes(options, &mut running);
+    let evidence = result?;
+    println!("stream baseline: {}", evidence.baseline.message);
+    println!("stream control:  {}", evidence.control.message);
+    if let Some(bulk) = &evidence.bulk {
+        println!(
+            "stream bulk:     {} B in {} x {} B chunks, {} ms, {:.3} MiB/s",
+            bulk.bytes, bulk.chunks, bulk.chunk, bulk.elapsed_ms, bulk.mb_per_s
+        );
+    }
+    if let Some(cancel) = &evidence.cancel {
+        println!(
+            "stream cancel:   state={} error={} chunks={} resets origin {}->{} peer {}->{}",
+            cancel.state,
+            cancel.error.as_deref().unwrap_or("-"),
+            cancel.chunks,
+            cancel.origin_resets_before,
+            cancel.origin_resets_after,
+            cancel.peer_resets_before,
+            cancel.peer_resets_after
+        );
+    }
+    if let Some(reuse) = &evidence.reuse {
+        println!(
+            "stream reuse:    {} B in {} chunks, {} ms",
+            reuse.bytes, reuse.chunks, reuse.elapsed_ms
+        );
+    }
+    println!("stream: {}", evidence.message);
+    let commit = git(&options.repo, &["rev-parse", "HEAD"]);
+    let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
+    let mut json = String::new();
+    json.push_str(&format!(
+        "{{\n  \"action\": \"stream\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"module_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
+        evidence::json_escape(&branch),
+        commit,
+        sha256::hex(&rom_sha),
+        module_sha_text,
+        evidence.ok,
+        evidence::json_escape(&evidence.message)
+    ));
+    json.push_str(&latency_json(&evidence.baseline));
+    json.push_str(",\n  \"control\": ");
+    json.push_str(&latency_json(&evidence.control));
+    json.push_str(",\n  \"bulk\": ");
+    match &evidence.bulk {
+        Some(run) => json.push_str(&format!(
+            "{{\"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"mib_per_s\": {:.4}, \"raw\": \"{}\"}}",
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            run.mb_per_s,
+            evidence::json_escape(&run.raw)
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n  \"cancel\": ");
+    match &evidence.cancel {
+        Some(cancel) => json.push_str(&format!(
+            "{{\"state\": \"{}\", \"error\": {}, \"chunks\": {}, \"origin_resets_before\": {}, \"origin_resets_after\": {}, \"peer_resets_before\": {}, \"peer_resets_after\": {}, \"reused\": {}}}",
+            evidence::json_escape(&cancel.state),
+            cancel
+                .error
+                .as_deref()
+                .map(|value| format!("\"{}\"", evidence::json_escape(value)))
+                .unwrap_or_else(|| "null".into()),
+            cancel.chunks,
+            cancel.origin_resets_before,
+            cancel.origin_resets_after,
+            cancel.peer_resets_before,
+            cancel.peer_resets_after,
+            cancel.reused
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str(",\n  \"reuse\": ");
+    match &evidence.reuse {
+        Some(run) => json.push_str(&format!(
+            "{{\"bytes\": {}, \"chunk\": {}, \"chunks\": {}, \"elapsed_ms\": {}, \"raw\": \"{}\"}}",
+            run.bytes,
+            run.chunk,
+            run.chunks,
+            run.elapsed_ms,
+            evidence::json_escape(&run.raw)
+        )),
+        None => json.push_str("null"),
+    }
+    json.push_str("\n}\n");
+    let path = options.work.join("stream-evidence.json");
+    fs::write(&path, json).map_err(|error| format!("write {}: {error}", path.display()))?;
+    for error in stop_errors {
+        eprintln!("m2-rig: stop: {error}");
+    }
+    println!("evidence: {}", path.display());
+    Ok(if evidence.ok { 0 } else { 1 })
+}
+
+fn latency_json(evidence: &crate::latency::LatencyEvidence) -> String {
+    format!(
+        "{{\"sent\": {}, \"received\": {}, \"p50_ms\": {}, \"p95_ms\": {}, \"min_ms\": {}, \"max_ms\": {}, \"raw\": \"{}\"}}",
+        evidence.sent,
+        evidence.received,
+        evidence.p50_ms,
+        evidence.p95_ms,
+        evidence.min_ms,
+        evidence.max_ms,
+        crate::evidence::json_escape(&evidence.raw)
+    )
 }
 
 fn run_and_probe(options: &Options) -> Result<i32, String> {

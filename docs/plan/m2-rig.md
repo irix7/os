@@ -1031,3 +1031,13 @@ started.  `--transport direct-fail` points the initiator at `gateway:1` and asse
 The direct run records `mesh-transport: direct role=…`, the pass line `connect_ms`, and
 `/mesh/latency` p50/p95.  The bulk command is `m2-rig bulk --transport direct`; it uses
 the same direct link and a 1 KiB same-host baseline.
+
+## Stream gate (#337)
+
+`m2-rig stream` boots the same two kernels and drives the live stream mux: it records the
+idle-link control p50/p95, starts a 512 KiB bulk transfer and a control series in one
+module request, then reads the control series once the transfer drains.  It cancels a
+fresh 1 MiB transfer, reads the reset counters from both nodes, and runs a 32 KiB reuse
+transfer over the same link.  `tools/mesh-stream-gate.sh` runs the host `mesh-stream` and
+rig suites first and then this scenario; `--host-only` skips the emulator.  The evidence
+file is `<work>/run/stream-evidence.json`.

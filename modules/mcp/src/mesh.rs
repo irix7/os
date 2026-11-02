@@ -58,15 +58,15 @@ use mesh_migrate::{
     Wire as MigrateWire, MAX_BODY as MIGRATE_BODY_MAX,
 };
 use mesh_route::{RouteNode, RouteSigner, Step as RouteStep, Wire as RouteWire};
-use mesh_stream::{Side, StreamTable};
+use mesh_stream::{Class, Side, StreamMux};
 use mesh_transport::{
     decode_record, ByteSink, Error as TransportError, Heartbeat, PendingTable, SendQueue, Stats,
     StreamDecoder, WriteOutcome, HEARTBEAT_INTERVAL_MS, RECEIVE_DEADLINE_MS,
 };
 use module_abi::Services;
 use sys_primitives::{
-    flags as frame_flags, mesh_flags, MeshEnvelope, MeshHeader, MessageFrame, MessageKind, NodeId,
-    NodeKey, ObjectId, OpCode, Status, StreamId, Tag, TraceContext,
+    flags as frame_flags, mesh_flags, FrameHeader, MeshEnvelope, MeshHeader, MessageFrame,
+    MessageKind, NodeId, NodeKey, ObjectId, OpCode, Status, StreamId, Tag, TraceContext,
 };
 
 // The authority write lease must expire before the membership failure window,
@@ -111,7 +111,7 @@ const BULK_HEADER_LEN: usize = 20;
 const BULK_CHUNK_MAX: usize = 16 * 1024;
 const BULK_CHUNK_DEFAULT: usize = 4 * 1024;
 const BULK_RECORD_MAX: usize = 1024 * 1024;
-const BULK_DEADLINE_MS: u64 = 6_000;
+const BULK_DEADLINE_MS: u64 = 20_000;
 /// Initial chunk credit and the grant after two consumed chunks.
 const BULK_INITIAL_CREDIT: u32 = 2;
 const BULK_CREDIT_GRANT: u32 = 2;
@@ -125,6 +125,26 @@ const BULK_CREDIT_GRANT: u32 = 2;
 /// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
 const LINE_CAP: usize = 768;
+
+/// Fixed control channels on the one peer link.
+///
+/// The bulk data channel is allocated per transfer, so a transfer cannot
+/// collide with a control ID and both sides keep the initiator/responder
+/// parity rule.
+const STREAM_CONTROL: u32 = 1;
+const STREAM_JOIN: u32 = 2;
+const STREAM_ROUTE: u32 = 3;
+const STREAM_MIGRATE: u32 = 4;
+const STREAM_LATENCY: u32 = 6;
+
+/// Frames the module may stage for one tick before the class scheduler drains
+/// them.  A tick produces at most one frame per stream plus a retry, so this is
+/// a bound on damage, not a throughput target.
+const STAGE_FRAMES: usize = 8;
+/// Body storage for the small control records that share a tick: route and
+/// migration bodies are at most 512 bytes each.  Join bodies already live in
+/// `JOIN_TX`, and a bulk chunk reuses `FRAME_RX` after the receive pass.
+const STAGE_SMALL_MAX: usize = 1536;
 /// Routine join-view and ack logging interval.
 ///
 /// The 5 s member refresh is a protocol liveness check, not evidence: logging
@@ -201,6 +221,30 @@ struct Incoming {
     status: Status,
     kind: MessageKind,
     opcode: OpCode,
+    stream: u32,
+    body_len: usize,
+}
+
+/// Where a staged frame's body bytes live.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BodyStore {
+    /// The small control staging area.
+    Small,
+    /// `JOIN_TX`, written by `send_join` for this frame.
+    Join,
+    /// `FRAME_RX`, reused for one bulk body after the receive pass.
+    FrameRx,
+}
+
+/// One encoded frame waiting for its class turn in the scheduler.
+#[derive(Clone, Copy)]
+struct StagedFrame {
+    stream: u32,
+    class: Class,
+    header: MeshHeader,
+    frame: FrameHeader,
+    store: BodyStore,
+    body_start: usize,
     body_len: usize,
 }
 
@@ -270,8 +314,18 @@ struct Mesh {
     last_connect_ms: u64,
     /// Active latency measurement.
     latency: Option<LatencyProbe>,
-    /// Version 1 stream table for the measurement streams.
-    streams: StreamTable,
+    /// Version 1 stream mux: table, class scheduler and send ledger.
+    streams: StreamMux,
+    /// Frames encoded this tick, in production order.
+    staged: [Option<StagedFrame>; STAGE_FRAMES],
+    /// Body bytes used in this tick.
+    stage_len: usize,
+    /// Set when a control frame could not be reserved or queued.  The link
+    /// fails closed at the next flush instead of silently dropping it.
+    stage_fault: Option<&'static str>,
+    /// Data stream whose final record is queued; retired after the sink
+    /// accepts it.
+    retire_stream: Option<u32>,
 }
 
 struct LatencyProbe {
@@ -305,6 +359,8 @@ struct BulkTransfer {
     chunks: u32,
     expected_offset: u32,
     error: Option<&'static str>,
+    /// Stream allocated for this transfer; reset when it retires.
+    stream: u32,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -327,6 +383,10 @@ struct BulkReply {
     started_ms: u64,
     /// Chunks the origin has granted; zero means wait for WindowUpdate.
     credit: u32,
+    /// The final chunk is queued; clear the reply once the sink accepts it.
+    finishing: bool,
+    /// Stream allocated by the origin for this reply.
+    stream: u32,
 }
 
 /// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
@@ -341,13 +401,24 @@ static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 static mut STORE_BUF: [u8; STORE_BYTES] = [0; STORE_BYTES];
 /// Encode buffer for the store payload (a signed record or confirmation).
 static mut STORE_BODY: [u8; STORE_BYTES - STORE_HEADER] = [0; STORE_BYTES - STORE_HEADER];
-/// Encode buffer for one outgoing bulk chunk (payload follows the header).
-static mut BULK_TX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
+/// Body storage for the small control records staged in one tick.
+static mut STAGE_SMALL: [u8; STAGE_SMALL_MAX] = [0; STAGE_SMALL_MAX];
 /// One receive scratch buffer reused by every socket read in a tick.
 static mut READ_BUF: [u8; READ_CHUNK] = [0; READ_CHUNK];
 
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
+
+/// Build the fixed stream set for one link side.
+fn live_streams(side: Side) -> StreamMux {
+    let mut streams = StreamMux::new(side);
+    let _ = streams.add_channel(STREAM_CONTROL, true);
+    let _ = streams.add_channel(STREAM_JOIN, true);
+    let _ = streams.add_channel(STREAM_ROUTE, true);
+    let _ = streams.add_channel(STREAM_MIGRATE, true);
+    let _ = streams.add_channel(STREAM_LATENCY, true);
+    streams
+}
 
 /// Initialise the listener and the join state from the service table.
 ///
@@ -477,12 +548,15 @@ pub unsafe fn init(services: *const Services) -> bool {
         connect_started_ms: now,
         last_connect_ms: 0,
         latency: None,
-        streams: {
-            let mut streams = StreamTable::new(Side::Initiator);
-            let _ = streams.insert(5, false);
-            let _ = streams.insert(6, true);
-            streams
-        },
+        streams: live_streams(if direct_initiator {
+            Side::Initiator
+        } else {
+            Side::Responder
+        }),
+        staged: [None; STAGE_FRAMES],
+        stage_len: 0,
+        stage_fault: None,
+        retire_stream: None,
     };
     unsafe {
         MESH = Some(mesh);
@@ -642,6 +716,7 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
     let mut cancel = false;
     let mut bytes = BULK_CHUNK_DEFAULT as u32;
     let mut chunk = BULK_CHUNK_DEFAULT as u32;
+    let mut latency = 0u32;
     if let Some(question) = path.iter().position(|byte| *byte == b'?') {
         for part in path[question + 1..].split(|byte| *byte == b'&') {
             if part.is_empty() {
@@ -662,6 +737,10 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
                     Some(parsed) => chunk = parsed,
                     None => return bulk_line(out, 400, "bad-request reason=chunk"),
                 },
+                b"latency" => match parse_u32(value) {
+                    Some(parsed) => latency = parsed.clamp(1, 64),
+                    None => return bulk_line(out, 400, "bad-request reason=latency"),
+                },
                 _ => return bulk_line(out, 400, "bad-request reason=query"),
             }
         }
@@ -674,31 +753,58 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
     if cancel {
         let now = (services.clock_ms)();
         let destination = mesh.peer.unwrap_or(NodeId::ZERO);
-        if let Some(transfer) = mesh.bulk.as_mut() {
-            transfer.state = BulkState::Failed;
-            transfer.error = Some("cancel");
-            transfer.finished_ms = now;
+        let active = mesh.bulk.as_ref().is_some_and(|transfer| {
+            matches!(transfer.state, BulkState::Start | BulkState::Running)
+        }) || mesh.bulk_reply.is_some();
+        if !active {
+            return bulk_line(out, 409, "idle");
         }
-        let _ = mesh.streams.reset(5);
-        let _ = mesh.streams.insert(5, false);
-        mesh.stats.stream_resets = mesh.stats.stream_resets.saturating_add(1);
+        let stream = mesh
+            .bulk
+            .as_ref()
+            .map(|transfer| transfer.stream)
+            .or_else(|| mesh.bulk_reply.as_ref().map(|reply| reply.stream));
+        let Some(stream) = stream else {
+            return bulk_line(out, 409, "idle");
+        };
+        if let Some(transfer) = mesh.bulk.as_mut() {
+            if transfer.stream == stream {
+                transfer.state = BulkState::Failed;
+                transfer.error = Some("cancel");
+                transfer.finished_ms = now;
+            }
+        }
+        if mesh
+            .bulk_reply
+            .as_ref()
+            .is_some_and(|reply| reply.stream == stream)
+        {
+            mesh.bulk_reply = None;
+        }
         let mut body = [0u8; 4];
-        body[0..4].copy_from_slice(&5u32.to_le_bytes());
+        body[0..4].copy_from_slice(&stream.to_le_bytes());
+        let mut sent = false;
         if let Ok(frame) = MessageFrame::inline(
             MessageKind::Cancel,
             OpCode::Cancel,
-            StreamId(5),
+            StreamId(stream),
             Tag(0),
             &body,
         ) {
             let mut header = MeshHeader::new(mesh.self_id, destination, mesh.self_id);
             header.flags = mesh_flags::PROBE;
             header.ttl = MeshHeader::MAX_HOPS;
-            let _ = mesh.queue.push_record(&MeshEnvelope { header, frame }, now);
+            let frame_header = frame.header;
+            sent = mesh.stage_control(stream, header, frame_header, &body);
         }
-        return bulk_line(out, 200, "cancelled");
-    }
-    if start {
+        if sent {
+            // The cancel record is queued; reset after the sink accepts it so
+            // the peer sees the reset before the slot is reused.
+            mesh.retire_stream = Some(stream);
+            return bulk_line(out, 200, "cancelled");
+        }
+        return bulk_line(out, 503, "cancel-queue");
+    } else if start {
         let now = (services.clock_ms)();
         if mesh
             .bulk
@@ -712,6 +818,9 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
         }
         if mesh.peer.is_none() {
             return bulk_line(out, 409, "no-peer");
+        }
+        if latency > 0 && !mesh.start_latency(latency, now) {
+            return bulk_line(out, 409, "latency");
         }
         if !mesh.start_bulk(services, bytes, chunk, now) {
             return bulk_line(out, 400, "bad-request reason=range");
@@ -733,6 +842,8 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
             body.u64(transfer.total as u64);
             body.str(" chunk=");
             body.u64(transfer.chunk as u64);
+            body.str(" stream=");
+            body.u64(transfer.stream as u64);
             body.str(" received=");
             body.u64(transfer.received as u64);
             body.str(" chunks=");
@@ -773,6 +884,22 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
     body.u64(mesh.stats.bulk_chunks_sent);
     body.str(" bulk_abort=");
     body.u64(mesh.stats.bulk_aborts);
+    body.str(" stream_open=");
+    body.u64(mesh.streams.len() as u64);
+    body.str(" stream_opens=");
+    body.u64(mesh.streams.opens());
+    body.str(" stream_resets=");
+    body.u64(mesh.streams.resets());
+    body.str(" stream_credit_stall=");
+    body.u64(mesh.streams.credit_stalls());
+    body.str(" stream_control_stall=");
+    body.u64(mesh.streams.control_stalls());
+    body.str(" stream_tx_control=");
+    body.u64(mesh.streams.control_frames());
+    body.str(" stream_tx_data=");
+    body.u64(mesh.streams.data_frames());
+    body.str(" stream_queued=");
+    body.u64(mesh.streams.queued_bytes() as u64);
     body.push(b'\n');
     let state = match mesh.bulk.as_ref().map(|transfer| transfer.state) {
         Some(BulkState::Done) => 200,
@@ -1833,6 +1960,11 @@ impl Mesh {
         self.heartbeat.reset(now);
         self.phase = Phase::Connected;
         self.connect_attempts = 0;
+        self.reset_streams(if self.direct_initiator {
+            Side::Initiator
+        } else {
+            Side::Responder
+        });
         self.last_connect_ms = if self.direct_initiator {
             now.saturating_sub(self.connect_started_ms)
         } else {
@@ -2003,6 +2135,7 @@ impl Mesh {
                 now,
                 MessageKind::Control,
                 OpCode::Ping,
+                STREAM_CONTROL,
                 destination,
                 0,
                 0,
@@ -2029,6 +2162,7 @@ impl Mesh {
             now,
             MessageKind::Request,
             OpCode::Ping,
+            STREAM_CONTROL,
             NodeId::ZERO,
             tag.0 as u64,
             0,
@@ -2075,6 +2209,7 @@ impl Mesh {
                         status: frame_header.status,
                         kind: frame_header.kind,
                         opcode: frame_header.opcode,
+                        stream: frame_header.stream.0,
                         body_len: body.len(),
                     }
                 };
@@ -2157,6 +2292,25 @@ impl Mesh {
                 return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
             }
         }
+        let stream_ok = match incoming.opcode {
+            OpCode::Ping => matches!(incoming.stream, STREAM_CONTROL | STREAM_LATENCY),
+            OpCode::Hello => incoming.stream == STREAM_JOIN,
+            OpCode::Invoke | OpCode::RouteQuery => incoming.stream == STREAM_ROUTE,
+            OpCode::Migrate => incoming.stream == STREAM_MIGRATE,
+            OpCode::Read => {
+                incoming.stream != 0
+                    && !self
+                        .streams
+                        .stream(incoming.stream)
+                        .is_some_and(|stream| stream.control)
+            }
+            OpCode::WindowUpdate | OpCode::Cancel => incoming.stream != 0,
+            _ => false,
+        };
+        if !stream_ok {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
         self.learn_peer(services, source, now)?;
         // Only the configured authority renews a member's write lease.  A
         // frame from another member proves that member is alive, not that the
@@ -2205,6 +2359,7 @@ impl Mesh {
                     now,
                     MessageKind::Response,
                     OpCode::Ping,
+                    incoming.stream,
                     source,
                     0,
                     incoming.header.request_id,
@@ -2354,16 +2509,16 @@ impl Mesh {
                 }
             }
             (MessageKind::Request, OpCode::Read) => {
-                self.on_bulk_request(services, source, body, now);
+                self.on_bulk_request(services, source, incoming.stream, body, now)?;
             }
             (MessageKind::Response, OpCode::Read) => {
-                self.on_bulk_chunk(services, source, body, now);
+                self.on_bulk_chunk(services, source, incoming.stream, body, now)?;
             }
             (MessageKind::Control, OpCode::WindowUpdate) => {
-                self.on_window_update(body);
+                self.on_window_update(body)?;
             }
             (MessageKind::Cancel, OpCode::Cancel) => {
-                self.on_cancel(body);
+                self.on_cancel(services, body, now)?;
             }
             _ => {}
         }
@@ -2385,17 +2540,22 @@ impl Mesh {
     }
 
     fn queue_route(&mut self, wire: RouteWire, now: u64) -> bool {
-        let Ok(mut frame) =
-            MessageFrame::inline(wire.kind, wire.opcode, StreamId(3), Tag(0), &wire.body)
-        else {
+        let Ok(mut frame) = MessageFrame::inline(
+            wire.kind,
+            wire.opcode,
+            StreamId(STREAM_ROUTE),
+            Tag(0),
+            &wire.body,
+        ) else {
             return false;
         };
         frame.header.object = wire.object;
         frame.header.status = wire.status;
         wire.apply_trace(&mut frame.header);
         let header = wire.header(self.self_id);
-        let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let frame_header = frame.header;
+        let _ = now;
+        self.stage_control(STREAM_ROUTE, header, frame_header, &wire.body)
     }
 
     fn dispatch_migrate(&mut self, services: &Services, step: MigrateStep, now: u64) {
@@ -2413,16 +2573,21 @@ impl Mesh {
     }
 
     fn queue_migrate(&mut self, wire: MigrateWire, now: u64) -> bool {
-        let Ok(mut frame) =
-            MessageFrame::inline(wire.kind, OpCode::Migrate, StreamId(4), Tag(0), &wire.body)
-        else {
+        let Ok(mut frame) = MessageFrame::inline(
+            wire.kind,
+            OpCode::Migrate,
+            StreamId(STREAM_MIGRATE),
+            Tag(0),
+            &wire.body,
+        ) else {
             return false;
         };
         frame.header.object = mesh_migrate::actor_object(&wire.actor);
         frame.header.status = wire.status;
         let header = wire.header(self.self_id);
-        let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let frame_header = frame.header;
+        let _ = now;
+        self.stage_control(STREAM_MIGRATE, header, frame_header, &wire.body)
     }
 
     fn after_join(
@@ -2980,6 +3145,19 @@ impl Mesh {
         if matches!(message, JoinMessage::Request(_)) {
             self.join_requests = self.join_requests.saturating_add(1);
         }
+        // JOIN_TX holds one body.  If a join frame from earlier in this tick is
+        // still staged, drain it into the transport queue before overwriting
+        // the buffer; control frames stay ahead of any data in the scheduler.
+        if self
+            .staged
+            .iter()
+            .any(|frame| frame.is_some_and(|frame| frame.store == BodyStore::Join))
+        {
+            self.drain_stage(now);
+            if self.stage_fault.is_some() {
+                return;
+            }
+        }
         // SAFETY: single-threaded module; JOIN_TX is the only encode buffer and
         // the bytes are copied into the send queue before the next message.
         let buffer = unsafe { &mut *core::ptr::addr_of_mut!(JOIN_TX) };
@@ -3085,7 +3263,7 @@ impl Mesh {
         if matches!(&message, JoinMessage::Confirm(_)) {
             self.persist_root(services);
         }
-        if !self.queue_hello(kind, destination, request_id, reply_to, body, now) {
+        if !self.stage_hello(kind, destination, request_id, reply_to, body, now) {
             let mut line = Line::new();
             line.str("mesh-join: send-failed kind=");
             line.str(message.kind());
@@ -3094,16 +3272,19 @@ impl Mesh {
         }
     }
 
-    fn queue_hello(
+    #[allow(clippy::too_many_arguments)]
+    fn stage_hello(
         &mut self,
         kind: MessageKind,
         destination: NodeId,
         request_id: u64,
         reply_to: u64,
         body: &[u8],
-        now: u64,
+        _now: u64,
     ) -> bool {
-        let Ok(frame) = MessageFrame::inline(kind, OpCode::Hello, StreamId(2), Tag(0), body) else {
+        let Ok(frame) =
+            MessageFrame::inline(kind, OpCode::Hello, StreamId(STREAM_JOIN), Tag(0), body)
+        else {
             return false;
         };
         let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
@@ -3114,8 +3295,18 @@ impl Mesh {
         header.request_id = request_id;
         header.reply_to = reply_to;
         header.ttl = MeshHeader::MAX_HOPS;
-        let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let frame_header = frame.header;
+        self.stage_control_join(STREAM_JOIN, header, frame_header, body)
+    }
+
+    /// The stream-allocator side for the current peer.
+    fn link_side(&self) -> Side {
+        match self.peer {
+            Some(peer) if self.self_id < peer => Side::Initiator,
+            Some(_) => Side::Responder,
+            None if self.direct_initiator => Side::Initiator,
+            None => Side::Responder,
+        }
     }
 
     fn learn_peer(
@@ -3150,6 +3341,12 @@ impl Mesh {
             if let Some(migrate) = self.migrate.as_mut() {
                 let _ = migrate.set_peer(source);
             }
+            // Dynamic stream IDs follow the lower NodeId as initiator, so
+            // both ends agree without a negotiation round trip.
+            let side = self.link_side();
+            if self.streams.side() != side {
+                self.reset_streams(side);
+            }
         }
         self.peers[self.peer_count] = source;
         self.peer_count += 1;
@@ -3166,16 +3363,17 @@ impl Mesh {
     #[allow(clippy::too_many_arguments)]
     fn queue_ping(
         &mut self,
-        now: u64,
+        _now: u64,
         kind: MessageKind,
         opcode: OpCode,
+        stream: u32,
         destination: NodeId,
         request_id: u64,
         reply_to: u64,
         tag: Tag,
     ) -> bool {
-        let body = self.self_id.as_bytes();
-        let Ok(frame) = MessageFrame::inline(kind, opcode, StreamId(1), tag, body) else {
+        let body = *self.self_id.as_bytes();
+        let Ok(frame) = MessageFrame::inline(kind, opcode, StreamId(stream), tag, &body) else {
             return false;
         };
         let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
@@ -3186,8 +3384,8 @@ impl Mesh {
         header.request_id = request_id;
         header.reply_to = reply_to;
         header.ttl = MeshHeader::MAX_HOPS;
-        let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let frame_header = frame.header;
+        self.stage_control(stream, header, frame_header, &body)
     }
 
     fn start_latency(&mut self, count: u32, now: u64) -> bool {
@@ -3223,6 +3421,7 @@ impl Mesh {
             now,
             MessageKind::Request,
             OpCode::Ping,
+            STREAM_LATENCY,
             destination,
             u64::from(send_ms),
             0,
@@ -3253,15 +3452,22 @@ impl Mesh {
         probe.next_ms = now.saturating_add(20);
     }
 
-    fn queue_window_update(&mut self, destination: NodeId, nonce: u32, credit: u32, now: u64) {
+    fn queue_window_update(
+        &mut self,
+        destination: NodeId,
+        stream: u32,
+        nonce: u32,
+        credit: u32,
+        now: u64,
+    ) {
         let mut body = [0u8; 16];
-        body[0..4].copy_from_slice(&5u32.to_le_bytes());
+        body[0..4].copy_from_slice(&stream.to_le_bytes());
         body[4..8].copy_from_slice(&credit.to_le_bytes());
         body[8..12].copy_from_slice(&nonce.to_le_bytes());
         let Ok(frame) = MessageFrame::inline(
             MessageKind::Control,
             OpCode::WindowUpdate,
-            StreamId(5),
+            StreamId(stream),
             Tag(0),
             &body,
         ) else {
@@ -3270,34 +3476,76 @@ impl Mesh {
         let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
         header.flags = mesh_flags::PROBE;
         header.ttl = MeshHeader::MAX_HOPS;
-        let _ = self.queue.push_record(&MeshEnvelope { header, frame }, now);
+        let frame_header = frame.header;
+        let _ = now;
+        self.stage_control(stream, header, frame_header, &body);
     }
 
-    fn on_window_update(&mut self, body: &[u8]) {
+    fn on_window_update(&mut self, body: &[u8]) -> Result<(), TransportError> {
         if body.len() < 8 {
-            return;
+            return Err(TransportError::Envelope(sys_primitives::Error::BadLength));
         }
         let stream = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        let credit = u32::from_le_bytes([body[4], body[5], body[6], body[7]]).clamp(1, 8);
-        let _ = self.streams.grant(stream, credit * BULK_CHUNK_MAX as u32);
-        if stream == 5 {
-            if let Some(reply) = self.bulk_reply.as_mut() {
-                reply.credit = reply.credit.saturating_add(credit);
+        // Window updates carry bytes, not chunks, so the receiver does not need
+        // to know the sender's chunk size.
+        let credit = u32::from_le_bytes([body[4], body[5], body[6], body[7]])
+            .clamp(1, mesh_stream::MAX_CREDIT);
+        // A window update can cross a cancel in flight.  A grant for a stream
+        // this side has already reset is stale, not a protocol failure.
+        let _ = self.streams.grant_send(stream, credit);
+        if let Some(reply) = self.bulk_reply.as_mut() {
+            if reply.stream == stream {
+                let chunks = (credit / reply.chunk.max(1)).max(1);
+                reply.credit = reply.credit.saturating_add(chunks).min(8);
             }
         }
+        Ok(())
     }
 
-    fn on_cancel(&mut self, body: &[u8]) {
+    fn on_cancel(
+        &mut self,
+        services: &Services,
+        body: &[u8],
+        now: u64,
+    ) -> Result<(), TransportError> {
         if body.len() < 4 {
-            return;
+            return Err(TransportError::Envelope(sys_primitives::Error::BadLength));
         }
         let stream = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
-        if stream == 5 {
-            self.bulk_reply = None;
-            let _ = self.streams.reset(5);
-            let _ = self.streams.insert(5, false);
-            self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
+        if stream == 0 {
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
+        if self.streams.reset(stream).is_err() {
+            // A cancel for a stream this side already retired is stale, not a
+            // protocol failure; there is nothing left to reclaim.
+            return Ok(());
+        }
+        if let Some(transfer) = self.bulk.as_mut() {
+            if transfer.stream == stream {
+                transfer.state = BulkState::Failed;
+                transfer.error = Some("cancel");
+                transfer.finished_ms = now;
+            }
+        }
+        if self
+            .bulk_reply
+            .as_ref()
+            .is_some_and(|reply| reply.stream == stream)
+        {
+            self.bulk_reply = None;
+        }
+        if self.retire_stream == Some(stream) {
+            self.retire_stream = None;
+        }
+        self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
+        let mut line = Line::new();
+        line.str("mesh-stream: cancel stream=");
+        line.u64(stream as u64);
+        line.str(" reset=");
+        line.u64(self.streams.resets());
+        line.push(b'\n');
+        log(services, line.as_bytes());
+        Ok(())
     }
 
     /// Whether a bulk transfer is queued or in flight in either direction.
@@ -3322,6 +3570,9 @@ impl Mesh {
             return false;
         }
         let nonce = (now as u32) ^ self.stats.frames_sent as u32 ^ 0x4952_4237;
+        let Ok(stream) = self.streams.open_channel(false) else {
+            return false;
+        };
         self.bulk = Some(BulkTransfer {
             nonce,
             total,
@@ -3335,6 +3586,7 @@ impl Mesh {
             chunks: 0,
             expected_offset: 0,
             error: None,
+            stream,
         });
         // No serial line here: the emulated console is synchronous inside the
         // module tick, and one 70-byte line delayed the bulk request by ~600 ms
@@ -3343,10 +3595,17 @@ impl Mesh {
         true
     }
 
-    fn on_bulk_request(&mut self, services: &Services, source: NodeId, body: &[u8], now: u64) {
+    fn on_bulk_request(
+        &mut self,
+        services: &Services,
+        source: NodeId,
+        stream: u32,
+        body: &[u8],
+        now: u64,
+    ) -> Result<(), TransportError> {
         if body.len() != BULK_HEADER_LEN {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return;
+            return Ok(());
         }
         let magic = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
         let total = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
@@ -3361,7 +3620,32 @@ impl Mesh {
             || !total.is_multiple_of(chunk)
         {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return;
+            return Ok(());
+        }
+        if let Some(reply) = self.bulk_reply.as_ref() {
+            if reply.stream != stream {
+                let old = reply.stream;
+                let _ = self.streams.reset(old);
+                self.bulk_reply = None;
+            }
+        }
+        if let Err(error) = self.streams.accept_channel(stream, false) {
+            let mut line = Line::new();
+            line.str("mesh-stream: reject reason=");
+            line.str(error.as_str());
+            line.str(" stream=");
+            line.u64(stream as u64);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if let Err(error) = self
+            .streams
+            .set_send_credit(stream, credit.saturating_mul(chunk))
+        {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            let _ = error;
+            return Ok(());
         }
         self.bulk_reply = Some(BulkReply {
             node: source,
@@ -3371,16 +3655,26 @@ impl Mesh {
             offset: 0,
             started_ms: now,
             credit,
+            finishing: false,
+            stream,
         });
         // The peer-side counters are reported by the origin's `/mesh/bulk`
         // raw line; do not block this tick on the emulated serial console.
         let _ = services;
+        Ok(())
     }
 
-    fn on_bulk_chunk(&mut self, services: &Services, source: NodeId, body: &[u8], now: u64) {
+    fn on_bulk_chunk(
+        &mut self,
+        services: &Services,
+        source: NodeId,
+        stream: u32,
+        body: &[u8],
+        now: u64,
+    ) -> Result<(), TransportError> {
         if body.len() < BULK_HEADER_LEN {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return;
+            return Ok(());
         }
         let magic = u32::from_le_bytes([body[0], body[1], body[2], body[3]]);
         let nonce = u32::from_le_bytes([body[4], body[5], body[6], body[7]]);
@@ -3388,8 +3682,16 @@ impl Mesh {
         let offset = u32::from_le_bytes([body[12], body[13], body[14], body[15]]);
         let payload = u32::from_le_bytes([body[16], body[17], body[18], body[19]]) as usize;
         let Some(transfer) = self.bulk.as_mut() else {
-            return;
+            return Ok(());
         };
+        if stream != transfer.stream {
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if transfer.state != BulkState::Running {
+            // A chunk that arrives after a cancel or a terminal state is
+            // stale; the stream is already reset.
+            return Ok(());
+        }
         if magic != BULK_MAGIC
             || nonce != transfer.nonce
             || total != transfer.total
@@ -3402,7 +3704,18 @@ impl Mesh {
             transfer.error = Some("chunk");
             transfer.finished_ms = now;
             self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
-            return;
+            return Ok(());
+        }
+        if self
+            .streams
+            .consume_receive(stream, payload as u32)
+            .is_err()
+        {
+            transfer.state = BulkState::Failed;
+            transfer.error = Some("credit");
+            transfer.finished_ms = now;
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
         if transfer.received == 0 {
             transfer.first_chunk_ms = now;
@@ -3422,13 +3735,17 @@ impl Mesh {
         if received == total {
             transfer.state = BulkState::Done;
             transfer.finished_ms = now;
+            let _ = self.streams.close_remote(stream);
+            self.retire_stream = Some(stream);
         }
         let elapsed = now.saturating_sub(started_ms);
         let chunks = transfer.chunks;
         if grant {
             // The origin grants the next pair of chunks only after it has
-            // consumed the previous pair.
-            self.queue_window_update(source, nonce, BULK_CREDIT_GRANT, now);
+            // consumed the previous pair.  The wire value is bytes.
+            let grant_bytes = BULK_CREDIT_GRANT * chunk;
+            let _ = self.streams.grant_receive(stream, grant_bytes);
+            self.queue_window_update(source, stream, nonce, grant_bytes, now);
             self.stats.credit_grants = self.stats.credit_grants.saturating_add(1);
         }
         if received == total {
@@ -3442,26 +3759,33 @@ impl Mesh {
             line.push(b'\n');
             log(services, line.as_bytes());
         }
+        Ok(())
     }
 
     /// Queue one outbound bulk request or reply chunk.  Called once per tick,
     /// after control work and before the single flush.
     fn bulk_tick(&mut self, services: &Services, now: u64) {
         let start = match self.bulk.as_ref() {
-            Some(transfer) if transfer.state == BulkState::Start => {
-                Some((transfer.total, transfer.chunk, transfer.nonce))
-            }
+            Some(transfer) if transfer.state == BulkState::Start => Some((
+                transfer.total,
+                transfer.chunk,
+                transfer.nonce,
+                transfer.stream,
+            )),
             Some(transfer)
                 if transfer.state == BulkState::Running
                     && now.saturating_sub(transfer.started_ms) >= BULK_DEADLINE_MS =>
             {
                 let received = transfer.received;
                 let total = transfer.total;
+                let stream = transfer.stream;
                 if let Some(transfer) = self.bulk.as_mut() {
                     transfer.state = BulkState::Failed;
                     transfer.error = Some("timeout");
                     transfer.finished_ms = now;
                 }
+                let _ = self.streams.reset(stream);
+                self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
                 self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
                 let mut line = Line::new();
                 line.str("mesh-bulk: failed reason=timeout received=");
@@ -3474,49 +3798,84 @@ impl Mesh {
             }
             _ => None,
         };
-        if let Some((total, chunk, nonce)) = start {
-            if self.queue_bulk_request(total, chunk, nonce, now) {
+        if let Some((total, chunk, nonce, stream)) = start {
+            if self.queue_bulk_request(stream, total, chunk, nonce, now) {
                 if let Some(transfer) = self.bulk.as_mut() {
                     transfer.state = BulkState::Running;
                     transfer.request_queued_ms = now;
                 }
-            } else if let Some(transfer) = self.bulk.as_mut() {
-                transfer.state = BulkState::Failed;
-                transfer.error = Some("queue");
-                transfer.finished_ms = now;
+            } else {
+                if let Some(transfer) = self.bulk.as_mut() {
+                    transfer.state = BulkState::Failed;
+                    transfer.error = Some("queue");
+                    transfer.finished_ms = now;
+                }
+                let _ = self.streams.reset(stream);
+                self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
             }
         }
         let Some(reply) = self.bulk_reply.as_ref() else {
             return;
         };
+        if reply.finishing || reply.credit == 0 {
+            return;
+        }
         if now.saturating_sub(reply.started_ms) >= BULK_DEADLINE_MS {
+            let stream = reply.stream;
             self.bulk_reply = None;
+            let _ = self.streams.reset(stream);
+            self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
             self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
             return;
         }
-        let (node, nonce, total, chunk, offset) = (
+        let (node, nonce, total, chunk, offset, stream) = (
             reply.node,
             reply.nonce,
             reply.total,
             reply.chunk,
             reply.offset,
+            reply.stream,
         );
-        if self.queue_bulk_chunk(node, nonce, total, chunk, offset, now) {
+        if self.queue_bulk_chunk(node, stream, nonce, total, chunk, offset, now) {
             self.stats.bulk_chunks_sent = self.stats.bulk_chunks_sent.saturating_add(1);
             if let Some(reply) = self.bulk_reply.as_mut() {
                 reply.offset = reply.offset.saturating_add(chunk);
+                reply.credit = reply.credit.saturating_sub(1);
                 if reply.offset >= reply.total {
-                    self.bulk_reply = None;
+                    // Keep the reply until the sink accepts the final record;
+                    // the flush path resets the stream and clears it.
+                    reply.finishing = true;
+                    self.retire_stream = Some(reply.stream);
                 }
             }
         }
     }
 
-    fn queue_bulk_request(&mut self, total: u32, chunk: u32, nonce: u32, now: u64) -> bool {
+    fn queue_bulk_request(
+        &mut self,
+        stream: u32,
+        total: u32,
+        chunk: u32,
+        nonce: u32,
+        now: u64,
+    ) -> bool {
         let Some(destination) = self.peer else {
             return false;
         };
-        let mut body = [0u8; BULK_HEADER_LEN];
+        if self
+            .staged
+            .iter()
+            .any(|frame| frame.is_some_and(|frame| frame.store == BodyStore::FrameRx))
+        {
+            self.drain_stage(now);
+            if self.stage_fault.is_some() {
+                return false;
+            }
+        }
+        // SAFETY: single-threaded module; FRAME_RX is reused after the receive
+        // pass and the staged record is copied into the transport queue before
+        // the next `feed`.
+        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(FRAME_RX))[..BULK_HEADER_LEN] };
         body[0..4].copy_from_slice(&BULK_MAGIC.to_le_bytes());
         body[4..8].copy_from_slice(&total.to_le_bytes());
         body[8..12].copy_from_slice(&chunk.to_le_bytes());
@@ -3525,9 +3884,9 @@ impl Mesh {
         let Ok(frame) = MessageFrame::inline(
             MessageKind::Request,
             OpCode::Read,
-            StreamId(5),
+            StreamId(stream),
             Tag(0),
-            &body,
+            body,
         ) else {
             return false;
         };
@@ -3535,14 +3894,26 @@ impl Mesh {
         header.flags = mesh_flags::PROBE;
         header.ttl = MeshHeader::MAX_HOPS;
         header.request_id = u64::from(nonce);
-        self.queue
-            .push_record(&MeshEnvelope { header, frame }, now)
-            .is_ok()
+        // The request carries the initial window; the receiver must enforce it
+        // before the first chunk arrives.
+        let _ = self
+            .streams
+            .set_receive_credit(stream, BULK_INITIAL_CREDIT * chunk);
+        let frame_header = frame.header;
+        self.stage_data_rx(
+            stream,
+            header,
+            frame_header,
+            BULK_HEADER_LEN,
+            BULK_HEADER_LEN as u32,
+        )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn queue_bulk_chunk(
         &mut self,
         destination: NodeId,
+        stream: u32,
         nonce: u32,
         total: u32,
         chunk: u32,
@@ -3554,9 +3925,25 @@ impl Mesh {
         if body_len > FRAME_BODY_MAX {
             return false;
         }
-        // SAFETY: single-threaded module; BULK_TX is only used here and the
-        // record is encoded into the send queue before the next call.
-        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(BULK_TX))[..body_len] };
+        if self
+            .staged
+            .iter()
+            .any(|frame| frame.is_some_and(|frame| frame.store == BodyStore::FrameRx))
+        {
+            self.drain_stage(now);
+            if self.stage_fault.is_some() {
+                return false;
+            }
+        }
+        let bytes = chunk;
+        let Ok(class) = self.streams.begin(stream, bytes) else {
+            self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
+            return false;
+        };
+        // SAFETY: single-threaded module; FRAME_RX is reused after the receive
+        // pass and the staged record is copied into the transport queue before
+        // the next `feed`.
+        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(FRAME_RX))[..body_len] };
         body[0..4].copy_from_slice(&BULK_MAGIC.to_le_bytes());
         body[4..8].copy_from_slice(&nonce.to_le_bytes());
         body[8..12].copy_from_slice(&total.to_le_bytes());
@@ -3569,10 +3956,11 @@ impl Mesh {
         let Ok(mut frame) = MessageFrame::inline(
             MessageKind::Response,
             OpCode::Read,
-            StreamId(5),
+            StreamId(stream),
             Tag(0),
             body,
         ) else {
+            self.streams.abort(stream, bytes);
             return false;
         };
         frame.header.flags |= if final_chunk {
@@ -3586,17 +3974,337 @@ impl Mesh {
         header.flags = mesh_flags::PROBE | mesh_flags::REPLY;
         header.ttl = MeshHeader::MAX_HOPS;
         header.request_id = u64::from(nonce);
-        self.queue
-            .push_data_record(&MeshEnvelope { header, frame }, now)
-            .is_ok()
+        let frame_header = frame.header;
+        self.stage_record(
+            stream,
+            class,
+            header,
+            frame_header,
+            BodyStore::FrameRx,
+            0,
+            body_len,
+            chunk,
+        )
+    }
+
+    /// Rebuild the per-link stream set for `side`.
+    fn reset_streams(&mut self, side: Side) {
+        self.streams = live_streams(side);
+        self.stage_reset();
+        self.retire_stream = None;
+    }
+
+    /// Drop staged frames and their bodies.
+    fn stage_reset(&mut self) {
+        self.staged = [None; STAGE_FRAMES];
+        self.stage_len = 0;
+    }
+
+    /// Copy one small control body into the tick's staging area.
+    fn stage_body_bytes(&mut self, body: &[u8]) -> Option<(usize, usize)> {
+        let start = self.stage_len;
+        let end = start.checked_add(body.len())?;
+        if end > STAGE_SMALL_MAX {
+            return None;
+        }
+        // SAFETY: single-threaded module; STAGE_SMALL is only written here and
+        // read by `drain_stage` before the next tick clears `stage_len`.
+        let storage = unsafe { &mut *core::ptr::addr_of_mut!(STAGE_SMALL) };
+        storage[start..end].copy_from_slice(body);
+        self.stage_len = end;
+        Some((start, body.len()))
+    }
+
+    /// Stage one frame whose body already sits at `body_start`.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_record(
+        &mut self,
+        id: u32,
+        class: Class,
+        header: MeshHeader,
+        frame: FrameHeader,
+        store: BodyStore,
+        body_start: usize,
+        body_len: usize,
+        bytes: u32,
+    ) -> bool {
+        let Some(slot) = self.staged.iter().position(Option::is_none) else {
+            if store == BodyStore::Small {
+                self.stage_len = body_start;
+            }
+            self.streams.abort(id, bytes);
+            return false;
+        };
+        if self.streams.schedule(id, class).is_err() {
+            if store == BodyStore::Small {
+                self.stage_len = body_start;
+            }
+            self.streams.abort(id, bytes);
+            return false;
+        }
+        self.staged[slot] = Some(StagedFrame {
+            stream: id,
+            class,
+            header,
+            frame,
+            store,
+            body_start,
+            body_len,
+        });
+        true
+    }
+
+    /// Stage one frame after copying its small body into the staging area.
+    fn stage_commit(
+        &mut self,
+        id: u32,
+        class: Class,
+        header: MeshHeader,
+        frame: FrameHeader,
+        body: &[u8],
+        bytes: u32,
+    ) -> bool {
+        let Some((body_start, body_len)) = self.stage_body_bytes(body) else {
+            self.streams.abort(id, bytes);
+            return false;
+        };
+        self.stage_record(
+            id,
+            class,
+            header,
+            frame,
+            BodyStore::Small,
+            body_start,
+            body_len,
+            bytes,
+        )
+    }
+
+    /// Stage a control-class frame.  Sets the fail-closed marker on failure.
+    fn stage_control(
+        &mut self,
+        id: u32,
+        header: MeshHeader,
+        frame: FrameHeader,
+        body: &[u8],
+    ) -> bool {
+        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        let Ok(class) = self.streams.begin_control(id, bytes) else {
+            self.stage_fault = Some("stream-control");
+            return false;
+        };
+        if self.stage_commit(id, class, header, frame, body, bytes) {
+            true
+        } else {
+            self.stage_fault = Some("stream-control");
+            false
+        }
+    }
+
+    /// Stage a join frame whose body is the current `JOIN_TX` contents.
+    fn stage_control_join(
+        &mut self,
+        id: u32,
+        header: MeshHeader,
+        frame: FrameHeader,
+        body: &[u8],
+    ) -> bool {
+        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        let Ok(class) = self.streams.begin_control(id, bytes) else {
+            self.stage_fault = Some("stream-control");
+            return false;
+        };
+        if self.stage_record(
+            id,
+            class,
+            header,
+            frame,
+            BodyStore::Join,
+            0,
+            body.len(),
+            bytes,
+        ) {
+            true
+        } else {
+            self.stage_fault = Some("stream-control");
+            false
+        }
+    }
+
+    /// Stage a data-class frame whose body is the current `FRAME_RX` contents.
+    ///
+    /// `credit_bytes` is the payload size the stream window counts.  A bulk
+    /// chunk's 20-byte body header is framing, not window credit, so the
+    /// window stays in payload units.
+    #[allow(clippy::too_many_arguments)]
+    fn stage_data_rx(
+        &mut self,
+        id: u32,
+        header: MeshHeader,
+        frame: FrameHeader,
+        body_len: usize,
+        credit_bytes: u32,
+    ) -> bool {
+        let Ok(class) = self.streams.begin(id, credit_bytes) else {
+            self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
+            return false;
+        };
+        self.stage_record(
+            id,
+            class,
+            header,
+            frame,
+            BodyStore::FrameRx,
+            0,
+            body_len,
+            credit_bytes,
+        )
+    }
+
+    /// Drain staged frames into the transport queue, control class first.
+    fn drain_stage(&mut self, now: u64) {
+        while let Some((id, class)) = self.streams.next_frame() {
+            let Some(slot) = self.staged.iter().position(|frame| {
+                frame.is_some_and(|frame| frame.stream == id && frame.class == class)
+            }) else {
+                continue;
+            };
+            let Some(frame) = self.staged[slot].take() else {
+                continue;
+            };
+            let bytes = u32::try_from(frame.body_len).unwrap_or(u32::MAX);
+            if !self.streams.can_commit() {
+                self.streams.abort(id, bytes);
+                if class == Class::Control {
+                    self.stage_fault = Some("stream-ledger");
+                } else {
+                    self.rollback_data(&frame);
+                }
+                continue;
+            }
+            let body = unsafe {
+                // SAFETY: single-threaded module; the staged body is copied
+                // into the transport queue before this slice is released.
+                match frame.store {
+                    BodyStore::Small => {
+                        &(&*core::ptr::addr_of!(STAGE_SMALL))
+                            [frame.body_start..frame.body_start + frame.body_len]
+                    }
+                    BodyStore::Join => {
+                        &(&*core::ptr::addr_of!(JOIN_TX))
+                            [frame.body_start..frame.body_start + frame.body_len]
+                    }
+                    BodyStore::FrameRx => {
+                        &(&*core::ptr::addr_of!(FRAME_RX))
+                            [frame.body_start..frame.body_start + frame.body_len]
+                    }
+                }
+            };
+            let Ok(mut message) = MessageFrame::inline(
+                frame.frame.kind,
+                frame.frame.opcode,
+                StreamId(id),
+                frame.frame.tag,
+                body,
+            ) else {
+                self.streams.abort(id, bytes);
+                if class == Class::Control {
+                    self.stage_fault = Some("stream-encode");
+                } else {
+                    self.rollback_data(&frame);
+                }
+                continue;
+            };
+            message.header = frame.frame;
+            let envelope = MeshEnvelope {
+                header: frame.header,
+                frame: message,
+            };
+            let queued = match class {
+                Class::Control => self.queue.push_record(&envelope, now),
+                Class::Data => self.queue.push_data_record(&envelope, now),
+            };
+            match queued {
+                Ok(()) => {
+                    if self.streams.commit(id, bytes).is_err() {
+                        self.streams.abort(id, bytes);
+                        if class == Class::Control {
+                            self.stage_fault = Some("stream-ledger");
+                        } else {
+                            self.rollback_data(&frame);
+                        }
+                    }
+                }
+                Err(_) => {
+                    self.streams.abort(id, bytes);
+                    if class == Class::Control {
+                        // Never skip a control record.  Close the link and let
+                        // the rejoin path retry it on a fresh queue.
+                        self.stage_fault = Some("stream-queue");
+                    } else {
+                        self.rollback_data(&frame);
+                        self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.staged = [None; STAGE_FRAMES];
+        self.stage_len = 0;
+    }
+
+    /// Put a data frame that never reached the transport queue back at the
+    /// head of its stream so the next tick retries it.
+    fn rollback_data(&mut self, frame: &StagedFrame) {
+        if let Some(reply) = self.bulk_reply.as_mut() {
+            if reply.stream == frame.stream {
+                reply.offset = frame.frame.offset as u32;
+                reply.finishing = false;
+                reply.credit = reply.credit.saturating_add(1);
+            }
+        }
+        if let Some(transfer) = self.bulk.as_mut() {
+            if transfer.stream == frame.stream
+                && transfer.state == BulkState::Running
+                && frame.frame.kind == MessageKind::Request
+            {
+                // The request never reached the transport queue; retry it on
+                // the next tick.
+                transfer.state = BulkState::Start;
+                transfer.request_queued_ms = 0;
+            }
+        }
+        if self.retire_stream == Some(frame.stream) {
+            self.retire_stream = None;
+        }
     }
 
     fn flush(&mut self, services: &Services, now: u64) {
+        self.drain_stage(now);
+        if let Some(reason) = self.stage_fault.take() {
+            self.disconnect(services, now, reason);
+            return;
+        }
         let mut sink = ServiceSink {
             services,
             slot: MESH_SLOT,
         };
         let report = self.queue.flush(&mut sink);
+        self.streams.settle(report.frames_written);
+        if let Some(stream) = self.retire_stream {
+            let queued = self.streams.stream(stream).map_or(0, |state| state.queued);
+            if queued == 0 {
+                let _ = self.streams.reset(stream);
+                self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
+                self.retire_stream = None;
+                if self
+                    .bulk_reply
+                    .as_ref()
+                    .is_some_and(|reply| reply.stream == stream)
+                {
+                    self.bulk_reply = None;
+                }
+            }
+        }
         self.stats.bytes_sent = self
             .stats
             .bytes_sent
@@ -3676,6 +4384,20 @@ impl Mesh {
         line.u64(self.stats.credit_grants);
         line.str(" stream_reset=");
         line.u64(self.stats.stream_resets);
+        line.str(" stream_open=");
+        line.u64(self.streams.len() as u64);
+        line.str(" stream_opens=");
+        line.u64(self.streams.opens());
+        line.str(" stream_credit_stall=");
+        line.u64(self.streams.credit_stalls());
+        line.str(" stream_control_stall=");
+        line.u64(self.streams.control_stalls());
+        line.str(" stream_tx_control=");
+        line.u64(self.streams.control_frames());
+        line.str(" stream_tx_data=");
+        line.u64(self.streams.data_frames());
+        line.str(" stream_inflight=");
+        line.u64(self.streams.inflight() as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
         self.pass_logged = true;
@@ -3717,6 +4439,10 @@ impl Mesh {
         (services.tcp_abort)(MESH_SLOT);
         self.decoder.reset();
         self.queue.clear();
+        self.streams.clear();
+        self.stage_reset();
+        self.stage_fault = None;
+        self.retire_stream = None;
         self.pending = PendingTable::new(PENDING_CAPACITY);
         self.peer = None;
         self.peers = [NodeId::ZERO; MAX_MESH_NODES];
