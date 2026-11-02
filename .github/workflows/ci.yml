@@ -1329,6 +1329,43 @@ jobs:
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
 
+  powerpc:
+    name: Boot (PowerPC G3 QEMU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install pinned nightly + rust-src + llvm-tools
+        run: |
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
+          rustup default nightly-2026-10-03
+      - name: Ensure host C compiler (cc)
+        run: |
+          command -v cc >/dev/null 2>&1 || sudo apt-get install -y gcc
+      - name: Ensure QEMU PowerPC
+        run: |
+          if ! command -v qemu-system-ppc >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-ppc
+          fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "powerpc-boot"
+      - name: Build and boot the G3 Beige machine
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/powerpc-qemu.sh "$RUNNER_TEMP/powerpc-qemu"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: powerpc-qemu
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/powerpc-qemu/serial.log
+
   x86:
     name: Boot (x86_64 QEMU)
     runs-on: ubuntu-24.04
