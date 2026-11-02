@@ -738,22 +738,62 @@ fn first_string(buffer: &[u8], length: usize) -> Option<&[u8]> {
     }
 }
 
-/// The CUDA, which carries the MOS 6522 VIA and its programmable timer.
+/// Which node carries the MOS 6522 VIA and its programmable timer.
 ///
-/// `reg` holds the offset of the CUDA window inside Mac I/O.
-/// `AAPL,interrupts` holds the interrupt controller line the CUDA asserts.
-/// The lookup is relative to the selected Mac I/O node: a second controller's
-/// VIA is not the machine's timer.
-pub struct Cuda {
-    pub base: u32,
-    pub line: u32,
+/// A beige G3 and QEMU's `g3beige` expose `via-cuda`; the PowerBook G3
+/// M4753 has no CUDA and exposes the same 6522 as `via-pmu`.  Both nodes
+/// publish a `reg` window and an interrupt line, and the timer is programmed
+/// through the same 6522 registers.  Linux's `via_calibrate_decr` makes the
+/// same two-step lookup, so the device tree, not the machine model, selects
+/// the transport.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ViaKind {
+    Cuda,
+    Pmu,
 }
 
-pub fn cuda(client: &Client, macio: &MacIo) -> Option<Cuda> {
-    let node = find_child(client, macio.node, b"via-cuda", b"via-cuda")?;
-    let base = via_base(client, macio, node)?;
-    let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
-    Some(Cuda { base, line })
+impl ViaKind {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Cuda => "cuda",
+            Self::Pmu => "pmu",
+        }
+    }
+}
+
+/// The VIA that carries the external timer.
+///
+/// `reg` holds the offset of the 6522 window inside Mac I/O.
+/// `AAPL,interrupts` holds the interrupt controller line the VIA asserts;
+/// the PMU node uses the standard `interrupts` name on some firmware.  The
+/// lookup is relative to the selected Mac I/O node: a second controller's
+/// VIA is not the machine's timer.
+pub struct ViaTimer {
+    pub base: u32,
+    pub line: u32,
+    pub kind: ViaKind,
+}
+
+pub fn via_timer(client: &Client, macio: &MacIo) -> Option<ViaTimer> {
+    for (node_name, kind) in [
+        (&b"via-cuda"[..], ViaKind::Cuda),
+        (&b"via-pmu"[..], ViaKind::Pmu),
+    ] {
+        let Some(node) = find_child(client, macio.node, node_name, node_name) else {
+            continue;
+        };
+        let Some(base) = via_base(client, macio, node) else {
+            continue;
+        };
+        let Some(line) = client
+            .getprop_u32(node, b"AAPL,interrupts\0")
+            .or_else(|| client.getprop_u32(node, b"interrupts\0"))
+        else {
+            continue;
+        };
+        return Some(ViaTimer { base, line, kind });
+    }
+    None
 }
 
 /// The ADB host and the keyboard's bus address.

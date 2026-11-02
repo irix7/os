@@ -29,6 +29,8 @@ const REGISTER_SHIFT: u32 = 9;
 
 /// Timer 1 continuous mode: reload from the latch on underflow.
 const ACR_T1_CONTINUOUS: u8 = 0x40;
+/// The two timer-1 mode bits in the auxiliary control register.
+const ACR_T1_MODE: u8 = 0xc0;
 /// Timer 1 interrupt flag.
 const IFR_T1: u8 = 0x40;
 /// The set/clear selector in an interrupt-enable write.
@@ -95,9 +97,14 @@ impl Timer {
     }
 
     /// Load the latch and select continuous mode.  The interrupt stays off.
+    ///
+    /// Only the two timer-1 mode bits change: the PMU path shares this 6522
+    /// with the shift register, and clearing its control field would disturb
+    /// a byte in flight.
     pub fn program(self, ticks: u16) {
         self.disable();
-        self.write(ACR, ACR_T1_CONTINUOUS);
+        let acr = self.read(ACR);
+        self.write(ACR, (acr & !ACR_T1_MODE) | ACR_T1_CONTINUOUS);
         self.write(T1LL, ticks as u8);
         self.write(T1LH, (ticks >> 8) as u8);
         self.write(IFR, IFR_T1);
@@ -118,15 +125,22 @@ impl Timer {
     /// cannot race the next underflow.  `program` restores continuous mode.
     pub fn stop(self) {
         self.disable();
-        self.write(ACR, 0);
+        let acr = self.read(ACR);
+        self.write(ACR, acr & !ACR_T1_MODE);
         self.write(T1LL, 0xff);
         self.write(T1LH, 0xff);
         self.write(T1CH, 0xff);
         self.write(IFR, 0x7f);
     }
 
+    /// Mask every VIA interrupt source.
+    ///
+    /// All seven sources share the chip's one interrupt output, so a source
+    /// the firmware left enabled could reach the controller line and make
+    /// the timer proof count a foreign event.  The ADB paths poll their
+    /// shift-register flag rather than enabling its interrupt.
     fn disable(self) {
-        self.write(IER, IFR_T1);
+        self.write(IER, 0x7f);
     }
 
     /// Clear the timer-1 flag: the source of the current interrupt.

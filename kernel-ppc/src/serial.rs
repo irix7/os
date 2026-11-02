@@ -19,7 +19,7 @@
 //! the control port selects a register, the next control access reads or
 //! writes it.
 
-use core::sync::atomic::{AtomicU32, Ordering::Relaxed};
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering::Relaxed};
 
 use crate::platform::Channel;
 
@@ -73,6 +73,20 @@ static PORTS: [AtomicU32; 2] = [AtomicU32::new(0), AtomicU32::new(0)];
 /// input channel, and [`read_byte`] always answers `None`.
 static INPUT: AtomicU32 = AtomicU32::new(0);
 
+/// A bounded receive ring between the ESCC and the monitor.
+///
+/// The chip exposes one received character at a time.  A paste or a fast host
+/// can deliver the next character while the monitor is executing a command,
+/// so every poll drains the port into this ring.  A full ring drops the
+/// excess and records the overrun instead of losing an earlier byte or
+/// spinning forever on a receiver that stays ready.
+const RX_CAPACITY: usize = 64;
+
+static RX: [AtomicU8; RX_CAPACITY] = [const { AtomicU8::new(0) }; RX_CAPACITY];
+static RX_HEAD: AtomicU32 = AtomicU32::new(0);
+static RX_TAIL: AtomicU32 = AtomicU32::new(0);
+static RX_OVERFLOW: AtomicU32 = AtomicU32::new(0);
+
 /// Initialise every channel the device tree described and mirror output to
 /// all of them.  A channel that is absent is left alone.
 ///
@@ -101,6 +115,7 @@ pub fn init(channels: [Option<u32>; 2], selected: Option<Channel>) -> Option<Cha
     if let Some(channel) = input {
         let control = PORTS[channel.index()].load(Relaxed);
         INPUT.store(control, Relaxed);
+        reset_ring();
         drain(control);
     }
     input
@@ -179,13 +194,64 @@ pub fn write(bytes: &[u8]) {
     }
 }
 
-/// Read one received byte from the input channel, if one is waiting.  The
-/// receiver is polled: the console never enables its interrupt line, and the
-/// boot keeps the monitor off the external-interrupt path.
-pub fn read_byte() -> Option<u8> {
-    let control = INPUT.load(Relaxed);
-    if control == 0 || read_status(control) & STATUS_RX_READY == 0 {
+fn reset_ring() {
+    RX_HEAD.store(0, Relaxed);
+    RX_TAIL.store(0, Relaxed);
+    RX_OVERFLOW.store(0, Relaxed);
+}
+
+fn push(byte: u8) -> bool {
+    let tail = RX_TAIL.load(Relaxed);
+    let head = RX_HEAD.load(Relaxed);
+    if tail.wrapping_sub(head) >= RX_CAPACITY as u32 {
+        return false;
+    }
+    RX[tail as usize % RX_CAPACITY].store(byte, Relaxed);
+    RX_TAIL.store(tail.wrapping_add(1), Relaxed);
+    true
+}
+
+fn pop() -> Option<u8> {
+    let head = RX_HEAD.load(Relaxed);
+    if head == RX_TAIL.load(Relaxed) {
         return None;
     }
-    Some(read_data(control))
+    let byte = RX[head as usize % RX_CAPACITY].load(Relaxed);
+    RX_HEAD.store(head.wrapping_add(1), Relaxed);
+    Some(byte)
+}
+
+/// Move every received byte the chip has into the ring.  The bound keeps a
+/// receiver that stays ready, such as one fed by a fast pipe, from holding
+/// the caller in the loop; the excess is dropped and counted.
+fn pump(control: u32) {
+    for _ in 0..RX_CAPACITY {
+        if read_status(control) & STATUS_RX_READY == 0 {
+            return;
+        }
+        let byte = read_data(control);
+        if !push(byte) {
+            RX_OVERFLOW.store(1, Relaxed);
+        }
+    }
+}
+
+/// Whether the ring has dropped input since the last call.  The flag is
+/// consumed so the monitor reports an overrun once.
+pub fn take_overflow() -> bool {
+    RX_OVERFLOW.swap(0, Relaxed) != 0
+}
+
+/// Read one received byte from the input channel, if one is waiting.  The
+/// receiver is polled: the console never enables its interrupt line, and the
+/// boot keeps the monitor off the external-interrupt path.  Each call first
+/// drains the channel into the ring, so a byte that arrives while a command
+/// is executing is retained for the next call.
+pub fn read_byte() -> Option<u8> {
+    let control = INPUT.load(Relaxed);
+    if control == 0 {
+        return None;
+    }
+    pump(control);
+    pop()
 }

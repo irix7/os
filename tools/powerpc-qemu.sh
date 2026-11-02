@@ -27,7 +27,10 @@
 # After the module check the kernel waits one second for a key on the selected
 # ESCC channel.  Silence prints `ppc: monitor timeout`.  A pipe chardev on
 # channel A in a separate boot carries `info`, `help` and `halt` at the `ppc>`
-# prompt, and the gate checks the echo, the prompt and every reported value.
+# prompt, then a pasted burst with a backspace edit, an overlong line and an
+# unknown command; the gate checks the echo, the prompt and every reported
+# value.  A final boot stops OpenBIOS auto-boot, names channel B as the output
+# device and runs the monitor on channel B with a pasted burst.
 #
 # The primary boot also proves the ADB keyboard.  QEMU's g3beige has a CUDA
 # and an ADB keyboard at the address OpenBIOS put in the device tree.  Once
@@ -98,6 +101,15 @@ else
 
   IMAGE="$WORK/kernel-ppc.bin"
   "$OBJCOPY" -O binary "$ELF" "$IMAGE"
+fi
+
+# The PMU timer path cannot run under QEMU: g3beige has a CUDA and QEMU has no
+# PMU model.  Require that the image still links the via-pmu selection so the
+# real M4753 check (#16) has something to run; this is a presence check, not a
+# substitute for hardware evidence.
+if ! grep -aqF "via-pmu" "$IMAGE"; then
+  echo "powerpc-qemu: the image does not contain the via-pmu timer path" >&2
+  exit 1
 fi
 
 # The same `modules/hello` source as the Indy machine, linked at the PowerPC
@@ -275,6 +287,7 @@ markers=(
   "ppc: console output-device="
   "ppc: memory base=0x"
   "ppc: timebase="
+  "ppc: timer transport=cuda via=0x"
   "ppc: ata reg base=0x"
   "ppc: ata irq=0xd"
   "ppc: adb transport=cuda via=0x"
@@ -850,13 +863,13 @@ monitor_wait() {
 }
 
 monitor_send_line() {
-  local text="$1"
-  local index
-  for ((index = 0; index < ${#text}; index++)); do
-    printf '%s' "${text:index:1}" > "$MONITOR_IN"
-    sleep 0.03
-  done
-  printf '\r' > "$MONITOR_IN"
+  # One write for the whole line: the receive ring must retain a burst that
+  # arrives while the previous command is still executing.
+  printf '%s\r' "$1" > "$MONITOR_IN"
+}
+
+monitor_send_raw() {
+  printf '%s' "$1" > "$MONITOR_IN"
 }
 
 monitor_wait "ppc: monitor wait" || monitor_fail "the monitor did not wait for a key"
@@ -866,6 +879,17 @@ monitor_wait "monitor: module status=0 tick=1 length=$MODULE_SIZE" \
 monitor_send_line "help"
 monitor_wait "monitor: halt    stop the machine" \
   || monitor_fail "the help command did not list halt"
+
+# Paste a help command, a backspace-edited help command, an overlong line and
+# an unknown command in one write.  The edited line is `help` only if the
+# monitor erases the `x`; the overlong line must be refused, not truncated
+# into a command.
+overlong="$(printf 'a%.0s' $(seq 1 40))"
+monitor_send_raw "help"$'\r'"helx"$'\x08'"p"$'\r'"$overlong"$'\r'"bogus"$'\r'
+monitor_wait "monitor: command too long" \
+  || monitor_fail "the overlong command was not refused"
+monitor_wait "monitor: unknown command: bogus" \
+  || monitor_fail "the unknown command was not reported"
 monitor_send_line "halt"
 monitor_wait "ppc: halted" || monitor_fail "the halt command did not stop the monitor"
 stop_monitor
@@ -876,16 +900,21 @@ echo "------------------------"
 
 monitor_text="$(tr -d '\r' < "$MONITOR_SERIAL")"
 prompts="$(printf '%s\n' "$monitor_text" | grep -c '^ppc> ')" || true
-if [ -z "$prompts" ] || [ "$prompts" -lt 3 ]; then
-  echo "powerpc-qemu: the monitor printed $prompts prompts, expected three" >&2
+if [ -z "$prompts" ] || [ "$prompts" -lt 6 ]; then
+  echo "powerpc-qemu: the monitor printed $prompts prompts, expected at least six" >&2
   exit 1
 fi
-for echo_line in "ppc> info" "ppc> help" "ppc> halt"; do
+for echo_line in "ppc> info" "ppc> help" "ppc> halt" "ppc> helx"; do
   if ! printf '%s\n' "$monitor_text" | grep -qF -- "$echo_line"; then
     echo "powerpc-qemu: the monitor did not echo '$echo_line'" >&2
     exit 1
   fi
 done
+help_count="$(printf '%s\n' "$monitor_text" | grep -cF "monitor: help    list commands")" || true
+if [ -z "$help_count" ] || [ "$help_count" -lt 2 ]; then
+  echo "powerpc-qemu: the backspace-edited command did not run help" >&2
+  exit 1
+fi
 for help_line in \
   "monitor: help    list commands" \
   "monitor: info    machine selection and status" \
@@ -895,6 +924,14 @@ for help_line in \
     exit 1
   fi
 done
+if ! printf '%s\n' "$monitor_text" | grep -qF "monitor: command too long"; then
+  echo "powerpc-qemu: the overlong command was not refused" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$monitor_text" | grep -qF "monitor: unknown command: bogus"; then
+  echo "powerpc-qemu: the unknown command was not reported" >&2
+  exit 1
+fi
 
 monitor_macio="$(printf '%s\n' "$monitor_text" \
   | grep -E '^monitor: macio base=0x[0-9a-f]+ size=[0-9]+ path=/[^ ]+ console=(a|b) input=(a|b)$' \
@@ -973,6 +1010,106 @@ if ! cmp -s "$monitor_a" "$monitor_b"; then
   diff -u "$monitor_a" "$monitor_b" 2>/dev/null | head -n 20 >&2 || true
   exit 1
 fi
+
+# B-selected console boot.  OpenBIOS publishes channel A under -nographic, so
+# the gate stops auto-boot through the NVRAM seed, asks the firmware to name
+# channel B, then boots the same kernel.  The monitor must select B and consume
+# a pasted command burst from the channel B pipe.  Channel A stays attached so
+# the OpenBIOS prompt can be driven; both kernel outputs are mirrored.
+B_SERIAL="$WORK/serial-b-selected.log"
+B_SERIAL_B="$WORK/serial-b-selected-b.log"
+B_PIPE_A="$WORK/serial-b-a"
+B_PIPE_B="$WORK/serial-b-b"
+rm -f "$B_SERIAL" "$B_SERIAL_B" \
+  "$B_PIPE_A.in" "$B_PIPE_A.out" "$B_PIPE_B.in" "$B_PIPE_B.out"
+mkfifo "$B_PIPE_A.in" "$B_PIPE_A.out" "$B_PIPE_B.in" "$B_PIPE_B.out"
+cat "$B_PIPE_A.out" > "$B_SERIAL" &
+B_DRAIN_A=$!
+cat "$B_PIPE_B.out" > "$B_SERIAL_B" &
+B_DRAIN_B=$!
+set +e
+"$QEMU" \
+  -M g3beige \
+  -m "$MEMORY" \
+  -kernel "$IMAGE" \
+  -drive "file=$DISK,format=raw,if=ide,index=0,media=disk" \
+  -nographic \
+  -chardev "pipe,id=b-a,path=$B_PIPE_A" \
+  -serial chardev:b-a \
+  -chardev "pipe,id=b-b,path=$B_PIPE_B" \
+  -serial chardev:b-b \
+  -prom-env "auto-boot?=false" \
+  -monitor none \
+  -no-reboot &
+B_PID=$!
+set -e
+
+stop_b() {
+  kill "$B_PID" 2>/dev/null || true
+  wait "$B_PID" 2>/dev/null || true
+  kill "$B_DRAIN_A" "$B_DRAIN_B" 2>/dev/null || true
+  wait "$B_DRAIN_A" "$B_DRAIN_B" 2>/dev/null || true
+}
+
+b_fail() {
+  echo "powerpc-qemu: $*" >&2
+  tr -d '\r' < "$B_SERIAL_B" 2>/dev/null | tail -n 40 >&2 || true
+  stop_b
+  exit 1
+}
+
+b_wait() {
+  local file="$1"
+  local pattern="$2"
+  local seconds="${3:-30}"
+  local deadline=$((SECONDS + seconds))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if grep -qF -- "$pattern" "$file" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+b_wait "$B_SERIAL" "0 > " 30 || b_fail "OpenBIOS did not reach its prompt"
+printf 'setenv output-device sccb\r' > "$B_PIPE_A.in"
+b_wait "$B_SERIAL" "setenv output-device sccb  ok" 30 \
+  || b_fail "OpenBIOS did not accept the channel B output device"
+printf 'boot\r' > "$B_PIPE_A.in"
+b_wait "$B_SERIAL_B" "ppc: monitor wait input=b" 30 \
+  || b_fail "the kernel did not select channel B"
+printf 'info\rhelp\rhalt\r' > "$B_PIPE_B.in"
+b_wait "$B_SERIAL_B" "ppc: halted" 30 \
+  || b_fail "the channel B monitor did not halt"
+stop_b
+
+b_console="$(tr -d '\r' < "$B_SERIAL_B" \
+  | grep -E '^ppc: console output-device=sccb stdout-path=none selected=b mirror=a\+b$' \
+  | tail -n 1)" || true
+if [ -z "$b_console" ]; then
+  echo "powerpc-qemu: the B-selected boot did not report selected=b" >&2
+  exit 1
+fi
+for marker in "ppc: monitor wait input=b" "ppc: monitor ready" \
+  "monitor: macio" "console=b input=b" "ppc> info" "ppc> help" "ppc> halt" \
+  "monitor: help    list commands" "monitor: halt" "ppc: halted"; do
+  if ! grep -qF -- "$marker" "$B_SERIAL_B"; then
+    echo "powerpc-qemu: B-selected boot missing marker: $marker" >&2
+    exit 1
+  fi
+done
+b_macio="$(tr -d '\r' < "$B_SERIAL_B" \
+  | grep -E '^monitor: macio base=0x[0-9a-f]+ size=[0-9]+ path=/[^ ]+ console=b input=b$' \
+  | tail -n 1)" || true
+if [ -z "$b_macio" ]; then
+  echo "powerpc-qemu: the channel B monitor did not report console=b input=b" >&2
+  exit 1
+fi
+
+echo "--- B-selected session ---"
+tr -d '\r' < "$B_SERIAL_B" | sed -n '/^ppc: monitor wait/,$p'
+echo "--------------------------"
 
 # The no-input boot must never reach the prompt: the monitor wait expires and
 # the machine halts with the same marker as before.
@@ -1085,4 +1222,4 @@ if ! grep -qF "GFX-OK" "$BAD_SERIAL"; then
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, display ${display_width}x${display_height}x${display_depth} linebytes=$display_linebytes base=0x$(printf '%x' "$display_base") frame=$frame_size bat=$fb_range gfx=readback, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase, key '$key_line')"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, display ${display_width}x${display_height}x${display_depth} linebytes=$display_linebytes base=0x$(printf '%x' "$display_base") frame=$frame_size bat=$fb_range gfx=readback, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase burst=59b B-selected=sccb input=b, key '$key_line')"
