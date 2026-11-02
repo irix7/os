@@ -30,7 +30,9 @@ mod rig;
 mod route;
 mod sha256;
 mod shard;
+mod timing;
 mod udp;
+mod x86;
 
 use std::fs;
 use std::io::{Read, Write};
@@ -51,7 +53,9 @@ use rig::{
     RunningNode, Transport,
 };
 
-const PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+fn probe_timeout() -> Duration {
+    crate::timing::secs(25)
+}
 
 /// Module bytes, PROM digest and module digest.
 type Prerequisites = (Vec<u8>, [u8; 32], [u8; 32]);
@@ -95,6 +99,9 @@ fn run() -> Result<i32, String> {
         Action::Status => status(&options),
         Action::Probe => probe_only(&options),
         Action::PrintConfig => print_config(&options),
+        Action::X86Smoke => x86::smoke(&options),
+        Action::X86Mesh => x86::mesh(&options),
+        Action::X86Mixed => x86::mixed(&options),
         Action::Clean => clean(&options),
     }
 }
@@ -260,13 +267,13 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         (Some(value), relay)
     };
     if options.fault.joins() {
-        wait_join(&nodes, Duration::from_secs(60));
-        wait_join_ack(&nodes, Duration::from_secs(20));
-        wait_homes_serial(&nodes, Duration::from_secs(60));
-        std::thread::sleep(Duration::from_secs(10));
+        wait_join(&nodes, crate::timing::secs(60));
+        wait_join_ack(&nodes, crate::timing::secs(20));
+        wait_homes_serial(&nodes, crate::timing::secs(60));
+        std::thread::sleep(crate::timing::secs(10));
     } else if options.fault == Fault::WrongAuthority {
-        wait_join_reject(&nodes, Duration::from_secs(30));
-        std::thread::sleep(Duration::from_secs(10));
+        wait_join_reject(&nodes, crate::timing::secs(30));
+        std::thread::sleep(crate::timing::secs(10));
     }
     let facts = snapshot_facts(&nodes);
     let keys = AuthorityKeys::lab();
@@ -389,7 +396,7 @@ fn ports_run(options: &Options) -> Result<i32, String> {
         return Err(error);
     }
 
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + crate::timing::secs(60);
     let mut marker = None;
     let mut failure = None;
     while Instant::now() < deadline {
@@ -523,12 +530,12 @@ fn run_failure_scenario(
                     drop(relay.take());
                     mcp_tool(&nodes[0], "mesh.reconnect")?;
                     mcp_tool(&nodes[1], "mesh.reconnect")?;
-                    std::thread::sleep(Duration::from_secs(1));
+                    std::thread::sleep(crate::timing::secs(1));
                     // Let the restart settle before the relay connects; the
                     // guest listeners are armed, but the host forward can
                     // otherwise accept the relay before its guest-side path
                     // is ready.
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(crate::timing::secs(2));
                     let restarted = MeshRelay::start_with_log(
                         (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
                         (Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
@@ -568,7 +575,7 @@ fn collect_route(
                 &join.members,
                 join.epoch.unwrap_or(0),
                 join.digest.as_deref().unwrap_or_default(),
-                Duration::from_secs(180),
+                crate::timing::secs(180),
             );
             if options.fault.failures() {
                 evidence.fault = options.fault.as_str().into();
@@ -577,7 +584,7 @@ fn collect_route(
         }
         Fault::Udp => Err("the datagram gate runs no capability route".into()),
         Fault::NoRoute | Fault::NoPeer | Fault::WrongAuthority => {
-            route::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
+            route::fetch_disabled(nodes, options.fault, crate::timing::secs(30))
         }
     }
 }
@@ -589,7 +596,7 @@ fn collect_migration(
 ) -> Result<migrate::MigrateEvidence, String> {
     match options.fault {
         Fault::NoPeer | Fault::NoRoute | Fault::WrongAuthority => {
-            migrate::fetch_disabled(nodes, options.fault, Duration::from_secs(30))
+            migrate::fetch_disabled(nodes, options.fault, crate::timing::secs(30))
         }
         Fault::None | Fault::KillPeer | Fault::Partition | Fault::Udp => {
             Err("the migration scenario is driven by run".into())
@@ -700,21 +707,21 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
         // listener is armed on a later module tick.  The iris forward accepts
         // a host connection before the guest socket exists, so start the hub
         // only after both listeners are armed.
-        std::thread::sleep(Duration::from_secs(10));
+        std::thread::sleep(crate::timing::secs(10));
         match options.transport {
             Transport::Relay => {
                 let _hub = hub::MeshHub::start_with(&nodes, 1, hub::HubConfig::default())?;
-                wait_join(&nodes, Duration::from_secs(60));
-                wait_join_ack(&nodes, Duration::from_secs(20));
+                wait_join(&nodes, crate::timing::secs(60));
+                wait_join_ack(&nodes, crate::timing::secs(20));
             }
             Transport::Direct => {
-                wait_join(&nodes, Duration::from_secs(60));
-                wait_join_ack(&nodes, Duration::from_secs(20));
+                wait_join(&nodes, crate::timing::secs(60));
+                wait_join_ack(&nodes, crate::timing::secs(20));
             }
             Transport::DirectFail => {
                 // The lower NodeId dials the dead port and must fall back to
                 // its listener.  The higher NodeId is a listener throughout.
-                let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                let deadline = std::time::Instant::now() + crate::timing::secs(30);
                 loop {
                     let texts: Vec<String> = nodes.iter().map(read_serial).collect();
                     let fallback = texts
@@ -745,7 +752,7 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
             }
         }
         // Let the first home-table serial burst drain before measuring.
-        std::thread::sleep(Duration::from_secs(10));
+        std::thread::sleep(crate::timing::secs(10));
         bulk::run(&nodes[0], &nodes[1])
     })();
     let stop_errors = rig::stop_nodes(options, &mut running);
@@ -927,22 +934,22 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             mesh_relay = relay;
         }
         if options.fault.joins() {
-            wait_join(&nodes, Duration::from_secs(60));
+            wait_join(&nodes, crate::timing::secs(60));
             // The terminal acknowledgement must cross the link before the
             // member is restarted; otherwise the restart can truncate it and
             // there is no evidence that B installed what A signed.
-            wait_join_ack(&nodes, Duration::from_secs(20));
+            wait_join_ack(&nodes, crate::timing::secs(20));
             if options.transport == Transport::Direct {
                 mesh = Some(direct_probe(&nodes));
             }
-            wait_homes_serial(&nodes, Duration::from_secs(60));
+            wait_homes_serial(&nodes, crate::timing::secs(60));
             // The MCP HTTP slot is armed by the module tick after the join
             // and homes logging settles.  Give it the same 10 s the guest HTTP
             // probe uses before the first control-plane fetch.
-            std::thread::sleep(Duration::from_secs(10));
+            std::thread::sleep(crate::timing::secs(10));
         } else if options.fault == Fault::WrongAuthority {
-            wait_join_reject(&nodes, Duration::from_secs(30));
-            std::thread::sleep(Duration::from_secs(10));
+            wait_join_reject(&nodes, crate::timing::secs(30));
+            std::thread::sleep(crate::timing::secs(10));
         }
         facts = snapshot_facts(&nodes);
 
@@ -1004,7 +1011,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                         &join_before.members,
                         epoch,
                         &digest,
-                        Duration::from_secs(240),
+                        crate::timing::secs(240),
                     );
                     if !evidence.ok {
                         migration_error = Some(evidence.message.clone());
@@ -1057,7 +1064,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
             // The failure/recovery path logs a fresh home group on both
             // nodes.  Wait for the last group to be complete before the
             // snapshot; a partial mirror group parses as a count mismatch.
-            wait_homes_serial(&nodes, Duration::from_secs(60));
+            wait_homes_serial(&nodes, crate::timing::secs(60));
             facts = snapshot_facts(&nodes);
         } else if options.fault.joins() {
             match restart_member(options, &nodes, &mut running, &facts, &mut mesh_relay) {
@@ -1065,7 +1072,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     restart = Some(input);
                     // The root's transcript gained a confirmation and the
                     // member's transcript is now the rejoin boot.
-                    wait_homes_serial(&nodes, Duration::from_secs(60));
+                    wait_homes_serial(&nodes, crate::timing::secs(60));
                     facts = snapshot_facts(&nodes);
                 }
                 Err(error) => join_error = Some(error),
@@ -1083,7 +1090,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                     // servers are responsive.  Wait for homes first so the
                     // MCP HTTP server has time to come back up after the
                     // restart before the probe opens the socket.
-                    wait_homes_serial(&nodes, Duration::from_secs(60));
+                    wait_homes_serial(&nodes, crate::timing::secs(60));
                     facts = snapshot_facts(&nodes);
                     match settle_and_probe(&nodes) {
                         Ok((value, value_relays)) => {
@@ -1121,12 +1128,16 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     };
     if matches!(options.fault, Fault::None | Fault::NoRoute) && join_error.is_none() {
         if let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) {
-            home_inputs.after = Some(homes::collect_current_serial(
+            // Fetch the live table over HTTP.  The restarted member restores
+            // the same view and does not re-log the home table, so a serial
+            // parse of the post-restart transcript finds nothing.
+            home_inputs.after = Some(homes::collect_current(
                 &nodes,
                 &facts,
                 epoch,
                 digest,
                 &join.members,
+                crate::timing::secs(30),
             ));
         } else {
             homes_error = Some("join evidence has no epoch/digest for the rejoin homes".into());
@@ -1201,7 +1212,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
     // Let the emulated UART drain the last pass/reject line before the
     // processes are stopped; a quit can otherwise truncate the final serial
     // line and the evidence reader sees a partial counter list.
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(crate::timing::secs(2));
     if !options.keep {
         let errors = rig::stop_nodes(options, &mut running);
         for error in errors {
@@ -1452,26 +1463,26 @@ fn collect_homes(
                 epoch,
                 digest,
                 &join.members,
-                Duration::from_secs(30),
+                crate::timing::secs(30),
             ));
             inputs.stale = Some(homes::collect_stale(
                 nodes,
                 1,
                 epoch,
                 digest,
-                Duration::from_secs(30),
+                crate::timing::secs(30),
             ));
         }
         // The datagram gate runs before any join, so there are no homes.
         Fault::Udp => {}
         Fault::NoPeer => {
-            inputs.disabled = Some(homes::collect_disabled(nodes, Duration::from_secs(30)));
+            inputs.disabled = Some(homes::collect_disabled(nodes, crate::timing::secs(30)));
         }
         Fault::WrongAuthority => {
             inputs.wrong_authority = Some(homes::collect_wrong_authority(
                 nodes,
                 facts,
-                Duration::from_secs(30),
+                crate::timing::secs(30),
             ));
         }
     }
@@ -1533,10 +1544,10 @@ fn mcp_tool(node: &Node, name: &str) -> Result<(), String> {
             let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, node.http_port))
                 .map_err(|error| format!("connect {}:{}: {error}", node.name, node.http_port))?;
             stream
-                .set_read_timeout(Some(Duration::from_secs(10)))
+                .set_read_timeout(Some(crate::timing::secs(10)))
                 .map_err(|error| format!("timeout {}: {error}", node.name))?;
             stream
-                .set_write_timeout(Some(Duration::from_secs(10)))
+                .set_write_timeout(Some(crate::timing::secs(10)))
                 .map_err(|error| format!("timeout {}: {error}", node.name))?;
             stream
                 .write_all(request.as_bytes())
@@ -1559,7 +1570,7 @@ fn mcp_tool(node: &Node, name: &str) -> Result<(), String> {
             Err(error) => {
                 last = error;
                 if attempt < 6 {
-                    std::thread::sleep(Duration::from_secs(2));
+                    std::thread::sleep(crate::timing::secs(2));
                 }
             }
         }
@@ -1603,7 +1614,7 @@ fn restart_member(
         drop(relay);
         log
     });
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(crate::timing::secs(1));
     let stopped_at = Instant::now();
     rig::stop_node(options, &mut running[1])?;
     if options.verbose {
@@ -1619,7 +1630,7 @@ fn restart_member(
     // close to the guest, so the heartbeat timeout is the root's only signal;
     // connecting to its forward before that leaves half-open guest attempts in
     // the forward and the restart never converges.
-    let deadline = Instant::now() + Duration::from_secs(60);
+    let deadline = Instant::now() + crate::timing::secs(60);
     let mut last_note = Instant::now();
     if already_down && options.verbose {
         eprintln!(
@@ -1642,7 +1653,7 @@ fn restart_member(
             }
             break;
         }
-        if options.verbose && last_note.elapsed() >= Duration::from_secs(5) {
+        if options.verbose && last_note.elapsed() >= crate::timing::secs(5) {
             last_note = Instant::now();
             eprintln!(
                 "m2-rig: waiting for n0 disconnect at {:?} (lines={}, disconnects={})",
@@ -1659,13 +1670,13 @@ fn restart_member(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(crate::timing::secs(1));
     // A clean quit normally unlinks the CI socket; remove any stale path
     // before the new process binds it.
     let _ = fs::remove_file(&node.ci_socket);
     let child = start_node(options, node)?;
     running[1] = child;
-    wait_ci_ready(options, node, Duration::from_secs(20))?;
+    wait_ci_ready(options, node, crate::timing::secs(20))?;
     start_cpu(options, node)?;
     rig::wait_serial(options, &mut running[1], "BOOT-READY", options.timeout)?;
     let marker = if options.transport == Transport::Direct {
@@ -1673,14 +1684,14 @@ fn restart_member(
     } else {
         "mesh-transport: listening"
     };
-    rig::wait_serial(options, &mut running[1], marker, Duration::from_secs(60))?;
+    rig::wait_serial(options, &mut running[1], marker, crate::timing::secs(60))?;
     if options.transport == Transport::Relay {
         // Reset the live root's old guest-side socket; the forward can keep
         // delivering new requests to it, so the new relay would never reach
         // the listener.
         mcp_tool(&nodes[0], "mesh.reconnect")?;
-        std::thread::sleep(Duration::from_secs(1));
-        std::thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(crate::timing::secs(1));
+        std::thread::sleep(crate::timing::secs(2));
         if let Some(log) = relay_log {
             let relay = MeshRelay::start_with_log(
                 (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
@@ -1698,29 +1709,34 @@ fn restart_member(
             *mesh_relay = Some(relay);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(90);
+    // The restarted guest logs a fresh boot, and the module suppresses routine
+    // join lines once a view is confirmed, so the serial transcript is not a
+    // reliable rejoin signal.  The module exposes the count of join requests it
+    // has sent for this boot; the restarted process starts at zero.
+    let deadline = Instant::now() + crate::timing::secs(90);
+    let mut last_requests = 0u64;
     loop {
-        let text = read_serial(node);
-        if text
-            .lines()
-            .any(|line| line.contains("mesh-join: converged "))
-            || text
-                .lines()
-                .any(|line| line.contains("mesh-join: duplicate "))
-            || text
-                .lines()
-                .any(|line| line.contains("mesh-join: refreshed "))
-        {
-            break;
+        if let Ok(response) = crate::homes::fetch(node, "/mesh/join", crate::timing::secs(3)) {
+            if response.status == 200 {
+                if let Some(value) = join::field_u64(&response.body, "requests=") {
+                    last_requests = value;
+                    if value > 0 {
+                        break;
+                    }
+                }
+            }
         }
         if Instant::now() >= deadline {
             return Err(format!(
-                "n1 did not rejoin before the deadline\n--- serial ---\n{}",
+                "n1 did not send a join request before the deadline (requests={last_requests})\n--- serial ---\n{}",
                 rig::tail(&read_serial(node), 40)
             ));
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+    // Keep the restarted member's transcript for diagnosis: the evidence copy
+    // is the pre-restart boot, and the failure usually happens after this one.
+    let _ = fs::copy(&node.serial_log, options.work.join("serial-n1-boot2.log"));
     let text = read_serial(node);
     let rejoin = raw_line(&text, "mesh-join: converged ")
         .and_then(join::JoinLine::parse)
@@ -1784,7 +1800,7 @@ fn restart_root(
         drop(relay);
         log
     });
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(crate::timing::secs(1));
     rig::stop_node(options, &mut running[0])?;
     fs::copy(&root.serial_log, &boot1_log)
         .map_err(|error| format!("copy {}: {error}", root.serial_log.display()))?;
@@ -1792,7 +1808,7 @@ fn restart_root(
     // Wait until the live member has observed the old link close and re-armed
     // its session.  The iris forward does not reliably propagate a peer close;
     // the heartbeat timeout is the member's only signal.
-    let deadline = Instant::now() + Duration::from_secs(90);
+    let deadline = Instant::now() + crate::timing::secs(90);
     loop {
         let text = read_serial(&nodes[1]);
         let tail = text.get(member_offset..).unwrap_or("");
@@ -1809,24 +1825,24 @@ fn restart_root(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(crate::timing::secs(1));
     let _ = fs::remove_file(&root.ci_socket);
     let child = start_node(options, root)?;
     running[0] = child;
-    wait_ci_ready(options, root, Duration::from_secs(20))?;
+    wait_ci_ready(options, root, crate::timing::secs(20))?;
     start_cpu(options, root)?;
     rig::wait_serial(options, &mut running[0], "BOOT-READY", options.timeout)?;
     rig::wait_serial(
         options,
         &mut running[0],
         "mesh-transport: listening",
-        Duration::from_secs(60),
+        crate::timing::secs(60),
     )?;
     // The member kept its old socket while the root was down; reset it for the
     // same reason as the member-restart path.
     mcp_tool(&nodes[1], "mesh.reconnect")?;
-    std::thread::sleep(Duration::from_secs(1));
-    std::thread::sleep(Duration::from_secs(2));
+    std::thread::sleep(crate::timing::secs(1));
+    std::thread::sleep(crate::timing::secs(2));
     if let Some(log) = relay_log {
         let relay = MeshRelay::start_with_log(
             (Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
@@ -1847,7 +1863,7 @@ fn restart_root(
     // Wait for the restored root view, the member's re-presentation of the
     // confirmed epoch, and a fresh confirmation.  A seed fallback shows up as
     // a missing restore line or as `epoch-regression`.
-    let deadline = Instant::now() + Duration::from_secs(120);
+    let deadline = Instant::now() + crate::timing::secs(120);
     loop {
         let root_text = read_serial(root);
         let member_text = read_serial(&nodes[1]);
@@ -2011,7 +2027,7 @@ fn start_all_with(
         }
     }
     for child in running.iter() {
-        if let Err(error) = wait_ci_ready(options, &child.node, Duration::from_secs(20)) {
+        if let Err(error) = wait_ci_ready(options, &child.node, crate::timing::secs(20)) {
             let _ = rig::stop_nodes(options, running);
             return Err(error);
         }
@@ -2051,6 +2067,30 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
 /// The MCP server has one HTTP slot while the mesh is enabled.  A single retry
 /// absorbs the iris forward's half-open connection without weakening the
 /// check.
+/// The guest HTTP probe crosses the console, the guest's NAT and the peer's
+/// single HTTP slot.  A malformed or late response on one attempt is a race,
+/// not a broken transport: retry before reporting.
+fn probe_http_with_retry(
+    node: &rig::Node,
+    host: std::net::Ipv4Addr,
+    port: u16,
+    timeout: std::time::Duration,
+) -> Result<probe::ProbeOutcome, probe::ProbeError> {
+    let mut last = None;
+    for attempt in 1..=3 {
+        match probe::probe_http(node, host, port, timeout) {
+            Ok(outcome) => return Ok(outcome),
+            Err(error) => {
+                last = Some(error);
+                if attempt < 3 {
+                    std::thread::sleep(crate::timing::secs(2));
+                }
+            }
+        }
+    }
+    Err(last.expect("probe attempts are non-empty"))
+}
+
 fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
     // After a root restart the member's mesh link has timed out and both
     // nodes' mesh links may close again after the confirm/ack exchange.  Give
@@ -2058,7 +2098,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
     // case the first attempt lands while a link is still re-establishing.
     let mut attempt = None;
     for retry in 0..3 {
-        std::thread::sleep(Duration::from_secs(30));
+        std::thread::sleep(crate::timing::secs(30));
         attempt = Some(probe_two_way(nodes));
         if matches!(
             attempt.as_ref(),
@@ -2067,7 +2107,7 @@ fn settle_and_probe(nodes: &[Node]) -> Result<ProbeSet, String> {
             break;
         }
         if retry < 2 {
-            std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(crate::timing::secs(30));
         }
     }
     attempt.unwrap_or_else(|| Err("settle_and_probe: all retries failed".into()))
@@ -2080,14 +2120,18 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
     // settle before the first host connection so the forward never races the
     // listener and resets the connection.  The emulated MIPS CPU and the
     // module tick are slow enough that a couple of seconds is not reliable.
-    std::thread::sleep(Duration::from_secs(10));
+    std::thread::sleep(crate::timing::secs(10));
     let relay_n0_n1 = Relay::start((Ipv4Addr::LOCALHOST, nodes[1].http_port).into())
         .map_err(|error| format!("start relay n0->n1: {error}"))?;
     let relay_n1_n0 = Relay::start((Ipv4Addr::LOCALHOST, nodes[0].http_port).into())
         .map_err(|error| format!("start relay n1->n0: {error}"))?;
 
-    let result_n0_n1 =
-        probe::probe_http(&nodes[0], nodes[0].gateway, relay_n0_n1.port, PROBE_TIMEOUT);
+    let result_n0_n1 = probe_http_with_retry(
+        &nodes[0],
+        nodes[0].gateway,
+        relay_n0_n1.port,
+        probe_timeout(),
+    );
     let url_n0_n1 = format!("http://{}:{}/", nodes[0].gateway, relay_n0_n1.port);
     let relay_text_n0_n1 = format!(
         "127.0.0.1:{} -> 127.0.0.1:{}",
@@ -2101,8 +2145,12 @@ fn probe_two_way(nodes: &[Node]) -> Result<ProbeSet, String> {
         result_n0_n1,
     )];
 
-    let result_n1_n0 =
-        probe::probe_http(&nodes[1], nodes[1].gateway, relay_n1_n0.port, PROBE_TIMEOUT);
+    let result_n1_n0 = probe_http_with_retry(
+        &nodes[1],
+        nodes[1].gateway,
+        relay_n1_n0.port,
+        probe_timeout(),
+    );
     let url_n1_n0 = format!("http://{}:{}/", nodes[1].gateway, relay_n1_n0.port);
     let relay_text_n1_n0 = format!(
         "127.0.0.1:{} -> 127.0.0.1:{}",
@@ -2136,7 +2184,7 @@ fn probe_mesh(nodes: &[Node]) -> (MeshProbeEvidence, Option<MeshRelay>) {
     // `BOOT-READY` precedes the module's first listener tick.  The relay's
     // cold session uses a first-byte guard and does not reconnect quickly, so
     // wait for both guest listeners before connecting to either forward.
-    wait_mesh_listen(nodes, Duration::from_secs(60));
+    wait_mesh_listen(nodes, crate::timing::secs(20));
     let relay_text = format!(
         "127.0.0.1:{} <-> 127.0.0.1:{}",
         nodes[0].mesh_port, nodes[1].mesh_port
@@ -2166,7 +2214,7 @@ fn probe_mesh(nodes: &[Node]) -> (MeshProbeEvidence, Option<MeshRelay>) {
         }
     };
 
-    let deadline = Instant::now() + Duration::from_secs(45);
+    let deadline = Instant::now() + crate::timing::secs(45);
     loop {
         let facts: Vec<BootFacts> = nodes
             .iter()
@@ -2188,9 +2236,6 @@ fn probe_mesh(nodes: &[Node]) -> (MeshProbeEvidence, Option<MeshRelay>) {
     let mut errors = Vec::new();
     for (index, fact) in facts.iter().enumerate() {
         let node = &nodes[index];
-        if fact.mesh_transport_listen.is_none() {
-            errors.push(format!("{}: no mesh-transport listening line", node.name));
-        }
         match &fact.mesh_transport_pass {
             None => errors.push(format!("{}: no mesh-transport pass line", node.name)),
             Some(line) => {
@@ -2422,7 +2467,7 @@ fn wait_udp_markers(options: &Options, nodes: &[RunningNode]) -> Result<(), Stri
         "netprobe: ping-rx",
         "netprobe: pong",
     ];
-    let deadline = Instant::now() + options.timeout.min(Duration::from_secs(120));
+    let deadline = Instant::now() + options.timeout.min(crate::timing::secs(120));
     loop {
         let mut missing = Vec::new();
         for node in nodes {

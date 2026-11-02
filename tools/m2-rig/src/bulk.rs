@@ -139,7 +139,7 @@ fn parse_num(value: &str) -> Result<u32, String> {
 fn fetch_retry(node: &Node, path: &str) -> Result<crate::homes::HttpResponse, String> {
     let mut last = String::new();
     for attempt in 0..10 {
-        match fetch(node, path, Duration::from_secs(20)) {
+        match fetch(node, path, crate::timing::secs(20)) {
             Ok(response) => return Ok(response),
             Err(error) => {
                 last = error;
@@ -159,7 +159,7 @@ fn one(from: &Node, to: &Node, total: u32, chunk: u32) -> Result<BulkRun, String
             from.name, response.status, response.body
         ));
     }
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + crate::timing::secs(40);
     loop {
         std::thread::sleep(Duration::from_millis(300));
         let response = fetch_retry(from, "/mesh/bulk?status=1")?;
@@ -232,7 +232,7 @@ fn start_bulk(from: &Node, total: u32, chunk: u32) -> Result<(), String> {
 /// Poll one bulk transfer to its terminal state.
 fn poll_bulk(from: &Node, total: u32, chunk: u32) -> Result<(BulkRun, Stat), String> {
     let expected_chunks = total / chunk;
-    let deadline = Instant::now() + Duration::from_secs(40);
+    let deadline = Instant::now() + crate::timing::secs(40);
     loop {
         std::thread::sleep(Duration::from_millis(200));
         let response = fetch_retry(from, "/mesh/bulk?status=1")?;
@@ -283,7 +283,9 @@ fn poll_bulk(from: &Node, total: u32, chunk: u32) -> Result<(BulkRun, Stat), Str
 }
 
 /// Measure a control probe while a 256 KiB bulk transfer is in flight.
-fn control_during_bulk(from: &Node) -> Result<(ControlRun, crate::latency::LatencyEvidence), String> {
+fn control_during_bulk(
+    from: &Node,
+) -> Result<(ControlRun, crate::latency::LatencyEvidence), String> {
     start_bulk(from, CONTROL_BYTES, BULK_CHUNK)?;
     // Start the control probe after the bulk request is queued; both share the
     // one peer link and the bulk stream is credit-blocked after two chunks.
@@ -312,7 +314,7 @@ fn cancel_bulk(from: &Node) -> Result<CancelRun, String> {
             from.name, response.status, response.body
         ));
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::timing::secs(10);
     loop {
         std::thread::sleep(Duration::from_millis(100));
         let response = fetch_retry(from, "/mesh/bulk?status=1")?;
@@ -342,7 +344,7 @@ pub fn run(first: &Node, second: &Node) -> Result<BulkEvidence, String> {
         // previous run's tail leave the send queue; without it the next run's
         // first chunks share the tick with the previous transfer and the
         // measured throughput describes the test harness, not the path.
-        std::thread::sleep(Duration::from_secs(6));
+        std::thread::sleep(crate::timing::secs(6));
         let (from, to) = if index % 2 == 0 {
             (first, second)
         } else {
@@ -364,8 +366,8 @@ pub fn run(first: &Node, second: &Node) -> Result<BulkEvidence, String> {
     let total: u64 = runs.iter().map(|run| run.bytes as u64).sum();
     let elapsed: u64 = runs.iter().map(|run| run.elapsed_ms).sum();
     let mean = total as f64 / elapsed as f64 * 1000.0 / (1024.0 * 1024.0);
-    let baseline_rate = baseline.bytes as f64 / baseline.elapsed_ms as f64 * 1000.0
-        / (1024.0 * 1024.0);
+    let baseline_rate =
+        baseline.bytes as f64 / baseline.elapsed_ms as f64 * 1000.0 / (1024.0 * 1024.0);
     let (control, latency) = control_during_bulk(first)?;
     let cancel = cancel_bulk(first)?;
     let control_ok = latency.ok

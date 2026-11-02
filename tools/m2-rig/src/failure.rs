@@ -34,7 +34,9 @@ use crate::route::{self, RouteReport};
 /// The M2 fixture object count the rig configures by default.
 pub const OBJECT_COUNT: u32 = 8;
 /// The MCP HTTP slot needs its close handshake before a non-idempotent step.
-const COMMAND_SETTLE: Duration = Duration::from_secs(6);
+fn command_settle() -> Duration {
+    crate::timing::secs(6)
+}
 /// One expected membership view, recomputed by the rig.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpectedView {
@@ -180,7 +182,7 @@ where
 }
 
 fn fetch_report(node: &Node) -> Result<(bool, RouteReport), String> {
-    route::fetch(node, Duration::from_secs(10)).map(|(_, report)| (false, report))
+    route::fetch(node, crate::timing::secs(10)).map(|(_, report)| (false, report))
 }
 
 /// Wait until `predicate` accepts the node's route report.
@@ -202,8 +204,8 @@ fn step(
     expected_status: u16,
     errors: &mut Vec<String>,
 ) -> bool {
-    std::thread::sleep(COMMAND_SETTLE);
-    match route::command(node, number, Duration::from_secs(15)) {
+    std::thread::sleep(command_settle());
+    match route::command(node, number, crate::timing::secs(15)) {
         Ok((status, body)) => {
             evidence.steps.push(format!(
                 "{} step {number}: HTTP {status} {}",
@@ -253,7 +255,7 @@ fn check_homes(
     expected: &ExpectedView,
     errors: &mut Vec<String>,
 ) {
-    match homes::fetch_table(node, "/mesh/homes", Duration::from_secs(30)) {
+    match homes::fetch_table(node, "/mesh/homes", crate::timing::secs(30)) {
         Ok((status, table)) => {
             evidence.pass(
                 status == 200 && table.state == "current",
@@ -348,7 +350,7 @@ fn survivor_steps(
     let mut results_seen = 0usize;
     // Step 6: re-route the object that was homed at the removed node.
     if step(evidence, root, 6, 202, errors) {
-        let report = match report_until(root, Duration::from_secs(60), |report| {
+        let report = match report_until(root, crate::timing::secs(60), |report| {
             report.results.iter().any(|row| {
                 row.object == stale_object
                     && row.operation == "stat"
@@ -412,7 +414,7 @@ fn survivor_steps(
             "the stale frame replay reported stale-epoch",
             errors,
         );
-        match report_until(root, Duration::from_secs(30), |report| report.replays >= 1) {
+        match report_until(root, crate::timing::secs(30), |report| report.replays >= 1) {
             Ok(report) => {
                 evidence.pass(
                     report.last_replay.as_deref() == Some("stale-epoch"),
@@ -431,7 +433,7 @@ fn survivor_steps(
 
     // Step 8: a mutable commit is available at the authority without a quorum.
     if step(evidence, root, 8, 202, errors) {
-        let report = match report_until(root, Duration::from_secs(60), |report| {
+        let report = match report_until(root, crate::timing::secs(60), |report| {
             report.results.iter().any(|row| row.operation == "commit")
         }) {
             Ok(report) => report,
@@ -468,7 +470,7 @@ fn survivor_steps(
     // Step 9: a read is available at the same home.  The report keeps a
     // bounded number of rows, so the check is that a new row appeared.
     if step(evidence, root, 9, 202, errors) {
-        match report_until(root, Duration::from_secs(60), |report| {
+        match report_until(root, crate::timing::secs(60), |report| {
             report.results.len() > results_seen
                 && report
                     .results
@@ -514,13 +516,13 @@ pub fn kill_peer(
     evidence.stage = "failure".into();
     progress("kill-peer: waiting for suspect/failed/removed");
 
-    if !wait_marker(root, "mesh-fail: suspect", Duration::from_secs(30)) {
+    if !wait_marker(root, "mesh-fail: suspect", crate::timing::secs(30)) {
         errors.push("the survivor did not report the member suspect".into());
     }
-    if !wait_marker(root, "mesh-fail: failed", Duration::from_secs(30)) {
+    if !wait_marker(root, "mesh-fail: failed", crate::timing::secs(30)) {
         errors.push("the survivor did not report the member failed".into());
     }
-    if !wait_marker(root, "mesh-fail: removed", Duration::from_secs(45)) {
+    if !wait_marker(root, "mesh-fail: removed", crate::timing::secs(45)) {
         errors.push("the survivor did not confirm the removal".into());
         return evidence.finish(errors);
     }
@@ -552,7 +554,7 @@ pub fn kill_peer(
     );
 
     progress("kill-peer: collecting the final report");
-    let report = route::fetch_ready(root, Duration::from_secs(30))
+    let report = route::fetch_ready(root, crate::timing::secs(30))
         .map(|(_, report)| report)
         .map_err(|error| errors.push(format!("/mesh/route: {error}")));
     if let Ok(report) = report {
@@ -592,13 +594,13 @@ pub fn partition(
     evidence.stage = "isolation".into();
     progress("partition: waiting for removal and authority loss");
 
-    if !wait_marker(root, "mesh-fail: removed", Duration::from_secs(60)) {
+    if !wait_marker(root, "mesh-fail: removed", crate::timing::secs(60)) {
         errors.push("the root did not confirm the removal".into());
     }
     if !wait_marker(
         member,
         "mesh-fail: authority state=lost",
-        Duration::from_secs(60),
+        crate::timing::secs(60),
     ) {
         errors.push("the isolated member did not report authority lost".into());
     }
@@ -627,7 +629,7 @@ pub fn partition(
     // The isolated member keeps the old confirmed view, refuses a commit and
     // still serves a read from its unexpired lease.  It never advances the
     // epoch and never re-homes the object.
-    let isolated = match route::fetch_ready(member, Duration::from_secs(30)) {
+    let isolated = match route::fetch_ready(member, crate::timing::secs(30)) {
         Ok((_, report)) => Some(report),
         Err(error) => {
             errors.push(format!("{} /mesh/route: {error}", member.name));
@@ -657,8 +659,8 @@ pub fn partition(
     }
 
     // An object homed on the other side is unavailable, not re-homed locally.
-    std::thread::sleep(COMMAND_SETTLE);
-    match route::command(member, 6, Duration::from_secs(15)) {
+    std::thread::sleep(command_settle());
+    match route::command(member, 6, crate::timing::secs(15)) {
         Ok((status, body)) => {
             evidence.steps.push(format!(
                 "{} step 6: HTTP {status} {}",
@@ -675,8 +677,8 @@ pub fn partition(
     }
 
     // A commit is unavailable immediately: no second authoritative home.
-    std::thread::sleep(COMMAND_SETTLE);
-    match route::command(member, 8, Duration::from_secs(15)) {
+    std::thread::sleep(command_settle());
+    match route::command(member, 8, crate::timing::secs(15)) {
         Ok((status, body)) => {
             evidence.steps.push(format!(
                 "{} step 8: HTTP {status} {}",
@@ -691,7 +693,7 @@ pub fn partition(
         }
         Err(error) => errors.push(format!("member step 8: {error}")),
     }
-    match route::fetch_ready(member, Duration::from_secs(30)) {
+    match route::fetch_ready(member, crate::timing::secs(30)) {
         Ok((_, report)) => {
             evidence.pass(
                 report.last_reject.as_deref() == Some("no-authority"),
@@ -716,7 +718,7 @@ pub fn partition(
         }
         Err(error) => errors.push(format!("{} final isolated report: {error}", member.name)),
     }
-    if let Ok((_, report)) = route::fetch_ready(root, Duration::from_secs(30)) {
+    if let Ok((_, report)) = route::fetch_ready(root, crate::timing::secs(30)) {
         evidence.pass(
             report.view_epoch == Some(after.epoch) && report.members == Some(1),
             "the root's view stayed at the one-member epoch while isolated",
@@ -754,8 +756,8 @@ pub fn partition(
     let recovered_epoch = before.epoch.saturating_add(2);
     let root_marker = format!("mesh-join: confirm epoch={recovered_epoch} ");
     let member_marker = format!("mesh-fail: authority state=restored epoch={recovered_epoch} ");
-    let rejoined = wait_marker(root, &root_marker, Duration::from_secs(120))
-        && wait_marker(member, &member_marker, Duration::from_secs(120));
+    let rejoined = wait_marker(root, &root_marker, crate::timing::secs(120))
+        && wait_marker(member, &member_marker, crate::timing::secs(120));
     if !rejoined {
         errors.push(format!(
             "the member did not rejoin at epoch {recovered_epoch} after the partition healed"
@@ -784,11 +786,11 @@ pub fn partition(
     // The recovered member serves a mutable commit from the authority again.
     // The member never issues a capability itself, so the root drives the
     // commit to the first object homed at the member.
-    let member_completes = route::fetch_ready(member, Duration::from_secs(30))
+    let member_completes = route::fetch_ready(member, crate::timing::secs(30))
         .map(|(_, report)| report.completes)
         .unwrap_or(0);
     if step(&mut evidence, root, 10, 202, &mut errors) {
-        match report_until(root, Duration::from_secs(60), |report| {
+        match report_until(root, crate::timing::secs(60), |report| {
             report
                 .results
                 .iter()
@@ -810,7 +812,7 @@ pub fn partition(
             Err(error) => errors.push(format!("recovered root step 10: {error}")),
         }
     }
-    match route::fetch_ready(member, Duration::from_secs(30)) {
+    match route::fetch_ready(member, crate::timing::secs(30)) {
         Ok((_, report)) => {
             evidence.pass(
                 report.mutable
@@ -827,7 +829,7 @@ pub fn partition(
         }
         Err(error) => errors.push(format!("recovered member report: {error}")),
     }
-    if let Ok((_, report)) = route::fetch_ready(member, Duration::from_secs(30)) {
+    if let Ok((_, report)) = route::fetch_ready(member, crate::timing::secs(30)) {
         evidence.pass(
             report.view_epoch == Some(recovered.epoch)
                 && report.members == Some(2)

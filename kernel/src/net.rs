@@ -579,12 +579,7 @@ pub fn init() {
             print_ipv4(ip);
             crate::println("");
 
-            iface.update_ip_addrs(|addrs| {
-                let _ = addrs.push(IpCidr::Ipv4(lease.address));
-            });
-            if let Some(gateway) = lease.router {
-                let _ = iface.routes_mut().add_default_ipv4_route(gateway);
-            }
+            irix7_netif::apply_lease(&mut iface, lease.address, lease.router);
             if let Some(dns) = lease.dns {
                 crate::print_str("network: dns ");
                 print_ipv4(dns);
@@ -639,13 +634,7 @@ pub fn poll() {
                         let ip = config.address.address();
                         stack.ip = Some(ip);
                         stack.dns = config.dns_servers.first().copied();
-                        stack.iface.update_ip_addrs(|addrs| {
-                            addrs.clear();
-                            let _ = addrs.push(IpCidr::Ipv4(config.address));
-                        });
-                        if let Some(gateway) = config.router {
-                            let _ = stack.iface.routes_mut().add_default_ipv4_route(gateway);
-                        }
+                        irix7_netif::apply_lease(&mut stack.iface, config.address, config.router);
                         crate::print_str("network: lease ");
                         print_ipv4(ip);
                         crate::println("");
@@ -735,30 +724,10 @@ pub fn mac_address() -> [u8; 6] {
 
 /// Print an IPv4 address in dotted-decimal form.
 fn print_ipv4(addr: Ipv4Address) {
-    let octets = addr.octets();
-    for (i, octet) in octets.iter().enumerate() {
-        if i > 0 {
-            crate::write_byte(b'.');
-        }
-        print_dec(*octet as u32);
-    }
+    irix7_fmt::dotted(addr.octets(), &mut |b| crate::write_byte(b));
 }
 
 /// Print an unsigned integer in decimal.
-fn print_dec(mut v: u32) {
-    let mut buf = [0u8; 10];
-    let mut n = 0;
-    if v == 0 {
-        crate::write_byte(b'0');
-        return;
-    }
-    while v > 0 && n < buf.len() {
-        buf[n] = b'0' + (v % 10) as u8;
-        v /= 10;
-        n += 1;
-    }
-    while n > 0 {
-        n -= 1;
-        crate::write_byte(buf[n]);
-    }
+fn print_dec(v: u32) {
+    irix7_fmt::decimal(u64::from(v), &mut |b| crate::write_byte(b));
 }

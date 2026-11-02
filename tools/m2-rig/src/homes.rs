@@ -250,6 +250,25 @@ pub struct HttpResponse {
 
 /// Fetch one path from a node's host MCP forward.
 pub fn fetch(node: &Node, target: &str, timeout: Duration) -> Result<HttpResponse, String> {
+    // The guest has one HTTP slot and closes it between requests.  A fetch
+    // that lands in the close window can be reset before the guest reads it;
+    // retry transport failures so a caller sees a real status or a real error.
+    let mut last = None;
+    for attempt in 1..=3 {
+        match fetch_once(node, target, timeout) {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                last = Some(error);
+                if attempt < 3 {
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+            }
+        }
+    }
+    Err(last.expect("fetch attempts are non-empty"))
+}
+
+fn fetch_once(node: &Node, target: &str, timeout: Duration) -> Result<HttpResponse, String> {
     let address: SocketAddr = (Ipv4Addr::LOCALHOST, node.http_port).into();
     let mut stream = TcpStream::connect_timeout(&address, timeout)
         .map_err(|error| format!("connect 127.0.0.1:{}: {error}", node.http_port))?;
@@ -337,7 +356,7 @@ pub fn fetch_table(
 ) -> Result<(u16, HomeTable), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let error = match fetch(node, target, Duration::from_secs(10)).and_then(|response| {
+        let error = match fetch(node, target, crate::timing::secs(10)).and_then(|response| {
             HomeTable::parse(&response.body).map(|table| (response.status, table))
         }) {
             Ok(value) => return Ok(value),
@@ -676,72 +695,6 @@ pub fn collect_current(
 /// convergence.  The after-rejoin check uses this path because the iris host
 /// forward can retain a half-open guest connection across the member restart;
 /// the serial transcript is produced by both kernels and is part of the gate
-/// evidence, so it does not weaken the equality check.
-pub fn collect_current_serial(
-    nodes: &[Node],
-    facts: &[BootFacts],
-    epoch: u32,
-    digest: &str,
-    members: &[String],
-) -> HomeRound {
-    let expected = expected_table(epoch, digest, members, OBJECT_COUNT);
-    let mut round = HomeRound::new("current (serial)", expected.clone().ok());
-    let mut errors = Vec::new();
-    let expected = match expected {
-        Ok(table) => table,
-        Err(error) => {
-            round.nodes = nodes
-                .iter()
-                .map(|node| NodeHomes {
-                    name: node.name.clone(),
-                    path: "serial".into(),
-                    status: None,
-                    table: None,
-                    error: Some(error.clone()),
-                })
-                .collect();
-            return round.finish(vec![error]);
-        }
-    };
-    let mut tables = Vec::new();
-    for (node, facts) in nodes.iter().zip(facts) {
-        let mut evidence = NodeHomes {
-            name: node.name.clone(),
-            path: "serial".into(),
-            status: None,
-            table: None,
-            error: None,
-        };
-        match serial_table(facts) {
-            Ok(table) => {
-                errors.extend(
-                    check_current(&table, &expected)
-                        .into_iter()
-                        .map(|error| format!("{}: {error}", node.name)),
-                );
-                tables.push((node.name.clone(), table.clone()));
-                evidence.table = Some(table);
-            }
-            Err(error) => {
-                errors.push(format!("{}: serial {error}", node.name));
-                evidence.error = Some(error);
-            }
-        }
-        round.nodes.push(evidence);
-    }
-    if tables.len() == nodes.len() {
-        let (first_name, first) = &tables[0];
-        for (name, table) in &tables[1..] {
-            if !first.mapping_eq(table) {
-                errors.push(format!(
-                    "{first_name} and {name} logged different home mappings"
-                ));
-            }
-        }
-    }
-    round.finish(errors)
-}
-
 /// Fetch `/mesh/homes?epoch=<stale>` and require a fail-closed `409`.
 pub fn collect_stale(
     nodes: &[Node],

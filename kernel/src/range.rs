@@ -96,20 +96,15 @@ pub fn append(buf: &mut [u8], len: &mut usize, data: &[u8]) -> Option<()> {
 
 /// Append an unsigned decimal number, returning `None` when the buffer has no
 /// room.
-pub fn append_decimal(buf: &mut [u8], len: &mut usize, mut v: u32) -> Option<()> {
+pub fn append_decimal(buf: &mut [u8], len: &mut usize, v: u32) -> Option<()> {
     let mut digits = [0u8; 10];
     let mut n = 0;
-    if v == 0 {
-        digits[0] = b'0';
-        n = 1;
-    }
-    while v > 0 && n < digits.len() {
-        digits[n] = b'0' + (v % 10) as u8;
-        v /= 10;
+    irix7_fmt::decimal(u64::from(v), &mut |b| {
+        digits[n] = b;
         n += 1;
-    }
-    for i in (0..n).rev() {
-        append(buf, len, &digits[i..i + 1])?;
+    });
+    for digit in &digits[..n] {
+        append(buf, len, core::slice::from_ref(digit))?;
     }
     Some(())
 }

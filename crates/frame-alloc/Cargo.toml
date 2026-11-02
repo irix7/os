@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "frame-alloc"
+version = "0.1.0"
+edition = "2021"
+description = "Physical frame allocator shared by the IRIX 7 machines"

@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "irix7-fmt"
+version = "0.1.0"
+edition = "2021"
+description = "Allocation-free number and address formatting for the IRIX 7 kernels"

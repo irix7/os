@@ -975,7 +975,9 @@ fn json_env(env: &[(String, String)]) -> String {
 }
 
 fn json_option_num(value: Option<u64>) -> String {
-    value.map(|v| v.to_string()).unwrap_or_else(|| "null".into())
+    value
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "null".into())
 }
 
 fn json_option(value: &Option<String>) -> String {

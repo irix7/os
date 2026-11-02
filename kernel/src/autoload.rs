@@ -11,8 +11,8 @@
 //! before the network path.
 
 use crate::nvram;
-use crate::sha256::Sha256;
 use crate::{console_println, console_write, http, module, scsi, tls};
+use irix7_sha256::Sha256;
 
 /// Outcome of the boot-time module autoload.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -126,22 +126,8 @@ pub fn boot_wasm() {
     }
 }
 
-fn write_dec(mut value: u64) {
-    let mut buf = [0u8; 20];
-    let mut len = 0;
-    if value == 0 {
-        console_write("0");
-        return;
-    }
-    while value > 0 && len < buf.len() {
-        buf[len] = b'0' + (value % 10) as u8;
-        value /= 10;
-        len += 1;
-    }
-    while len > 0 {
-        len -= 1;
-        console_write(core::str::from_utf8(&buf[len..len + 1]).unwrap_or("?"));
-    }
+fn write_dec(value: u64) {
+    irix7_fmt::decimal(value, &mut |b| crate::write_byte(b));
 }
 
 fn boot_nvram(url: &[u8]) -> Status {
@@ -338,23 +324,5 @@ fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchRes
 }
 
 fn parse_digest(hex: &[u8]) -> Option<Sha256> {
-    if hex.len() != 64 {
-        return None;
-    }
-    let mut digest = [0u8; 32];
-    for (i, byte) in digest.iter_mut().enumerate() {
-        let hi = hex_value(hex[i * 2])?;
-        let lo = hex_value(hex[i * 2 + 1])?;
-        *byte = (hi << 4) | lo;
-    }
-    Some(Sha256(digest))
-}
-
-fn hex_value(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
+    Sha256::from_hex(hex)
 }

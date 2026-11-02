@@ -391,22 +391,8 @@ impl<'a> Out<'a> {
             self.push(HEX[(byte & 0x0f) as usize]);
         }
     }
-    fn dec(&mut self, mut value: usize) {
-        let mut digits = [0u8; 20];
-        let mut count = 0;
-        if value == 0 {
-            self.push(b'0');
-            return;
-        }
-        while value > 0 && count < digits.len() {
-            digits[count] = b'0' + (value % 10) as u8;
-            value /= 10;
-            count += 1;
-        }
-        while count > 0 {
-            count -= 1;
-            self.push(digits[count]);
-        }
+    fn dec(&mut self, value: usize) {
+        irix7_fmt::decimal(value as u64, &mut |b| self.push(b));
     }
     fn slice(&self) -> &[u8] {
         &self.buf[..self.len]

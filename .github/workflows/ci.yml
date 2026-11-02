@@ -1329,6 +1329,63 @@ jobs:
             ${{ runner.temp }}/iris-o32/serial.log
             ${{ runner.temp }}/iris-o32/iris.out
 
+  x86:
+    name: Boot (x86_64 QEMU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install rustup
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain none --profile minimal
+      - name: Install pinned nightly + rust-src + llvm-tools
+        run: |
+          rustup toolchain install nightly-2026-10-03 --component rust-src --component llvm-tools-preview
+          rustup default nightly-2026-10-03
+      - name: Ensure host C compiler (cc)
+        run: |
+          command -v cc >/dev/null 2>&1 || sudo apt-get install -y gcc
+      - name: Ensure QEMU
+        run: |
+          if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y qemu-system-x86
+          fi
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "x86-boot"
+      - name: Build and boot the x86_64 machine
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/x86-qemu.sh "$RUNNER_TEMP/x86-qemu"
+      - name: Check the module layout on both machines
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/module-layout-check.sh "$RUNNER_TEMP/module-layout"
+      - name: Run the two-guest x86 mesh
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/x86-qemu"
+          harness="$RUNNER_TEMP/x86-mesh-rig"
+          cargo build --release --manifest-path tools/m2-rig/Cargo.toml \
+            --target-dir "$harness"
+          "$harness/release/m2-rig" x86-mesh \
+            --work "$RUNNER_TEMP/x86-mesh" \
+            --rom "$work/target/x86_64-unknown-none/release/kernel-x86" \
+            --module "$work/mcp-x86.module" \
+            --wasm "$work/wasm-x86.module" \
+            --base-port 12000
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: x86-qemu
+          if-no-files-found: warn
+          path: |
+            ${{ runner.temp }}/x86-qemu/serial.log
+            ${{ runner.temp }}/x86-mesh/*.serial
+
   mesh-real:
     name: Mesh two-kernel (M2 gate)
     runs-on: ubuntu-24.04
@@ -1350,7 +1407,7 @@ jobs:
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
         with:
-          version: v0.1.10+irix7
+          version: v0.1.13+irix7
       - name: Build the two-node artefacts
         run: |
           set -euo pipefail
@@ -1482,7 +1539,7 @@ jobs:
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
         with:
-          version: v0.1.10+irix7
+          version: v0.1.13+irix7
       - name: Build the kernel and the slot probe
         run: |
           set -euo pipefail

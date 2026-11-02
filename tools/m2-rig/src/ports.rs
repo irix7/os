@@ -122,7 +122,7 @@ mod tests {
     fn connect(base: u16, slot: u16) -> TcpStream {
         let stream = TcpStream::connect(("127.0.0.1", base + slot)).unwrap();
         stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .set_read_timeout(Some(crate::timing::secs(5)))
             .unwrap();
         stream
     }

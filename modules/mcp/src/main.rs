@@ -40,6 +40,7 @@ const WAIT_REQUEST: u32 = 1;
 const WAIT_CLOSE: u32 = 2;
 const CLOSING: u32 = 3;
 const SEND_SCREEN: u32 = 4;
+const SEND_RESPONSE: u32 = 5;
 
 const SCREEN_W: u32 = 1280;
 const SCREEN_H: u32 = 1024;
@@ -502,6 +503,24 @@ static mut THUMB_B64: [u8; 12000] = [0; 12000];
 static mut REQUEST: [u8; REQUEST_CAP] = [0; REQUEST_CAP];
 static mut REQ_LEN: usize = 0;
 static mut IN_CONN: bool = false;
+/// When the current request began.  A host forward can keep a guest-side
+/// connection open after the client is gone; the request must not hold a slot
+/// forever.
+static mut REQUEST_START_MS: u64 = 0;
+const REQUEST_TIMEOUT_MS: u64 = 10_000;
+/// The pending response: a small header, then a body the handler owns.
+/// `SEND_RESPONSE` drains both across ticks, so a full transmit ring is a
+/// wait rather than a truncated response.
+const HEADER_CAP: usize = 160;
+static mut HEADER: [u8; HEADER_CAP] = [0; HEADER_CAP];
+static mut HEADER_LEN: usize = 0;
+static mut BODY_PTR: *const u8 = ptr::null();
+static mut BODY_LEN: usize = 0;
+static mut SENT: usize = 0;
+/// When the pending send began.  A peer that stops reading must not hold the
+/// single HTTP slot: the send aborts after `SEND_TIMEOUT_MS` and re-arms.
+static mut SEND_START_MS: u64 = 0;
+const SEND_TIMEOUT_MS: u64 = 10_000;
 static mut RESPONSE: [u8; 16384] = [0; 16384];
 /// Scratch for the `fs.stat` JSON text before it is embedded in a `text`
 /// field; a link target is bounded by [`LINK_MAX`] so the buffer cannot
@@ -512,7 +531,7 @@ static mut STAT_TEXT: [u8; 2048] = [0; 2048];
 /// one.  Alternating the two hides the close handshake from a back-to-back
 /// client.
 static mut CURRENT: u32 = 0;
-static mut NEXT: u32 = 1;
+static mut NEXT: u32 = 0;
 static mut NEXT_ARMED: bool = false;
 
 /// Deferred reset/poweroff: 0 none, 1 reset, 2 poweroff.  The response is
@@ -552,9 +571,12 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
     // one, so it cannot collide with the HTTP server or the mesh listener.
     unsafe { netprobe::init(services) };
     if mesh_enabled {
+        // One HTTP slot.  A second listener let a client connect while the
+        // first connection closed, and the rig's alternating current/stale
+        // requests were then answered from the wrong connection state.
         unsafe {
             CURRENT = mesh::HTTP_SLOT;
-            NEXT = 1;
+            NEXT = mesh::HTTP_SLOT;
             NEXT_ARMED = false;
         }
     }
@@ -629,6 +651,10 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     PHASE = WAIT_REQUEST;
                 }
+            } else if (services.tcp_state)(slot) != 0 {
+                // A half-open connection left by the host forward keeps the
+                // slot out of LISTEN.  Clear it; the next tick listens again.
+                (services.tcp_abort)(slot);
             } else if !unsafe { LISTEN_FAIL_LOGGED } {
                 unsafe {
                     LISTEN_FAIL_LOGGED = true;
@@ -654,7 +680,18 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                     unsafe {
                         REQ_LEN = 0;
                         IN_CONN = true;
+                        REQUEST_START_MS = (services.clock_ms)();
                     }
+                }
+                if (services.clock_ms)().saturating_sub(unsafe { REQUEST_START_MS })
+                    >= REQUEST_TIMEOUT_MS
+                {
+                    (services.tcp_abort)(slot);
+                    unsafe {
+                        IN_CONN = false;
+                        PHASE = ARM;
+                    }
+                    return 0;
                 }
                 let request = unsafe { &mut *core::ptr::addr_of_mut!(REQUEST) };
                 let used = unsafe { REQ_LEN };
@@ -677,38 +714,10 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
                 let used = unsafe { REQ_LEN };
                 if used > 0 && request_complete(&request[..used]) {
+                    // The handler stages the response and leaves it pending.
+                    // `SEND_RESPONSE` (or `SEND_SCREEN`) drains it across ticks
+                    // and only then closes the connection.
                     handle_request(services, slot);
-                    if unsafe { SCREEN_STREAMING } {
-                        unsafe {
-                            IN_CONN = false;
-                            PHASE = SEND_SCREEN;
-                        }
-                    } else {
-                        // Arm the other slot before the client closes, so the
-                        // next connection lands on a listening socket.  With
-                        // the mesh listener enabled slot 1 is reserved for
-                        // port 7000, so HTTP re-arms slot 0 after the close
-                        // handshake instead.
-                        if !mesh::enabled() {
-                            let next = unsafe { NEXT };
-                            if (services.tcp_listen)(next, PORT) == 0 {
-                                unsafe {
-                                    NEXT_ARMED = true;
-                                }
-                            }
-                        }
-                        // The response is already in the TCP send buffer.
-                        // Close our side now rather than waiting for a
-                        // possibly half-open iris forward to send FIN; the
-                        // single HTTP slot is needed by the next control
-                        // request.  CLOSING drains or aborts after 2 s.
-                        (services.tcp_close)(slot);
-                        unsafe {
-                            IN_CONN = false;
-                            CLOSE_START_MS = (services.clock_ms)();
-                            PHASE = CLOSING;
-                        }
-                    }
                 } else if state == 3 {
                     (services.tcp_close)(slot);
                     unsafe {
@@ -720,22 +729,70 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 unsafe {
                     PHASE = ARM;
                 }
+            } else {
+                // `tcp_state` maps Listen, SynSent and SynReceived to 1.  A
+                // listening slot carries the LISTEN event; a half-open
+                // handshake does not.  Without this, a client that vanishes
+                // mid-handshake holds the slot forever.
+                const EV_LISTEN: u32 = 1 << 3;
+                if (services.tcp_events)(slot) & EV_LISTEN == 0 {
+                    if !unsafe { IN_CONN } {
+                        unsafe {
+                            IN_CONN = true;
+                            REQUEST_START_MS = (services.clock_ms)();
+                        }
+                    }
+                    if (services.clock_ms)().saturating_sub(unsafe { REQUEST_START_MS })
+                        >= REQUEST_TIMEOUT_MS
+                    {
+                        (services.tcp_abort)(slot);
+                        unsafe {
+                            IN_CONN = false;
+                            PHASE = ARM;
+                        }
+                    }
+                }
             }
         }
         SEND_SCREEN => {
             let slot = unsafe { CURRENT };
+            // The header and BMP preamble go out the same resumable way as a
+            // regular response; only after they are queued do the rows start.
+            let sent = unsafe { SENT };
+            let header_len = unsafe { HEADER_LEN };
+            if sent < header_len {
+                let n = unsafe {
+                    (services.tcp_send)(
+                        slot,
+                        (core::ptr::addr_of!(HEADER) as *const u8).add(sent),
+                        header_len - sent,
+                    )
+                };
+                match n {
+                    n if n > 0 => unsafe {
+                        SENT = sent + n as usize;
+                    },
+                    n if n < 0 => {
+                        (services.tcp_abort)(slot);
+                        unsafe {
+                            SCREEN_STREAMING = false;
+                            PHASE = ARM;
+                        }
+                    }
+                    _ => {}
+                }
+                return 0;
+            }
             let row = unsafe { SCREEN_ROW };
             if row >= SCREEN_H {
                 (services.tcp_close)(slot);
                 unsafe {
                     SCREEN_STREAMING = false;
                 }
-                if !mesh::enabled() {
-                    let next = unsafe { NEXT };
-                    if (services.tcp_listen)(next, PORT) == 0 {
-                        unsafe {
-                            NEXT_ARMED = true;
-                        }
+                let next = unsafe { NEXT };
+                if next != slot && (services.tcp_listen)(next, PORT) == 0 {
+                    unsafe {
+                        NEXT_ARMED = true;
                     }
                 }
                 unsafe {
@@ -803,16 +860,74 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
                 return 0;
             }
-            match (services.tcp_state)(slot) {
-                3 => {
-                    (services.tcp_close)(slot);
+            // EV_CLOSED covers TimeWait as well as Closed.  Waiting for the
+            // coarse state to read zero means every request pays the 2 s
+            // abort, and the single slot refuses requests while it does.
+            const EV_CLOSED: u32 = 1 << 2;
+            if (services.tcp_events)(slot) & EV_CLOSED != 0 {
+                unsafe {
+                    finish_close();
+                }
+            } else if (services.tcp_state)(slot) == 3 {
+                (services.tcp_close)(slot);
+                unsafe {
+                    PHASE = CLOSING;
+                }
+            }
+        }
+        SEND_RESPONSE => {
+            let slot = unsafe { CURRENT };
+            if (services.clock_ms)().saturating_sub(unsafe { SEND_START_MS }) >= SEND_TIMEOUT_MS {
+                (services.tcp_abort)(slot);
+                unsafe {
+                    PHASE = ARM;
+                }
+                return 0;
+            }
+            let sent = unsafe { SENT };
+            let header_len = unsafe { HEADER_LEN };
+            let body_len = unsafe { BODY_LEN };
+            if sent >= header_len + body_len {
+                // Arm the other slot before the client closes, so the next
+                // connection lands on a listening socket while this one
+                // finishes its close handshake.
+                let next = unsafe { NEXT };
+                if next != slot && (services.tcp_listen)(next, PORT) == 0 {
                     unsafe {
-                        PHASE = CLOSING;
+                        NEXT_ARMED = true;
                     }
                 }
-                0 => unsafe {
-                    finish_close();
+                (services.tcp_close)(slot);
+                unsafe {
+                    IN_CONN = false;
+                    CLOSE_START_MS = (services.clock_ms)();
+                    PHASE = CLOSING;
+                }
+                return 0;
+            }
+            let n = if sent < header_len {
+                unsafe {
+                    (services.tcp_send)(
+                        slot,
+                        (core::ptr::addr_of!(HEADER) as *const u8).add(sent),
+                        header_len - sent,
+                    )
+                }
+            } else {
+                let offset = sent - header_len;
+                unsafe { (services.tcp_send)(slot, BODY_PTR.add(offset), body_len - offset) }
+            };
+            match n {
+                // A full ring is a wait: the next tick retries from `SENT`.
+                n if n > 0 => unsafe {
+                    SENT = sent + n as usize;
                 },
+                n if n < 0 => {
+                    (services.tcp_abort)(slot);
+                    unsafe {
+                        PHASE = ARM;
+                    }
+                }
                 _ => {}
             }
         }
@@ -827,7 +942,8 @@ unsafe extern "C" fn tick(services: *const Services) -> i32 {
                 }
                 return 0;
             }
-            if (services.tcp_state)(slot) == 0 {
+            const EV_CLOSED: u32 = 1 << 2;
+            if (services.tcp_state)(slot) == 0 || (services.tcp_events)(slot) & EV_CLOSED != 0 {
                 (services.tcp_abort)(slot);
                 unsafe {
                     finish_close();
@@ -920,6 +1036,12 @@ fn handle_request(services: &Services, slot: u32) {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let n = module_status(services, response);
         send_http(services, slot, &b"text/plain"[..], &response[..n]);
+        return;
+    }
+    if !is_post && path == b"/mesh/join" {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let (status, n) = mesh::join_response(response);
+        send_http_status(services, slot, status, &b"text/plain"[..], &response[..n]);
         return;
     }
     if !is_post && (path == b"/mesh/homes" || path.starts_with(b"/mesh/homes?")) {
@@ -1036,12 +1158,32 @@ fn authorized(request: &[u8]) -> bool {
     false
 }
 
-fn send_unauthorized(services: &Services, slot: u32) {
-    send_all(
-        services,
-        slot,
-        b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-    );
+fn send_unauthorized(_services: &Services, _slot: u32) {
+    let header = b"HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: Bearer\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+    begin_response(header, ptr::null(), 0);
+}
+
+/// Stage a response for `SEND_RESPONSE`.  The header is copied; the body is
+/// borrowed and must stay valid until the response is sent, which holds because
+/// the body is a static buffer and one response is in flight at a time.
+fn begin_response(header: &[u8], body: *const u8, body_len: usize) {
+    // SAFETY: single-threaded module; no other response is in flight.
+    unsafe {
+        let copy = header.len().min(HEADER_CAP);
+        HEADER[..copy].copy_from_slice(&header[..copy]);
+        HEADER_LEN = copy;
+        BODY_PTR = body;
+        BODY_LEN = body_len;
+        SENT = 0;
+        let clock = SERVICES.load(Ordering::Acquire);
+        SEND_START_MS = if clock.is_null() {
+            0
+        } else {
+            // SAFETY: the table is published before any request is served.
+            ((*clock).clock_ms)()
+        };
+        PHASE = SEND_RESPONSE;
+    }
 }
 
 fn thumbnail(services: &Services) -> usize {
@@ -1174,7 +1316,7 @@ fn b64_encode(src: &[u8], dst: &mut [u8]) -> usize {
     out
 }
 
-fn screen_start(services: &Services, slot: u32) {
+fn screen_start(_services: &Services, _slot: u32) {
     let mut header = [0u8; 160];
     let mut w = Out::new(&mut header);
     w.push(b"HTTP/1.0 200 OK\r\nContent-Type: image/bmp\r\nContent-Length: ");
@@ -1195,8 +1337,12 @@ fn screen_start(services: &Services, slot: u32) {
     le32(&mut bmp[34..38], SCREEN_DATA);
     le32(&mut bmp[38..42], 2835);
 
-    send_all(services, slot, &header[..n]);
-    send_all(services, slot, &bmp);
+    // Header and BMP file header go out as one preamble through the
+    // resumable writer; `SEND_SCREEN` sends it before the pixel rows.
+    let mut preamble = [0u8; 160];
+    preamble[..n].copy_from_slice(&header[..n]);
+    preamble[n..n + 54].copy_from_slice(&bmp);
+    begin_response(&preamble[..n + 54], ptr::null(), 0);
     unsafe {
         SCREEN_ROW = 0;
         SCREEN_OFF = 0;
@@ -1216,7 +1362,13 @@ fn send_http(services: &Services, slot: u32, content_type: &[u8], body: &[u8]) {
     send_http_status(services, slot, 200, content_type, body);
 }
 
-fn send_http_status(services: &Services, slot: u32, status: u16, content_type: &[u8], body: &[u8]) {
+fn send_http_status(
+    _services: &Services,
+    _slot: u32,
+    status: u16,
+    content_type: &[u8],
+    body: &[u8],
+) {
     let reason: &[u8] = match status {
         200 => b"200 OK",
         202 => b"202 Accepted",
@@ -1236,8 +1388,7 @@ fn send_http_status(services: &Services, slot: u32, status: u16, content_type: &
     w.u64(body.len() as u64);
     w.push(b"\r\n\r\n");
     let n = w.len;
-    send_all(services, slot, &header[..n]);
-    send_all(services, slot, body);
+    begin_response(&header[..n], body.as_ptr(), body.len());
 }
 
 // ---------------------------------------------------------------------------
@@ -1817,20 +1968,18 @@ fn write_u64(dst: &mut [u8], mut value: u64) -> usize {
     count
 }
 
-fn send_all(services: &Services, slot: u32, data: &[u8]) {
-    let mut offset = 0;
-    while offset < data.len() {
-        let n = unsafe { (services.tcp_send)(slot, data[offset..].as_ptr(), data.len() - offset) };
-        if n <= 0 {
-            return;
-        }
-        offset += n as usize;
-    }
-}
-
 #[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
+    // A silent spin is indistinguishable from a wedged tick.  Report the panic
+    // through the service table so the transcript says what happened.  The
+    // message is fixed: the module has no room in slot A for formatting code.
+    let table = SERVICES.load(Ordering::Acquire);
+    if !table.is_null() {
+        let message = b"mcp: PANIC\n";
+        // SAFETY: the table is published before any allocation or request.
+        unsafe { ((*table).write)(message.as_ptr(), message.len()) };
+    }
     loop {
         core::hint::spin_loop();
     }

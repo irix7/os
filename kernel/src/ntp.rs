@@ -171,13 +171,12 @@ pub fn format_utc(unix: u64, out: &mut [u8; 20]) -> usize {
 }
 
 /// Write `value` as exactly `width` decimal digits, zero padded.
-fn write_padded(out: &mut [u8; 20], start: usize, mut value: u64, width: usize) -> usize {
-    let mut i = start + width;
-    while i > start {
-        i -= 1;
-        out[i] = b'0' + (value % 10) as u8;
-        value /= 10;
-    }
+fn write_padded(out: &mut [u8; 20], start: usize, value: u64, width: usize) -> usize {
+    let mut n = 0;
+    irix7_fmt::decimal_padded(value, width, &mut |b| {
+        out[start + n] = b;
+        n += 1;
+    });
     width
 }
 

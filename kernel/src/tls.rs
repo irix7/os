@@ -500,7 +500,7 @@ fn get_inner(
     let mut body_len = 0usize;
     let mut total_rx = 0usize;
     let mut captured = 0usize;
-    let mut hasher = crate::sha256::Hasher::new();
+    let mut hasher = irix7_sha256::Hasher::new();
     let mut scratch = [0u8; 2048];
 
     let deadline = net::clock_now().total_millis() + TIMEOUT_MS;

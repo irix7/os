@@ -54,7 +54,6 @@ pub mod rtc;
 pub mod sash;
 pub mod scheduler;
 pub mod scsi;
-pub mod sha256;
 pub mod status;
 pub mod telnet;
 pub mod tlb;
@@ -232,16 +231,11 @@ pub fn println(s: &str) {
 }
 
 pub fn print_hex8(v: u8) {
-    const HEX: &[u8; 16] = b"0123456789ABCDEF";
-    write_byte(HEX[(v >> 4) as usize]);
-    write_byte(HEX[(v & 0x0F) as usize]);
+    irix7_fmt::hex(u64::from(v), 2, true, &mut |b| crate::write_byte(b));
 }
 
 pub fn print_hex32(v: u32) {
-    print_hex8((v >> 24) as u8);
-    print_hex8((v >> 16) as u8);
-    print_hex8((v >> 8) as u8);
-    print_hex8(v as u8);
+    irix7_fmt::hex(u64::from(v), 8, true, &mut |b| crate::write_byte(b));
 }
 
 // ---------------------------------------------------------------------------
@@ -792,22 +786,8 @@ fn announce_boot(autoload: autoload::Status) {
     }
 }
 
-fn write_u64_dec(mut value: u64) {
-    let mut digits = [0u8; 20];
-    let mut count = 0usize;
-    if value == 0 {
-        write_byte(b'0');
-        return;
-    }
-    while value > 0 && count < digits.len() {
-        digits[count] = b'0' + (value % 10) as u8;
-        value /= 10;
-        count += 1;
-    }
-    while count > 0 {
-        count -= 1;
-        write_byte(digits[count]);
-    }
+fn write_u64_dec(value: u64) {
+    irix7_fmt::decimal(value, &mut |b| write_byte(b));
 }
 
 /// Halt the machine.  Interrupts are disabled and the CPU waits.

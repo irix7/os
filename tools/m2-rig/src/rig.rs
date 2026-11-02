@@ -49,6 +49,12 @@ pub enum Action {
     Ports,
     /// Print the derived instance table without starting anything.
     PrintConfig,
+    /// Boot one x86 QEMU guest and check the module's status page.
+    X86Smoke,
+    /// Boot two x86 QEMU guests and join them through the relay.
+    X86Mesh,
+    /// Join one Indy guest and one x86 guest through the relay.
+    X86Mixed,
     /// Remove the rig work directory.
     Clean,
 }
@@ -66,6 +72,9 @@ impl Action {
             "probe" => Self::Probe,
             "ports" => Self::Ports,
             "print-config" => Self::PrintConfig,
+            "x86-smoke" => Self::X86Smoke,
+            "x86-mesh" => Self::X86Mesh,
+            "x86-mixed" => Self::X86Mixed,
             "clean" => Self::Clean,
             _ => return None,
         })
@@ -185,10 +194,19 @@ pub struct Options {
     pub iris: PathBuf,
     /// `iris-ci` binary.
     pub iris_ci: PathBuf,
-    /// PROM image.
+    /// x86 kernel ELF for the x86 actions, or the PROM for iris when `prom`
+    /// is not set.
     pub rom: PathBuf,
+    /// PROM image for iris.  Defaults to `rom`.
+    pub prom: PathBuf,
     /// Fresh MCP module image.
     pub module: PathBuf,
+    /// x86 MCP module image for a mixed run.  `module` is the MIPS image.
+    pub x86_module: PathBuf,
+    /// Wasm module image (x86 autoload).
+    pub wasm: PathBuf,
+    /// qemu-system-x86_64 binary.
+    pub qemu: PathBuf,
     /// First monitor port block.
     pub base_port: u16,
     /// Number of nodes for the M3 shard scenario.
@@ -263,12 +281,16 @@ where
     let mut iris = None;
     let mut iris_ci = None;
     let mut rom = None;
+    let mut prom = None;
     let mut module = None;
+    let mut x86_module = None;
+    let mut wasm = None;
+    let mut qemu = None;
     let mut base_port = 9100u16;
     let mut nodes = 2u32;
     let mut hub = false;
     let mut transport = Transport::Relay;
-    let mut timeout = Duration::from_secs(180);
+    let mut timeout = crate::timing::secs(180);
     let mut fault = Fault::None;
     let mut keep = false;
     let mut verbose = false;
@@ -283,7 +305,13 @@ where
             "--iris" => iris = Some(PathBuf::from(next_value(&mut iter, "--iris")?)),
             "--iris-ci" => iris_ci = Some(PathBuf::from(next_value(&mut iter, "--iris-ci")?)),
             "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
+            "--prom" => prom = Some(PathBuf::from(next_value(&mut iter, "--prom")?)),
             "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
+            "--x86-module" => {
+                x86_module = Some(PathBuf::from(next_value(&mut iter, "--x86-module")?))
+            }
+            "--wasm" => wasm = Some(PathBuf::from(next_value(&mut iter, "--wasm")?)),
+            "--qemu" => qemu = Some(PathBuf::from(next_value(&mut iter, "--qemu")?)),
             "--base-port" => {
                 base_port = next_value(&mut iter, "--base-port")?
                     .parse()
@@ -309,7 +337,7 @@ where
                 let seconds: u64 = next_value(&mut iter, "--timeout")?
                     .parse()
                     .map_err(|_| "--timeout must be seconds".to_string())?;
-                timeout = Duration::from_secs(seconds.max(10));
+                timeout = crate::timing::secs(seconds.max(10));
             }
             "--fault" => {
                 let word = next_value(&mut iter, "--fault")?;
@@ -347,6 +375,7 @@ where
     let rom = rom.unwrap_or_else(|| work.join("irix7-rom.bin"));
     let module = module.unwrap_or_else(|| work.join("mcp.module"));
 
+    let prom = prom.unwrap_or_else(|| rom.clone());
     Ok(Some(Options {
         action,
         repo,
@@ -354,7 +383,11 @@ where
         iris,
         iris_ci,
         rom,
+        prom,
         module,
+        x86_module: x86_module.unwrap_or_default(),
+        wasm: wasm.unwrap_or_default(),
+        qemu: qemu.unwrap_or_else(|| PathBuf::from("qemu-system-x86_64")),
         base_port,
         nodes,
         hub,
@@ -986,7 +1019,7 @@ pub fn start_node(options: &Options, node: &Node) -> Result<RunningNode, String>
         .arg("--port-base")
         .arg(node.port_base.to_string())
         .arg("--prom")
-        .arg(&options.rom)
+        .arg(&options.prom)
         .arg("--nvram")
         .arg(node.state_dir.join("nvram.bin"))
         .arg("--ci")
@@ -1162,15 +1195,12 @@ pub fn record_boot_timings(node: &str, timings: BootTimings) {
 
 /// The recorded phases for a node, when its boot was timed.
 pub fn boot_timings_for(node: &str) -> Option<BootTimings> {
-    timing_table()
-        .lock()
-        .ok()
-        .and_then(|table| {
-            table
-                .iter()
-                .find(|(name, _)| name == node)
-                .map(|(_, timings)| *timings)
-        })
+    timing_table().lock().ok().and_then(|table| {
+        table
+            .iter()
+            .find(|(name, _)| name == node)
+            .map(|(_, timings)| *timings)
+    })
 }
 
 /// Boot markers extracted from one serial transcript.
@@ -1505,7 +1535,7 @@ pub fn kill_node(running: &mut RunningNode) -> Result<(), String> {
         .child
         .kill()
         .map_err(|error| format!("kill {}: {error}", running.node.name))?;
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::timing::secs(10);
     loop {
         match running.child.try_wait() {
             Ok(Some(_)) => return Ok(()),
@@ -1526,7 +1556,7 @@ pub fn stop_node(options: &Options, running: &mut RunningNode) -> Result<(), Str
             eprintln!("{}: clean quit failed: {error}", running.node.name);
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + crate::timing::secs(10);
     loop {
         match running.child.try_wait() {
             Ok(Some(_)) => return Ok(()),
@@ -1651,12 +1681,16 @@ mod tests {
             iris: PathBuf::from("iris"),
             iris_ci: PathBuf::from("iris-ci"),
             rom: PathBuf::from("rom"),
+            prom: PathBuf::from("rom"),
             module: PathBuf::from("module"),
+            x86_module: PathBuf::from("module"),
+            wasm: PathBuf::new(),
+            qemu: PathBuf::from("qemu-system-x86_64"),
             base_port: 9100,
             nodes: 2,
             hub: false,
             transport: Transport::Relay,
-            timeout: Duration::from_secs(1),
+            timeout: crate::timing::secs(1),
             fault: Fault::None,
             keep: false,
             verbose: false,

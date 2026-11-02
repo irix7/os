@@ -57,25 +57,11 @@ pub fn probe_http(
     timeout: Duration,
 ) -> Result<ProbeOutcome, ProbeError> {
     let address: SocketAddr = (Ipv4Addr::LOCALHOST, node.telnet_port).into();
-    let mut stream =
-        TcpStream::connect_timeout(&address, Duration::from_secs(5)).map_err(|error| {
-            ProbeError::new(
-                format!(
-                    "connect to {} telnet {}: {error}",
-                    node.name, node.telnet_port
-                ),
-                Vec::new(),
-            )
-        })?;
-    stream
-        .set_read_timeout(Some(Duration::from_millis(250)))
-        .map_err(|error| ProbeError::new(format!("set read timeout: {error}"), Vec::new()))?;
-    stream
-        .set_write_timeout(Some(Duration::from_secs(2)))
-        .map_err(|error| ProbeError::new(format!("set write timeout: {error}"), Vec::new()))?;
-
-    let mut transcript = Vec::new();
-    read_banner(&mut stream, &mut transcript, Duration::from_secs(5))?;
+    // The guest has one console session, and its kernel may be inside a
+    // deferred HTTP fetch when the probe arrives; the host forward accepts the
+    // connection before the guest does.  Retry the whole connection rather than
+    // reporting a console timeout for a guest that is merely busy.
+    let (mut stream, mut transcript) = connect_console(node, &address)?;
 
     let command = format!("http {host}:{port}/\r\n");
     stream.write_all(command.as_bytes()).map_err(|error| {
@@ -151,6 +137,43 @@ pub fn probe_http(
         "telnet peer closed before an HTTP result",
         transcript,
     ))
+}
+
+/// Connect to the guest console and wait for its prompt, retrying a busy
+/// console.  The transcript of the last attempt is kept for the report.
+fn connect_console(node: &Node, address: &SocketAddr) -> Result<(TcpStream, Vec<u8>), ProbeError> {
+    const ATTEMPTS: usize = 4;
+    let mut last: Option<ProbeError> = None;
+    for attempt in 0..ATTEMPTS {
+        let connected =
+            TcpStream::connect_timeout(address, crate::timing::secs(5)).map_err(|error| {
+                ProbeError::new(
+                    format!(
+                        "connect to {} telnet {}: {error}",
+                        node.name, node.telnet_port
+                    ),
+                    Vec::new(),
+                )
+            })?;
+        connected
+            .set_read_timeout(Some(Duration::from_millis(250)))
+            .map_err(|error| ProbeError::new(format!("set read timeout: {error}"), Vec::new()))?;
+        connected
+            .set_write_timeout(Some(crate::timing::secs(2)))
+            .map_err(|error| ProbeError::new(format!("set write timeout: {error}"), Vec::new()))?;
+        let mut stream = connected;
+        let mut transcript = Vec::new();
+        match read_banner(&mut stream, &mut transcript, crate::timing::secs(5)) {
+            Ok(()) => return Ok((stream, transcript)),
+            Err(error) => {
+                last = Some(error);
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| ProbeError::new("console did not answer", Vec::new())))
 }
 
 fn read_banner(

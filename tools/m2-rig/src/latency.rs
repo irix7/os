@@ -75,7 +75,7 @@ fn parse(body: &str) -> Result<LatencyEvidence, String> {
 fn fetch_retry(node: &Node, path: &str) -> Result<HttpResponse, String> {
     let mut last = String::new();
     for attempt in 0..8 {
-        match fetch(node, path, Duration::from_secs(20)) {
+        match fetch(node, path, crate::timing::secs(20)) {
             Ok(response) => return Ok(response),
             Err(error) => {
                 last = error;
@@ -101,7 +101,7 @@ pub fn run_with(node: &Node, count: u32) -> Result<LatencyEvidence, String> {
             node.name, response.status, response.body
         ));
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + crate::timing::secs(30);
     loop {
         std::thread::sleep(Duration::from_millis(250));
         let response = fetch_retry(node, "/mesh/latency?status=1")?;
@@ -109,7 +109,11 @@ pub fn run_with(node: &Node, count: u32) -> Result<LatencyEvidence, String> {
         if evidence.ok && evidence.received >= count {
             evidence.message = format!(
                 "{} samples: p50 {} ms, p95 {} ms, min {} ms, max {} ms",
-                evidence.received, evidence.p50_ms, evidence.p95_ms, evidence.min_ms, evidence.max_ms
+                evidence.received,
+                evidence.p50_ms,
+                evidence.p95_ms,
+                evidence.min_ms,
+                evidence.max_ms
             );
             return Ok(evidence);
         }
@@ -143,8 +147,8 @@ mod tests {
 
     #[test]
     fn a_running_report_is_not_ok() {
-        let evidence = parse("mesh-latency: state=running sent=7 received=5 count=50\n")
-            .expect("parse");
+        let evidence =
+            parse("mesh-latency: state=running sent=7 received=5 count=50\n").expect("parse");
         assert!(!evidence.ok);
         assert_eq!(evidence.received, 5);
     }

@@ -9,9 +9,6 @@
 #![allow(dead_code)]
 #![allow(clippy::wrong_self_convention)]
 
-#[path = "../src/sha256.rs"]
-mod sha256;
-
 mod telnet {
     pub fn resolve_host(_: &[u8]) -> Option<u32> {
         None

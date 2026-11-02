@@ -28,7 +28,9 @@ const PREFIX: &str = "mesh-route: ";
 /// The MCP HTTP server keeps its single slot in the close handshake for up to
 /// 5 s.  A command is not idempotent, so the rig lets the slot re-arm rather
 /// than replaying a request whose response was lost.
-const COMMAND_SETTLE: Duration = Duration::from_secs(6);
+fn command_settle() -> Duration {
+    crate::timing::secs(6)
+}
 const OBJECT_DOMAIN: &[u8] = b"IRIX7-M2-HOME-OBJECT-v1";
 const OBJECT_MAX: u32 = 32;
 const HOME_DOMAIN: &[u8] = b"IRIX7-HOME-v1";
@@ -339,7 +341,7 @@ pub fn fetch(node: &Node, timeout: Duration) -> Result<(u16, RouteReport), Strin
 pub fn fetch_ready(node: &Node, timeout: Duration) -> Result<(u16, RouteReport), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let error = match fetch(node, Duration::from_secs(10)) {
+        let error = match fetch(node, crate::timing::secs(10)) {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
@@ -529,8 +531,8 @@ fn drive_step(
     number: u8,
     done: &mut dyn FnMut(&RouteReport, &RouteReport) -> bool,
 ) -> Option<(RouteReport, RouteReport)> {
-    std::thread::sleep(COMMAND_SETTLE);
-    match command(root, number, Duration::from_secs(10)) {
+    std::thread::sleep(command_settle());
+    match command(root, number, crate::timing::secs(10)) {
         Ok((status, body)) => {
             evidence
                 .steps
@@ -550,8 +552,8 @@ fn drive_step(
     }
     let deadline = Instant::now() + timeout;
     loop {
-        let root_now = fetch_ready(root, Duration::from_secs(10));
-        let member_now = fetch_ready(member, Duration::from_secs(10));
+        let root_now = fetch_ready(root, crate::timing::secs(10));
+        let member_now = fetch_ready(member, crate::timing::secs(10));
         match (root_now, member_now) {
             (Ok((_, root_report)), Ok((_, member_report))) => {
                 if done(&root_report, &member_report) {
@@ -621,8 +623,8 @@ pub fn run(
 
     let view_deadline = Instant::now() + timeout;
     let (root_status, root_report, member_status, member_report) = loop {
-        let root_now = fetch_ready(root, Duration::from_secs(10));
-        let member_now = fetch_ready(member, Duration::from_secs(10));
+        let root_now = fetch_ready(root, crate::timing::secs(10));
+        let member_now = fetch_ready(member, crate::timing::secs(10));
         match (root_now, member_now) {
             (Ok((root_status, root_report)), Ok((member_status, member_report)))
                 if view_ready(&root_report, epoch, digest)

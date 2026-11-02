@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "irix7-sha256"
+version = "0.1.0"
+edition = "2021"
+description = "Streaming SHA-256 (FIPS 180-4) shared by the IRIX 7 kernels"

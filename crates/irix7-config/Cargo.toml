@@ -1,0 +1,6 @@
+[package]
+license = "GPL-3.0-only"
+name = "irix7-config"
+version = "0.1.0"
+edition = "2021"
+description = "key=value boot configuration lookup shared by the IRIX 7 machines"

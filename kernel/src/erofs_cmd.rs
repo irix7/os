@@ -333,7 +333,7 @@ fn verify_image(
     if summary.body_len as u64 != image_size {
         return Err("image size does not match the superblock");
     }
-    if !summary.sha256.eq_digest(&crate::sha256::Sha256(expected)) {
+    if !summary.sha256.eq_digest(&irix7_sha256::Sha256(expected)) {
         return Err("digest mismatch");
     }
     Ok(())

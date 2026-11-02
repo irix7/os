@@ -31,7 +31,9 @@ use crate::homes;
 use crate::rig::{Fault, Node};
 
 const PREFIX: &str = "mesh-migrate: ";
-const COMMAND_SETTLE: Duration = Duration::from_secs(6);
+fn command_settle() -> Duration {
+    crate::timing::secs(6)
+}
 const OBJECT_DOMAIN: &[u8] = b"IRIX7-M2-HOME-OBJECT-v1";
 const ACTOR_DOMAIN: &[u8] = b"IRIX7-M2-ACTOR-v1";
 const INIT_DOMAIN: &[u8] = b"IRIX7-M2-ACTOR-INIT-v1";
@@ -403,7 +405,7 @@ pub fn fetch(node: &Node, timeout: Duration) -> Result<(u16, MigrateReport), Str
 pub fn fetch_ready(node: &Node, timeout: Duration) -> Result<(u16, MigrateReport), String> {
     let deadline = Instant::now() + timeout;
     loop {
-        let error = match fetch(node, Duration::from_secs(10)) {
+        let error = match fetch(node, crate::timing::secs(10)) {
             Ok(value) => return Ok(value),
             Err(error) => error,
         };
@@ -643,8 +645,8 @@ fn wait_for(
 ) -> Option<(MigrateReport, MigrateReport)> {
     let deadline = Instant::now() + timeout;
     loop {
-        let root_now = fetch_ready(root, Duration::from_secs(10));
-        let member_now = fetch_ready(member, Duration::from_secs(10));
+        let root_now = fetch_ready(root, crate::timing::secs(10));
+        let member_now = fetch_ready(member, crate::timing::secs(10));
         if let (Ok((_, root_report)), Ok((_, member_report))) = (root_now, member_now) {
             if done(&root_report, &member_report) {
                 return Some((root_report, member_report));
@@ -666,8 +668,8 @@ fn drive_step(
     number: u8,
     mut done: impl FnMut(&MigrateReport, &MigrateReport) -> bool,
 ) -> Option<(MigrateReport, MigrateReport)> {
-    std::thread::sleep(COMMAND_SETTLE);
-    match command(root, number, Duration::from_secs(10)) {
+    std::thread::sleep(command_settle());
+    match command(root, number, crate::timing::secs(10)) {
         Ok((status, body)) => {
             evidence
                 .steps
