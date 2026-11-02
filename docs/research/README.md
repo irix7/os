@@ -22,6 +22,7 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`m2-completion-audit.md`](m2-completion-audit.md) | The adversarial audit of M2 closure against issue #3, with the three remaining gaps. |
 | [`m2-remediation.md`](m2-remediation.md) | The remediation gate: signed persistent epoch, two-node CI, provenance, engineering review and the remaining limits. |
 | [`quic-primary.md`](quic-primary.md) | Whether QUIC should replace TCP as the native transport, the Indy's crypto/code/memory budget, the recommended QUIC profile and the measured spike that decides it. |
+| [`ati-rage-lt.md`](ati-rage-lt.md) | The M4753's 3D Rage LT Pro: the complete function matrix, register blocks, driver-cell interface, Mesa/GL path, staged gates and clean-room provenance. |
 
 The reports cite primary sources; they are kept verbatim (including their own spelling) for
 traceability.
@@ -33,3 +34,5 @@ traceability.
 - [Bounded mesh streams](mesh-streams.md) — #246.
 
 - [PowerPC G3 QEMU boot](powerbook-qemu-boot.md) — #287.
+
+- [ATI Rage LT Pro](ati-rage-lt.md) — #328.
