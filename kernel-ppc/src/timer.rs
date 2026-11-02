@@ -2,15 +2,14 @@
 //! The PowerPC decrementer as the first tick source.
 //!
 //! The exception vector at 0x900 branches to `decrementer_handler` in
-//! `boot.S`.  The handler counts the tick and reloads the decrementer; this
-//! module installs the vector, programs the reload value and enables MSR[EE].
+//! `boot.S`; `trap` installs it.  The handler counts the tick and reloads the
+//! decrementer.  This module programs the reload value and enables MSR[EE]
+//! once the kernel's own address translation is active.
 
 use core::arch::asm;
-use core::ptr::write_volatile;
 use core::sync::atomic::AtomicU32;
 
 pub const MSR_EE: u32 = 1 << 15;
-pub const DECREMENTER_VECTOR: u32 = 0x900;
 
 /// The interrupted code's tick count.  `boot.S` increments this directly.
 #[no_mangle]
@@ -19,10 +18,6 @@ pub static TICKS: AtomicU32 = AtomicU32::new(0);
 /// The value `boot.S` writes back to the decrementer after each tick.
 #[no_mangle]
 pub static mut TICK_RELOAD: u32 = 0;
-
-extern "C" {
-    fn decrementer_handler();
-}
 
 pub fn ticks() -> u32 {
     TICKS.load(core::sync::atomic::Ordering::Relaxed)
@@ -38,42 +33,19 @@ pub fn timebase() -> u32 {
     value
 }
 
-pub fn start(timebase_hz: u32) {
-    // A 10 ms period, so ten ticks take a tenth of a second at any plausible
-    // timebase frequency.
+/// Program a 10 ms period so ten ticks take a tenth of a second at any
+/// plausible timebase frequency.  Interrupts stay disabled.
+pub fn prepare(timebase_hz: u32) {
     let reload = timebase_hz / 100;
     unsafe {
         TICK_RELOAD = reload;
     }
-    install();
     write_decrementer(reload);
-    enable_interrupts();
 }
 
-fn install() {
-    let handler = decrementer_handler as *const () as usize as u32;
-    let offset = handler.wrapping_sub(DECREMENTER_VECTOR);
-    assert!(
-        offset < 0x0200_0000,
-        "decrementer handler out of branch range"
-    );
-    // `b` (opcode 18) with the word offset in LI.
-    let branch = 0x4800_0000 | (offset & 0x03ff_fffc);
-    // SAFETY: 0x900 is the decrementer vector in the firmware's one-to-one
-    // mapping.  It is writable, and the cache maintenance below makes the new
-    // instruction visible to the instruction fetch.
-    unsafe {
-        write_volatile(DECREMENTER_VECTOR as *mut u32, branch);
-        asm!(
-            "dcbst 0, {vector}",
-            "sync",
-            "icbi 0, {vector}",
-            "sync",
-            "isync",
-            vector = in(reg) DECREMENTER_VECTOR,
-            options(nostack),
-        );
-    }
+/// Enable decrementer interrupts; the vector and handler are already mapped.
+pub fn enable() {
+    enable_interrupts();
 }
 
 fn write_decrementer(value: u32) {
