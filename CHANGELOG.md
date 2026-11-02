@@ -8,6 +8,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- PowerPC G3 ATA disk read. `kernel-ppc` finds the `ata-3` channel with a disk
+  child in the Mac I/O device tree, takes its task-file window from `reg`, runs
+  polled `IDENTIFY DEVICE` and one LBA28 `READ SECTORS`, and checks
+  BSY/DRQ/DRDY/ERR/DF under a two-second timebase bound. The QEMU gate attaches
+  a 1 MiB raw disk with `IRIX7-ATA-SIG001` at LBA 4 and asserts the model,
+  capacity and signature. The BAT block-size encoding is corrected from a
+  power-of-two exponent to the 750's `(size / 128 KiB) - 1` field, which the
+  512 KiB Mac I/O block needs to reach the ATA registers. No DMA, writes, ATAPI
+  or block layer yet; see #305.
 - M2-6 failure detection, lease fencing and the partition rule. `mesh-service`
   adds a bounded, deterministic failure detector over the existing membership
   table: a confirmed peer is suspect after 6 s without a frame and failed after

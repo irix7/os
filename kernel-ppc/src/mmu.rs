@@ -7,10 +7,10 @@
 //! SDR1 is then pointed at a zeroed table and the TLB is invalidated, so an
 //! address outside those blocks has no translation at all.
 //!
-//! BAT block sizes on the 750 are `128 KiB << BL`, with the 11-bit BL field
-//! at BATU bits 2..12 (bits 19..28 in the manual's MSB-first numbering).  The
-//! upper register's BEPI field and the lower register's BRPN field both hold
-//! address bits 0..14, so every block is identity-mapped.
+//! BAT block sizes on the 750 are a multiple of 128 KiB: the 11-bit BL field
+//! at BATU bits 2..12 holds the size in 128 KiB units minus one.  The upper
+//! register's BEPI field and the lower register's BRPN field both hold address
+//! bits 0..14, so every block is identity-mapped.
 
 use core::arch::asm;
 use core::ptr::addr_of;
@@ -38,7 +38,8 @@ pub struct Bat {
 
 impl Bat {
     fn upper(self) -> u32 {
-        let bl = self.size.trailing_zeros() - BLOCK_128K.trailing_zeros();
+        // The BL field is the block size in 128 KiB units, minus one.
+        let bl = self.size / BLOCK_128K - 1;
         (self.base & BAT_BEPI) | ((bl & 0x7ff) << BAT_BL_SHIFT) | BAT_VS
     }
 

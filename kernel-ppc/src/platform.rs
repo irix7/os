@@ -115,3 +115,71 @@ pub fn timebase(client: &Client) -> Option<u32> {
     let cpu = client.child(cpus)?;
     client.getprop_u32(cpu, b"timebase-frequency\0")
 }
+
+/// The ATA channel that carries the boot disk.
+///
+/// The `ata-3` node publishes two `reg` ranges: the task-file registers and
+/// the DBDMA channel.  Only the first range is used by a polled PIO driver.
+/// The firmware numbers the channels and assigns the Mac I/O offsets, so
+/// both the `reg` offset and the `AAPL,interrupts` line are read here rather
+/// than compiled in.  A channel whose tree has a `disk` child wins over an
+/// empty one.
+pub struct Ata {
+    pub base: u32,
+    pub size: u32,
+    pub line: u32,
+}
+
+pub fn ata(client: &Client, macio: &MacIo) -> Option<Ata> {
+    let macio_node = client.finddevice(b"/pci/mac-io\0")?;
+    let mut fallback = None;
+    let mut child = client.child(macio_node);
+    while let Some(node) = child {
+        if let Some(ata) = ata_node(client, macio, node) {
+            if has_disk(client, node) {
+                return Some(ata);
+            }
+            fallback.get_or_insert(ata);
+        }
+        child = client.peer(node);
+    }
+    fallback
+}
+
+fn ata_node(client: &Client, macio: &MacIo, node: u32) -> Option<Ata> {
+    let mut kind = [0u8; 8];
+    let length = client.getprop(node, b"device_type\0", &mut kind)?;
+    if length < 4 || &kind[..4] != b"ata\0" {
+        return None;
+    }
+    let mut reg = [0u8; 16];
+    let length = client.getprop(node, b"reg\0", &mut reg)?;
+    if length < 8 {
+        return None;
+    }
+    let offset = u32::from_be_bytes([reg[0], reg[1], reg[2], reg[3]]);
+    let size = u32::from_be_bytes([reg[4], reg[5], reg[6], reg[7]]);
+    if size < 0x200 {
+        return None;
+    }
+    let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
+    Some(Ata {
+        base: macio.base.wrapping_add(offset),
+        size,
+        line,
+    })
+}
+
+fn has_disk(client: &Client, node: u32) -> bool {
+    let mut child = client.child(node);
+    while let Some(child_node) = child {
+        let mut name = [0u8; 8];
+        if let Some(length) = client.getprop(child_node, b"name\0", &mut name) {
+            if length >= 5 && &name[..5] == b"disk\0" {
+                return true;
+            }
+        }
+        child = client.peer(child_node);
+    }
+    false
+}

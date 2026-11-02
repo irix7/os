@@ -145,6 +145,12 @@ changing the console path.
 6. Ethernet and the two-node gate, if the machine has a usable NIC.
 7. Userland.
 
+Slice 4's first part is in place: #305 reads the `ata-3` node and its register
+window from the device tree, runs `IDENTIFY DEVICE` and one PIO `READ SECTORS`
+through the Mac I/O ATA controller, and checks the model, capacity and a
+signature sector in the QEMU gate. It is polled, LBA28 and read-only; DMA, the
+interrupt path, ATAPI and the module loader follow.
+
 ## Repository layout
 
 With three machines, the per-machine trees belong under one parent, for example

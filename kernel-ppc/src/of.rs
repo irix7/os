@@ -42,6 +42,13 @@ impl Client {
         nonzero(args[1])
     }
 
+    pub fn peer(&self, phandle: u32) -> Option<u32> {
+        let mut args = [0u32; 10];
+        args[0] = phandle;
+        self.call(b"peer\0", 1, &mut args)?;
+        nonzero(args[1])
+    }
+
     pub fn getprop(&self, phandle: u32, name: &[u8], buffer: &mut [u8]) -> Option<usize> {
         let mut args = [0u32; 10];
         args[0] = phandle;

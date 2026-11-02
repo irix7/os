@@ -10,8 +10,10 @@
 # paths it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
 # one system call round-trip.  Finally it programs the CUDA timer and takes
 # ten external interrupts through the Heathrow controller at the 0x500
-# vector.  QEMU's g3beige machine has no debug-exit device, so the gate stops
-# QEMU once the final `ppc: halted` reaches the serial file.
+# vector, then identifies the ATA disk on the first Mac I/O channel and reads
+# the signature sector at LBA 4 with polled PIO.  QEMU's g3beige machine has no
+# debug-exit device, so the gate stops QEMU once the final `ppc: halted`
+# reaches the serial file.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -21,6 +23,7 @@
 #   QEMU           qemu-system-ppc binary (default: qemu-system-ppc)
 #   QEMU_MEMORY    guest RAM (default: 64M)
 #   PPC_IMAGE      boot this raw image instead of building one
+#   PPC_DISK       attach this raw disk instead of creating the signature disk
 
 set -euo pipefail
 
@@ -30,6 +33,8 @@ WORK="${1:-${PPC_QEMU_WORK:-$REPO/target/powerpc-qemu}}"
 CARGO="${CARGO:-cargo}"
 QEMU="${QEMU:-qemu-system-ppc}"
 MEMORY="${QEMU_MEMORY:-64M}"
+SIGNATURE_BYTES="IRIX7-ATA-SIG001"
+SIGNATURE_LBA=4
 
 mkdir -p "$WORK"
 
@@ -66,11 +71,26 @@ fi
 SERIAL="$WORK/serial.log"
 rm -f "$SERIAL"
 
+DISK="${PPC_DISK:-$WORK/ata.img}"
+if [ -z "${PPC_DISK:-}" ]; then
+  rm -f "$DISK"
+  dd if=/dev/zero of="$DISK" bs=512 count=2048 status=none
+  printf '%s' "$SIGNATURE_BYTES" \
+    | dd of="$DISK" bs=1 seek=$((SIGNATURE_LBA * 512)) conv=notrunc status=none
+fi
+DISK_SECTORS=$(( $(wc -c < "$DISK") / 512 ))
+SIGNATURE="$(od -An -tx1 -N16 -j $((SIGNATURE_LBA * 512)) "$DISK" | tr -d ' \n')"
+if [ -z "$SIGNATURE" ]; then
+  echo "powerpc-qemu: could not read the signature sector from $DISK" >&2
+  exit 1
+fi
+
 set +e
 "$QEMU" \
   -M g3beige \
   -m "$MEMORY" \
   -kernel "$IMAGE" \
+  -drive "file=$DISK,format=raw,if=ide,index=0,media=disk" \
   -display none \
   -serial "file:$SERIAL" \
   -monitor none \
@@ -106,6 +126,8 @@ markers=(
   "ppc: escc=0x"
   "ppc: memory base=0x"
   "ppc: timebase="
+  "ppc: ata reg base=0x"
+  "ppc: ata irq=0xd"
   "ppc: irq controller=0x"
   "ppc: decrementer ticks="
   "BOOT-OK"
@@ -123,6 +145,9 @@ markers=(
   "ppc: irq vector=0x500 line=0x12 count=1"
   "ppc: irq pending=0x"
   "IRQ-OK count="
+  "ppc: ata model=QEMU HARDDISK sectors="
+  "ppc: ata lba=4 sector="
+  "ATA-OK"
   "ppc: halted"
 )
 
@@ -325,4 +350,57 @@ if [ $((pending)) -ne 0 ] || [ $((ifr)) -ne 0 ]; then
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0)"
+# The ATA register window comes from the `ata-3` node's `reg`, so it must sit
+# inside the Mac I/O BAT the kernel printed.  The identify model, the sector
+# count and the signature sector are checked against the disk QEMU attached.
+io_range="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: mmu io base=\(0x[0-9a-f]*\) size=\([0-9][0-9]*\)$/\1 \2/p' \
+  | tail -n 1)" || true
+if [ -z "$io_range" ]; then
+  echo "powerpc-qemu: no Mac I/O BAT range in the serial log" >&2
+  exit 1
+fi
+io_base=$(( ${io_range% *} ))
+io_size=${io_range#* }
+
+ata_range="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: ata reg base=\(0x[0-9a-f]*\) size=\([0-9][0-9]*\)$/\1 \2/p' \
+  | tail -n 1)" || true
+if [ -z "$ata_range" ]; then
+  echo "powerpc-qemu: no ATA register window in the serial log" >&2
+  exit 1
+fi
+ata_base=$(( ${ata_range% *} ))
+ata_size=${ata_range#* }
+if [ "$ata_base" -lt "$io_base" ] \
+  || [ $((ata_base + ata_size)) -gt $((io_base + io_size)) ]; then
+  echo "powerpc-qemu: ATA window $ata_range is outside the Mac I/O BAT" >&2
+  exit 1
+fi
+
+ata="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: ata model=QEMU HARDDISK sectors=[0-9]+ lba48=[01]$' \
+  | tail -n 1)" || true
+if [ -z "$ata" ]; then
+  echo "powerpc-qemu: missing or malformed ATA identify report" >&2
+  exit 1
+fi
+ata_sectors="$(printf '%s\n' "$ata" | sed -E 's/^.*sectors=([0-9]+).*$/\1/')"
+if [ "$ata_sectors" -ne "$DISK_SECTORS" ]; then
+  echo "powerpc-qemu: ATA capacity $ata_sectors sectors, expected $DISK_SECTORS" >&2
+  exit 1
+fi
+
+ata_sector="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: ata lba=4 sector=\([0-9a-f]*\)$/\1/p' \
+  | tail -n 1)" || true
+if [ -z "$ata_sector" ]; then
+  echo "powerpc-qemu: missing ATA signature-sector report" >&2
+  exit 1
+fi
+if [ "$ata_sector" != "$SIGNATURE" ]; then
+  echo "powerpc-qemu: ATA sector 4 is $ata_sector, expected $SIGNATURE" >&2
+  exit 1
+fi
+
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector)"
