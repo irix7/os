@@ -1795,6 +1795,12 @@ any child; a non-child is `ECHILD`.  `wait4` accepts the fourth `rusage` pointer
 zero-fills 144 bytes.  A parent that exits first leaves the child reparented to pid 0;
 an orphan that exits with no live parent is reclaimed immediately.
 
+**Scheduling.**  `sched_yield` first tries another thread in the current cell, then a
+runnable local cell.  A process switch saves the calling frame and installs the target's
+page tables, descriptor table and thread table.  A `nanosleep` parks the calling thread;
+another local cell runs at the next explicit process switch point (`wait`, `exit` or
+`sched_yield`), because the v0 process table has no per-cell sleep deadline.
+
 **Mesh path (M4).**  A remote spawn, exec or wait is a **capability invocation routed to
 the cell's home**, not a second process-service RPC and not a replicated process table.
 The handle is the `Job`/actor identity, home, home epoch and object epoch in the token;

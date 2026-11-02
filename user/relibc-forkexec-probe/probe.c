@@ -27,6 +27,7 @@ extern ssize_t read(int fd, void *buf, size_t count);
 extern ssize_t write(int fd, const void *buf, size_t count);
 extern long lseek(int fd, long offset, int whence);
 extern int fcntl(int fd, int cmd, ...);
+extern int sched_yield(void);
 extern void _exit(int status) __attribute__((noreturn));
 
 extern char **environ;
@@ -92,6 +93,28 @@ int main(void) {
     check(lseek(inherited, 0, 0) == 0, "cannot rewind the inherited file");
     ssize_t count = read(inherited, buffer, sizeof(buffer));
     check(count == 28, "parent lost the inherited descriptor");
+
+    // A second child exits before the parent waits, so the parent reaps a
+    // zombie rather than being woken inside exit.  The child inherits the
+    // same descriptors; the exit and reap must release exactly one child
+    // reference and leave the parent's descriptor usable.
+    int late = fork();
+    if (late == 0) {
+        _exit(9);
+    }
+    check(late > 1, "second fork did not return a child pid");
+    int late_status = -1;
+    int late_waited = 0;
+    for (int attempt = 0; attempt < 1000 && late_waited == 0; attempt++) {
+        (void)sched_yield();
+        late_waited = waitpid(late, &late_status, WNOHANG);
+    }
+    check(late_waited == late, "waitpid did not reap the late child");
+    check((late_status & 0x7f) == 0, "late child did not exit normally");
+    check(((late_status >> 8) & 0xff) == 9, "late child status is not 9");
+    check(lseek(inherited, 0, 0) == 0, "cannot rewind after the late child");
+    count = read(inherited, buffer, sizeof(buffer));
+    check(count == 28, "parent lost the descriptor after the late child");
 
     if (failures == 0) {
         out("FORK-EXEC-OK\n", 13);

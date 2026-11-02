@@ -606,6 +606,11 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
         Some(index) => index,
         None => return Exit::Last,
     };
+    // The live descriptor table belongs to this process.  Take it now: a
+    // process can open and close descriptors after its last context switch,
+    // so the saved snapshot may be stale.  Clear the saved copy so `reap_child`
+    // cannot release the same descriptions twice.
+    let live_fds = fd::snapshot();
     // SAFETY: single-threaded kernel; the current slot is live.
     let (pid, parent_actor, parent_pid) = unsafe {
         let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
@@ -613,7 +618,8 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
         process.state = State::Zombie;
         process.exit_status = status;
         process.space.release();
-        fd::release_snapshot(&process.fds);
+        fd::release_snapshot(&live_fds);
+        process.fds = fd::Snapshot::EMPTY;
         (process.identity.pid, process.parent, process.ppid)
     };
     crate::print_str("process: exit pid=");
@@ -780,6 +786,34 @@ fn current_index() -> Option<usize> {
     } else {
         Some(index)
     }
+}
+
+/// Hand the CPU to the next runnable local cell.
+///
+/// This is the process-level half of `sched_yield`: a thread yield first tries
+/// another thread in this cell, and when none is runnable this switches to a
+/// runnable child cell.  The caller's frame is advanced past the gate before it
+/// is saved, exactly as a thread yield does.
+pub fn yield_current(tf: &mut TrapFrame) -> bool {
+    let from = match current_index() {
+        Some(index) => index,
+        None => return false,
+    };
+    let Some(to) = next_runnable(from) else {
+        return false;
+    };
+    tf.advance_epc();
+    thread::save_current(tf);
+    // SAFETY: single-threaded kernel; the current slot is live and the target
+    // was selected from the same table.
+    unsafe {
+        let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
+        processes[from].frame = *tf;
+        processes[from].threads = thread::snapshot();
+        processes[from].state = State::Runnable;
+    }
+    switch_to(tf, from, to);
+    true
 }
 
 /// The current process's local pid, or 0 when no user process is running.

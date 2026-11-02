@@ -94,9 +94,14 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
     if number == SYS_YIELD {
         tf.regs[2] = native_abi::status::CELL_OK as u64;
         tf.regs[3] = 0;
-        // `yield_current` advances the outgoing EPC itself when it switches;
-        // without a peer the normal `Gate::Continue` path advances it.
-        return if crate::thread::yield_current(tf) {
+        // A thread yield first tries another thread in this cell.  If none is
+        // runnable, hand the CPU to another local cell; both switch paths
+        // advance the outgoing EPC themselves.  Without either peer the normal
+        // `Gate::Continue` path advances it.
+        if crate::thread::yield_current(tf) {
+            return Gate::Resume;
+        }
+        return if crate::process::yield_current(tf) {
             Gate::Resume
         } else {
             Gate::Continue
