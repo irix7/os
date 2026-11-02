@@ -267,7 +267,7 @@ syscall-personality probe, not an IRIX 6.5 binary; the IRIX libc, `rld`,
 | `x86` | Build the x86_64 image and boot it under QEMU (PVH, serial, memory map, PIT, fault report) | Yes |
 | `module-layout` | Build the MCP module for MIPS and x86_64 and assert the entry is the slot base and the flat image fits | Yes (in the x86 job) |
 | `x86-mesh` | Two QEMU x86_64 guests join, run route/`MOVED` both ways and the L0 migration, then restore the epoch after member and root restarts | Yes (in the x86 job) |
-| `powerpc` | Build the PowerPC G3 image and boot it under `qemu-system-ppc -M g3beige` (OpenBIOS entry, ESCC serial, memory map, decrementer) | Yes |
+| `powerpc` | Build the PowerPC G3 image and boot it under `qemu-system-ppc -M g3beige` (OpenBIOS entry, ESCC serial, memory map, decrementer), then build the 1.44 MB HFS floppy image | Yes |
 | `mcp` | MCP conformance against a running iris instance | Yes once P3 is green |
 | `licence` | `cargo-deny`, REUSE, SBOM | Yes |
 | `security` | CodeQL, dependency review, `cargo-audit` | Yes |

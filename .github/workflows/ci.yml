@@ -1346,11 +1346,12 @@ jobs:
       - name: Ensure host C compiler (cc)
         run: |
           command -v cc >/dev/null 2>&1 || sudo apt-get install -y gcc
-      - name: Ensure QEMU PowerPC
+      - name: Ensure QEMU PowerPC and hfsutils
         run: |
-          if ! command -v qemu-system-ppc >/dev/null 2>&1; then
+          if ! command -v qemu-system-ppc >/dev/null 2>&1 \
+            || ! command -v hformat >/dev/null 2>&1; then
             sudo apt-get update
-            sudo apt-get install -y qemu-system-ppc
+            sudo apt-get install -y qemu-system-ppc hfsutils
           fi
       - uses: Swatinem/rust-cache@v2
         with:
@@ -1359,12 +1360,18 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/powerpc-qemu.sh "$RUNNER_TEMP/powerpc-qemu"
+      - name: Build the PowerPC floppy image
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/powerpc-floppy.sh "$RUNNER_TEMP/irix7-powerpc-floppy.img"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: powerpc-qemu
           if-no-files-found: warn
-          path: ${{ runner.temp }}/powerpc-qemu/serial.log
+          path: |
+            ${{ runner.temp }}/powerpc-qemu/serial.log
+            ${{ runner.temp }}/irix7-powerpc-floppy.img
 
   x86:
     name: Boot (x86_64 QEMU)
