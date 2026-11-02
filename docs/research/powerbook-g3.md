@@ -20,6 +20,31 @@ can reuse, what has to be written, and the risks.
 The CPU is 32-bit and big-endian, with a PowerPC MMU (segment registers, BATs
 and hashed page tables) and a decrementer timer.
 
+## Mac I/O controllers
+
+The M4753 has two Mac I/O nodes under `/pci@80000000`:
+
+| Node | `compatible` | Children |
+|---|---|---|
+| `mac-io@10` | `heathrow` | `mesh`, `escc`, `bmac`, `media-bay` (`floppy`, `ata1`), `ata0`, `via-pmu` |
+| `mac-io@D` | `gatwick` | `escc`, `media-bay` (`floppy`, `ata4`) |
+
+Both carry an ESCC, and either media bay can carry an ATA disk, so the first
+node in tree order is not a stable choice for the console or the boot disk.
+The kernel selects a node by its children: an ESCC first, then an ATA channel
+with a `disk` child, then the number of ATA channels, with the first node
+winning a tie. The scan follows `media-bay`, where the PowerBook puts the
+`ata1`/`ata4` channel. On the M4753 the primary `mac-io@10` wins because it
+carries both the ESCC and the internal `ata0` disk. The ESCC, ATA, VIA and
+interrupt-controller lookups then all start at that node. The QEMU gate adds
+a second `macio-oldworld` device ahead of the built-in node to exercise the
+tree-order case.
+
+The interrupt controller in both nodes is the Heathrow register block, so the
+driver accepts `compatible = "heathrow"` and `"gatwick"`. The M4753's VIA is
+the PMU (`via-pmu`), not a CUDA, so the current CUDA timer proof still stops
+on this machine; the PMU is its own device with a command protocol.
+
 ## What this changes
 
 IRIX 7 currently has two machine layers: the Indy (MIPS, n32) and x86_64 (QEMU,
@@ -71,6 +96,11 @@ A new machine layer, in the same shape as the x86 one:
   The first image should be CD-bootable through Open Firmware, not a disk
   install.
 - **No userland yet.** As on x86, userland follows the machine layer.
+- **The timer is in the PMU.** The M4753 exposes `via-pmu`, not `via-cuda`.
+  The current external-interrupt proof programs the CUDA's 6522 timer, so the
+  PowerBook reaches the console and disk selection and then stops at
+  `ppc: device tree has no CUDA timer`. The PMU command protocol is a separate
+  slice; the decrementer still ticks.
 
 ## Netboot and the floppy
 
@@ -154,11 +184,15 @@ Slice 4's first part is in place: #305 reads the `ata-3` node and its register
 window from the device tree, runs `IDENTIFY DEVICE` and one PIO `READ SECTORS`
 through the Mac I/O ATA controller, and checks the model, capacity and a
 signature sector in the QEMU gate. It is polled, LBA28 and read-only; DMA, the
-interrupt path, ATAPI and the module loader follow.
+interrupt path, ATAPI and the module loader follow. #317 selects the Mac I/O
+node that carries the boot disk and follows its `media-bay` child, so the
+PowerBook's `ata1`/`ata4` channel is eligible.
 
 Slice 5's serial half is in place: #313 reads the ESCC `ch-a`/`ch-b` child
 nodes and the firmware console property, programs both channels for 38400 8N1
-and mirrors the boot log to both. The framebuffer console remains.
+and mirrors the boot log to both. #317 makes the ESCC lookup relative to the
+selected Mac I/O node, so the communication-slot controller's ESCC cannot
+displace the boot console. The framebuffer console remains.
 
 ## Repository layout
 

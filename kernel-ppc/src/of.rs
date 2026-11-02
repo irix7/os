@@ -49,6 +49,31 @@ impl Client {
         nonzero(args[1])
     }
 
+    pub fn parent(&self, phandle: u32) -> Option<u32> {
+        let mut args = [0u32; 10];
+        args[0] = phandle;
+        self.call(b"parent\0", 1, &mut args)?;
+        nonzero(args[1])
+    }
+
+    /// The full device path of `phandle`, written into `buffer`.
+    ///
+    /// The return value is the path length.  A firmware without
+    /// `package-to-path` returns `None`; the caller then falls back to a walk
+    /// over the node names.
+    pub fn package_to_path(&self, phandle: u32, buffer: &mut [u8]) -> Option<usize> {
+        let mut args = [0u32; 10];
+        args[0] = phandle;
+        args[1] = buffer.as_mut_ptr() as u32;
+        args[2] = buffer.len() as u32;
+        self.call(b"package-to-path\0", 3, &mut args)?;
+        let length = args[3];
+        if length == u32::MAX || length as usize > buffer.len() {
+            return None;
+        }
+        Some(length as usize)
+    }
+
     pub fn getprop(&self, phandle: u32, name: &[u8], buffer: &mut [u8]) -> Option<usize> {
         let mut args = [0u32; 10];
         args[0] = phandle;

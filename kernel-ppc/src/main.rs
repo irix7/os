@@ -149,28 +149,13 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
-    let controller = match platform::pic(&client, &macio) {
-        Some(controller) => controller,
-        None => {
-            print_line(b"ppc: Mac I/O is not a Heathrow controller");
-            halt();
-        }
-    };
-    let cuda = match platform::cuda(&client, &macio) {
-        Some(cuda) => cuda,
-        None => {
-            print_line(b"ppc: device tree has no CUDA timer");
-            halt();
-        }
-    };
-    let disk = match platform::ata(&client, &macio) {
-        Some(disk) => disk,
-        None => {
-            print_line(b"ppc: device tree has no ATA disk");
-            print_line(b"ppc: halted");
-            halt();
-        }
-    };
+    // These lookups use the Open Firmware client and must run before the BAT
+    // switch.  The results are kept until the boot log has reported the
+    // selected Mac I/O node, so a machine with a missing child still shows
+    // which controller was chosen.
+    let controller = platform::pic(&client, &macio);
+    let cuda = platform::cuda(&client, &macio);
+    let disk = platform::ata(&client, &macio);
 
     let io_end = match macio.base.checked_add(macio.size) {
         Some(end) => end,
@@ -207,6 +192,17 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write(b"ppc: of client=");
     print_hex(of_client);
     serial::write_byte(b'\n');
+    print_range(b"ppc: macio", macio.base, macio.size);
+    serial::write(b"ppc: macio path=");
+    serial::write(macio.path.bytes());
+    serial::write_byte(b'\n');
+    serial::write(b"ppc: macio children escc=");
+    print_dec(macio.escc);
+    serial::write(b" ata=");
+    print_dec(macio.ata);
+    serial::write(b" disks=");
+    print_dec(macio.disks);
+    serial::write_byte(b'\n');
     serial::write(b"ppc: escc=");
     print_hex(escc.base);
     serial::write(b" ch-a=");
@@ -234,6 +230,29 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write(b"ppc: timebase=");
     print_dec(timebase);
     print_line(b" Hz");
+
+    let controller = match controller {
+        Some(controller) => controller,
+        None => {
+            print_line(b"ppc: Mac I/O is not a Heathrow or Gatwick controller");
+            halt();
+        }
+    };
+    let cuda = match cuda {
+        Some(cuda) => cuda,
+        None => {
+            print_line(b"ppc: device tree has no CUDA timer");
+            halt();
+        }
+    };
+    let disk = match disk {
+        Some(disk) => disk,
+        None => {
+            print_line(b"ppc: device tree has no ATA disk");
+            print_line(b"ppc: halted");
+            halt();
+        }
+    };
 
     print_range(b"ppc: ata reg", disk.base, disk.size);
     serial::write(b"ppc: ata irq=");

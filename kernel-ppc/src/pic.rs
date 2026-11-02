@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The Heathrow interrupt controller.
 //!
-//! The Mac I/O node of this machine is `compatible = "heathrow"`, and the
-//! interrupt controller is the first register block of that window.  It has
-//! two banks of four 32-bit registers: the pending events, the mask, the
-//! acknowledge port and the raw input levels.  A source raises an event on
-//! its rising edge and stays pending until software writes the same bit to
-//! the acknowledge port; that write is the end of interrupt.
+//! The selected Mac I/O node is `compatible = "heathrow"` on the beige G3 and
+//! the PowerBook's primary controller, and `"gatwick"` on the PowerBook's
+//! second controller; both put the interrupt controller in the first register
+//! block of the window.  It has two banks of four 32-bit registers: the
+//! pending events, the mask, the acknowledge port and the raw input levels.  A
+//! source raises an event on its rising edge and stays pending until software
+//! writes the same bit to the acknowledge port; that write is the end of
+//! interrupt.
 //!
 //! Sources 0..31 are the second bank and 32..63 the first, which is the Mac
 //! I/O interrupt numbering.  The registers are little-endian on the Mac I/O
