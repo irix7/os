@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-only
 #
-# Check the loadable-module layout on both machine types.
+# Check the loadable-module layout on all machine types.
 #
 # Each module image is linked at its slot base and loaded there by the kernel.
 # This script builds the MCP module for the Indy (MIPS n32, slot A at
-# 0x88400000, 512 KiB) and for x86_64 (window at 0x02000000, 2 MiB), and
-# asserts that the ELF entry is the slot base and that the flat image plus .bss
-# fits the slot.  A module that links somewhere else, or grows past its slot,
-# would be copied over kernel memory or another module at load time.
+# 0x88400000, 512 KiB) and for x86_64 (window at 0x02000000, 2 MiB), and the
+# hello module for the PowerPC G3 (slot at 0x01800000, 2 MiB).  It asserts that
+# the ELF entry is the slot base and that the flat image plus .bss fits the
+# slot.  A module that links somewhere else, or grows past its slot, would be
+# copied over kernel memory or another module at load time.
 #
 # Usage:
 #   tools/module-layout-check.sh [WORK_DIR]
@@ -72,5 +73,14 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker-x86.
         -Z build-std-features=compiler-builtins-mem \
         --target x86_64-unknown-none -p mcp-module
 check x86_64 "$WORK/x86/x86_64-unknown-none/release/mcp-module" $((0x02000000)) $((2 * 1024 * 1024))
+
+echo "=== PowerPC G3 ==="
+CARGO_TARGET_DIR="$WORK/powerpc" \
+CARGO_PROFILE_RELEASE_OPT_LEVEL=2 \
+CARGO_TARGET_POWERPC_UNKNOWN_IRIX7_PPC_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker-ppc.ld -Crelocation-model=static" \
+    "$CARGO" build --release -Z build-std=core \
+        -Z build-std-features=compiler-builtins-mem -Z json-target-spec \
+        --target "$REPO/targets/powerpc-unknown-irix7-ppc.json" -p hello-module
+check powerpc "$WORK/powerpc/powerpc-unknown-irix7-ppc/release/hello-module" $((0x01800000)) $((2 * 1024 * 1024))
 
 echo "module-layout-check: ok"

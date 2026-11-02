@@ -10,10 +10,12 @@
 # paths it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
 # one system call round-trip.  Finally it programs the CUDA timer and takes
 # ten external interrupts through the Heathrow controller at the 0x500
-# vector, then identifies the ATA disk on the first Mac I/O channel and reads
-# the signature sector at LBA 4 with polled PIO.  QEMU's g3beige machine has no
-# debug-exit device, so the gate stops QEMU once the final `ppc: halted`
-# reaches the serial file.
+# vector, then identifies the ATA disk on the first Mac I/O channel, reads the
+# signature sector at LBA 4 with polled PIO, and loads the flat PowerPC module
+# from the disk.  The module's SHA-256 is checked before the entry runs; a
+# second boot with one corrupted image byte must refuse it.  QEMU's g3beige
+# machine has no debug-exit device, so the gate stops QEMU once the final
+# `ppc: halted` reaches the serial file.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -23,7 +25,9 @@
 #   QEMU           qemu-system-ppc binary (default: qemu-system-ppc)
 #   QEMU_MEMORY    guest RAM (default: 64M)
 #   PPC_IMAGE      boot this raw image instead of building one
-#   PPC_DISK       attach this raw disk instead of creating the signature disk
+#   PPC_DISK       attach this raw disk instead of creating the signature and
+#                  module disk; it must carry the signature at LBA 4, the
+#                  module header at LBA 6 and the image at LBA 16
 
 set -euo pipefail
 
@@ -35,6 +39,15 @@ QEMU="${QEMU:-qemu-system-ppc}"
 MEMORY="${QEMU_MEMORY:-64M}"
 SIGNATURE_BYTES="IRIX7-ATA-SIG001"
 SIGNATURE_LBA=4
+MODULE_HEADER_LBA=6
+MODULE_IMAGE_LBA=16
+# 4 MiB: the signature sector, the module header and a full 2 MiB image fit.
+DISK_IMAGE_SECTORS=8192
+
+HOST="$(rustc -vV | sed -n 's/^host: //p')"
+LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"
+OBJCOPY="$LLVM_BIN/llvm-objcopy"
+OBJDUMP="$LLVM_BIN/llvm-objdump"
 
 mkdir -p "$WORK"
 
@@ -53,11 +66,9 @@ else
     -p kernel-ppc --features cross
 
   ELF="$CARGO_TARGET_DIR/powerpc-unknown-irix7-ppc/release/kernel-ppc"
-  OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
   # The target keeps the hard-float ABI, but the kernel has no FPR
   # save/restore yet.  Refuse an image that uses the FPU rather than let an
   # accidental f32/f64 corrupt a thread's state later.
-  OBJDUMP="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objdump"
   if "$OBJDUMP" -d "$ELF" \
     | grep -qE $'^ *[0-9a-f]+:.*\t(f[a-z]|lfd|lfs|stfd|stfs|mffs|mtfs)'; then
     echo "powerpc-qemu: the kernel image uses an FP instruction" >&2
@@ -68,15 +79,56 @@ else
   "$OBJCOPY" -O binary "$ELF" "$IMAGE"
 fi
 
+# The same `modules/hello` source as the Indy machine, linked at the PowerPC
+# slot.  The module is loaded from the disk, so the gate checks its digest and
+# marker rather than trusting the build directory.
+MODULE_TARGET="$WORK/module-target"
+CARGO_TARGET_POWERPC_UNKNOWN_IRIX7_PPC_RUSTFLAGS="-Clink-arg=-T$REPO/modules/hello/linker-ppc.ld -Crelocation-model=static" \
+CARGO_TARGET_DIR="$MODULE_TARGET" \
+  "$CARGO" build --release \
+    -Z json-target-spec \
+    -Z build-std=core \
+    -Z build-std-features=compiler-builtins-mem \
+    --target "$REPO/targets/powerpc-unknown-irix7-ppc.json" \
+    -p hello-module
+
+MODULE_ELF="$MODULE_TARGET/powerpc-unknown-irix7-ppc/release/hello-module"
+MODULE="$WORK/hello-ppc.module"
+"$OBJCOPY" -O binary "$MODULE_ELF" "$MODULE"
+MODULE_SIZE="$(stat -c%s "$MODULE")"
+MODULE_SHA="$(sha256sum "$MODULE" | cut -d' ' -f1)"
+if [ "$MODULE_SIZE" -gt $((2 * 1024 * 1024)) ]; then
+  echo "powerpc-qemu: module image $MODULE_SIZE bytes exceeds the 2 MiB slot" >&2
+  exit 1
+fi
+if "$OBJDUMP" -d "$MODULE_ELF" \
+  | grep -qE $'^ *[0-9a-f]+:.*\t(f[a-z]|lfd|lfs|stfd|stfs|mffs|mtfs)'; then
+  echo "powerpc-qemu: the module image uses an FP instruction" >&2
+  exit 1
+fi
+
 SERIAL="$WORK/serial.log"
 rm -f "$SERIAL"
 
 DISK="${PPC_DISK:-$WORK/ata.img}"
 if [ -z "${PPC_DISK:-}" ]; then
   rm -f "$DISK"
-  dd if=/dev/zero of="$DISK" bs=512 count=2048 status=none
+  dd if=/dev/zero of="$DISK" bs=512 count="$DISK_IMAGE_SECTORS" status=none
   printf '%s' "$SIGNATURE_BYTES" \
     | dd of="$DISK" bs=1 seek=$((SIGNATURE_LBA * 512)) conv=notrunc status=none
+  # Header: `IRIX7MOD`, the big-endian image length and the SHA-256.  The image
+  # follows at its own fixed LBA.
+  python3 -I - "$DISK" "$MODULE" "$MODULE_HEADER_LBA" "$MODULE_IMAGE_LBA" <<'PY'
+import hashlib, struct, sys
+disk, module, header_lba, image_lba = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
+data = open(module, "rb").read()
+header = b"IRIX7MOD" + struct.pack(">I", len(data)) + hashlib.sha256(data).digest()
+with open(disk, "r+b") as f:
+    f.seek(header_lba * 512)
+    f.write(header)
+    f.seek(image_lba * 512)
+    f.write(data)
+PY
 fi
 DISK_SECTORS=$(( $(wc -c < "$DISK") / 512 ))
 SIGNATURE="$(od -An -tx1 -N16 -j $((SIGNATURE_LBA * 512)) "$DISK" | tr -d ' \n')"
@@ -120,6 +172,7 @@ markers=(
   "ppc: mmu image base=0x"
   "ppc: mmu io base=0x"
   "ppc: mmu io wimg=0x28"
+  "ppc: mmu module base=0x1800000 size=2097152"
   "IRIX 7 PowerPC G3 bring-up"
   "ppc: booted"
   "ppc: of client=0x"
@@ -148,6 +201,12 @@ markers=(
   "ppc: ata model=QEMU HARDDISK sectors="
   "ppc: ata lba=4 sector="
   "ATA-OK"
+  "ppc: module length=${MODULE_SIZE} digest=${MODULE_SHA}"
+  "PPC-MODULE-RUN"
+  "module info: ppc: g3beige"
+  "module tick"
+  "ppc: module status=0 tick=1 length=${MODULE_SIZE}"
+  "MODULE-OK"
   "ppc: halted"
 )
 
@@ -403,4 +462,60 @@ if [ "$ata_sector" != "$SIGNATURE" ]; then
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector)"
+module_report="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: module length=\([0-9][0-9]*\) digest=\([0-9a-f][0-9a-f]*\)$/\1 \2/p' \
+  | tail -n 1)" || true
+if [ -z "$module_report" ]; then
+  echo "powerpc-qemu: missing module digest report" >&2
+  exit 1
+fi
+if [ "${module_report% *}" != "$MODULE_SIZE" ] \
+  || [ "${module_report#* }" != "$MODULE_SHA" ]; then
+  echo "powerpc-qemu: module report '$module_report' does not match $MODULE_SIZE bytes $MODULE_SHA" >&2
+  exit 1
+fi
+
+# The same kernel must refuse an image whose digest does not match.  Flip one
+# byte after the module entry and require the digest marker, no module output
+# and no MODULE-OK.
+BAD_DISK="$WORK/ata-bad.img"
+BAD_SERIAL="$WORK/serial-bad.log"
+cp "$DISK" "$BAD_DISK"
+printf '\377' | dd of="$BAD_DISK" bs=1 \
+  seek=$((MODULE_IMAGE_LBA * 512 + 32)) conv=notrunc status=none
+rm -f "$BAD_SERIAL"
+set +e
+"$QEMU" \
+  -M g3beige \
+  -m "$MEMORY" \
+  -kernel "$IMAGE" \
+  -drive "file=$BAD_DISK,format=raw,if=ide,index=0,media=disk" \
+  -display none \
+  -serial "file:$BAD_SERIAL" \
+  -monitor none \
+  -no-reboot &
+BAD_PID=$!
+deadline=$((SECONDS + 60))
+while kill -0 "$BAD_PID" 2>/dev/null; do
+  if grep -qF "ppc: halted" "$BAD_SERIAL" 2>/dev/null; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    break
+  fi
+  sleep 0.1
+done
+kill "$BAD_PID" 2>/dev/null
+wait "$BAD_PID" 2>/dev/null
+set -e
+if ! grep -qF "MODULE-DIGEST-BAD" "$BAD_SERIAL" 2>/dev/null; then
+  echo "powerpc-qemu: the corrupted module was not refused" >&2
+  cat "$BAD_SERIAL" 2>/dev/null || true
+  exit 1
+fi
+if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"; then
+  echo "powerpc-qemu: the corrupted module ran" >&2
+  exit 1
+fi
+
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA})"

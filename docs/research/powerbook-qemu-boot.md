@@ -27,7 +27,7 @@ size, sets `pc` to `FW_CFG_KERNEL_ADDR` and enters the client context.
 A raw image is loaded with `load_image_targphys` at `0x01000000`. An ELF image
 goes through `translate_kernel_address`, which maps `(address & 0x0fffffff) +
 0x01000000`; a segment linked at `0x01000000` would therefore be loaded at
-`0x02000000` while the entry remains `0x01000000`. The first slice passes
+`0x01F00000` while the entry remains `0x01000000`. The first slice passes
 `llvm-objcopy -O binary` output, not the ELF.
 
 ## Register state at entry

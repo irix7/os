@@ -2,10 +2,10 @@
 //! The kernel's own address translation.
 //!
 //! OpenBIOS leaves a hashed page table and a one-to-one mapping behind.  The
-//! kernel replaces both with four block address translations: the image and
-//! its stack, the low exception vectors, and the Mac I/O register window.
-//! SDR1 is then pointed at a zeroed table and the TLB is invalidated, so an
-//! address outside those blocks has no translation at all.
+//! kernel replaces both with block address translations: the image and its
+//! stack, the low exception vectors, the Mac I/O register window and the
+//! module slot.  SDR1 is then pointed at a zeroed table and the TLB is
+//! invalidated, so an address outside those blocks has no translation at all.
 //!
 //! BAT block sizes on the 750 are a multiple of 128 KiB: the 11-bit BL field
 //! at BATU bits 2..12 holds the size in 128 KiB units minus one.  The upper
@@ -75,13 +75,14 @@ struct EmptyHash {
 
 static EMPTY_HASH: EmptyHash = EmptyHash { table: [0; 16384] };
 
-/// Install the four BAT entries that the kernel runs on.
+/// Install the BAT entries that the kernel runs on.
 ///
 /// IBAT0/DBAT0 cover the image, including `.bss` and the boot stack.  IBAT1
 /// covers the 128 KiB vector page.  DBAT1 covers the Mac I/O window, guarded
-/// and cache-inhibited.  The other four slots are cleared: a firmware BAT
-/// must not survive the switch.
-pub fn install(image: Bat, io: Bat) {
+/// and cache-inhibited.  IBAT2/DBAT2 cover the module slot, cacheable so the
+/// loader can copy and hash into it directly.  The remaining slots are
+/// cleared: a firmware BAT must not survive the switch.
+pub fn install(image: Bat, io: Bat, module: Bat) {
     let vectors = Bat {
         base: 0,
         size: BLOCK_128K,
@@ -89,11 +90,11 @@ pub fn install(image: Bat, io: Bat) {
     unsafe {
         write_ibat(0, image.upper(), image.lower(0));
         write_ibat(1, vectors.upper(), vectors.lower(0));
-        write_ibat(2, 0, 0);
+        write_ibat(2, module.upper(), module.lower(0));
         write_ibat(3, 0, 0);
         write_dbat(0, image.upper(), image.lower(0));
         write_dbat(1, io.upper(), io.lower(WIMG_IO));
-        write_dbat(2, 0, 0);
+        write_dbat(2, module.upper(), module.lower(0));
         write_dbat(3, 0, 0);
         asm!("isync", options(nostack));
     }
@@ -108,7 +109,7 @@ pub fn install(image: Bat, io: Bat) {
 /// covers every firmware entry the kernel could otherwise keep using.
 ///
 /// Returns the table address, for the boot log.
-pub fn activate(image: Bat, io: Bat) -> u32 {
+pub fn activate(image: Bat, io: Bat, module: Bat) -> u32 {
     let table = addr_of!(EMPTY_HASH) as u32;
     // SAFETY: SDR1 and tlbie are privileged; the image BAT and the vector BAT
     // are already installed, so this code keeps executing through them.
@@ -117,6 +118,7 @@ pub fn activate(image: Bat, io: Bat) -> u32 {
     }
     invalidate(image);
     invalidate(io);
+    invalidate(module);
     invalidate(Bat {
         base: 0,
         size: BLOCK_128K,

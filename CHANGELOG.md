@@ -8,6 +8,20 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- PowerPC G3 flat-module load. `kernel-ppc` reserves a 2 MiB slot at
+  `0x0300_0000` under IBAT2/DBAT2, reads a big-endian `IRIX7MOD` header and
+  image from ATA LBAs 6 and 16, checks the image with `irix7-sha256`, zeroes
+  the slot, copies, writes the data cache back and invalidates the instruction
+  cache before calling the entry with the shared `module_abi::Services` table.
+  `modules/hello` builds from the same source for the PowerPC slot with
+  `linker-ppc.ld`, writes `PPC-MODULE-RUN`, reads `info(0)`, and returns a
+  one-shot tick. The services subset is `write`, `clock_ms` and `info`; all
+  other entries refuse. The QEMU gate asserts the digest, module marker and
+  `MODULE-OK`, then boots a corrupted image and requires
+  `MODULE-DIGEST-BAD` with no module output. The existing BAT, trap, IRQ, ATA
+  and no-FP checks and the floppy image build are unchanged. A single slot, no
+  network, block or allocation service, and a disk-header digest remain; see
+  #309.
 - PowerPC G3 ATA disk read. `kernel-ppc` finds the `ata-3` channel with a disk
   child in the Mac I/O device tree, takes its task-file window from `reg`, runs
   polled `IDENTIFY DEVICE` and one LBA28 `READ SECTORS`, and checks

@@ -678,6 +678,8 @@ name = "kernel-ppc"
 version = "0.1.0"
 dependencies = [
  "irix7-fmt",
+ "irix7-sha256",
+ "module-abi",
 ]
 
 [[package]]
