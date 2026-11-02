@@ -26,6 +26,7 @@ title and gains the next free global number.
 | [M2-ADR-0009](m2-0009-actor-migration.md) | L0 stackless-actor state, root-signed move and the message-boundary lease protocol | Accepted for M2, limited |
 | [M2-ADR-0011](m2-0011-one-computer-console.md) | Named-object route operations and one prompt over the M2 object/actor surfaces | Accepted for M2, limited |
 | [M3-ADR-0001](m3-0001-shard-slice.md) | First sharded home slice: one rendezvous table, signed epoch refresh, two-kernel real limit | Accepted for this slice, limited |
+| [M1-ADR-0002](m1-0002-network-kernel-download.md) | ROM downloads the kernel from GitHub; kernel leaves the PROM; no integrity check (accepted risk) | Accepted, limited |
 | [M3-ADR-0002](m3-0002-multi-node-hub.md) | Bounded multi-member host hub, guest receive-path ordering and real multi-kernel convergence | Accepted for this slice, limited |
 
 The practical M2 runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md); the M3 first-slice

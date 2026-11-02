@@ -27,7 +27,7 @@ compatibility surfaces throughout.
 
 | Gate | Nodes | What must pass |
 |---|---|---|
-| M1 | 1 | Boot with no network, quorum or seed; zero mesh RPCs; local namespace, CAS, capabilities, actors and devices; POSIX/IRIX smoke |
+| M1 | 1 | Boot with network (kernel downloaded per M1-ADR-0002), quorum or seed not required; zero mesh RPCs; local namespace, CAS, capabilities, actors and devices; POSIX/IRIX smoke |
 | M2 | 2 | Join, membership epoch, rendezvous homes, remote capability route, L0 migration both ways, one-node failure and partition |
 | M3 | 8 | Sharded homes, namespace/CAS fetch-by-OID, placement, two-node failure, membership churn, GPU object path |
 | M4 | 128 | 128 replicas, ≤2 normal hops, no global queue/lock/all-to-all, eight-node failure, 64/64 partition, churn, 1M OIDs, 10k actors |
@@ -170,7 +170,7 @@ lab work in #16.
 
 **Exit:** M1 is complete on iris with the recorded real-Indy limitation and the
 module-host seam. Indy boots to `BOOT-READY`; network/telnet/MCP/module autoload
-and POSIX image pass; no network or mesh transport is required. Boot time is
+and POSIX image pass; the network is required to boot (M1-ADR-0002), but no mesh transport is required. Boot time is
 **recorded, not gated** for the 1994 hardware path; the optional module load is
 likewise an observation.
 

@@ -15,13 +15,11 @@ were not ROM state. Calls between the two address ranges are normal intra-progra
 
 Consequences:
 
-- The ROM is a **pure MIPS3 assembly stub**. It has no Rust in it at all. Everything it
-  does is: size and map the DRAM banks, test every byte of RAM, bring up the serial
-  console, LZ4-decompress the kernel image from PROM to `0x88040000`, and jump there.
-- The kernel image is embedded in the PROM image by `rom/build.rs`, which extracts the
-  kernel's loadable segments, compresses them as an LZ4 block, and emits them as
-  `rom/src/boot/payload.S`. The payload layout is
-  `[4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]`.
+- The ROM is a **Rust downloader** (M1-ADR-0002). It sizes and maps the DRAM banks,
+  tests RAM, brings up the network, fetches `kernel-indy-latest` from GitHub over TLS and
+  jumps to it at `0x88040000`. The kernel is not embedded in the PROM.
+- Boot needs the network. There is no offline fallback. The kernel is run without an
+  integrity check; this is an accepted risk recorded in M1-ADR-0002.
 - **The assembler renumbers `$t0`-`$t3`** in the ROM's assembly. Two source registers
   that differ only in that range can end up as the same machine register, so the
   decompressor's temporaries live in `$a0`-`$a3`, `$v0` and `$s5`-`$s7` instead.
@@ -86,7 +84,7 @@ goal, not a reason to retain our own old versions. See
   replacement strategy. Prefer implementing the missing OS service or a
   Rust-native replacement over dropping the feature. Only defer a dependency
   when it genuinely belongs to a later layer, and say which layer.
-- Rust, n32, MIPS III minimum; the kernel is n32. The ROM is assembly.
+- Rust, n32, MIPS III minimum; the kernel is n32. The ROM is a Rust downloader (M1-ADR-0002).
 - The ROM executes from PROM space, not RAM.
 - RAM tests run before any RAM structures exist.
 - Use Australian English in prose.
