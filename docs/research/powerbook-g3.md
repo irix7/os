@@ -12,9 +12,10 @@ can reuse, what has to be written, and the risks.
 | RAM | 32 MiB |
 | Storage | 2 GiB IDE |
 | Display | 14.1" TFT, 4 MiB video |
-| Removable | CD-ROM |
+| Removable | CD-ROM, 1.44 MB floppy module (optional on some configurations) |
 | Modem | built-in |
-| Firmware | Old World ROM with Open Firmware |
+| Ethernet | built-in 10Base-T |
+| Firmware | Old World ROM, Open Firmware 2.0.1 |
 
 The CPU is 32-bit and big-endian, with a PowerPC MMU (segment registers, BATs
 and hashed page tables) and a decrementer timer.
@@ -68,6 +69,42 @@ A new machine layer, in the same shape as the x86 one:
   The first image should be CD-bootable through Open Firmware, not a disk
   install.
 - **No userland yet.** As on x86, userland follows the machine layer.
+
+## Netboot and the floppy
+
+The M4753 has built-in 10Base-T Ethernet, and Open Firmware 2.0.1 can netboot
+over it with BOOTP and TFTP.  Open Firmware versions before 3 expect an XCOFF
+second-stage loader, so the netboot path is:
+
+```text
+0 > boot enet:,IRIX7.XCF
+0 > boot enet:192.168.1.5,IRIX7.XCF      (if BOOTP does not supply the server)
+```
+
+The built-in NIC is the only netboot path; PCI, CardBus and Airport interfaces
+have no Open Firmware drivers.
+
+A 1.44 MB floppy is ample for a netbooter.  The floppy module must be in the
+left MediaBay, and Open Firmware loads a file from it directly:
+
+```text
+0 > boot fd2:,\IRIX7.XCF
+```
+
+NetBSD's `boot.fs` is a full 1.44 MB boot-and-install image, so a loader plus a
+kernel fits with room to spare.  A custom loader that fetches the kernel and
+the module images over TFTP and jumps to the kernel entry with the Open
+Firmware client handler in `r5` is tens of kilobytes.  The work item is the
+file format, not the size: Open Firmware 2.0.1 loads XCOFF, while the kernel
+build is ELF, so the loader needs an ELF-to-XCOFF wrapper or an XCOFF link
+step.  The floppy image is HFS with the loader at the root.
+
+The boot-time network is unauthenticated TFTP.  A loader may check SHA-256 for
+the kernel and modules, but that is integrity, not transport security; the
+module-trust rule still wants TLS or local media for a production boot.  For
+the development loop a trusted LAN is acceptable, and fetching the kernel and
+modules in one stage avoids needing a PowerPC NIC driver in the kernel for the
+first console tests.
 
 ## Bring-up slices
 
