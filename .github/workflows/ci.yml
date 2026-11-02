@@ -1359,6 +1359,10 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/x86-qemu.sh "$RUNNER_TEMP/x86-qemu"
+      - name: Check the module layout on both machines
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          tools/module-layout-check.sh "$RUNNER_TEMP/module-layout"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
