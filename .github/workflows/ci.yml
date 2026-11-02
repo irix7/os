@@ -1550,6 +1550,7 @@ jobs:
               cp -a "$work/evidence" "$out/$mode"
             fi
             if [ -d "$work/demo" ]; then
+              mkdir -p "$out/$mode"
               cp -a "$work/demo" "$out/$mode/demo"
             fi
             if [ -d "$work" ]; then
