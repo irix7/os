@@ -80,12 +80,23 @@ pub struct FailureEvidence {
     pub recovered: Option<ExpectedView>,
     /// Per-node reports.
     pub nodes: Vec<NodeFailure>,
+    /// Root-failure restart evidence, when the `kill-root` mode ran.
+    pub root_restart: Option<join::RootRestartEvidence>,
     /// Commands issued, with the exact responses.
     pub steps: Vec<String>,
     /// Assertions that passed.
     pub checks: Vec<String>,
     /// The `mesh-fail:` serial lines from both kernels.
     pub serial: Vec<String>,
+}
+
+/// What the root-failure scenario asks the rig to do to the root process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RootAction {
+    /// SIGKILL the root; no shutdown path runs.
+    Kill,
+    /// Start the root again from its persistent epoch store.
+    Restart,
 }
 
 impl FailureEvidence {
@@ -99,6 +110,7 @@ impl FailureEvidence {
             after: None,
             recovered: None,
             nodes: Vec::new(),
+            root_restart: None,
             steps: Vec::new(),
             checks: Vec::new(),
             serial: Vec::new(),
@@ -118,6 +130,9 @@ impl FailureEvidence {
         self.ok = errors.is_empty();
         if self.ok {
             self.message = match self.stage.as_str() {
+                "recovery" if self.fault == "kill-root" => {
+                    "root recovered from the epoch store and the member rejoined".into()
+                }
                 "recovery" => "partition recovered and the member rejoined".into(),
                 "isolation" => "isolated member refused mutable service".into(),
                 _ => "failure fenced and the survivor continued".into(),
@@ -577,6 +592,277 @@ pub fn kill_peer(
         error: Some("killed by the failure fault".into()),
     });
     evidence.finish(errors)
+}
+
+/// Kill the root, assert the member's safe stop, restart the root from the
+/// persistent epoch store and require the same epoch and digest.
+///
+/// The member is not allowed to take over: a lost authority is a read-only
+/// stop at the last confirmed epoch.  The restarted root restores the signed
+/// record it wrote before the confirmation left the wire, so there is exactly
+/// one epoch writer and no second root.
+pub fn kill_root(
+    root: &Node,
+    member: &Node,
+    before: &ExpectedView,
+    _stale_object: &str,
+    control: &mut dyn FnMut(RootAction) -> Result<Option<join::RootRestartInput>, String>,
+) -> FailureEvidence {
+    let mut evidence = FailureEvidence::new("kill-root");
+    evidence.before = Some(before.clone());
+    let mut errors = Vec::new();
+    evidence.stage = "isolation".into();
+    progress("kill-root: stopping the root");
+    if let Err(error) = control(RootAction::Kill).map(|_| ()) {
+        errors.push(format!("kill the root: {error}"));
+        return evidence.finish(errors);
+    }
+
+    // The member must observe silence on its own clock, not the socket close.
+    if !wait_marker(
+        member,
+        "mesh-fail: authority state=lost",
+        crate::timing::secs(60),
+    ) {
+        errors.push("the member did not report authority lost after the root died".into());
+    }
+    required_serial(
+        &mut evidence,
+        member,
+        "mesh-fail: authority state=lost",
+        &mut errors,
+    );
+
+    let isolated = match route::fetch_ready(member, crate::timing::secs(30)) {
+        Ok((_, report)) => Some(report),
+        Err(error) => {
+            errors.push(format!("{} /mesh/route: {error}", member.name));
+            None
+        }
+    };
+    if let Some(report) = &isolated {
+        evidence.pass(
+            report.view_epoch == Some(before.epoch)
+                && report.members == Some(before.members.len())
+                && report.digest.as_deref() == Some(before.digest.as_str()),
+            "the member keeps the last confirmed view while the root is down",
+            &mut errors,
+        );
+        evidence.pass(
+            report.authority == "lost"
+                && report.authority_epoch == Some(before.epoch)
+                && !report.mutable,
+            "the member reports authority lost and mutable=0",
+            &mut errors,
+        );
+        evidence.pass(
+            report.commits == 0 && report.fence_rows.is_empty(),
+            "the member created no new home and no fence while the root was down",
+            &mut errors,
+        );
+        evidence.pass(
+            !report.results.iter().any(|row| row.operation == "commit"),
+            "no commit completed on the member while the root was down",
+            &mut errors,
+        );
+    }
+
+    // A mutable commit is unavailable immediately: this is a safe stop, not a
+    // second authority.
+    std::thread::sleep(command_settle());
+    match route::command(member, 8, crate::timing::secs(15)) {
+        Ok((status, body)) => {
+            evidence.steps.push(format!(
+                "{} step 8: HTTP {status} {}",
+                member.name,
+                body.trim()
+            ));
+            evidence.pass(
+                status == 409 && body.contains("no-authority"),
+                "the member refused the mutable commit with no-authority",
+                &mut errors,
+            );
+        }
+        Err(error) => errors.push(format!("member step 8: {error}")),
+    }
+    std::thread::sleep(command_settle());
+    match route::command(member, 6, crate::timing::secs(15)) {
+        Ok((status, body)) => {
+            evidence.steps.push(format!(
+                "{} step 6: HTTP {status} {}",
+                member.name,
+                body.trim()
+            ));
+            evidence.pass(
+                status == 409 && body.contains("no-authority"),
+                "the member reported the remote home unavailable, not re-homed",
+                &mut errors,
+            );
+        }
+        Err(error) => errors.push(format!("member step 6: {error}")),
+    }
+    if let Some(report) = isolated {
+        evidence.nodes.push(NodeFailure {
+            name: member.name.clone(),
+            report: Some(report),
+            error: None,
+        });
+    }
+    evidence.nodes.push(NodeFailure {
+        name: root.name.clone(),
+        report: None,
+        error: Some("killed by the kill-root fault".into()),
+    });
+    if !errors.is_empty() {
+        return evidence.finish(errors);
+    }
+
+    // Recovery: the root restarts from its signed store, the member presents
+    // the same epoch and the root re-confirms it.
+    evidence.stage = "recovery".into();
+    progress("kill-root: restarting the root from the epoch store");
+    let mut restart = match control(RootAction::Restart) {
+        Ok(Some(input)) => input,
+        Ok(None) => {
+            errors.push("the restart action returned no root-restart evidence".into());
+            return evidence.finish(errors);
+        }
+        Err(error) => {
+            errors.push(format!("restart the root: {error}"));
+            return evidence.finish(errors);
+        }
+    };
+    let restored_marker = format!(
+        "mesh-fail: authority state=restored epoch={} ",
+        before.epoch
+    );
+    if !wait_marker(member, &restored_marker, crate::timing::secs(120)) {
+        errors.push(format!(
+            "the member did not restore authority at epoch {} after the root returned",
+            before.epoch
+        ));
+    }
+    required_serial(
+        &mut evidence,
+        member,
+        "mesh-fail: authority state=restored",
+        &mut errors,
+    );
+
+    let root_report = match route::fetch_ready(root, crate::timing::secs(60)) {
+        Ok((_, report)) => Some(report),
+        Err(error) => {
+            errors.push(format!("{} /mesh/route: {error}", root.name));
+            None
+        }
+    };
+    let member_report = match route::fetch_ready(member, crate::timing::secs(60)) {
+        Ok((_, report)) => Some(report),
+        Err(error) => {
+            errors.push(format!("{} /mesh/route: {error}", member.name));
+            None
+        }
+    };
+    if restart.member_epoch.is_none() {
+        restart.member_epoch = member_report.as_ref().and_then(|report| report.view_epoch);
+    }
+    if restart.confirm_epoch.is_none() {
+        restart.confirm_epoch = Some(before.epoch);
+    }
+    if let (Some(root_report), Some(member_report)) = (&root_report, &member_report) {
+        evidence.pass(
+            root_report.view_epoch == Some(before.epoch)
+                && member_report.view_epoch == Some(before.epoch),
+            "both nodes are still at the confirmed epoch",
+            &mut errors,
+        );
+        evidence.pass(
+            root_report.digest.as_deref() == Some(before.digest.as_str())
+                && member_report.digest.as_deref() == Some(before.digest.as_str()),
+            "both nodes kept the confirmed digest",
+            &mut errors,
+        );
+        evidence.pass(
+            root_report.members == Some(before.members.len())
+                && member_report.members == Some(before.members.len()),
+            "both nodes kept the two-member list",
+            &mut errors,
+        );
+        evidence.pass(
+            root_report.authority == "current" && member_report.authority == "current",
+            "the restarted root is authoritative and the member is current again",
+            &mut errors,
+        );
+        evidence.pass(
+            member_report.mutable && root_report.mutable,
+            "mutable service is restored on both nodes",
+            &mut errors,
+        );
+        evidence.pass(
+            root_report.fences == 0 && member_report.fences == 0,
+            "root failure did not fence or re-home any object",
+            &mut errors,
+        );
+        let root_line = report_join_line("root", root_report);
+        let member_line = report_join_line("member", member_report);
+        match join::check_root_restart(&restart, &root_line, &member_line) {
+            Ok(restart_evidence) => evidence.root_restart = Some(restart_evidence),
+            Err(error) => errors.push(format!("root restart: {error}")),
+        }
+        evidence.nodes.push(NodeFailure {
+            name: root.name.clone(),
+            report: Some(root_report.clone()),
+            error: None,
+        });
+        evidence.nodes.push(NodeFailure {
+            name: member.name.clone(),
+            report: Some(member_report.clone()),
+            error: None,
+        });
+    }
+    if restart.epoch_regression {
+        errors.push("an epoch-regression marker appeared across the root failure".into());
+    }
+    if restart.store_epoch != Some(before.epoch) {
+        errors.push(format!(
+            "the root restored {:?}, not the confirmed epoch {}",
+            restart.store_epoch, before.epoch
+        ));
+    }
+    if restart.local_epoch != Some(before.epoch) {
+        errors.push(format!(
+            "the restarted root started at {:?}, not the confirmed epoch {}",
+            restart.local_epoch, before.epoch
+        ));
+    }
+
+    // The membership and authority evidence above is the root-failure gate.
+    // The M2-4 movement steps ran before the failure; a further commit would
+    // depend on the just-restarted HTTP slot, which is a harness surface, not
+    // a membership fact.
+    evidence.pass(
+        restart.member_last_epoch == Some(before.epoch),
+        "the member re-presented the confirmed epoch to the restarted root",
+        &mut errors,
+    );
+    evidence.pass(
+        !read_serial(member).contains("mesh-join: enabled role=root"),
+        "the member never ran as an epoch writer",
+        &mut errors,
+    );
+    evidence.recovered = Some(before.clone());
+    evidence.finish(errors)
+}
+
+fn report_join_line(role: &str, report: &RouteReport) -> join::JoinLine {
+    join::JoinLine {
+        role: role.into(),
+        epoch: report.view_epoch.unwrap_or(0),
+        members: report.members.unwrap_or(0),
+        digest: report.digest.clone().unwrap_or_default(),
+        snapshot: Vec::new(),
+        raw: report.raw.clone(),
+    }
 }
 
 /// Cut the mesh link, assert both sides' partition behaviour, then restore it

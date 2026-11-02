@@ -232,6 +232,14 @@ struct MemberState {
     incarnation: u64,
     /// Monotonic summary counter (one per refresh interval).
     summary_counter: u64,
+    /// The last root-signed aggregate this member installed.
+    ///
+    /// Stored so a member can validate a peer's `MemberSummary` incarnation
+    /// without re-deriving the grant table, and so aggregate gossip can be
+    /// forwarded unchanged.
+    current_aggregate: Option<EpochSummary>,
+    /// Highest peer-summary counter accepted per `(node, epoch)`.
+    peer_counters: BTreeMap<(NodeId, u32), u64>,
     /// Whether the root's liveness is tracked (after the first confirmation).
     root_tracked: bool,
     /// Whether this member currently has an authoritative view.  A lost
@@ -324,6 +332,8 @@ impl JoinNode {
                 root_seen_ms: now_ms,
                 incarnation: 0,
                 summary_counter: 0,
+                current_aggregate: None,
+                peer_counters: BTreeMap::new(),
                 root_tracked: false,
                 authority_current: false,
                 refresh_at_ms: None,
@@ -376,6 +386,19 @@ impl JoinNode {
         match &self.engine {
             Engine::Root(state) => Some(&state.converged),
             Engine::Member(state) => state.converged.as_ref(),
+        }
+    }
+
+    /// The last root-signed aggregate held by this node.
+    ///
+    /// A root returns the aggregate it last signed; a member returns the one
+    /// it last installed.  Gossip forwards this object unchanged, so a member
+    /// never re-signs and the root signs at most one aggregate per changed
+    /// view.
+    pub fn current_aggregate(&self) -> Option<&EpochSummary> {
+        match &self.engine {
+            Engine::Root(state) => state.published.as_ref(),
+            Engine::Member(state) => state.current_aggregate.as_ref(),
         }
     }
 
@@ -741,18 +764,7 @@ impl JoinNode {
         let Engine::Root(state) = &mut self.engine else {
             return None;
         };
-        let snapshot = state.converged.clone();
-        let mut grants: Vec<MemberGrant> = snapshot
-            .members
-            .iter()
-            .map(|&node| MemberGrant {
-                node,
-                incarnation: state.incarnations.get(&node).copied().unwrap_or(0),
-            })
-            .collect();
-        grants.sort_by_key(|grant| grant.node);
-        let mut summary = EpochSummary::new(self.root, snapshot.epoch, &grants).ok()?;
-        summary.signature = state.authority.sign(&summary.signed_bytes());
+        let summary = state.signed_aggregate()?;
         state.published = Some(summary.clone());
         Some(summary)
     }
@@ -774,6 +786,35 @@ impl JoinNode {
 }
 
 impl RootState {
+    /// The aggregate for the current confirmed view, signed only when the
+    /// epoch or digest differs from the last published one.
+    ///
+    /// Routine refresh requests return the same epoch and list.  Re-signing
+    /// for every member every 5 s would contradict "one signature per change
+    /// set" and put Ed25519 work in the live tick; the cached aggregate is
+    /// returned instead.
+    fn signed_aggregate(&mut self) -> Option<EpochSummary> {
+        let snapshot = self.converged.clone();
+        if let Some(published) = &self.published {
+            if published.epoch == snapshot.epoch && published.digest == snapshot.digest() {
+                return Some(published.clone());
+            }
+        }
+        let mut grants: Vec<MemberGrant> = snapshot
+            .members
+            .iter()
+            .map(|&node| MemberGrant {
+                node,
+                incarnation: self.incarnations.get(&node).copied().unwrap_or(0),
+            })
+            .collect();
+        grants.sort_by_key(|grant| grant.node);
+        let mut summary = EpochSummary::new(self.authority.root(), snapshot.epoch, &grants).ok()?;
+        summary.signature = self.authority.sign(&summary.signed_bytes());
+        self.published = Some(summary.clone());
+        Some(summary)
+    }
+
     fn handle(&mut self, root: NodeId, src: NodeId, message: JoinMessage, now_ms: u64) -> Outcome {
         match message {
             JoinMessage::Request(request) => {
@@ -832,10 +873,26 @@ impl RootState {
                 }
             }
             JoinMessage::Summary(summary) => {
+                // A summary is a direct liveness record from its subject.  A
+                // forwarded summary is not evidence that the origin is alive,
+                // so the root refuses a body whose subject is not the link
+                // source rather than refreshing the wrong member.
+                if summary.node != src {
+                    return Outcome::rejected("summary-subject");
+                }
                 if summary.epoch != self.converged.epoch
                     || summary.digest != self.converged.digest()
                 {
-                    return Outcome::rejected("epoch-digest-mismatch");
+                    // A member that missed a change set is stale.  Repair it
+                    // from the signed aggregate instead of leaving it behind
+                    // until the next unrelated epoch change.  This is the
+                    // anti-entropy half of bounded gossip: the response is
+                    // one aggregate to the one stale member.
+                    let reply = self.signed_aggregate().map(JoinMessage::Epoch);
+                    return Outcome {
+                        reply,
+                        event: JoinEvent::Rejected("epoch-digest-mismatch"),
+                    };
                 }
                 let known = self.incarnations.get(&src).copied().unwrap_or(0);
                 if known != 0 && summary.incarnation != known {
@@ -943,6 +1000,17 @@ impl MemberState {
                 self.root_seen_ms = now_ms;
                 self.root_state = NodeState::Alive;
                 self.authority_current = true;
+                if self
+                    .current_aggregate
+                    .as_ref()
+                    .is_some_and(|aggregate| aggregate.epoch != snapshot.epoch)
+                {
+                    // A confirmation does not carry per-member grants, so an
+                    // aggregate from an older epoch cannot validate peer
+                    // summaries at this one.  The root publishes a fresh
+                    // aggregate for the change set.
+                    self.current_aggregate = None;
+                }
                 self.refresh_at_ms = Some(now_ms.saturating_add(REFRESH_INTERVAL_MS));
                 if duplicate {
                     // The same epoch and list are already installed.  This is
@@ -993,6 +1061,44 @@ impl MemberState {
                     },
                 }
             }
+            JoinMessage::Summary(summary) => {
+                // A member validates peer gossip against the aggregate it
+                // installed.  It never treats a peer summary as authority and
+                // never advances an epoch from one.
+                let Some(current) = self.converged.as_ref() else {
+                    return Outcome::rejected("no-view");
+                };
+                if summary.node != src {
+                    return Outcome::rejected("summary-subject");
+                }
+                if summary.epoch != current.epoch || summary.digest != current.digest() {
+                    return Outcome::rejected("epoch-digest-mismatch");
+                }
+                if !current.members.contains(&summary.node) {
+                    return Outcome::rejected("not-member");
+                }
+                if let Some(aggregate) = self.current_aggregate.as_ref() {
+                    if aggregate.grant(summary.node) != Some(summary.incarnation) {
+                        return Outcome::rejected("incarnation-mismatch");
+                    }
+                }
+                let key = (summary.node, summary.epoch);
+                let previous = self.peer_counters.get(&key).copied().unwrap_or(0);
+                if summary.counter <= previous {
+                    if summary.counter == previous {
+                        return Outcome {
+                            reply: None,
+                            event: JoinEvent::None,
+                        };
+                    }
+                    return Outcome::rejected("stale-counter");
+                }
+                self.peer_counters.insert(key, summary.counter);
+                Outcome {
+                    reply: None,
+                    event: JoinEvent::None,
+                }
+            }
             JoinMessage::Epoch(summary) => {
                 match self.install_aggregate(self_id, &summary, now_ms) {
                     Ok(event) => Outcome { reply: None, event },
@@ -1023,6 +1129,11 @@ impl MemberState {
             .install(snapshot.epoch, &snapshot.members, now_ms)
             .map_err(|_| "install-failed")?;
         self.incarnation = summary.grant(self_id).unwrap_or(0);
+        // Drop peer counters from superseded epochs so the relay state stays
+        // bounded.  The aggregate itself is retained for forwarding.
+        self.peer_counters
+            .retain(|(_, epoch), _| *epoch >= snapshot.epoch);
+        self.current_aggregate = Some(summary.clone());
         self.root_tracked = true;
         self.root_seen_ms = now_ms;
         self.root_state = NodeState::Alive;

@@ -1025,3 +1025,96 @@ fn a_member_requests_one_rejoin_after_losing_the_authority() {
     assert!(matches!(outcome.event, JoinEvent::Converged(_)));
     assert!(pair.member.authority_current());
 }
+
+#[test]
+fn a_member_validates_a_peer_summary_against_the_signed_aggregate() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    // Add a third member so the second member has a peer summary to validate.
+    let third_id = node(3);
+    let mut third = JoinNode::new_member(third_id, pair.root_id, key(9), 1, 0).expect("member");
+    let request = third.on_link_up(1_100).expect("request");
+    let outcome = pair
+        .root
+        .on_message(third_id, JoinMessage::Request(request), 1_100);
+    let confirmation = match outcome.reply {
+        Some(JoinMessage::Confirm(confirmation)) => confirmation,
+        other => panic!("expected confirmation, got {other:?}"),
+    };
+    let outcome = third.on_message(pair.root_id, JoinMessage::Confirm(confirmation), 1_100);
+    assert!(matches!(outcome.event, JoinEvent::Converged(_)));
+    let aggregate = pair.root.publish_aggregate().expect("aggregate");
+    for member in [&mut pair.member, &mut third] {
+        let outcome = member.on_message(pair.root_id, JoinMessage::Epoch(aggregate.clone()), 1_200);
+        assert!(matches!(outcome.event, JoinEvent::Refreshed(_)));
+    }
+    let summary = third.member_summary().expect("peer summary");
+    let outcome = pair
+        .member
+        .on_message(third_id, JoinMessage::Summary(summary), 1_300);
+    assert!(matches!(outcome.event, JoinEvent::None));
+
+    // A different incarnation cannot borrow the grant.
+    let mut forged = summary;
+    forged.incarnation = 0x999;
+    forged.counter = 9;
+    let outcome = pair
+        .member
+        .on_message(third_id, JoinMessage::Summary(forged), 1_300);
+    assert!(matches!(
+        outcome.event,
+        JoinEvent::Rejected("incarnation-mismatch")
+    ));
+
+    // A stale digest is refused before it can touch the counter table.
+    let mut stale = summary;
+    stale.digest = [0xaa; 16];
+    stale.counter = 10;
+    let outcome = pair
+        .member
+        .on_message(third_id, JoinMessage::Summary(stale), 1_300);
+    assert!(matches!(
+        outcome.event,
+        JoinEvent::Rejected("epoch-digest-mismatch")
+    ));
+}
+
+#[test]
+fn root_repairs_a_stale_summary_with_the_signed_aggregate() {
+    let mut pair = pair();
+    join(&mut pair, 1_000);
+    let bootstrap = pair.root.publish_aggregate().expect("bootstrap aggregate");
+    let outcome =
+        pair.member
+            .on_message(pair.root_id, JoinMessage::Epoch(bootstrap.clone()), 1_100);
+    assert!(matches!(outcome.event, JoinEvent::Refreshed(_)));
+
+    // A third member advances the root to a new epoch.  The second member has
+    // not seen the aggregate yet and presents its old view.
+    let third_id = node(3);
+    let mut third = JoinNode::new_member(third_id, pair.root_id, key(9), 1, 0).expect("member");
+    let request = third.on_link_up(1_200).expect("request");
+    let _ = pair
+        .root
+        .on_message(third_id, JoinMessage::Request(request), 1_200);
+    let current = pair.root.publish_aggregate().expect("new aggregate");
+    assert_eq!(current.epoch, 3);
+    assert!(current.epoch > bootstrap.epoch);
+
+    let stale = pair.member.member_summary().expect("stale summary");
+    assert_eq!(stale.epoch, bootstrap.epoch);
+    let outcome = pair
+        .root
+        .on_message(pair.member_id, JoinMessage::Summary(stale), 1_300);
+    assert!(matches!(
+        outcome.event,
+        JoinEvent::Rejected("epoch-digest-mismatch")
+    ));
+    match outcome.reply {
+        Some(JoinMessage::Epoch(reply)) => {
+            assert_eq!(reply.epoch, current.epoch);
+            assert_eq!(reply.digest, current.digest);
+        }
+        other => panic!("expected the current aggregate, got {other:?}"),
+    }
+}

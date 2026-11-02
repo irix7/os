@@ -47,11 +47,11 @@
 
 use mesh_core::{
     fixture_objects, shard_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_MAX,
-    MAX_NODES as MAX_MESH_NODES, SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
+    SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
 };
 use mesh_join::{
-    EpochConfirmation, EpochRecord, JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role,
-    Tick, MAX_BODY as JOIN_BODY_MAX,
+    gossip_targets, EpochConfirmation, EpochRecord, JoinEvent, JoinMessage, JoinNode,
+    MembershipSnapshot, Role, Tick, FANOUT as GOSSIP_FANOUT, MAX_BODY as JOIN_BODY_MAX,
 };
 use mesh_migrate::{
     Event as MigrateEvent, MigrateNode, Signer as MigrateSigner, Step as MigrateStep,
@@ -124,6 +124,31 @@ const BULK_CREDIT_GRANT: u32 = 2;
 /// 10,000 outstanding tags, and that result must not be read as a claim that
 /// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
+/// Live bound on distinct member links.
+///
+/// The wire membership allows 128 members, but the module holds one send
+/// queue, pending table and heartbeat per source.  Eight is the largest real
+/// kernel count the M3 rig drives; a ninth source is refused rather than
+/// growing the module's fixed memory on the data path.
+const MAX_MESH_LINKS: usize = 8;
+/// Send-queue size for a non-authority link.
+///
+/// Join, route, migration and one aggregate are all far below 4 KiB; bulk and
+/// latency stay on the authority link's 32 KiB queue.
+const LINK_QUEUE_BYTES: usize = 4 * 1024;
+/// Reply-tag capacity for a gossip link.
+const LINK_PENDING_CAPACITY: u32 = 2;
+/// Interval between anti-entropy re-gossip of the current aggregate.
+///
+/// The root re-sends the same signed object to a rotating bounded window, so
+/// a lost push is repaired without another signature or an O(N) broadcast.
+const GOSSIP_RESYNC_MS: u64 = 60_000;
+/// A gossip record's header hop budget.
+///
+/// The live hard bound is "each node forwards one aggregate per epoch"; this
+/// field records the intended bounded depth for diagnostics and forwarding
+/// policy in a future hop-counting path.
+const GOSSIP_TTL: u8 = 3;
 const LINE_CAP: usize = 768;
 /// Routine join-view and ack logging interval.
 ///
@@ -204,22 +229,96 @@ struct Incoming {
     body_len: usize,
 }
 
+/// Per-source membership and send state.
+///
+/// One TCP session carries every source.  The decoder is a property of that
+/// session (a record's length prefix has no source field), but everything from
+/// the envelope source onwards is per link: the send queue, reply tags,
+/// heartbeat, last-seen time, summary counter and last aggregate epoch sent.
+/// That is what a hub-multiplexed root needs to give each member its own
+/// bounded state instead of one shared queue and one global join view.
+struct MeshLink {
+    /// The source `NodeId`; zero only for the root's unbound listener link.
+    peer: NodeId,
+    /// A frame from this source has been accepted.
+    confirmed: bool,
+    queue: SendQueue,
+    pending: PendingTable,
+    heartbeat: Heartbeat,
+    last_rx_ms: u64,
+    /// Highest member-summary counter accepted from this peer.
+    summary_counter: u64,
+    /// Highest aggregate epoch queued to this peer.
+    sent_epoch: u32,
+    /// Bytes and whole frames written from this link's queue.
+    bytes_sent: u64,
+    frames_sent: u64,
+}
+
+impl MeshLink {
+    fn new(peer: NodeId, primary: bool, heartbeat: Heartbeat, now: u64) -> Self {
+        let queue = if primary {
+            SendQueue::new()
+        } else {
+            SendQueue::with_capacity(LINK_QUEUE_BYTES)
+        };
+        let pending = PendingTable::new(if primary {
+            PENDING_CAPACITY
+        } else {
+            LINK_PENDING_CAPACITY
+        });
+        let mut heartbeat = heartbeat;
+        heartbeat.reset(now);
+        Self {
+            peer,
+            confirmed: false,
+            queue,
+            pending,
+            heartbeat,
+            last_rx_ms: now,
+            summary_counter: 0,
+            sent_epoch: 0,
+            bytes_sent: 0,
+            frames_sent: 0,
+        }
+    }
+}
+
 struct Mesh {
     phase: Phase,
     self_id: NodeId,
+    /// The authority peer: the root on a member, the first member on a root.
+    /// Route, migration and latency use this peer.
     peer: Option<NodeId>,
-    /// Every source accepted on this link, in first-seen order.
-    ///
-    /// M2 has one peer per link.  The M3 host hub multiplexes the member links
-    /// onto the root's single mesh slot, so the root sees several source
-    /// `NodeId`s on one byte stream.  A member still sees only the root.
-    peers: [NodeId; MAX_MESH_NODES],
-    peer_count: usize,
+    /// Bounded per-source link table.  The M3 host hub multiplexes several
+    /// member sessions onto one module TCP slot, so a root sees one source per
+    /// member; each gets its own queue, tags and heartbeat.  The table lives on
+    /// the module heap, not in the static image, so eight links do not consume
+    /// the 512 KiB slot.
+    links: alloc::vec::Vec<MeshLink>,
+    /// Index of the authority link in `links`.
+    primary_link: Option<usize>,
     peer_confirmed: bool,
+    /// Record framer for the one TCP session.
+    ///
+    /// The length prefix is per session, not per source, so the decoder stays
+    /// single.  It is reset only when the session is replaced; per-source
+    /// processing begins after `decode_record` exposes `MeshHeader.src`.
     decoder: StreamDecoder,
-    queue: SendQueue,
-    pending: PendingTable,
     stats: Stats,
+    /// Greedy-gossip round counter; rotates the bounded target window.
+    gossip_round: u64,
+    /// Highest aggregate epoch this node has forwarded or published.
+    gossip_floor: u32,
+    /// Last anti-entropy re-gossip time (root only).
+    last_gossip_ms: u64,
+    /// Member summaries emitted and accepted.
+    gossip_summaries_sent: u64,
+    gossip_summaries_received: u64,
+    /// Aggregates queued and forwarded.
+    gossip_aggregates_sent: u64,
+    gossip_aggregates_forwarded: u64,
+    /// Heartbeat policy copied into each link when the session is established.
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
     /// Join requests this boot has queued.  A restarted member starts at zero,
@@ -329,9 +428,14 @@ struct BulkReply {
     credit: u32,
 }
 
-/// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
-/// the frame loop's stack frame; the module is single-threaded.
-static mut FRAME_RX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
+/// Receive/transmit buffer for one frame body.
+///
+/// The module is single-threaded and never holds an inbound body across a
+/// tick, so the frame receive copy and the outgoing bulk chunk share one
+/// 16 KiB static.  Two separate buffers would put the module over the 512 KiB
+/// slot A; sharing is safe because `queue_bulk_chunk` runs from `bulk_tick`
+/// after `feed` has returned.
+static mut FRAME_BODY: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
 /// Encode buffer for one outgoing join body.
 static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 /// Read/write buffer for the persistent epoch store.
@@ -341,8 +445,6 @@ static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
 static mut STORE_BUF: [u8; STORE_BYTES] = [0; STORE_BYTES];
 /// Encode buffer for the store payload (a signed record or confirmation).
 static mut STORE_BODY: [u8; STORE_BYTES - STORE_HEADER] = [0; STORE_BYTES - STORE_HEADER];
-/// Encode buffer for one outgoing bulk chunk (payload follows the header).
-static mut BULK_TX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
 /// One receive scratch buffer reused by every socket read in a tick.
 static mut READ_BUF: [u8; READ_CHUNK] = [0; READ_CHUNK];
 
@@ -432,17 +534,26 @@ pub unsafe fn init(services: *const Services) -> bool {
     } else {
         Phase::Arm
     };
+    let peer = match join.as_ref().map(|join| (join.role(), join.root())) {
+        Some((Role::Member, root)) => Some(root),
+        _ => None,
+    };
     let mesh = Mesh {
         phase,
         self_id,
-        peer: None,
-        peers: [NodeId::ZERO; MAX_MESH_NODES],
-        peer_count: 0,
+        peer,
+        links: alloc::vec::Vec::new(),
+        primary_link: None,
         peer_confirmed: false,
         decoder: StreamDecoder::new(),
-        queue: SendQueue::new(),
-        pending: PendingTable::new(PENDING_CAPACITY),
         stats: Stats::default(),
+        gossip_round: 0,
+        gossip_floor: 0,
+        last_gossip_ms: 0,
+        gossip_summaries_sent: 0,
+        gossip_summaries_received: 0,
+        gossip_aggregates_sent: 0,
+        gossip_aggregates_forwarded: 0,
         heartbeat,
         join,
         join_requests: 0,
@@ -694,7 +805,10 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
             let mut header = MeshHeader::new(mesh.self_id, destination, mesh.self_id);
             header.flags = mesh_flags::PROBE;
             header.ttl = MeshHeader::MAX_HOPS;
-            let _ = mesh.queue.push_record(&MeshEnvelope { header, frame }, now);
+            let envelope = MeshEnvelope { header, frame };
+            if let Some(queue) = mesh.primary_queue_mut() {
+                let _ = queue.push_record(&envelope, now);
+            }
         }
         return bulk_line(out, 200, "cancelled");
     }
@@ -1630,6 +1744,140 @@ impl<'a> Body<'a> {
 }
 
 impl Mesh {
+    fn link_count(&self) -> usize {
+        self.links.len()
+    }
+
+    fn link_index(&self, peer: NodeId) -> Option<usize> {
+        if peer.is_zero() {
+            return self.primary_link;
+        }
+        self.links.iter().position(|link| link.peer == peer)
+    }
+
+    fn link(&self, peer: NodeId) -> Option<&MeshLink> {
+        self.link_index(peer).map(|index| &self.links[index])
+    }
+
+    fn link_mut(&mut self, peer: NodeId) -> Option<&mut MeshLink> {
+        let index = self.link_index(peer)?;
+        self.links.get_mut(index)
+    }
+
+    /// Return the link for `peer`, creating a bounded gossip link if needed.
+    ///
+    /// The hub forwards by destination over the shared session, so a member can
+    /// address another member without a separate TCP connection.  A full link
+    /// table falls back to the primary queue: the frame is still routable, but
+    /// it no longer has per-peer queue state, and the table never grows.
+    fn ensure_link(&mut self, peer: NodeId, now: u64) -> Option<usize> {
+        if peer.is_zero() {
+            return self.primary_link;
+        }
+        if let Some(index) = self.link_index(peer) {
+            return Some(index);
+        }
+        if self.links.len() >= MAX_MESH_LINKS {
+            return self.primary_link;
+        }
+        self.links
+            .push(MeshLink::new(peer, false, self.heartbeat, now));
+        Some(self.links.len() - 1)
+    }
+
+    fn outbound_index(&mut self, destination: NodeId, now: u64) -> Option<usize> {
+        if destination.is_zero() {
+            self.primary_link
+        } else {
+            self.ensure_link(destination, now)
+        }
+    }
+
+    /// The authority link's queue; bulk and latency use this one.
+    fn primary_queue_mut(&mut self) -> Option<&mut SendQueue> {
+        let index = self.primary_link?;
+        self.links.get_mut(index).map(|link| &mut link.queue)
+    }
+
+    /// Start a fresh session: one unbound authority link, no gossip state.
+    ///
+    /// A member's authority link is addressed to the configured root from the
+    /// start.  A root cannot know the first member's `NodeId` until a frame
+    /// arrives, so its authority link starts unbound and is bound by
+    /// `learn_peer` on the first accepted source.
+    fn reset_links(&mut self, now: u64) {
+        self.links.clear();
+        let role = self.join.as_ref().map(|join| join.role());
+        let root = self.join.as_ref().map(|join| join.root());
+        let primary_peer = match (role, root) {
+            (Some(Role::Member), Some(root)) => root,
+            _ => NodeId::ZERO,
+        };
+        self.links
+            .push(MeshLink::new(primary_peer, true, self.heartbeat, now));
+        self.primary_link = Some(0);
+        self.peer = match role {
+            Some(Role::Member) => Some(primary_peer),
+            _ => None,
+        };
+        // A member's route and migration policy start bound to the authority
+        // link.  Without this the first route frame from the root is refused as
+        // `peer-mismatch`; the old single-link path set this on the first
+        // learned peer, but a member now knows the root before it hears a frame.
+        if role == Some(Role::Member) {
+            if let Some(route) = self.route.as_mut() {
+                let _ = route.set_peer(primary_peer, now);
+            }
+            if let Some(migrate) = self.migrate.as_mut() {
+                let _ = migrate.set_peer(primary_peer);
+            }
+        }
+        self.peer_confirmed = false;
+        self.gossip_floor = 0;
+        self.gossip_round = 0;
+        self.last_gossip_ms = now;
+    }
+
+    /// Bind the root's unbound authority link to the first accepted source.
+    fn bind_primary(&mut self, peer: NodeId) -> Option<usize> {
+        let index = self.primary_link?;
+        let link = self.links.get_mut(index)?;
+        if link.peer.is_zero() {
+            link.peer = peer;
+            link.confirmed = true;
+            if self.peer.is_none() {
+                self.peer = Some(peer);
+            }
+        }
+        Some(index)
+    }
+
+    /// Drop a link after the failure detector removed its member.
+    fn forget_link(&mut self, peer: NodeId) {
+        let Some(index) = self.link_index(peer) else {
+            return;
+        };
+        if Some(index) == self.primary_link {
+            // A member never removes its root.  A root keeps the primary slot
+            // as its authority route target even if that member failed; the
+            // slot is reused by the next confirmed member only if unbound.
+            return;
+        }
+        self.links.remove(index);
+    }
+
+    fn mark_sent_epoch(&mut self, peer: NodeId, epoch: u32) {
+        if let Some(link) = self.link_mut(peer) {
+            if epoch > link.sent_epoch {
+                link.sent_epoch = epoch;
+            }
+        }
+    }
+
+    fn link_sent_epoch(&self, peer: NodeId) -> u32 {
+        self.link(peer).map(|link| link.sent_epoch).unwrap_or(0)
+    }
+
     fn tick(&mut self, services: &Services) {
         let now = (services.clock_ms)();
         // Failure detection runs in every phase: a partition may leave the
@@ -1739,6 +1987,7 @@ impl Mesh {
                 }
             }
         }
+        let had_removal = removed.is_some();
         if let Some(snapshot) = removed {
             self.log_homes(services, &snapshot, true);
             self.on_route_snapshot(services, &snapshot, now);
@@ -1746,6 +1995,13 @@ impl Mesh {
             // the removed node.  Persist the root's new signed view so a root
             // restart resumes the post-removal epoch rather than the seed.
             self.persist_root(services);
+        }
+        if had_removal && self.join.as_ref().map(|join| join.role()) == Some(Role::Root) {
+            // Publish the new view once and seed it to a bounded window; a
+            // member that misses the push is repaired from its next summary.
+            if let Some(aggregate) = self.join.as_mut().and_then(|join| join.publish_aggregate()) {
+                self.gossip_epoch(services, &aggregate, None, now, false);
+            }
         }
     }
 
@@ -1821,16 +2077,10 @@ impl Mesh {
         self.stats.connects = self.stats.connects.saturating_add(1);
         self.link_generation = self.link_generation.wrapping_add(1);
         self.decoder.reset();
-        self.queue.clear();
-        self.pending = PendingTable::new(PENDING_CAPACITY);
-        self.peer = None;
-        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
-        self.peer_count = 0;
-        self.peer_confirmed = false;
+        self.reset_links(now);
         self.pass_logged = false;
         self.join_timeout_logged = false;
         self.last_rx_ms = now;
-        self.heartbeat.reset(now);
         self.phase = Phase::Connected;
         self.connect_attempts = 0;
         self.last_connect_ms = if self.direct_initiator {
@@ -1841,6 +2091,8 @@ impl Mesh {
         let mut line = Line::new();
         line.str("mesh-transport: connected connect_ms=");
         line.u64(self.last_connect_ms);
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
         self.send_handshake(now);
@@ -1892,7 +2144,6 @@ impl Mesh {
             let count = read as usize;
             self.stats.bytes_received = self.stats.bytes_received.saturating_add(count as u64);
             self.last_rx_ms = now;
-            self.heartbeat.on_receive(now);
             if let Err(error) = self.feed(services, &buffer[..count], now) {
                 self.reject(services, now, error);
                 return;
@@ -1906,12 +2157,20 @@ impl Mesh {
             self.disconnect(services, now, "receive-deadline");
             return;
         }
-        if self.queue.send_deadline_expired(now) {
+        if self
+            .links
+            .iter()
+            .any(|link| link.queue.send_deadline_expired(now))
+        {
             self.stats.send_deadlines = self.stats.send_deadlines.saturating_add(1);
             self.disconnect(services, now, "send-deadline");
             return;
         }
-        if self.heartbeat.timed_out(now) {
+        // A silent gossip link is dropped; the authority link is kept until
+        // every link is silent, because under the hub one quiet member must
+        // not tear down the root's session with the others.
+        self.expire_silent_links(services, now);
+        if !self.links.iter().any(|link| !link.heartbeat.timed_out(now)) {
             self.stats.heartbeat_timeouts = self.stats.heartbeat_timeouts.saturating_add(1);
             self.disconnect(services, now, "heartbeat-timeout");
             return;
@@ -1955,12 +2214,39 @@ impl Mesh {
             }
             Some((Tick::Summary, _)) => {
                 // Routine M3 refresh: the member reports liveness with a small
-                // summary instead of a full signed join request.  The root
-                // answers with one signed aggregate for the whole view.
-                if let Some(join) = self.join.as_mut() {
-                    let root = join.root();
-                    if let Some(summary) = join.member_summary() {
-                        self.send_join(services, JoinMessage::Summary(summary), root, now, false);
+                // signed summary.  The root is always a target; a bounded
+                // rotating window of other members receives the same summary
+                // so membership evidence spreads without a central directory
+                // and without one record per peer per interval.
+                if let Some((summary, root, snapshot)) = self.join.as_mut().and_then(|join| {
+                    let summary = join.member_summary()?;
+                    Some((summary, join.root(), join.snapshot()))
+                }) {
+                    let mut targets: alloc::vec::Vec<NodeId> =
+                        alloc::vec::Vec::with_capacity(GOSSIP_FANOUT);
+                    targets.push(root);
+                    let peers = gossip_targets(
+                        self.self_id,
+                        &snapshot.members,
+                        &[root],
+                        self.gossip_round,
+                        GOSSIP_FANOUT.saturating_sub(1),
+                    );
+                    self.gossip_round = self.gossip_round.wrapping_add(1);
+                    targets.extend(peers);
+                    targets.sort_unstable();
+                    targets.dedup();
+                    for target in targets {
+                        if self.send_join(
+                            services,
+                            JoinMessage::Summary(summary.clone()),
+                            target,
+                            now,
+                            false,
+                        ) {
+                            self.gossip_summaries_sent =
+                                self.gossip_summaries_sent.saturating_add(1);
+                        }
                     }
                 }
             }
@@ -1997,8 +2283,41 @@ impl Mesh {
         // above has already been queued, so a chunk cannot delay it.
         self.bulk_tick(services, now);
 
-        if self.heartbeat.due(now) {
-            let destination = self.peer.unwrap_or(NodeId::ZERO);
+        // Root anti-entropy: re-send the current signed aggregate to a
+        // rotating bounded window.  The object is not re-signed, so a lost
+        // push costs bytes, not another Ed25519 signature.
+        if self.join.as_ref().map(|join| join.role()) == Some(Role::Root)
+            && now.saturating_sub(self.last_gossip_ms) >= GOSSIP_RESYNC_MS
+            && self
+                .join
+                .as_ref()
+                .is_some_and(|join| join.snapshot().len() > 2)
+        {
+            self.last_gossip_ms = now;
+            if let Some(summary) = self
+                .join
+                .as_ref()
+                .and_then(|join| join.current_aggregate())
+                .cloned()
+            {
+                self.gossip_epoch(services, &summary, None, now, true);
+            }
+        }
+
+        // One heartbeat per link.  The authority link and each gossip peer
+        // have independent clocks, so a quiet member cannot suppress the
+        // root's heartbeat to a healthy one.
+        let mut pings: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        for link in self.links.iter() {
+            if link.heartbeat.due(now) {
+                pings.push(if link.peer.is_zero() {
+                    NodeId::ZERO
+                } else {
+                    link.peer
+                });
+            }
+        }
+        for destination in pings {
             if self.queue_ping(
                 now,
                 MessageKind::Control,
@@ -2009,19 +2328,163 @@ impl Mesh {
                 Tag(0),
             ) {
                 self.stats.heartbeats_sent = self.stats.heartbeats_sent.saturating_add(1);
-                self.heartbeat.on_transmit(now);
+                if let Some(link) = self.link_mut(destination) {
+                    link.heartbeat.on_transmit(now);
+                }
             }
         }
-        let expired = self.pending.expire(now);
+        let mut expired = 0usize;
+        for link in self.links.iter_mut() {
+            expired += link.pending.expire(now);
+        }
         self.stats.expired_tags = self.stats.expired_tags.saturating_add(expired as u64);
         self.flush(services, now);
         self.maybe_log_pass(services);
     }
 
+    /// Drop silent gossip links while at least one link remains.
+    fn expire_silent_links(&mut self, services: &Services, now: u64) {
+        let mut silent: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        for (index, link) in self.links.iter().enumerate() {
+            if Some(index) == self.primary_link || link.peer.is_zero() {
+                continue;
+            }
+            if link.heartbeat.timed_out(now) {
+                silent.push(link.peer);
+            }
+        }
+        if silent.len() >= self.link_count().saturating_sub(1) {
+            // Keep the last link; the session heartbeat below decides whether
+            // the whole session is dead.
+            return;
+        }
+        for peer in silent {
+            let mut line = Line::new();
+            line.str("mesh-link: expired peer=");
+            line.node(&peer);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+            self.forget_link(peer);
+        }
+    }
+
+    /// Queue one root-signed aggregate to a bounded deterministic window.
+    ///
+    /// `resync` re-sends an already-forwarded epoch to a rotating window for
+    /// anti-entropy.  Otherwise each node forwards a given epoch once, so the
+    /// work per change set is `O(N * FANOUT)` records, not an `O(N)` broadcast
+    /// of an `O(N)` object by the root.
+    fn gossip_epoch(
+        &mut self,
+        services: &Services,
+        summary: &mesh_join::EpochSummary,
+        exclude: Option<NodeId>,
+        now: u64,
+        resync: bool,
+    ) {
+        let Some(snapshot) = self.join.as_ref().map(|join| join.snapshot()) else {
+            return;
+        };
+        if !snapshot.members.contains(&self.self_id) {
+            return;
+        }
+        if !resync && summary.epoch <= self.gossip_floor {
+            return;
+        }
+        let mut excludes: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        if let Some(source) = exclude {
+            excludes.push(source);
+        }
+        // The root is the writer; a member forwards to peers only.  Sending an
+        // aggregate back to the root would be an unexpected message there.
+        let member = self.join.as_ref().map(|join| join.role()) == Some(Role::Member);
+        let root = self
+            .join
+            .as_ref()
+            .map(|join| join.root())
+            .unwrap_or(NodeId::ZERO);
+        if member && !root.is_zero() {
+            excludes.push(root);
+        }
+        let targets = gossip_targets(
+            self.self_id,
+            &snapshot.members,
+            &excludes,
+            self.gossip_round,
+            GOSSIP_FANOUT,
+        );
+        self.gossip_round = self.gossip_round.wrapping_add(1);
+        let mut sent = 0usize;
+        for target in targets {
+            if !resync && self.link_sent_epoch(target) >= summary.epoch {
+                continue;
+            }
+            if self.send_join(
+                services,
+                JoinMessage::Epoch(summary.clone()),
+                target,
+                now,
+                false,
+            ) {
+                self.mark_sent_epoch(target, summary.epoch);
+                sent += 1;
+            }
+        }
+        if sent == 0 {
+            return;
+        }
+        if summary.epoch > self.gossip_floor {
+            self.gossip_floor = summary.epoch;
+        }
+        self.gossip_aggregates_sent = self.gossip_aggregates_sent.saturating_add(sent as u64);
+        let forwarded = member;
+        if forwarded {
+            self.gossip_aggregates_forwarded =
+                self.gossip_aggregates_forwarded.saturating_add(sent as u64);
+        }
+        let mut line = Line::new();
+        line.str("mesh-gossip: aggregate epoch=");
+        line.u64(summary.epoch as u64);
+        line.str(" members=");
+        line.u64(summary.grants.len() as u64);
+        line.str(" targets=");
+        line.u64(sent as u64);
+        line.str(match forwarded {
+            true => " forward=1",
+            false => " forward=0",
+        });
+        line.push(b'\n');
+        log(services, line.as_bytes());
+    }
+
+    /// Forward the aggregate this member installed, once per epoch.
+    fn maybe_forward_aggregate(&mut self, services: &Services, source: NodeId, now: u64) {
+        if self.join.as_ref().map(|join| join.role()) != Some(Role::Member) {
+            return;
+        }
+        let Some(summary) = self
+            .join
+            .as_ref()
+            .and_then(|join| join.current_aggregate())
+            .cloned()
+        else {
+            return;
+        };
+        self.gossip_epoch(services, &summary, Some(source), now, false);
+    }
+
     fn send_handshake(&mut self, now: u64) {
+        let Some(index) = self.primary_link else {
+            return;
+        };
         let Ok(tag) = self
-            .pending
-            .begin_at(now.saturating_add(RECEIVE_DEADLINE_MS))
+            .links
+            .get_mut(index)
+            .map(|link| {
+                link.pending
+                    .begin_at(now.saturating_add(RECEIVE_DEADLINE_MS))
+            })
+            .unwrap_or(Err(TransportError::NoTag))
         else {
             return;
         };
@@ -2035,9 +2498,11 @@ impl Mesh {
             tag,
         ) {
             self.stats.heartbeats_sent = self.stats.heartbeats_sent.saturating_add(1);
-            self.heartbeat.on_transmit(now);
-        } else {
-            let _ = self.pending.complete(tag);
+            if let Some(link) = self.links.get_mut(index) {
+                link.heartbeat.on_transmit(now);
+            }
+        } else if let Some(link) = self.links.get_mut(index) {
+            let _ = link.pending.complete(tag);
         }
     }
 
@@ -2053,10 +2518,10 @@ impl Mesh {
                     if body.len() > limit {
                         return Err(TransportError::Envelope(sys_primitives::Error::BadLength));
                     }
-                    // SAFETY: single-threaded module; FRAME_RX is the only
+                    // SAFETY: single-threaded module; FRAME_BODY is the only
                     // frame-body buffer and the copied slice is read before
                     // the next record is decoded.
-                    let storage = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_RX) };
+                    let storage = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BODY) };
                     storage[..body.len()].copy_from_slice(body);
                     let frame_header = envelope.frame.header;
                     let trace = if frame_header.flags & sys_primitives::flags::TRACE != 0 {
@@ -2157,7 +2622,12 @@ impl Mesh {
                 return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
             }
         }
-        self.learn_peer(services, source, now)?;
+        self.learn_peer(services, source, now, incoming.kind, incoming.opcode)?;
+        if let Some(link) = self.link_mut(source) {
+            link.confirmed = true;
+            link.last_rx_ms = now;
+            link.heartbeat.on_receive(now);
+        }
         // Only the configured authority renews a member's write lease.  A
         // frame from another member proves that member is alive, not that the
         // authority still holds the view.
@@ -2214,7 +2684,9 @@ impl Mesh {
             (MessageKind::Response, OpCode::Ping) => {
                 let reply_to = incoming.header.reply_to as u32;
                 let tag = Tag(reply_to);
-                let _ = self.pending.complete(tag);
+                if let Some(link) = self.link_mut(source) {
+                    let _ = link.pending.complete(tag);
+                }
                 self.peer_confirmed = true;
                 self.on_latency(reply_to, now);
             }
@@ -2258,10 +2730,25 @@ impl Mesh {
                     JoinMessage::Confirm(confirmation) => Some(confirmation.clone()),
                     _ => None,
                 };
+                let summary = match &message {
+                    JoinMessage::Summary(summary) => Some(summary.counter),
+                    _ => None,
+                };
                 let outcome = match &mut self.join {
                     Some(join) => join.on_message(source, message, now),
                     None => return Ok(()),
                 };
+                if let Some(counter) = summary {
+                    if !matches!(outcome.event, JoinEvent::Rejected(_)) {
+                        if let Some(link) = self.link_mut(source) {
+                            if counter > link.summary_counter {
+                                link.summary_counter = counter;
+                            }
+                        }
+                        self.gossip_summaries_received =
+                            self.gossip_summaries_received.saturating_add(1);
+                    }
+                }
                 if let Some(confirmation) = stored_confirmation {
                     let accepted = match &outcome.event {
                         JoinEvent::Converged(snapshot)
@@ -2394,8 +2881,15 @@ impl Mesh {
         frame.header.status = wire.status;
         wire.apply_trace(&mut frame.header);
         let header = wire.header(self.self_id);
+        let destination = header.dst;
         let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let Some(index) = self.outbound_index(destination, now) else {
+            return false;
+        };
+        match self.links.get_mut(index) {
+            Some(link) => link.queue.push_record(&envelope, now).is_ok(),
+            None => false,
+        }
     }
 
     fn dispatch_migrate(&mut self, services: &Services, step: MigrateStep, now: u64) {
@@ -2421,8 +2915,15 @@ impl Mesh {
         frame.header.object = mesh_migrate::actor_object(&wire.actor);
         frame.header.status = wire.status;
         let header = wire.header(self.self_id);
+        let destination = header.dst;
         let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let Some(index) = self.outbound_index(destination, now) else {
+            return false;
+        };
+        match self.links.get_mut(index) {
+            Some(link) => link.queue.push_record(&envelope, now).is_ok(),
+            None => false,
+        }
     }
 
     fn after_join(
@@ -2605,11 +3106,10 @@ impl Mesh {
             | JoinEvent::None => {}
         }
 
-        // Root: sign one aggregate for each change set and push it to every
-        // known peer.  This is the M3 aggregated refresh: one signed
-        // EpochSummary per change set, not one full confirmation per member
-        // per refresh interval.  `publish_aggregate` returns owned data, so
-        // the mutable borrow on `self.join` ends before we iterate `self.peers`.
+        // Root: sign at most one aggregate for a changed view and seed it to a
+        // bounded deterministic window.  Members forward the same signed
+        // object once per epoch.  `publish_aggregate` returns owned data, so
+        // the mutable borrow on `self.join` ends before gossip needs `self`.
         let is_root = self.join.as_ref().map(|join| join.role()) == Some(Role::Root);
         if is_root {
             match &outcome.event {
@@ -2617,20 +3117,24 @@ impl Mesh {
                     if let Some(aggregate) =
                         self.join.as_mut().and_then(|join| join.publish_aggregate())
                     {
-                        let peers: alloc::vec::Vec<NodeId> = self.peers[..self.peer_count].to_vec();
-                        for peer in peers {
-                            self.send_join(
-                                services,
-                                JoinMessage::Epoch(aggregate.clone()),
-                                peer,
-                                now,
-                                false,
-                            );
-                        }
+                        self.gossip_epoch(services, &aggregate, None, now, false);
                     }
                 }
                 _ => {}
             }
+            match &outcome.event {
+                JoinEvent::Removed { node, .. } => self.forget_link(*node),
+                JoinEvent::RemovedBatch { nodes, .. } => {
+                    for node in nodes {
+                        self.forget_link(*node);
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            // A member that installed an aggregate forwards it once.  The
+            // source is excluded so the record does not echo to its sender.
+            self.maybe_forward_aggregate(services, source, now);
         }
     }
 
@@ -2976,7 +3480,7 @@ impl Mesh {
         reply_to_source: NodeId,
         now: u64,
         verbose: bool,
-    ) {
+    ) -> bool {
         if matches!(message, JoinMessage::Request(_)) {
             self.join_requests = self.join_requests.saturating_add(1);
         }
@@ -2991,7 +3495,7 @@ impl Mesh {
                 line.str(error.as_str());
                 line.push(b'\n');
                 log(services, line.as_bytes());
-                return;
+                return false;
             }
         };
         // The ack is sent by the member to the root, not to the member's own
@@ -3091,7 +3595,9 @@ impl Mesh {
             line.str(message.kind());
             line.push(b'\n');
             log(services, line.as_bytes());
+            return false;
         }
+        true
     }
 
     fn queue_hello(
@@ -3113,9 +3619,25 @@ impl Mesh {
         }
         header.request_id = request_id;
         header.reply_to = reply_to;
-        header.ttl = MeshHeader::MAX_HOPS;
+        header.ttl = if kind == MessageKind::Control {
+            GOSSIP_TTL
+        } else {
+            MeshHeader::MAX_HOPS
+        };
         let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let Some(index) = self.outbound_index(destination, now) else {
+            return false;
+        };
+        match self.links.get_mut(index) {
+            Some(link) => match link.queue.push_record(&envelope, now) {
+                Ok(()) => {
+                    link.frames_sent = link.frames_sent.saturating_add(1);
+                    true
+                }
+                Err(_) => false,
+            },
+            None => false,
+        }
     }
 
     fn learn_peer(
@@ -3123,27 +3645,36 @@ impl Mesh {
         services: &Services,
         source: NodeId,
         now: u64,
+        kind: MessageKind,
+        opcode: OpCode,
     ) -> Result<(), TransportError> {
-        if self.peer_count > 0 && self.peers[..self.peer_count].contains(&source) {
+        if self.link_index(source).is_some() {
             return Ok(());
         }
-        if self.peer_count >= MAX_MESH_NODES {
-            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        let role = self.join.as_ref().map(|join| join.role());
+        let root = self.join.as_ref().map(|join| join.root());
+        // A member accepts the authority plus confirmed members carrying
+        // membership gossip.  Route, migration and bulk frames from a third
+        // node are not a member link and are refused before they reach policy.
+        if role == Some(Role::Member) && root != Some(source) {
+            let gossip = matches!((kind, opcode), (MessageKind::Control, OpCode::Hello));
+            let member = self
+                .join
+                .as_ref()
+                .map(|join| join.snapshot().members.contains(&source))
+                .unwrap_or(false);
+            if !gossip || !member {
+                self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+            }
         }
-        if self.join.as_ref().map(|join| join.role()) == Some(Role::Member)
-            && self.peer.is_some()
-            && self.peer != Some(source)
+        // The root's authority link is unbound until the first member frame.
+        if self
+            .primary_link
+            .and_then(|index| self.links.get(index))
+            .is_some_and(|link| link.peer.is_zero())
         {
-            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
-        }
-        // A member link has exactly one source, the root.  A root link may see
-        // every member when the M3 host hub multiplexes the star onto the
-        // root's single mesh slot.  The first source remains the route and
-        // migration peer; the join state handles each member by `src`.
-        if self.peer.is_none() {
-            self.peer = Some(source);
+            self.bind_primary(source);
             if let Some(route) = self.route.as_mut() {
                 let _ = route.set_peer(source, now);
             }
@@ -3151,13 +3682,33 @@ impl Mesh {
                 let _ = migrate.set_peer(source);
             }
         }
-        self.peers[self.peer_count] = source;
-        self.peer_count += 1;
+        if self.link_index(source).is_some() {
+            return Ok(());
+        }
+        if self.link_count() >= MAX_MESH_LINKS {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if self.ensure_link(source, now).is_none() {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if let Some(link) = self.link_mut(source) {
+            link.confirmed = true;
+            link.last_rx_ms = now;
+        }
         let mut line = Line::new();
-        line.str("mesh-transport: peer=");
+        line.str("mesh-link: peer=");
         line.node(&source);
-        line.str(" peers=");
-        line.u64(self.peer_count as u64);
+        line.str(" role=");
+        line.str(match (role, root == Some(source)) {
+            (Some(Role::Root), _) => "member",
+            (Some(Role::Member), true) => "authority",
+            (Some(Role::Member), false) => "gossip",
+            _ => "peer",
+        });
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
         Ok(())
@@ -3175,7 +3726,9 @@ impl Mesh {
         tag: Tag,
     ) -> bool {
         let body = self.self_id.as_bytes();
-        let Ok(frame) = MessageFrame::inline(kind, opcode, StreamId(1), tag, body) else {
+        let mut body_bytes = [0u8; 16];
+        body_bytes.copy_from_slice(body);
+        let Ok(frame) = MessageFrame::inline(kind, opcode, StreamId(1), tag, &body_bytes) else {
             return false;
         };
         let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
@@ -3187,7 +3740,19 @@ impl Mesh {
         header.reply_to = reply_to;
         header.ttl = MeshHeader::MAX_HOPS;
         let envelope = MeshEnvelope { header, frame };
-        self.queue.push_record(&envelope, now).is_ok()
+        let Some(index) = self.outbound_index(destination, now) else {
+            return false;
+        };
+        match self.links.get_mut(index) {
+            Some(link) => match link.queue.push_record(&envelope, now) {
+                Ok(()) => {
+                    link.frames_sent = link.frames_sent.saturating_add(1);
+                    true
+                }
+                Err(_) => false,
+            },
+            None => false,
+        }
     }
 
     fn start_latency(&mut self, count: u32, now: u64) -> bool {
@@ -3270,7 +3835,13 @@ impl Mesh {
         let mut header = MeshHeader::new(self.self_id, destination, self.self_id);
         header.flags = mesh_flags::PROBE;
         header.ttl = MeshHeader::MAX_HOPS;
-        let _ = self.queue.push_record(&MeshEnvelope { header, frame }, now);
+        let envelope = MeshEnvelope { header, frame };
+        let Some(index) = self.outbound_index(destination, now) else {
+            return;
+        };
+        if let Some(link) = self.links.get_mut(index) {
+            let _ = link.queue.push_record(&envelope, now);
+        }
     }
 
     fn on_window_update(&mut self, body: &[u8]) {
@@ -3535,9 +4106,12 @@ impl Mesh {
         header.flags = mesh_flags::PROBE;
         header.ttl = MeshHeader::MAX_HOPS;
         header.request_id = u64::from(nonce);
-        self.queue
-            .push_record(&MeshEnvelope { header, frame }, now)
-            .is_ok()
+        match self.primary_queue_mut() {
+            Some(queue) => queue
+                .push_record(&MeshEnvelope { header, frame }, now)
+                .is_ok(),
+            None => false,
+        }
     }
 
     fn queue_bulk_chunk(
@@ -3554,9 +4128,9 @@ impl Mesh {
         if body_len > FRAME_BODY_MAX {
             return false;
         }
-        // SAFETY: single-threaded module; BULK_TX is only used here and the
-        // record is encoded into the send queue before the next call.
-        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(BULK_TX))[..body_len] };
+        // SAFETY: single-threaded module; FRAME_BODY is not live across a
+        // tick and the chunk is encoded into the send queue before return.
+        let body = unsafe { &mut (&mut *core::ptr::addr_of_mut!(FRAME_BODY))[..body_len] };
         body[0..4].copy_from_slice(&BULK_MAGIC.to_le_bytes());
         body[4..8].copy_from_slice(&nonce.to_le_bytes());
         body[8..12].copy_from_slice(&total.to_le_bytes());
@@ -3586,9 +4160,12 @@ impl Mesh {
         header.flags = mesh_flags::PROBE | mesh_flags::REPLY;
         header.ttl = MeshHeader::MAX_HOPS;
         header.request_id = u64::from(nonce);
-        self.queue
-            .push_data_record(&MeshEnvelope { header, frame }, now)
-            .is_ok()
+        match self.primary_queue_mut() {
+            Some(queue) => queue
+                .push_data_record(&MeshEnvelope { header, frame }, now)
+                .is_ok(),
+            None => false,
+        }
     }
 
     fn flush(&mut self, services: &Services, now: u64) {
@@ -3596,28 +4173,54 @@ impl Mesh {
             services,
             slot: MESH_SLOT,
         };
-        let report = self.queue.flush(&mut sink);
-        self.stats.bytes_sent = self
-            .stats
-            .bytes_sent
-            .saturating_add(report.bytes_written as u64);
-        self.stats.frames_sent = self
-            .stats
-            .frames_sent
-            .saturating_add(report.frames_written as u64);
-        self.stats.writes = self.stats.writes.saturating_add(report.writes as u64);
-        if report.frames_written > 1 && report.writes == 1 {
-            self.stats.batched_flushes = self.stats.batched_flushes.saturating_add(1);
+        // Flush the authority link first, then every gossip link.  The sink is
+        // one TCP session, so a blocked queue stops later queues too; the
+        // order keeps join/route control ahead of gossip.
+        let mut bytes = 0usize;
+        let mut frames = 0usize;
+        let mut writes = 0usize;
+        let mut blocked = false;
+        let mut closed = false;
+        let mut batching = 0u64;
+        let mut peak = 0usize;
+        for pass in 0..2 {
+            for index in 0..self.links.len() {
+                let primary = Some(index) == self.primary_link;
+                if (pass == 0) != primary {
+                    continue;
+                }
+                let Some(link) = self.links.get_mut(index) else {
+                    continue;
+                };
+                let report = link.queue.flush(&mut sink);
+                bytes += report.bytes_written;
+                frames += report.frames_written;
+                writes += report.writes;
+                blocked |= report.blocked;
+                closed |= report.closed;
+                if report.frames_written > 1 && report.writes == 1 {
+                    batching += 1;
+                }
+                peak = peak.max(link.queue.peak_pending());
+                link.bytes_sent = link.bytes_sent.saturating_add(report.bytes_written as u64);
+                link.frames_sent = link
+                    .frames_sent
+                    .saturating_add(report.frames_written as u64);
+            }
         }
-        self.stats.peak_queued_bytes = self.stats.peak_queued_bytes.max(self.queue.peak_pending());
+        self.stats.bytes_sent = self.stats.bytes_sent.saturating_add(bytes as u64);
+        self.stats.frames_sent = self.stats.frames_sent.saturating_add(frames as u64);
+        self.stats.writes = self.stats.writes.saturating_add(writes as u64);
+        self.stats.batched_flushes = self.stats.batched_flushes.saturating_add(batching);
+        self.stats.peak_queued_bytes = self.stats.peak_queued_bytes.max(peak);
         self.stats.peak_decoder_bytes = self
             .stats
             .peak_decoder_bytes
             .max(self.decoder.buffered_len());
-        if report.blocked {
+        if blocked {
             self.stats.short_writes = self.stats.short_writes.saturating_add(1);
         }
-        if report.closed {
+        if closed {
             self.disconnect(services, now, "send-closed");
         }
     }
@@ -3656,6 +4259,16 @@ impl Mesh {
         line.u64(self.stats.connects);
         line.str(" connect_ms=");
         line.u64(self.last_connect_ms);
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
+        line.str(" gossip_sum=");
+        line.u64(self.gossip_summaries_sent);
+        line.str(" gossip_sum_rx=");
+        line.u64(self.gossip_summaries_received);
+        line.str(" gossip_agg=");
+        line.u64(self.gossip_aggregates_sent);
+        line.str(" gossip_fwd=");
+        line.u64(self.gossip_aggregates_forwarded);
         line.str(" writes=");
         line.u64(self.stats.writes);
         line.str(" batched=");
@@ -3716,11 +4329,12 @@ impl Mesh {
         let poisoned = self.decoder.is_poisoned();
         (services.tcp_abort)(MESH_SLOT);
         self.decoder.reset();
-        self.queue.clear();
-        self.pending = PendingTable::new(PENDING_CAPACITY);
-        self.peer = None;
-        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
-        self.peer_count = 0;
+        self.links.clear();
+        self.primary_link = None;
+        self.peer = match self.join.as_ref().map(|join| (join.role(), join.root())) {
+            Some((Role::Member, root)) => Some(root),
+            _ => None,
+        };
         self.peer_confirmed = false;
         self.pass_logged = false;
         self.join_timeout_logged = false;
@@ -3835,9 +4449,9 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
 }
 
 fn body_bytes(len: usize) -> &'static [u8] {
-    // SAFETY: single-threaded module; FRAME_RX holds the current frame body and
+    // SAFETY: single-threaded module; FRAME_BODY holds the current frame body and
     // the slice is consumed before the next record is decoded.
-    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FRAME_RX) as *const u8, len) }
+    unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FRAME_BODY) as *const u8, len) }
 }
 
 /// Read the M2-6 failure-detection opt-in.
