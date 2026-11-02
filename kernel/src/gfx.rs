@@ -16,7 +16,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 use crate::font::{FONT_BASELINE, FONT_DATA, FONT_INFO};
-use crate::{console_println, print_hex32, print_str, println};
+use crate::{console_println, print_hex32, print_hex8, print_str, println};
 
 /// REX3 register block (kseg1 alias of physical 0x1F0F_0000).
 const REX3: u32 = 0xBF0F_0000;
@@ -153,10 +153,6 @@ const STATUS_GFXBUSY: u32 = 1 << 3;
 const STATUS_GFIFOLEVEL_SHIFT: u32 = 7;
 const STATUS_GFIFOLEVEL_MASK: u32 = 0x3F;
 
-/// Wait-path counters used by the diagnostics self-test.
-static mut WAIT_CALLS: u32 = 0;
-static mut WAIT_LOOPS: u32 = 0;
-
 /// DRAWMODE1: RGB planes, 24-bit draw depth, compare disabled, logicop SRC.
 ///
 /// The bit layout matters: planes is bits [2:0], drawdepth [4:3], compare
@@ -164,6 +160,14 @@ static mut WAIT_LOOPS: u32 = 0;
 /// rgbmode bit the engine stays in colour-index mode and only the red
 /// channel of the fill colour reaches the framebuffer.
 const DM1_RGB24: u32 = 0x3000_F319;
+const DM1_RGBMODE: u32 = 1 << 15;
+const DM1_PLANES_MASK: u32 = 0x7;
+const DM1_PLANES_RGB: u32 = 1;
+const DM1_DRAWDEPTH_SHIFT: u32 = 3;
+const DM1_DRAWDEPTH_MASK: u32 = 0x3;
+const DM1_DRAWDEPTH_24: u32 = 3;
+const DM1_LOGICOP_SHIFT: u32 = 28;
+const DM1_LOGICOP_SRC: u32 = 3;
 /// DRAWMODE0: DRAW opcode, block address mode, stop on X and Y.
 const DM0_BLOCK: u32 = 0x0306;
 /// DRAWMODE0: DRAW opcode, span address mode, stop on X.
@@ -181,24 +185,70 @@ fn reg_go(off: u32, val: u32) {
     unsafe { write_volatile((REX3 + GO + off) as *mut u32, val) }
 }
 
+/// Wait-path counters, sampled by the self-test.
+///
+/// These describe the FIFO, not the driver: a poll that found `GFXBUSY` set or
+/// a non-zero FIFO level is direct evidence that the wait had work to do.
+#[derive(Clone, Copy)]
+pub struct WaitStats {
+    /// Calls to `wait_idle`.
+    pub waits: u32,
+    /// STATUS polls made inside those calls.
+    pub polls: u32,
+    /// Polls that saw the engine busy or the FIFO non-empty.
+    pub busy_polls: u32,
+    /// Deepest FIFO level reported by STATUS since boot.
+    pub max_level: u32,
+}
+
+static mut WAITS: u32 = 0;
+static mut POLLS: u32 = 0;
+static mut BUSY_POLLS: u32 = 0;
+static mut MAX_LEVEL: u32 = 0;
+
+fn wait_stats() -> WaitStats {
+    // SAFETY: single-threaded kernel; the counters are only written here and
+    // in `wait_idle`.
+    unsafe {
+        WaitStats {
+            waits: WAITS,
+            polls: POLLS,
+            busy_polls: BUSY_POLLS,
+            max_level: MAX_LEVEL,
+        }
+    }
+}
+
 /// Wait for the command FIFO to drain.
 ///
-/// The FIFO holds only a few dozen entries and a full queue drops the write,
-/// so a driver has to throttle.  Real SGI code does the same thing with
-/// `REX3WAIT(REX)`, which polls STATUS for the busy bit.
+/// The FIFO holds 32 entries on the real REX3 and a full queue stalls or drops
+/// the GIO write, so a driver has to throttle.  Real SGI code does the same
+/// thing with `REX3WAIT(REX)`, which polls STATUS for the busy bit.
+///
+/// The counters record what the wait saw, which is what makes the self-test's
+/// burst meaningful: a poll that found the engine busy cannot have been
+/// skipped, and the last poll of a burst that drained the queue shows level 0.
 fn wait_idle() {
+    // SAFETY: single-threaded kernel.
     unsafe {
-        WAIT_CALLS = WAIT_CALLS.wrapping_add(1);
+        WAITS = WAITS.wrapping_add(1);
     }
     loop {
-        let status = unsafe { read_volatile((REX3 + STATUS) as *const u32) };
+        let status = read_reg(STATUS);
         let busy = status & STATUS_GFXBUSY != 0;
         let level = (status >> STATUS_GFIFOLEVEL_SHIFT) & STATUS_GFIFOLEVEL_MASK;
+        // SAFETY: single-threaded kernel.
+        unsafe {
+            POLLS = POLLS.wrapping_add(1);
+            if level > MAX_LEVEL {
+                MAX_LEVEL = level;
+            }
+            if busy || level != 0 {
+                BUSY_POLLS = BUSY_POLLS.wrapping_add(1);
+            }
+        }
         if !busy && level == 0 {
             return;
-        }
-        unsafe {
-            WAIT_LOOPS = WAIT_LOOPS.wrapping_add(1);
         }
         core::hint::spin_loop();
     }
@@ -407,6 +457,29 @@ pub fn init() {
     program_identity_gamma();
 }
 
+/// Stage the RGB24 draw state used by every fill.
+fn stage_rgb(r: u32, g: u32, b: u32) {
+    reg(DRAWMODE1, DM1_RGB24);
+    reg(WRMASK, 0x00FF_FFFF);
+    reg(COLORRED, r << 11);
+    reg(COLORGRN, g << 11);
+    reg(COLORBLUE, b << 11);
+}
+
+/// Issue one block fill from the staged state.  The caller waits.
+fn block_go(x0: i32, y0: i32, x1: i32, y1: i32) {
+    reg(XYENDI, xy(x1, y1));
+    reg(XYSTARTI, xy(x0, y0));
+    reg_go(DRAWMODE0, DM0_BLOCK);
+}
+
+/// Issue one span fill from the staged state.  The caller waits.
+fn span_go(x0: i32, x1: i32, y: i32) {
+    reg(XYENDI, xy(x1, y));
+    reg(XYSTARTI, xy(x0, y));
+    reg_go(DRAWMODE0, DM0_SPAN);
+}
+
 /// Fill the rectangle `(x0, y0)..=(x1, y1)` with an RGB colour.
 pub fn fill_rect(x0: i32, y0: i32, x1: i32, y1: i32, r: u32, g: u32, b: u32) {
     for y in y0.max(0)..=y1.min(SCREEN_HEIGHT - 1) {
@@ -415,14 +488,8 @@ pub fn fill_rect(x0: i32, y0: i32, x1: i32, y1: i32, r: u32, g: u32, b: u32) {
         }
     }
     wait_idle();
-    reg(DRAWMODE1, DM1_RGB24);
-    reg(WRMASK, 0x00FF_FFFF);
-    reg(COLORRED, r << 11);
-    reg(COLORGRN, g << 11);
-    reg(COLORBLUE, b << 11);
-    reg(XYENDI, xy(x1, y1));
-    reg(XYSTARTI, xy(x0, y0));
-    reg_go(DRAWMODE0, DM0_BLOCK);
+    stage_rgb(r, g, b);
+    block_go(x0, y0, x1, y1);
 }
 
 /// Fill the horizontal run `x0..=x1` on row `y` with an RGB colour.
@@ -434,73 +501,328 @@ pub fn fill_span(x0: i32, x1: i32, y: i32, r: u32, g: u32, b: u32) {
         shadow_put(x, y, r, g, b);
     }
     wait_idle();
-    reg(DRAWMODE1, DM1_RGB24);
-    reg(WRMASK, 0x00FF_FFFF);
-    reg(COLORRED, r << 11);
-    reg(COLORGRN, g << 11);
-    reg(COLORBLUE, b << 11);
-    reg(XYENDI, xy(x1, y));
-    reg(XYSTARTI, xy(x0, y));
-    reg_go(DRAWMODE0, DM0_SPAN);
+    stage_rgb(r, g, b);
+    span_go(x0, x1, y);
 }
 
-/// Verify the REX3 mode and FIFO-drain contract from the driver side.
+/// The self-test probe: the rectangle the engine paints and the host gate
+/// reads back from the REX3 framebuffer.
 ///
-/// This is deliberately not an emulator conformance test.  It checks that the
-/// fill path actually programs RGB24 mode (including `DRAWMODE1` bit 15), that
-/// the register readback agrees, and that the shallow-FIFO wait was called and
-/// ended with `GFXBUSY=0` and FIFO level 0.  A driver regression that clears
-/// rgbmode or bypasses `REX3WAIT` fails here even if the emulator is more
-/// permissive than the real REX3.
-pub fn self_test() -> bool {
-    let calls_before = unsafe { WAIT_CALLS };
-    // One small span at the bottom-right avoids touching the menu body.
-    fill_span(
-        SCREEN_WIDTH - 2,
-        SCREEN_WIDTH - 1,
-        SCREEN_HEIGHT - 1,
-        1,
-        2,
-        3,
+/// It sits below the text console's last row and is repainted at the end of
+/// every console repaint, so a host framebuffer dump always sees pixels that
+/// came through the REX3 fill path, never a CPU shadow.
+#[derive(Clone, Copy)]
+pub struct Probe {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+    pub r: u32,
+    pub g: u32,
+    pub b: u32,
+}
+
+/// Fixed probe geometry and colour.
+///
+/// The three channels differ and are non-zero, so a red-only fill, a channel
+/// swap or a colour-index fill all produce a different framebuffer word.
+pub const PROBE: Probe = Probe {
+    x: SCREEN_WIDTH - 64,
+    y: SCREEN_HEIGHT - 16,
+    w: 64,
+    h: 16,
+    r: 0x11,
+    g: 0x22,
+    b: 0x33,
+};
+
+/// Colour index used by the deliberate-fault fill (`gfx fault`).
+const FAULT_INDEX: u32 = 0x2A;
+
+/// Number of GO writes in the FIFO burst: 64 times the real 32-entry FIFO.
+const FIFO_BURST: u32 = 1024;
+
+static mut PROBE_ARMED: bool = false;
+static mut PROBE_FAULT: bool = false;
+
+/// Repaint the self-test probe through the engine's block-fill path.
+///
+/// The console calls this at the end of a repaint.  Without it the full-screen
+/// console repaint would cover the probe area with the background colour and a
+/// host dump would never see the engine's output.  While the fault window is
+/// open the probe is deliberately left as the faulted fill painted it.
+pub fn paint_probe() {
+    // SAFETY: single-threaded kernel.
+    let (armed, fault) = unsafe { (PROBE_ARMED, PROBE_FAULT) };
+    if !armed || fault {
+        return;
+    }
+    fill_rect(
+        PROBE.x,
+        PROBE.y,
+        PROBE.x + PROBE.w - 1,
+        PROBE.y + PROBE.h - 1,
+        PROBE.r,
+        PROBE.g,
+        PROBE.b,
     );
+}
+
+/// What `self_test` measured, for the telnet reply and the host gate.
+pub struct GfxReport {
+    pub ok: bool,
+    pub drawmode1: u32,
+    pub rgbmode: bool,
+    pub colour: [u32; 3],
+    pub burst: u32,
+    pub waits: u32,
+    pub polls: u32,
+    pub busy_polls: u32,
+    pub max_level: u32,
+    pub probe: Probe,
+}
+
+/// Verify the REX3 fill path from the engine side.
+///
+/// Three things are checked:
+///
+/// 1. **Engine state.**  `DRAWMODE1`, `COLORRED`/`COLORGRN`/`COLORBLUE`,
+///    `WRMASK` and the probe primitive's coordinates are read back from the
+///    engine's register window, not from driver bookkeeping.  A driver that
+///    clears `rgbmode` (leaving the engine in colour-index mode, where the
+///    green and blue registers are ignored) or that stages only the red
+///    channel fails here.
+/// 2. **FIFO drain.**  A burst of [`FIFO_BURST`] full-width span GOs is issued
+///    with no intervening wait, ending in a full-screen block fill, and only
+///    then is the engine waited on.  The wait loop must observe a busy engine
+///    and drain it to `GFXBUSY=0`, FIFO level 0.  `busy_polls` is the number of
+///    polls that found work queued; it is evidence the wait was needed, not a
+///    count of calls.
+/// 3. **Framebuffer probe.**  The probe rectangle is left painted on the
+///    display and repainted by every console repaint, so the host gate
+///    (`tools/rex3-gate.py`) can read its pixels back from iris's REX3
+///    framebuffer.  The guest cannot read VRAM itself: Newport has no CPU
+///    framebuffer aperture, so the pixel half of the check is host-side.
+///
+/// The burst writes the engine and not the CPU shadow: the console repaint
+/// that follows this diagnostic's output rebuilds the whole shadow from the
+/// log, so the two are back in step before anything else reads the shadow.
+pub fn self_test() -> GfxReport {
+    // SAFETY: single-threaded kernel.
+    unsafe {
+        PROBE_FAULT = false;
+    }
+    wait_idle();
+
+    // FIFO burst.  Mode and colour are staged once, then GO follows GO with no
+    // wait: on hardware the 32-entry FIFO cannot take 1024 primitives, so the
+    // CPU has to stall on the full queue; on iris the queue is deeper, but the
+    // engine is still mid-draw when the burst ends.
+    let before = wait_stats();
+    stage_rgb(PROBE.r, PROBE.g, PROBE.b);
+    for i in 0..FIFO_BURST {
+        let y = PROBE.y + (i % PROBE.h as u32) as i32;
+        span_go(0, SCREEN_WIDTH - 1, y);
+    }
+    // A full-screen fill ends the burst: 1.3 M pixels the engine cannot finish
+    // between the last GO and the first STATUS poll, so the wait below always
+    // has work to drain.  It leaves the screen black; the console repaint that
+    // follows this diagnostic's output restores the log.
+    reg(COLORRED, 0);
+    reg(COLORGRN, 0);
+    reg(COLORBLUE, 0);
+    block_go(0, 0, SCREEN_WIDTH - 1, SCREEN_HEIGHT - 1);
+    wait_idle();
+    let drained = wait_stats();
+    let status = read_reg(STATUS);
+
+    // Stage the probe primitive's coordinates without starting it and read
+    // them back through the engine's context registers.  The read must happen
+    // before the GO: the live DDA start advances as the primitive draws, so a
+    // read after the fill reports where the walker stopped, not what was
+    // staged.
+    stage_rgb(PROBE.r, PROBE.g, PROBE.b);
+    reg(XYENDI, xy(PROBE.x + PROBE.w - 1, PROBE.y + PROBE.h - 1));
+    reg(XYSTARTI, xy(PROBE.x, PROBE.y));
+    let start = read_reg(XYSTARTI);
+    let end = read_reg(XYENDI);
+    let coords_ok =
+        start == xy(PROBE.x, PROBE.y) && end == xy(PROBE.x + PROBE.w - 1, PROBE.y + PROBE.h - 1);
+
+    // Publish the probe through the ordinary block-fill path (which restages
+    // the same mode, colour and coordinates), then read the engine back.
+    // SAFETY: single-threaded kernel.
+    unsafe {
+        PROBE_ARMED = true;
+    }
+    paint_probe();
     wait_idle();
 
     let mode = read_reg(DRAWMODE1);
-    let status = read_reg(STATUS);
-    let calls = unsafe { WAIT_CALLS }.wrapping_sub(calls_before);
-    let mode_ok = mode & (1 << 15) != 0 && mode & 0x7 == 1 && (mode >> 3) & 0x3 == 3;
-    let fifo_ok = calls >= 2
+    let colour = [read_reg(COLORRED), read_reg(COLORGRN), read_reg(COLORBLUE)];
+    let wrmask = read_reg(WRMASK);
+
+    let rgbmode = mode & DM1_RGBMODE != 0;
+    let mode_ok = rgbmode
+        && mode & DM1_PLANES_MASK == DM1_PLANES_RGB
+        && (mode >> DM1_DRAWDEPTH_SHIFT) & DM1_DRAWDEPTH_MASK == DM1_DRAWDEPTH_24
+        && (mode >> DM1_LOGICOP_SHIFT) & 0xF == DM1_LOGICOP_SRC;
+    let colour_ok = wrmask == 0x00FF_FFFF
+        && colour[0] == (PROBE.r << 11) & 0x00FF_FFFF
+        && colour[1] == (PROBE.g << 11) & 0x00FF_FFFF
+        && colour[2] == (PROBE.b << 11) & 0x00FF_FFFF;
+    let waits = drained.waits.wrapping_sub(before.waits);
+    let polls = drained.polls.wrapping_sub(before.polls);
+    let busy_polls = drained.busy_polls.wrapping_sub(before.busy_polls);
+    let max_level = if drained.max_level > before.max_level {
+        drained.max_level
+    } else {
+        0
+    };
+    let fifo_ok = busy_polls > 0
         && status & STATUS_GFXBUSY == 0
         && (status >> STATUS_GFIFOLEVEL_SHIFT) & STATUS_GFIFOLEVEL_MASK == 0;
-    let pixel_offset =
-        ((SCREEN_HEIGHT - 1) as usize * SCREEN_WIDTH as usize + (SCREEN_WIDTH - 1) as usize) * 3;
-    let mut pixel = [0u8; 3];
-    shadow_read(pixel_offset, &mut pixel);
-    let shadow_ok = pixel == [3, 2, 1]; // shadow is BGR; fill was r=1,g=2,b=3
 
     console_println("gfx: self-test");
+    print_str("  engine drawmode1=0x");
+    print_hex32(mode);
+    print_str(" rgbmode=");
+    print_str(if rgbmode { "set" } else { "CLEAR" });
+    print_str(" planes=");
+    print_dec(mode & DM1_PLANES_MASK);
+    print_str(" depth=");
+    print_dec((mode >> DM1_DRAWDEPTH_SHIFT) & DM1_DRAWDEPTH_MASK);
+    print_str(" wrmask=0x");
+    print_hex32(wrmask);
+    println("");
+    print_str("  colour red=0x");
+    print_hex32(colour[0]);
+    print_str(" grn=0x");
+    print_hex32(colour[1]);
+    print_str(" blu=0x");
+    print_hex32(colour[2]);
+    println("");
+    print_str("  probe start=0x");
+    print_hex32(start);
+    print_str(" end=0x");
+    print_hex32(end);
+    println("");
+    print_str("  fifo burst=");
+    print_dec(FIFO_BURST);
+    print_str(" waits=");
+    print_dec(waits);
+    print_str(" polls=");
+    print_dec(polls);
+    print_str(" busy_polls=");
+    print_dec(busy_polls);
+    print_str(" max_level=");
+    print_dec(max_level);
+    print_str(" status=0x");
+    print_hex32(status);
+    println("");
+    print_str("  probe x=");
+    print_dec(PROBE.x as u32);
+    print_str(" y=");
+    print_dec(PROBE.y as u32);
+    print_str(" w=");
+    print_dec(PROBE.w as u32);
+    print_str(" h=");
+    print_dec(PROBE.h as u32);
+    print_str(" rgb=");
+    print_probe_rgb();
+    println("");
+    print_str("  checks mode=");
+    print_str(if mode_ok { "ok" } else { "BAD" });
+    print_str(" colour=");
+    print_str(if colour_ok { "ok" } else { "BAD" });
+    print_str(" coords=");
+    print_str(if coords_ok { "ok" } else { "BAD" });
+    print_str(" fifo=");
+    print_str(if fifo_ok { "ok" } else { "BAD" });
+    println("");
+
+    let ok = mode_ok && colour_ok && coords_ok && fifo_ok;
+    print_str("gfx: self-test ");
+    println(if ok { "ok" } else { "FAILED" });
+
+    GfxReport {
+        ok,
+        drawmode1: mode,
+        rgbmode,
+        colour,
+        burst: FIFO_BURST,
+        waits,
+        polls,
+        busy_polls,
+        max_level,
+        probe: PROBE,
+    }
+}
+
+/// Deliberately clear `rgbmode` and require the engine readback to catch it.
+///
+/// This is the negative control for the mode check: it clears the bit the same
+/// way a driver regression would, paints the probe through the engine in
+/// colour-index mode, reads the engine back, then restores RGB24.
+///
+/// The probe is left showing the faulted fill until the next `self_test`:
+/// `graphics_console::flush` skips the probe while the fault window is open, so
+/// a host dump taken after this command shows exactly what a colour-index fill
+/// leaves in VRAM.  That is how `tools/rex3-gate.py` proves the pixel check has
+/// power.
+pub fn fault_test() -> bool {
+    wait_idle();
+    // The fault: only the rgbmode bit is cleared, so the engine stays in
+    // colour-index mode while the driver still asks for a 24-bit fill.
+    reg(DRAWMODE1, DM1_RGB24 & !DM1_RGBMODE);
+    reg(WRMASK, 0x00FF_FFFF);
+    reg(COLORI, FAULT_INDEX);
+    reg(COLORX, FAULT_INDEX);
+    block_go(
+        PROBE.x,
+        PROBE.y,
+        PROBE.x + PROBE.w - 1,
+        PROBE.y + PROBE.h - 1,
+    );
+    wait_idle();
+    let mode = read_reg(DRAWMODE1);
+    let detected = mode & DM1_RGBMODE == 0;
+    reg(DRAWMODE1, DM1_RGB24);
+    wait_idle();
+    // SAFETY: single-threaded kernel.
+    unsafe {
+        PROBE_ARMED = true;
+        PROBE_FAULT = true;
+    }
+
+    console_println("gfx: fault-injection rgbmode");
     print_str("  drawmode1=0x");
     print_hex32(mode);
     print_str(" rgbmode=");
-    print_str(if mode & (1 << 15) != 0 {
-        "set"
-    } else {
-        "CLEAR"
-    });
-    print_str(" status=0x");
-    print_hex32(status);
-    print_str(" waits=");
-    print_dec(calls);
-    print_str(" loops=");
-    print_dec(unsafe { WAIT_LOOPS });
+    print_str(if detected { "CLEAR" } else { "SET" });
+    print_str(" index=0x");
+    print_hex32(FAULT_INDEX);
     println("");
-    let ok = mode_ok && fifo_ok && shadow_ok;
-    print_str(" shadow=");
-    print_str(if shadow_ok { "bgr" } else { "BAD" });
+    print_str("  probe held x=");
+    print_dec(PROBE.x as u32);
+    print_str(" y=");
+    print_dec(PROBE.y as u32);
+    print_str(" w=");
+    print_dec(PROBE.w as u32);
+    print_str(" h=");
+    print_dec(PROBE.h as u32);
     println("");
-    print_str("gfx: self-test ");
-    println(if ok { "ok" } else { "FAILED" });
-    ok
+    print_str("gfx: fault-injection ");
+    println(if detected { "detected" } else { "NOT DETECTED" });
+    detected
+}
+
+fn print_probe_rgb() {
+    print_hex8(PROBE.r as u8);
+    print_str(",");
+    print_hex8(PROBE.g as u8);
+    print_str(",");
+    print_hex8(PROBE.b as u8);
 }
 
 /// Draw one character with the PROM's raster font.

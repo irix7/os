@@ -628,7 +628,8 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
                   \x20 panic         dump the panic screen and halt (test hook)\r\n\
                   \x20 trap          exercise the exception vector (test hook)\r\n\
                   \x20 tlb           exercise the TLB-refill vector (test hook)\r\n\
-                  \x20 gfx           verify REX3 rgbmode and FIFO drain (test hook)\r\n\
+                  \x20 gfx           verify the REX3 engine and FIFO drain (test hook)\r\n\
+                  \x20 gfx fault     clear rgbmode and prove the gfx check catches it\r\n\
                   \x20 user          enter the fixed user-mode smoke test\r\n\
                   \x20 userelf       load and run an n32 ELF from SCSI target 2\r\n\
                   \x20 reboot        restart from the PROM\r\n",
@@ -725,7 +726,45 @@ fn execute(sock: &mut TcpSocket, console: &mut Console) {
             crate::traps::tlb_self_test();
         }
         b"gfx" => {
-            crate::gfx::self_test();
+            let report = crate::gfx::self_test();
+            let mut w = SocketWriter { sock };
+            let _ = write!(
+                w,
+                "gfx: self-test {} mode=0x{:08x} rgbmode={} colour={:02x},{:02x},{:02x} \
+                 fifo=burst:{},waits:{},polls:{},busy:{},level:{} \
+                 probe={},{},{},{} rgb={:02x},{:02x},{:02x}\r\n",
+                if report.ok { "ok" } else { "FAILED" },
+                report.drawmode1,
+                if report.rgbmode { "set" } else { "CLEAR" },
+                report.colour[0] >> 11,
+                report.colour[1] >> 11,
+                report.colour[2] >> 11,
+                report.burst,
+                report.waits,
+                report.polls,
+                report.busy_polls,
+                report.max_level,
+                report.probe.x,
+                report.probe.y,
+                report.probe.w,
+                report.probe.h,
+                report.probe.r,
+                report.probe.g,
+                report.probe.b,
+            );
+        }
+        b"gfx fault" => {
+            let detected = crate::gfx::fault_test();
+            let mut w = SocketWriter { sock };
+            let _ = write!(
+                w,
+                "gfx: fault-injection {} probe={},{},{},{}\r\n",
+                if detected { "detected" } else { "NOT DETECTED" },
+                crate::gfx::PROBE.x,
+                crate::gfx::PROBE.y,
+                crate::gfx::PROBE.w,
+                crate::gfx::PROBE.h,
+            );
         }
         b"user" => {
             let _ = sock.send_slice(b"user: entering (write returns, exit returns here)\r\n");
