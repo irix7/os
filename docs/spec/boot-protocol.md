@@ -1,6 +1,6 @@
 # IRIX 7 — Boot Protocol (ROM ↔ Kernel)
 
-**Status:** draft (the current assembly ROM does not emit `BootInfo`)
+**Status:** draft (the kernel consumes a `BootInfo` when one is present; the current assembly ROM passes none)
 **Version:** 1.0
 **Owner:** boot
 **Related:** [`architecture.md`](architecture.md) §10, [`../plan/milestones.md`](../plan/milestones.md) M1–M2.
@@ -59,6 +59,10 @@ The current ROM passes `$a0 = 0` (no `BootInfo`), `$a1` = RAM bytes, `$a2` = RAM
 `$sp` = the kernel stack top. The kernel falls back to that geometry, reserves
 `0x0800_0000..0x08B0_0000` and starts the frame allocator at `0x08B0_0000`.
 
+A non-zero `$a0` is a loader-produced record that must validate. A record that fails any
+check in §5 is a malformed handoff: the kernel prints a diagnostic and halts. It does not
+fall back to the register handoff, because that would hide a broken loader.
+
 The kernel may re-enable or reconfigure anything after it has validated the handoff. It must
 not call ARCS after it takes over the TLB and caches; anything it needs from ARCS must be
 copied out of `BootInfo` first.
@@ -68,7 +72,9 @@ copied out of `BootInfo` first.
 `BootInfo` is a **binary contract**, not a Rust ABI. It is `#[repr(C, align(8))]`, 256 bytes,
 with fixed offsets. The current assembly ROM does not emit it; when a loader does, that
 loader and the n32 kernel must produce and consume the same bytes.
-Compile-time assertions in both codebases check the size and offsets.
+Compile-time assertions in `crates/boot-protocol-tests` check the size and offsets, and the
+kernel links that crate, so the layout the kernel parses is the layout the conformance tests
+assert.
 
 | Offset | Size | Field | Notes |
 |---|---|---|---|
@@ -184,15 +190,27 @@ Rules:
 
 The kernel validates, in order:
 
-1. `magic == "I7BI"`.
+1. `magic == "I7BI"` (the four bytes `49 37 42 49`, decoded big-endian).
 2. `version_major == 1`; minor is ignored if unknown.
-3. `size >= 256` and `mem_map_entry_size == 24`.
-4. CRC32C matches with the checksum field zeroed.
-5. `mem_map_count <= 64`; every entry is within the 4 GiB physical map.
-6. `kernel_phys`/`kernel_size` and `bundle_phys`/`bundle_size` are inside usable RAM and do
-   not overlap `BootInfo` or the stack.
-7. `cmdline` and `r2_url` are NUL-terminated within their declared lengths.
-8. The kernel and bundle digests match (the ROM already checked; the kernel checks again).
+3. `size` is between 256 and 4096 and the whole declared record is readable.
+4. CRC32C over the declared `size` bytes with the checksum field zeroed matches.
+5. `mem_map_count <= 64`.
+6. `mem_map_entry_size == 24`.
+7. Every map entry is within the 4 GiB physical space; `base + size` must not wrap.
+8. Map entries do not overlap each other; `kernel_phys`/`kernel_size` and
+   `bundle_phys`/`bundle_size` are inside usable RAM, within bounds, do not overlap each
+   other, and do not overlap the `BootInfo` record. `cmdline` and `r2_url` are
+   NUL-terminated within their declared lengths.
+
+The map is read with a bounded length derived from `mem_map_count` and
+`mem_map_entry_size`; the kernel never indexes the 256-byte header with a physical address.
+The parser and these checks are implemented once in `crates/boot-protocol-tests`; the
+kernel's `boot_protocol` module only supplies the kseg0 physical reader.
+
+Digest re-verification is not on the live path yet. The current ROM supplies neither a
+`BootInfo` record nor a kernel/bundle digest, so there is nothing for the kernel to re-hash;
+a loader that sets flag 9 or 10 must supply the digest bytes, and the kernel must add the
+re-hash before it trusts those flags.
 
 On failure, the kernel prints a diagnostic to the serial console and halts. It does not
 attempt to recover by guessing.
@@ -201,7 +219,7 @@ attempt to recover by guessing.
 
 - Major version changes are incompatible; the kernel refuses an unknown major.
 - Minor versions add fields at the end or repurpose reserved bits; the kernel accepts a
-  smaller `size` and zero-fills the rest.
+  larger `size`, checksums the declared bytes and ignores fields it does not know.
 - Unknown flag bits are ignored.
 - The memory-map entry size is explicit; a future entry can grow.
 
@@ -215,6 +233,13 @@ The ROM's own failure behaviour is:
 | RAM test mismatch | Print the failing address and halt |
 | Kernel image will not decompress | Print a diagnostic and halt |
 
+The kernel's handoff failure behaviour is:
+
+| Failure | Behaviour |
+|---|---|
+| `$a0 = 0` | Print `kernel: no BootInfo; using ROM handoff` and use `$a1`/`$a2` |
+| `$a0 != 0`, record invalid | Print `kernel: BootInfo rejected at 0x<addr>: <reason>` and halt |
+
 The ROM does not fetch anything: the kernel image is embedded in the PROM image, so
 there is no link to lose and no digest to check. The failure modes that used to belong
 here — no DHCP, DNS failure, HTTP errors — belong to the kernel's boot path, which owns
@@ -225,13 +250,18 @@ the network.
 - [x] iris: ROM → kernel → serial marker, with the RAM test reporting the whole machine.
 - [x] iris: ROM → kernel → full-screen boot log on the REX3 display.
 - [x] The PS/2 scancode decoder is unit-tested on the host (`kernel/tests/kbd.rs`).
-- [ ] `BootInfo` size/offset assertions in the assembly ROM and n32 kernel.
-- [ ] CRC32C known-answer tests.
-- [ ] A stub kernel validates a synthetic `BootInfo` and prints the memory map.
+- [x] `BootInfo` size/offset assertions in the shared contract crate the n32 kernel links
+      (`crates/boot-protocol-tests`).
+- [x] CRC32C known-answer tests.
+- [x] A host harness validates synthetic valid and invalid `BootInfo` records through the
+      same parser the kernel links (`cargo test -p boot-protocol-tests -p kernel`).
+- [x] Corrupt magic, version, size, checksum, map count, entry size, truncated map,
+      out-of-bounds entry, overlapping regions and unterminated strings are rejected.
+- [ ] The assembly ROM emits `BootInfo`; until then the register handoff is the live path.
 - [ ] iris: ROM → real kernel → M2 demo.
 - [ ] Real Indy: same, with the PROM as the fallback.
-- [ ] Corrupt magic, version, checksum, map count and overlapping regions are rejected.
 - [ ] A 256 MiB machine and a 32 MiB machine produce valid maps.
+- [ ] The kernel re-hashes the kernel and bundle digests when a loader supplies them.
 
 ## 9. Open questions
 

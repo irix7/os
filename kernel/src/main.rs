@@ -24,6 +24,7 @@ use core::ptr::{read_volatile, write_volatile};
 pub mod allocator;
 pub mod autoload;
 pub mod boot_config;
+pub mod boot_protocol;
 pub mod cache;
 pub mod capability;
 pub mod diagnostics;
@@ -278,163 +279,6 @@ pub fn console_println(s: &str) {
     println(s);
 }
 
-// ---------------------------------------------------------------------------
-// BootInfo fields (offsets from boot-protocol.md §3).
-const BOOTINFO_MAGIC: u32 = 0x49374249; // "I7BI" big-endian
-const BOOTINFO_SIZE: usize = 256;
-
-const BOOTINFO_MEM_MAP_PHYS: usize = 0x10;
-const BOOTINFO_MEM_MAP_COUNT: usize = 0x18;
-const BOOTINFO_MEM_MAP_ENTRY_SIZE: usize = 0x1C;
-const BOOTINFO_CONSOLE_POLL: usize = 0xF0;
-const BOOTINFO_NET_STATE: usize = 0xF4;
-const BOOTINFO_SEEQ_STATE: usize = 0xF8;
-
-// Memory descriptor kind values (matching the ROM).
-const MEM_KIND_USABLE_RAM: u32 = 0;
-const MEM_KIND_RESERVED: u32 = 1;
-
-/// A memory descriptor copied from BootInfo.
-#[derive(Clone, Copy, Debug)]
-struct BootMemDesc {
-    base: u64,
-    size: u64,
-    kind: u32,
-    flags: u32,
-}
-
-/// CRC32C (Castagnoli) for BootInfo checksum verification.
-fn crc32c(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        crc ^= byte as u32;
-        for _ in 0..8 {
-            let mask = if crc & 1 == 1 { 0x82F6_3B78 } else { 0 };
-            crc = (crc >> 1) ^ mask;
-        }
-    }
-    crc ^ 0xFFFF_FFFF
-}
-
-/// Read a u32 from a kseg0 virtual address.
-fn read_u32(addr: u32) -> u32 {
-    unsafe { read_volatile(addr as *const u32) }
-}
-
-/// Read BootInfo from the physical address passed in $a0.
-fn read_bootinfo(phys_addr: u32) -> Option<&'static [u8; BOOTINFO_SIZE]> {
-    let kseg0_addr = phys_addr.wrapping_add(0x8000_0000);
-    let ptr = kseg0_addr as *const [u8; BOOTINFO_SIZE];
-    let data = unsafe { &*ptr };
-
-    // Verify magic.
-    let magic = u32::from_le_bytes([data[0x00], data[0x01], data[0x02], data[0x03]]);
-    if magic != BOOTINFO_MAGIC {
-        return None;
-    }
-
-    // Verify size.
-    let size = u32::from_le_bytes([data[0x08], data[0x09], data[0x0A], data[0x0B]]) as usize;
-    if size != BOOTINFO_SIZE {
-        return None;
-    }
-
-    // Verify checksum.
-    let checksum = u32::from_le_bytes([data[0x0C], data[0x0D], data[0x0E], data[0x0F]]);
-    let mut buf = [0u8; BOOTINFO_SIZE];
-    buf.copy_from_slice(data);
-    buf[0x0C..0x10].copy_from_slice(&0u32.to_le_bytes());
-    let computed = crc32c(&buf);
-    if computed != checksum {
-        return None;
-    }
-
-    Some(data)
-}
-
-/// Read memory descriptors from BootInfo's mem_map.
-fn read_mem_map(info: &[u8; BOOTINFO_SIZE]) -> (BootMemDesc, usize) {
-    let map_phys = u64::from_le_bytes([
-        info[0x10], info[0x11], info[0x12], info[0x13], info[0x14], info[0x15], info[0x16],
-        info[0x17],
-    ]);
-    let count = u32::from_le_bytes([info[0x18], info[0x19], info[0x1A], info[0x1B]]) as usize;
-    let entry_size = u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
-
-    let mut descs = [BootMemDesc {
-        base: 0,
-        size: 0,
-        kind: 0,
-        flags: 0,
-    }; 64];
-
-    let kseg0_map = (map_phys as u32).wrapping_add(0x8000_0000) as usize;
-    for i in 0..count.min(64) {
-        let off = (i * entry_size) as usize;
-        let base = u64::from_le_bytes([
-            info[kseg0_map as usize + off],
-            info[kseg0_map as usize + off + 1],
-            info[kseg0_map as usize + off + 2],
-            info[kseg0_map as usize + off + 3],
-            info[kseg0_map as usize + off + 4],
-            info[kseg0_map as usize + off + 5],
-            info[kseg0_map as usize + off + 6],
-            info[kseg0_map as usize + off + 7],
-        ]);
-        let size = u64::from_le_bytes([
-            info[kseg0_map as usize + off + 8],
-            info[kseg0_map as usize + off + 9],
-            info[kseg0_map as usize + off + 10],
-            info[kseg0_map as usize + off + 11],
-            info[kseg0_map as usize + off + 12],
-            info[kseg0_map as usize + off + 13],
-            info[kseg0_map as usize + off + 14],
-            info[kseg0_map as usize + off + 15],
-        ]);
-        let kind = u32::from_le_bytes([
-            info[kseg0_map as usize + off + 16],
-            info[kseg0_map as usize + off + 17],
-            info[kseg0_map as usize + off + 18],
-            info[kseg0_map as usize + off + 19],
-        ]);
-        let flags = u32::from_le_bytes([
-            info[kseg0_map as usize + off + 20],
-            info[kseg0_map as usize + off + 21],
-            info[kseg0_map as usize + off + 22],
-            info[kseg0_map as usize + off + 23],
-        ]);
-
-        descs[i] = BootMemDesc {
-            base,
-            size,
-            kind,
-            flags,
-        };
-    }
-
-    (descs[0], count.min(64))
-}
-
-/// Read the resident console-poll function pointer from BootInfo.
-///
-/// The ROM publishes the address of its polled console routine at offset
-/// 0xF0 so the kernel can drive the same terminal after handoff.  A zero
-/// address means the ROM did not provide one.
-fn read_console_poll(info: &[u8; BOOTINFO_SIZE]) -> Option<extern "C" fn(*mut ())> {
-    let addr = u32::from_le_bytes([
-        info[BOOTINFO_CONSOLE_POLL],
-        info[BOOTINFO_CONSOLE_POLL + 1],
-        info[BOOTINFO_CONSOLE_POLL + 2],
-        info[BOOTINFO_CONSOLE_POLL + 3],
-    ]);
-    if addr == 0 {
-        return None;
-    }
-    // SAFETY: the ROM populated this field with the address of a routine that
-    // is resident in PROM for the lifetime of the machine.
-    Some(unsafe { core::mem::transmute::<u32, extern "C" fn(*mut ())>(addr) })
-}
-
 /// Linker-provided bounds of the kernel's .bss section.
 #[cfg(not(test))]
 extern "C" {
@@ -481,7 +325,7 @@ static mut BOOT_HANDOFF: BootHandoff = BootHandoff {
 // The C ABI's argument registers are not visible to the Rust compiler through
 // an `asm!` block, so capture them in a tiny real entry stub.  The earlier
 // inline-asm capture could be scheduled after `$a0` had been reused as a
-// string pointer, which handed `read_bootinfo` a rodata address.
+// string pointer, which handed the BootInfo parser a rodata address.
 #[cfg(not(test))]
 core::arch::global_asm!(
     r#"
@@ -524,7 +368,22 @@ pub extern "C" fn _start_rust() -> ! {
     tlb::init();
     nvram::init();
 
-    let info = read_bootinfo(bootinfo_phys);
+    // A non-zero $a0 is a loader-produced record: validate it or halt. Only a
+    // zero address means "the loader did not produce one" and permits the
+    // register-handoff fallback.
+    let boot = match bootinfo_phys {
+        0 => None,
+        phys => match boot_protocol::load(phys) {
+            Ok(loaded) => Some(loaded),
+            Err(error) => {
+                console_write("kernel: BootInfo rejected at 0x");
+                print_hex32(phys);
+                console_write(": ");
+                console_println(error.as_str());
+                poweroff();
+            }
+        },
+    };
 
     // Read memory map and pass usable RAM descriptors to the frame allocator.
     let mut usable_descs = [frames::MemDesc {
@@ -535,63 +394,32 @@ pub extern "C" fn _start_rust() -> ! {
     }; 64];
     let mut usable_count = 0;
 
-    match info {
-        Some(info) => {
+    match boot.as_ref() {
+        Some(loaded) => {
             console_println("kernel: BootInfo verified");
-            let (_first_desc, count) = read_mem_map(info);
-            let kseg0_map = u64::from_le_bytes([
-                info[0x10], info[0x11], info[0x12], info[0x13], info[0x14], info[0x15], info[0x16],
-                info[0x17],
-            ]) + KSEG0_OFFSET;
-            let entry_size =
-                u32::from_le_bytes([info[0x1C], info[0x1D], info[0x1E], info[0x1F]]) as usize;
-            for i in 0..count.min(64) {
-                let off = (i * entry_size) as usize;
-                let kind = u32::from_le_bytes([
-                    info[kseg0_map as usize + off + 16],
-                    info[kseg0_map as usize + off + 17],
-                    info[kseg0_map as usize + off + 18],
-                    info[kseg0_map as usize + off + 19],
-                ]);
-                if kind == MEM_KIND_USABLE_RAM {
-                    let mut base = u64::from_le_bytes([
-                        info[kseg0_map as usize + off],
-                        info[kseg0_map as usize + off + 1],
-                        info[kseg0_map as usize + off + 2],
-                        info[kseg0_map as usize + off + 3],
-                        info[kseg0_map as usize + off + 4],
-                        info[kseg0_map as usize + off + 5],
-                        info[kseg0_map as usize + off + 6],
-                        info[kseg0_map as usize + off + 7],
-                    ]);
-                    let mut size = u64::from_le_bytes([
-                        info[kseg0_map as usize + off + 8],
-                        info[kseg0_map as usize + off + 9],
-                        info[kseg0_map as usize + off + 10],
-                        info[kseg0_map as usize + off + 11],
-                        info[kseg0_map as usize + off + 12],
-                        info[kseg0_map as usize + off + 13],
-                        info[kseg0_map as usize + off + 14],
-                        info[kseg0_map as usize + off + 15],
-                    ]);
-                    // Never hand the frame allocator memory below the
-                    // reserved window, whatever the descriptor says.
-                    if base < RESERVED_END {
-                        let clip = RESERVED_END - base;
-                        if size <= clip {
-                            continue;
-                        }
-                        base = RESERVED_END;
-                        size -= clip;
-                    }
-                    usable_descs[usable_count] = frames::MemDesc {
-                        base,
-                        size,
-                        kind,
-                        flags: 0,
-                    };
-                    usable_count += 1;
+            for entry in loaded.map.entries() {
+                if entry.kind != boot_protocol::MEM_KIND_USABLE_RAM {
+                    continue;
                 }
+                let mut base = entry.base;
+                let mut size = entry.size;
+                // Never hand the frame allocator memory below the reserved
+                // window, whatever the descriptor says.
+                if base < RESERVED_END {
+                    let clip = RESERVED_END - base;
+                    if size <= clip {
+                        continue;
+                    }
+                    base = RESERVED_END;
+                    size -= clip;
+                }
+                usable_descs[usable_count] = frames::MemDesc {
+                    base,
+                    size,
+                    kind: entry.kind,
+                    flags: entry.flags,
+                };
+                usable_count += 1;
             }
         }
         None => {
@@ -604,11 +432,25 @@ pub extern "C" fn _start_rust() -> ! {
             usable_descs[0] = frames::MemDesc {
                 base: start,
                 size: end.saturating_sub(start),
-                kind: MEM_KIND_USABLE_RAM,
+                kind: boot_protocol::MEM_KIND_USABLE_RAM,
                 flags: 0,
             };
             usable_count = 1;
         }
+    }
+
+    // The specification allows an unsorted map; the frame allocator needs a
+    // stable base order, so sort the descriptors the kernel accepted.
+    for index in 1..usable_count {
+        let mut position = index;
+        while position > 0 && usable_descs[position - 1].base > usable_descs[position].base {
+            usable_descs.swap(position - 1, position);
+            position -= 1;
+        }
+    }
+    if usable_count == 0 {
+        console_println("kernel: BootInfo has no usable RAM above the reserved window");
+        poweroff();
     }
     frames::init(&usable_descs, usable_count);
 
@@ -664,7 +506,9 @@ pub extern "C" fn _start_rust() -> ! {
     // loadable image).  Keep the console, network and module services alive.
     // Both the BootInfo path and the register-handoff path keep the console
     // and network alive; only the resident poll routine is conditional.
-    let console_poll = info.and_then(|info| read_console_poll(info));
+    let console_poll = boot
+        .as_ref()
+        .and_then(|loaded| boot_protocol::console_poll(&loaded.info));
     idle_loop(console_poll);
 }
 

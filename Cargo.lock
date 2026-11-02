@@ -647,6 +647,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "agnostic-core",
+ "boot-protocol-tests",
  "cas-core",
  "cas-store",
  "embedded-io",
