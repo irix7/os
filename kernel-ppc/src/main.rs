@@ -19,13 +19,16 @@
 use core::panic::PanicInfo;
 
 mod ata;
+mod cache;
 mod irq;
 mod mmu;
+mod module;
 mod of;
 mod pic;
 mod platform;
 mod probe;
 mod serial;
+mod services;
 mod timer;
 mod trap;
 mod via;
@@ -66,7 +69,7 @@ fn print_range(label: &[u8], base: u32, size: u32) {
     serial::write_byte(b'\n');
 }
 
-fn print_hex_bytes(bytes: &[u8]) {
+pub(crate) fn print_hex_bytes(bytes: &[u8]) {
     for byte in bytes {
         irix7_fmt::hex(u64::from(*byte), 2, false, &mut |digit| {
             serial::write_byte(digit)
@@ -111,6 +114,15 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
+    let slot_end = module::SLOT_BASE + module::SLOT_SIZE as u32;
+    match memory.base.checked_add(memory.size) {
+        Some(end) if end >= slot_end => {}
+        _ => {
+            print_line(b"ppc: memory does not cover the module slot");
+            print_line(b"ppc: halted");
+            halt();
+        }
+    }
     let timebase = match platform::timebase(&client) {
         Some(timebase) => timebase,
         None => {
@@ -153,12 +165,13 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         core::ptr::addr_of!(__kernel_end) as u32,
     );
     let io = mmu::cover(macio.base, io_end);
+    let module_slot = mmu::cover(module::SLOT_BASE, slot_end);
 
     // The vectors must be in place before the firmware mapping goes away.
     trap::install();
     timer::prepare(timebase);
-    mmu::install(image, io);
-    let sdr1 = mmu::activate(image, io);
+    mmu::install(image, io, module_slot);
+    let sdr1 = mmu::activate(image, io, module_slot);
 
     serial::write(b"ppc: mmu enabled sdr1=");
     print_hex(sdr1);
@@ -168,6 +181,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write(b"ppc: mmu io wimg=");
     print_hex(mmu::WIMG_IO);
     serial::write_byte(b'\n');
+    print_range(b"ppc: mmu module", module_slot.base, module_slot.size);
 
     print_line(b"IRIX 7 PowerPC G3 bring-up");
     print_line(b"ppc: booted");
@@ -266,6 +280,24 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_hex_bytes(&sector[..16]);
     serial::write_byte(b'\n');
     print_line(b"ATA-OK");
+
+    match module::load(channel) {
+        Ok(report) => {
+            serial::write(b"ppc: module status=");
+            print_dec(report.status as u32);
+            serial::write(b" tick=");
+            print_dec(u32::from(report.ticked));
+            serial::write(b" length=");
+            print_dec(report.length);
+            serial::write_byte(b'\n');
+            print_line(b"MODULE-OK");
+        }
+        Err(error) => {
+            error.report();
+            print_line(b"ppc: halted");
+            halt();
+        }
+    }
 
     print_line(b"ppc: halted");
     halt()

@@ -110,16 +110,11 @@ pub fn dispatch(srr0: u32, srr1: u32, call: u32) -> u32 {
 
     // Drop the timer's flag first so the source line falls, then clear the
     // event latched at the controller.  That write is the end of interrupt.
+    // The timer runs continuously, so it can raise a fresh event between the
+    // acknowledge and any later read of the pending register.  That is the
+    // next interrupt, not a failed acknowledge; leave it for the vector.
     timer().acknowledge();
     controller.acknowledge(line, bit);
-    let remaining = controller.events(line);
-    if remaining & bit != 0 {
-        serial::write(b"ppc: irq acknowledge failed pending=");
-        print_hex(remaining);
-        serial::write_byte(b'\n');
-        print_line(b"ppc: halted");
-        halt();
-    }
 
     let count = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
     serial::write(b"ppc: irq vector=0x500 line=");

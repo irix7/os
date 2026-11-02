@@ -94,6 +94,24 @@ environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), o
 
 A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by its own linker script. The manager is limited to the first 256 KiB of slot B; the five runtime regions follow it. There is no load-time relocation: every image is linked for its final region. The Seeq device's uncached DMA structures start at physical `0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
 
+### Slots on the other machines
+
+| Machine | Slot | Base | Size | Linker script |
+|---|---|---|---|---|
+| Indy | A | `0x8840_0000` | 512 KiB | `modules/hello/linker.ld` |
+| Indy | B | `0x8848_0000` | 1.5 MiB | `modules/wasm/linker.ld` |
+| x86_64 | MCP | `0x0200_0000` | 2 MiB | `modules/mcp/linker-x86.ld` |
+| x86_64 | wasm | `0x0400_0000` | 2 MiB | `modules/wasm/linker-x86.ld` |
+| PowerPC G3 | module | `0x0300_0000` | 2 MiB | `modules/hello/linker-ppc.ld` |
+
+The PowerPC slot is physical `0x0300_0000`, which needs at least 50 MiB of RAM; the
+g3beige gate runs with 64 MiB. IBAT2/DBAT2 cover the slot as cacheable memory. The
+loader reads a big-endian header at disk LBA 6 (`IRIX7MOD`, a `u32` image length and
+the 32-byte SHA-256) and copies the image from LBA 16. It zeroes the whole slot,
+verifies the digest with `irix7-sha256`, writes the data cache back and invalidates
+the instruction cache before calling the entry. A header read error, a bad magic, a
+length outside the slot or a digest mismatch stops the boot before the entry.
+
 ## 4. ABI
 
 The entry point is a normal C call:
@@ -241,10 +259,12 @@ below.
 
 ## 7. Reference modules
 
-`modules/hello` is the one-shot reference: a small flat image that prints one line through
-the service table and returns a vtable with status 0. `modules/block` reads block 0 of SCSI
-target 1 through `block_read` and prints the volume-header magic. Build them with their own linker script
-and flatten the ELF:
+`modules/hello` is the shared one-shot reference: a small flat image that prints one line
+through the service table, reads `info(0)` and returns a vtable with status 0 and a tick
+callback that unregisters after its first call. The same source builds for the Indy
+and PowerPC slots; only the linker script differs. `modules/block` reads block 0
+of SCSI target 1 through `block_read` and prints the volume-header magic. Build them with
+their own linker script and flatten the ELF:
 
 ```bash
 export CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld"
@@ -253,6 +273,14 @@ cargo build --release -Z build-std=core -Zjson-target-spec \
 
 $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
   -O binary target/mips3-sgi-irix7-n32/release/hello-module hello.module
+```
+
+For the G3, link the same package at `0x0300_0000`:
+
+```bash
+export CARGO_TARGET_POWERPC_UNKNOWN_IRIX7_PPC_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker-ppc.ld -Crelocation-model=static"
+cargo build --release -Z build-std=core -Zjson-target-spec \
+  --target targets/powerpc-unknown-irix7-ppc.json -p hello-module
 ```
 
 `modules/ticker` is the long-running reference: it allocates 32 bytes through the service
