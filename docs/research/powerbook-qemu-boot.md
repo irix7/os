@@ -1,15 +1,18 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the sixth boot slice of #287, tracked as #313, makes the console
-work on both ESCC channels. `kernel-ppc` is loaded by OpenBIOS, reads the
-machine description from the device tree, installs its own BAT entries, points
-SDR1 at an empty table, prints to both ESCC serial ports, takes ten decrementer
-ticks and prints `BOOT-OK`. It then proves the DSI, ISI, alignment, program and
-system-call vectors in order, prints `TRAPS-OK`, takes ten external interrupts
-from the CUDA timer through the Heathrow interrupt controller at the `0x500`
-vector, prints `IRQ-OK count=10`, identifies the ATA disk on the first Mac I/O
-channel, reads the signature sector at LBA 4 with polled PIO, prints `ATA-OK`
-and halts. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build.
+**Status:** the seventh boot slice of #287, tracked as #317, selects the Mac
+I/O node that carries the ESCC console and the ATA disk. `kernel-ppc` is
+loaded by OpenBIOS, reads the machine description from the device tree,
+installs its own BAT entries, points SDR1 at an empty table, prints to both
+ESCC serial ports, takes ten decrementer ticks and prints `BOOT-OK`. It then
+proves the DSI, ISI, alignment, program and system-call vectors in order,
+prints `TRAPS-OK`, takes ten external interrupts from the CUDA timer through
+the Heathrow interrupt controller at the `0x500` vector, prints `IRQ-OK
+count=10`, identifies the ATA disk on the selected Mac I/O channel, reads the
+signature sector at LBA 4 with polled PIO, prints `ATA-OK` and halts. Observed
+with QEMU 11.1.2 and its OpenBIOS 1.1 build. On a PMU machine such as the
+M4753 there is no `via-cuda`; the kernel skips the external-interrupt probe,
+continues on the decrementer and does not print `IRQ-OK`.
 
 ## The `-kernel` path
 
@@ -65,31 +68,82 @@ mapping; see [The kernel's mapping](#the-kernels-mapping).
 
 ## Devices read from the tree
 
+The paths below are QEMU's. Every Mac I/O lookup is relative to the node
+selected in [Mac I/O selection](#mac-io-selection); on the PowerBook the unit
+address is `@10` or `@D`, depending on which controller carries the console
+and disk.
+
 | Node and property | Use |
 |---|---|
 | `/memory:reg` | `[address, size]`; the RAM QEMU handed over |
-| `/pci/mac-io:assigned-addresses` | the Mac I/O PCI BAR assigned by OpenBIOS |
-| `/pci/mac-io:compatible` | `"heathrow"`; selects the interrupt controller |
-| `/pci/mac-io/escc:reg` | the ESCC window (`0x13000`, size `0x1000`) |
-| `/pci/mac-io/escc/ch-a:reg` | channel A's control offset (`0x13020`) |
-| `/pci/mac-io/escc/ch-b:reg` | channel B's control offset (`0x13000`) |
-| `/pci/mac-io/escc/ch-a:AAPL,address` | the absolute channel A address, when the firmware publishes it |
+| selected Mac I/O node `assigned-addresses` | the Mac I/O PCI BAR assigned by OpenBIOS |
+| selected Mac I/O node `compatible` | `"heathrow"` or `"gatwick"`; selects the interrupt controller |
+| `escc:reg` | the ESCC window (`0x13000`, size `0x1000`) |
+| `escc/ch-a:reg` | channel A's control offset (`0x13020`) |
+| `escc/ch-b:reg` | channel B's control offset (`0x13000`) |
+| `escc/ch-a:AAPL,address` | the absolute channel A address, when the firmware publishes it |
 | `/options:output-device` | the firmware's console selection (`screen`, `scca`, ...) |
 | `/chosen:stdout-path` | the standard console path, when present |
-| `/pci/mac-io/via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
-| `/pci/mac-io/via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
-| `/pci/mac-io/ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
-| `/pci/mac-io/ata-3@20000:AAPL,interrupts` | the ATA channel's interrupt controller line (`0x0d`) |
+| `via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
+| `via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
+| `ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
+| `ata-3@20000:AAPL,interrupts` | the ATA channel's interrupt controller line (`0x0d`) |
 | `/cpus/PowerPC,750@0:timebase-frequency` | `16600000` Hz on g3beige |
 
 The Mac I/O BAR is assigned, not fixed. With no extra PCI devices it is
 `0x81080000`; adding an `e1000` moves it to `0x81110000`. The ESCC address
-must be derived from the tree, not compiled in.
+must be derived from the tree, not compiled in. Channel A of the ESCC occupies
+control `+0x20` and data `+0x30` at `it_shift = 4`. QEMU connects the first
+`-serial` to channel A (`chrA`) and the second to channel B (`chrB`). Both
+channels are independent register banks in the same Mac I/O window.
 
-Channel A of the ESCC occupies control `+0x20` and data `+0x30` at `it_shift =
-4`. QEMU connects the first `-serial` to channel A (`chrA`) and the second to
-channel B (`chrB`). Both channels are independent register banks in the same
-Mac I/O window.
+## Mac I/O selection
+
+`g3beige` has one Mac I/O node. The PowerBook G3 M4753 has two under
+`/pci@80000000`:
+
+| Path | `compatible` | Children |
+|---|---|---|
+| `mac-io@10` | `heathrow` | `mesh`, `escc`, `bmac`, `media-bay` (`floppy`, `ata1`), `ata0`, `via-pmu` |
+| `mac-io@D` | `gatwick` | `escc`, `media-bay` (`floppy`, `ata4`) |
+
+Both carry an ESCC, and either can have an ATA disk, so `/pci/mac-io` — which
+the firmware resolves to the first match — is not a stable selector. The
+kernel walks the children of `/pci`, accepts every node whose `device_type` or
+`name` is `mac-io`, and scores each candidate from its descendants:
+
+- an ESCC child is worth 100;
+- an ATA channel with a `disk` child is worth 50;
+- every ATA channel is worth 10.
+
+The highest score wins; a tie stays with the first node in tree order. A
+candidate with no ESCC is refused, because without it there is no console on
+which to report a failure. The scan reaches an ATA channel below `media-bay`
+as well as a direct child, so the media-bay channel is eligible when it holds
+the boot disk. On the M4753 the primary controller scores higher because it
+has `ata0` and the media-bay `ata1`. QEMU's `g3beige` has one built-in Mac I/O
+node, so the gate adds a second `macio-oldworld` device at PCI device `0x03`.
+That node appears first in tree order with an ESCC and empty ATA channels,
+while the built-in `mac-io@10` has the attached disk. The gate requires the
+kernel to keep selecting `mac-io@10`. This exercises the score order, not just
+the single-candidate path.
+
+The selected node's `assigned-addresses` gives the Mac I/O BAR. The ESCC, ATA,
+VIA and interrupt-controller lookups all start at that node, so a tree that
+orders the communication-slot controller first still boots from the primary
+controller's console and disk. The boot log records the choice:
+
+```
+ppc: macio base=0x81080000 size=524288
+ppc: macio path=/pci@80000000/mac-io@10
+ppc: macio children escc=1 ata=2 disks=1
+```
+
+`package-to-path` supplies the full path. The fallback walk over `name`
+properties omits unit addresses, so the base is logged as well. The gate
+requires a `/pci` path containing `mac-io`, at least one ESCC child and at
+least one ATA child, and checks that the ESCC and ATA windows lie inside the
+selected Mac I/O window.
 
 ## Console channels
 
@@ -122,6 +176,9 @@ Anything else, such as `screen`, selects neither. The kernel logs both
 properties and the resolved channel:
 
 ```
+ppc: macio base=0x81080000 size=524288
+ppc: macio path=/pci@80000000/mac-io@10
+ppc: macio children escc=1 ata=2 disks=1
 ppc: escc=0x81093000 ch-a=0x81093020 ch-b=0x81093000
 ppc: console output-device=/pci@80000000/mac-io@10/escc/ch-a stdout-path=none selected=a mirror=a+b
 ```
@@ -281,6 +338,11 @@ number of times instead of reporting a false failure. The stop path disables
 the interrupt, switches T1 to one-shot mode, loads the longest count and then
 clears the flag, so its final IFR read cannot race the next underflow.
 
+On the M4753 there is no `via-cuda` node.  `platform::cuda` returns `None`,
+`main` logs `ppc: timer via=absent external-irq=skipped`, and the IRQ probe is
+skipped; the decrementer still provides `clock_ms` and the boot continues to
+`BOOT-OK`, the fault probes, the ATA read and the module check.
+
 The `0x500` stub shares `trap_entry` with the fault vectors. An external
 interrupt is taken at an instruction boundary, so SRR0 already holds the
 instruction to resume at and the dispatcher writes it back unchanged. SRR1
@@ -306,10 +368,13 @@ The disk path is the Mac I/O ATA controller, not an ISA IDE port. QEMU's
 `hw/ide/macio.c` places each channel in the Mac I/O BAR at a firmware-assigned
 offset and gives each task-file register a 16-byte stride. The `ata-3` node
 publishes two `reg` ranges — the task-file window and the DBDMA channel — plus
-`AAPL,interrupts = <line, dma-line>`. `platform::ata` walks the children of
-`/pci/mac-io`, accepts `device_type = "ata"`, prefers the channel with a `disk`
-child, and takes the first `reg` range. The channel base is the Mac I/O BAR plus
-that offset; no ATA address is compiled in.
+`AAPL,interrupts = <line, dma-line>`. `platform::ata` walks the selected Mac
+I/O node's children, accepts `device_type = "ata"` or an `ata*` node name,
+prefers the channel with a `disk` child, and takes the first `reg` range. The
+walk follows `media-bay`, where the PowerBook puts its `ata1`/`ata4` channel,
+so the media-bay disk is eligible as well as the direct `ata0`. The channel
+base is the selected Mac I/O BAR plus that offset; no ATA address is compiled
+in.
 
 `ata::Channel` performs two operations, both polled:
 
@@ -353,9 +418,9 @@ qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
   -monitor none -no-reboot
 ```
 
-The gate creates `ata.img` as 2048 zero sectors and writes
+The gate creates `ata.img` as 8192 zero sectors and writes
 `IRIX7-ATA-SIG001` at LBA 4. It attaches that image to the first Mac I/O ATA
-channel, so the device tree's `ata-3@20000` node has a `disk` child.
+channel, so the selected Mac I/O node has the disk the kernel identifies.
 
 The g3beige machine has no `isa-debug-exit` device and no RTAS shutdown call,
 so the kernel halts in a spin loop after `ppc: halted` and the gate stops QEMU
@@ -380,6 +445,12 @@ order it must appear on channel A, then parses the exception reports:
 - at least four external interrupts were counted, `IRQ-OK` repeats the same
   count, and the controller's pending-event and the timer's flag register are
   both zero after the last acknowledge;
+- the selected Mac I/O path is a `/pci` node containing `mac-io` and reports at
+  least one ESCC child and one ATA child; the ESCC and ATA windows lie inside
+  that node's window;
+- a second boot with an extra `macio-oldworld` device first in tree order
+  still selects the built-in `mac-io@10`, and completes the ESCC, ATA, IRQ and
+  module path on both channels;
 - the ESCC report names channel B at the window base and channel A at
   `window + 0x20`, and the firmware's `output-device` names the same channel
   the kernel reports as selected;
@@ -405,6 +476,9 @@ ppc: mmu io wimg=0x28
 IRIX 7 PowerPC G3 bring-up
 ppc: booted
 ppc: of client=0xfff025d0
+ppc: macio base=0x81080000 size=524288
+ppc: macio path=/pci@80000000/mac-io@10
+ppc: macio children escc=1 ata=2 disks=1
 ppc: escc=0x81093000 ch-a=0x81093020 ch-b=0x81093000
 ppc: console output-device=/pci@80000000/mac-io@10/escc/ch-a stdout-path=none selected=a mirror=a+b
 ppc: memory base=0x0 size=64 MiB
@@ -436,7 +510,7 @@ ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1004abc srr1=0xa030
 ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1004abc srr1=0xa030
 ppc: irq pending=0x0 ifr=0x0
 IRQ-OK count=10
-ppc: ata model=QEMU HARDDISK sectors=2048 lba48=1
+ppc: ata model=QEMU HARDDISK sectors=8192 lba48=1
 ppc: ata lba=4 sector=49524958372d4154412d534947303031
 ATA-OK
 ppc: halted
@@ -464,6 +538,17 @@ ppc: halted
   come with the disk service slice.
 - The PowerBook G3 M4753 has no OpenPIC; a New World machine with the KeyLargo
   OpenPIC needs a separate controller driver and a different machine tree.
+  The Gatwick Mac I/O controller's interrupt block is accepted as the same
+  Heathrow register layout; no other Gatwick-specific device is driven.
+- The PowerBook's timer is the PMU's VIA, not a CUDA. `platform::cuda` looks
+  for `via-cuda` below the selected Mac I/O node, so the M4753 stops at
+  `ppc: device tree has no CUDA timer` after the console report. The PMU is a
+  separate device with its own command protocol and is outside this slice.
+- The media-bay ATA scan is device-tree support only; no PowerBook media-bay
+  hardware has been tested. The gate's second controller is a
+  `macio-oldworld` instance with an ESCC and empty ATA channels, so it proves
+  tree-order independence and ATA selection, not the Gatwick media-bay
+  wiring.
 - The console is transmit-only at a fixed 38400 8N1. It programs WR11, WR12,
   WR13 and WR14 for the 3.6864 MHz ESCC clock, but there is no receive path,
   flow control, termios, or baud negotiation, and no keyboard or framebuffer

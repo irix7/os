@@ -1,10 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The machine description the firmware hands over.
 //!
-//! Every address here is read from the Open Firmware device tree.  The
-//! Mac I/O PCI BAR and the ESCC offset are assigned by OpenBIOS, so a
-//! compiled-in address would be wrong as soon as the firmware or the set of
-//! PCI devices changes.
+//! Every address here is read from the Open Firmware device tree.  The Mac I/O
+//! PCI BAR and the ESCC offset are assigned by the firmware, so a compiled-in
+//! address would be wrong as soon as the firmware or the set of PCI devices
+//! changes.
+//!
+//! A PowerBook G3 M4753 has two Mac I/O controllers under `/pci`: the primary
+//! Heathrow controller and a second Gatwick controller for the communication
+//! slot and media bay.  Both can carry an ESCC and ATA children, so the first
+//! node in tree order is not necessarily the one with the boot console and
+//! disk.  [`macio`] walks the `/pci` children, scores every Mac I/O node by
+//! its children and selects the node with the ESCC console and the boot ATA
+//! disk.  Every other lookup is relative to that node.
 
 use crate::of::Client;
 
@@ -13,10 +21,76 @@ pub struct Memory {
     pub size: u32,
 }
 
-/// The Mac I/O register window assigned by the firmware.
+/// A device-tree path captured for the boot log.  The buffer is fixed-size
+/// because the tree is read before the heap exists.
+pub struct Path {
+    value: [u8; 96],
+    length: usize,
+}
+
+impl Path {
+    pub fn bytes(&self) -> &[u8] {
+        &self.value[..self.length]
+    }
+
+    fn from_buffer(buffer: [u8; 96], length: usize) -> Self {
+        let length = length.min(buffer.len());
+        let end = buffer[..length]
+            .iter()
+            .position(|&byte| byte == 0)
+            .unwrap_or(length);
+        Self {
+            value: buffer,
+            length: end,
+        }
+    }
+}
+
+/// The selected Mac I/O register window and the children that selected it.
 pub struct MacIo {
     pub base: u32,
     pub size: u32,
+    /// The Open Firmware phandle.  Every child lookup starts here.
+    pub node: u32,
+    /// The selected node's path, for the boot log.
+    pub path: Path,
+    /// ESCC children found below the selected node.
+    pub escc: u32,
+    /// ATA channels found below the selected node.
+    pub ata: u32,
+    /// ATA channels that the firmware gave a `disk` child.
+    pub disks: u32,
+}
+
+/// The deepest child level the score scans.  A Mac I/O node reaches its ATA
+/// channel through `media-bay` on the PowerBook, so three levels are needed;
+/// one spare level keeps the scan tolerant of a wrapping node.
+const MAX_DEPTH: u32 = 4;
+
+/// One candidate Mac I/O node before selection.
+struct Candidate {
+    node: u32,
+    base: u32,
+    size: u32,
+    escc: u32,
+    ata: u32,
+    disks: u32,
+}
+
+impl Candidate {
+    /// The ESCC is the boot console and dominates the score.  A channel with
+    /// a disk child is the boot disk and outranks an empty channel; the ATA
+    /// count only breaks ties between otherwise equal controllers.
+    fn score(&self) -> u32 {
+        self.escc * 100 + self.disks * 50 + self.ata * 10
+    }
+}
+
+#[derive(Default)]
+struct Children {
+    escc: u32,
+    ata: u32,
+    disks: u32,
 }
 
 pub fn memory(client: &Client) -> Option<Memory> {
@@ -32,15 +106,60 @@ pub fn memory(client: &Client) -> Option<Memory> {
     })
 }
 
-/// The 32-bit Mac I/O BAR and its window size.
+/// The Mac I/O window that carries the boot console and disk.
+///
+/// The M4753 has two Mac I/O nodes under `/pci`.  Their tree order is a
+/// firmware detail, so each node is scored by the children it has: the ESCC
+/// console, ATA channels, and ATA channels with a `disk` child.  Ties stay
+/// with the first node in tree order.
 ///
 /// `assigned-addresses` holds one PCI address per 20 bytes:
 /// `[phys_hi, phys_mid, phys_lo, size_hi, size_lo]`.  Mac I/O has a single
 /// BAR, so the first entry describes the whole register window.
 pub fn macio(client: &Client) -> Option<MacIo> {
-    let macio = find_node(client, b"/pci/mac-io\0", b"/pci\0", b"mac-io")?;
+    let pci = pci_node(client)?;
+    let mut best: Option<Candidate> = None;
+    let mut child = client.child(pci);
+    while let Some(node) = child {
+        if let Some(candidate) = macio_candidate(client, node) {
+            if best
+                .as_ref()
+                .is_none_or(|best| candidate.score() > best.score())
+            {
+                best = Some(candidate);
+            }
+        }
+        child = client.peer(node);
+    }
+    let best = best?;
+    Some(MacIo {
+        base: best.base,
+        size: best.size,
+        node: best.node,
+        path: path(client, best.node),
+        escc: best.escc,
+        ata: best.ata,
+        disks: best.disks,
+    })
+}
+
+/// The PCI host node.  `/pci` is the OpenBIOS name; Apple's Old World tree
+/// calls the node `pci@80000000`, so fall back to a child of the root named
+/// `pci` when the short path does not resolve.
+fn pci_node(client: &Client) -> Option<u32> {
+    if let Some(node) = client.finddevice(b"/pci\0") {
+        return Some(node);
+    }
+    let root = client.finddevice(b"/\0")?;
+    find_child(client, root, b"pci", b"pci")
+}
+
+fn macio_candidate(client: &Client, node: u32) -> Option<Candidate> {
+    if !is_macio(client, node) {
+        return None;
+    }
     let mut assigned = [0u8; 20];
-    let length = client.getprop(macio, b"assigned-addresses\0", &mut assigned)?;
+    let length = client.getprop(node, b"assigned-addresses\0", &mut assigned)?;
     if length < assigned.len() {
         return None;
     }
@@ -49,7 +168,117 @@ pub fn macio(client: &Client) -> Option<MacIo> {
     if size == 0 {
         return None;
     }
-    Some(MacIo { base, size })
+    let mut children = Children::default();
+    scan_children(client, node, 0, &mut children);
+    // Without an ESCC there is no console on which to report a failure, so a
+    // disk-heavy controller that lacks one must not win the score.
+    if children.escc == 0 {
+        return None;
+    }
+    Some(Candidate {
+        node,
+        base,
+        size,
+        escc: children.escc,
+        ata: children.ata,
+        disks: children.disks,
+    })
+}
+
+fn scan_children(client: &Client, node: u32, depth: u32, children: &mut Children) {
+    let mut child = client.child(node);
+    while let Some(child_node) = child {
+        if is_escc(client, child_node) {
+            children.escc += 1;
+        }
+        if is_ata(client, child_node) {
+            children.ata += 1;
+            if has_disk(client, child_node) {
+                children.disks += 1;
+            }
+        }
+        if depth < MAX_DEPTH {
+            scan_children(client, child_node, depth + 1, children);
+        }
+        child = client.peer(child_node);
+    }
+}
+
+fn is_macio(client: &Client, node: u32) -> bool {
+    matches_property(client, node, b"device_type\0", b"mac-io")
+        || matches_property(client, node, b"name\0", b"mac-io")
+}
+
+fn is_escc(client: &Client, node: u32) -> bool {
+    matches_property(client, node, b"device_type\0", b"escc")
+        || matches_property(client, node, b"name\0", b"escc")
+}
+
+fn is_ata(client: &Client, node: u32) -> bool {
+    if matches_property(client, node, b"device_type\0", b"ata") {
+        return true;
+    }
+    let mut name = [0u8; 16];
+    match client.getprop(node, b"name\0", &mut name) {
+        Some(length) => starts_with(&name, length, b"ata"),
+        None => false,
+    }
+}
+
+/// The full path of `node`, from `package-to-path` when the firmware has it.
+/// The name walk is the fallback; it omits unit addresses, so the boot log
+/// also records the Mac I/O base.
+fn path(client: &Client, node: u32) -> Path {
+    let mut buffer = [0u8; 96];
+    if let Some(length) = client.package_to_path(node, &mut buffer) {
+        if length > 0 {
+            return Path::from_buffer(buffer, length);
+        }
+    }
+    path_from_names(client, node)
+}
+
+fn path_from_names(client: &Client, node: u32) -> Path {
+    let mut parts = [[0u8; 24]; 6];
+    let mut lengths = [0usize; 6];
+    let mut count = 0;
+    let mut current = Some(node);
+    while let Some(current_node) = current {
+        if count == parts.len() {
+            break;
+        }
+        let mut name = [0u8; 24];
+        let length = client
+            .getprop(current_node, b"name\0", &mut name)
+            .unwrap_or(0);
+        let length = trim_string(&name, length);
+        if length > 0 && !(length == 1 && name[0] == b'/') {
+            parts[count][..length].copy_from_slice(&name[..length]);
+            lengths[count] = length;
+            count += 1;
+        }
+        current = client.parent(current_node);
+    }
+
+    let mut buffer = [0u8; 96];
+    let mut length = 0;
+    for index in (0..count).rev() {
+        if length + 1 + lengths[index] > buffer.len() {
+            break;
+        }
+        buffer[length] = b'/';
+        length += 1;
+        buffer[length..length + lengths[index]].copy_from_slice(&parts[index][..lengths[index]]);
+        length += lengths[index];
+    }
+    if length == 0 {
+        buffer[0] = b'/';
+        length = 1;
+    }
+    Path {
+        value: buffer,
+        length,
+    }
 }
 
 /// An ESCC channel.  The register layout is fixed by the chip: channel A
@@ -133,15 +362,16 @@ pub struct Escc {
     pub stdout_path: Property,
 }
 
-/// The two ESCC channels, read from the children of the `escc` node.
+/// The two ESCC channels, read from the children of the `escc` node below the
+/// selected Mac I/O node.
 ///
-/// A CHRP tree puts `ch-a` and `ch-b` under `/pci/mac-io/escc`; OpenBIOS and
-/// Apple's Old World firmware both build that shape.  The child `reg` values
-/// are offsets in the Mac I/O window on both, but a relative `reg` is also
-/// accepted.  If the children are missing, the chip's fixed channel layout
-/// inside the ESCC window is used.
+/// A CHRP tree puts `ch-a` and `ch-b` under `escc`; OpenBIOS and Apple's Old
+/// World firmware both build that shape.  The child `reg` values are offsets
+/// in the Mac I/O window on both, but a relative `reg` is also accepted.  If
+/// the children are missing, the chip's fixed channel layout inside the ESCC
+/// window is used.
 pub fn escc(client: &Client, macio: &MacIo) -> Option<Escc> {
-    let node = find_node(client, b"/pci/mac-io/escc\0", b"/pci/mac-io\0", b"escc")?;
+    let node = find_child(client, macio.node, b"escc", b"escc")?;
     let mut reg = [0u8; 8];
     let length = client.getprop(node, b"reg\0", &mut reg)?;
     if length < 8 {
@@ -186,22 +416,13 @@ pub fn escc(client: &Client, macio: &MacIo) -> Option<Escc> {
     })
 }
 
-fn find_node(client: &Client, path: &[u8], parent: &[u8], name: &[u8]) -> Option<u32> {
-    if let Some(node) = client.finddevice(path) {
-        return Some(node);
-    }
-    let parent = client.finddevice(parent)?;
-    child_named(client, parent, name)
-}
-
-fn child_named(client: &Client, parent: u32, name: &[u8]) -> Option<u32> {
+fn find_child(client: &Client, parent: u32, device_type: &[u8], name: &[u8]) -> Option<u32> {
     let mut child = client.child(parent);
     while let Some(node) = child {
-        let mut buffer = [0u8; 32];
-        if let Some(length) = client.getprop(node, b"name\0", &mut buffer) {
-            if string_equals(&buffer, length, name) {
-                return Some(node);
-            }
+        if matches_property(client, node, b"device_type\0", device_type)
+            || matches_property(client, node, b"name\0", name)
+        {
+            return Some(node);
         }
         child = client.peer(node);
     }
@@ -291,6 +512,11 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
         .any(|window| window == needle)
 }
 
+fn starts_with(buffer: &[u8], length: usize, value: &[u8]) -> bool {
+    let length = length.min(buffer.len());
+    length >= value.len() && &buffer[..value.len()] == value
+}
+
 fn string_equals(buffer: &[u8], length: usize, value: &[u8]) -> bool {
     let length = length.min(buffer.len());
     let end = buffer[..length]
@@ -300,50 +526,86 @@ fn string_equals(buffer: &[u8], length: usize, value: &[u8]) -> bool {
     &buffer[..end] == value
 }
 
-/// The interrupt controller built into the Mac I/O node.
+fn trim_string(buffer: &[u8], length: usize) -> usize {
+    let length = length.min(buffer.len());
+    buffer[..length]
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(length)
+}
+
+fn matches_property(client: &Client, node: u32, property: &[u8], value: &[u8]) -> bool {
+    let mut buffer = [0u8; 32];
+    match client.getprop(node, property, &mut buffer) {
+        Some(length) => string_equals(&buffer, length, value),
+        None => false,
+    }
+}
+
+/// The interrupt controller built into the selected Mac I/O node.
 ///
-/// The beige G3 Mac I/O controller is Heathrow, and the Heathrow interrupt
-/// controller is the first register block of the Mac I/O window.  It is not
-/// an OpenPIC: OpenPIC is the New World controller in KeyLargo, and neither
-/// this machine nor QEMU's `g3beige` model has one.  The `compatible`
-/// property selects the controller, so a machine with a different Mac I/O
-/// device fails here instead of writing Heathrow registers into an OpenPIC.
+/// The beige G3 and the PowerBook's primary Mac I/O controller are Heathrow;
+/// the PowerBook's second controller is Gatwick.  Both put the same interrupt
+/// controller block at the start of the Mac I/O window.  It is not an OpenPIC:
+/// OpenPIC is the New World controller in KeyLargo, and neither this machine
+/// nor QEMU's `g3beige` model has one.  The `compatible` property selects the
+/// controller, so a machine with a different Mac I/O device fails here instead
+/// of writing Heathrow registers into an OpenPIC.
 pub struct Pic {
     pub base: u32,
 }
 
 pub fn pic(client: &Client, macio: &MacIo) -> Option<Pic> {
-    let node = client.finddevice(b"/pci/mac-io\0")?;
     let mut compatible = [0u8; 32];
-    let length = client.getprop(node, b"compatible\0", &mut compatible)?;
-    if length < 8 || &compatible[..8] != b"heathrow" {
-        return None;
+    let length = client.getprop(macio.node, b"compatible\0", &mut compatible)?;
+    let first = first_string(&compatible, length)?;
+    if first == b"heathrow" || first == b"gatwick" {
+        Some(Pic { base: macio.base })
+    } else {
+        None
     }
-    Some(Pic { base: macio.base })
+}
+
+fn first_string(buffer: &[u8], length: usize) -> Option<&[u8]> {
+    let end = trim_string(buffer, length);
+    if end == 0 {
+        None
+    } else {
+        Some(&buffer[..end])
+    }
 }
 
 /// The CUDA, which carries the MOS 6522 VIA and its programmable timer.
 ///
 /// `reg` holds the offset of the CUDA window inside Mac I/O.
 /// `AAPL,interrupts` holds the interrupt controller line the CUDA asserts.
+/// The lookup is relative to the selected Mac I/O node: a second controller's
+/// VIA is not the machine's timer.
 pub struct Cuda {
     pub base: u32,
     pub line: u32,
 }
 
 pub fn cuda(client: &Client, macio: &MacIo) -> Option<Cuda> {
-    let node = client.finddevice(b"/pci/mac-io/via-cuda\0")?;
+    let node = find_child(client, macio.node, b"via-cuda", b"via-cuda")?;
     let mut reg = [0u8; 8];
     let length = client.getprop(node, b"reg\0", &mut reg)?;
     if length < 4 {
         return None;
     }
     let offset = u32::from_be_bytes([reg[0], reg[1], reg[2], reg[3]]);
+    let size = if length >= 8 {
+        u32::from_be_bytes([reg[4], reg[5], reg[6], reg[7]])
+    } else {
+        0
+    };
+    let base = macio.base.checked_add(offset)?;
+    let window_end = macio.base.checked_add(macio.size)?;
+    if base < macio.base || base.checked_add(size)? > window_end {
+        return None;
+    }
     let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
-    Some(Cuda {
-        base: macio.base.wrapping_add(offset),
-        line,
-    })
+    Some(Cuda { base, line })
 }
 
 pub fn timebase(client: &Client) -> Option<u32> {
@@ -354,12 +616,13 @@ pub fn timebase(client: &Client) -> Option<u32> {
 
 /// The ATA channel that carries the boot disk.
 ///
-/// The `ata-3` node publishes two `reg` ranges: the task-file registers and
-/// the DBDMA channel.  Only the first range is used by a polled PIO driver.
-/// The firmware numbers the channels and assigns the Mac I/O offsets, so
-/// both the `reg` offset and the `AAPL,interrupts` line are read here rather
-/// than compiled in.  A channel whose tree has a `disk` child wins over an
-/// empty one.
+/// The node publishes two `reg` ranges: the task-file registers and the DBDMA
+/// channel.  Only the first range is used by a polled PIO driver.  The
+/// firmware numbers the channels and assigns the Mac I/O offsets, so both the
+/// `reg` offset and the `AAPL,interrupts` line are read here rather than
+/// compiled in.  A channel whose tree has a `disk` child wins over an empty
+/// one.  The scan follows the selected node's children through `media-bay`,
+/// where the PowerBook puts the media-bay channel.
 pub struct Ata {
     pub base: u32,
     pub size: u32,
@@ -367,25 +630,37 @@ pub struct Ata {
 }
 
 pub fn ata(client: &Client, macio: &MacIo) -> Option<Ata> {
-    let macio_node = client.finddevice(b"/pci/mac-io\0")?;
     let mut fallback = None;
-    let mut child = client.child(macio_node);
-    while let Some(node) = child {
-        if let Some(ata) = ata_node(client, macio, node) {
-            if has_disk(client, node) {
+    scan_ata(client, macio, macio.node, 0, &mut fallback).or(fallback)
+}
+
+fn scan_ata(
+    client: &Client,
+    macio: &MacIo,
+    node: u32,
+    depth: u32,
+    fallback: &mut Option<Ata>,
+) -> Option<Ata> {
+    let mut child = client.child(node);
+    while let Some(child_node) = child {
+        if let Some(ata) = ata_node(client, macio, child_node) {
+            if has_disk(client, child_node) {
                 return Some(ata);
             }
             fallback.get_or_insert(ata);
         }
-        child = client.peer(node);
+        if depth < MAX_DEPTH {
+            if let Some(ata) = scan_ata(client, macio, child_node, depth + 1, fallback) {
+                return Some(ata);
+            }
+        }
+        child = client.peer(child_node);
     }
-    fallback
+    None
 }
 
 fn ata_node(client: &Client, macio: &MacIo, node: u32) -> Option<Ata> {
-    let mut kind = [0u8; 8];
-    let length = client.getprop(node, b"device_type\0", &mut kind)?;
-    if length < 4 || &kind[..4] != b"ata\0" {
+    if !is_ata(client, node) {
         return None;
     }
     let mut reg = [0u8; 16];
@@ -399,11 +674,12 @@ fn ata_node(client: &Client, macio: &MacIo, node: u32) -> Option<Ata> {
         return None;
     }
     let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
-    Some(Ata {
-        base: macio.base.wrapping_add(offset),
-        size,
-        line,
-    })
+    let base = macio.base.checked_add(offset)?;
+    let window_end = macio.base.checked_add(macio.size)?;
+    if base < macio.base || base.checked_add(size)? > window_end {
+        return None;
+    }
+    Some(Ata { base, size, line })
 }
 
 fn has_disk(client: &Client, node: u32) -> bool {
@@ -411,7 +687,7 @@ fn has_disk(client: &Client, node: u32) -> bool {
     while let Some(child_node) = child {
         let mut name = [0u8; 8];
         if let Some(length) = client.getprop(child_node, b"name\0", &mut name) {
-            if length >= 5 && &name[..5] == b"disk\0" {
+            if starts_with(&name, length, b"disk") {
                 return true;
             }
         }

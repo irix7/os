@@ -4,20 +4,22 @@
 # Build the PowerPC G3 Beige machine image and boot it under QEMU.
 #
 # The gate is marker-based: OpenBIOS enters the raw image at 0x01000000, the
-# kernel reads the memory map and the ESCC address from the device tree,
-# installs its own BAT entries, points SDR1 at an empty table, takes ten
+# kernel selects the Mac I/O node that carries the ESCC console and the ATA
+# disk, installs its own BAT entries, points SDR1 at an empty table, takes ten
 # decrementer ticks through the 0x900 vector, then proves the five exception
 # paths it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
 # one system call round-trip.  Finally it programs the CUDA timer and takes
 # ten external interrupts through the Heathrow controller at the 0x500
-# vector, then identifies the ATA disk on the first Mac I/O channel, reads the
-# signature sector at LBA 4 with polled PIO, and loads the flat PowerPC module
+# vector, then identifies the ATA disk on the selected Mac I/O channel, reads
+# the signature sector at LBA 4 with polled PIO, and loads the flat PowerPC module
 # from the disk.  The module's SHA-256 is checked before the entry runs; a
 # second boot with one corrupted image byte must refuse it.  The kernel
 # initialises both ESCC channels and mirrors every byte to both, so QEMU
-# captures the same kernel log on channel A and channel B.  QEMU's g3beige
-# machine has no debug-exit device, so the gate stops QEMU once the final
-# `ppc: halted` reaches both serial files.
+# captures the same kernel log on channel A and channel B.  A second boot adds
+# an extra `macio-oldworld` device ahead of the built-in controller in tree
+# order and requires the kernel to keep selecting the node with the ESCC and
+# the disk.  QEMU's g3beige machine has no debug-exit device, so the gate stops
+# QEMU once the final `ppc: halted` reaches both serial files.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -183,6 +185,9 @@ markers=(
   "IRIX 7 PowerPC G3 bring-up"
   "ppc: booted"
   "ppc: of client=0x"
+  "ppc: macio base=0x"
+  "ppc: macio path="
+  "ppc: macio children escc="
   "ppc: escc=0x"
   "ppc: console output-device="
   "ppc: memory base=0x"
@@ -232,6 +237,56 @@ for marker in "${markers[@]}"; do
   previous="$line"
 done
 
+# The selected Mac I/O node must be a PCI mac-io node with an ESCC and at
+# least one ATA child.  g3beige has one candidate; the PowerBook has two and
+# the same selection code scores them.
+macio_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: macio base=0x[0-9a-f]+ size=[0-9]+$' \
+  | tail -n 1)" || true
+if [ -z "$macio_line" ]; then
+  echo "powerpc-qemu: missing Mac I/O window report" >&2
+  exit 1
+fi
+macio_base=$(( $(printf '%s\n' "$macio_line" | sed -E 's/^ppc: macio base=(0x[0-9a-f]+) .*$/\1/') ))
+macio_size=$(printf '%s\n' "$macio_line" | sed -E 's/^.* size=([0-9]+)$/\1/')
+
+macio_path_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: macio path=/[^ ]+$' \
+  | tail -n 1)" || true
+if [ -z "$macio_path_line" ]; then
+  echo "powerpc-qemu: missing Mac I/O path report" >&2
+  exit 1
+fi
+macio_path="${macio_path_line#ppc: macio path=}"
+case "$macio_path" in
+  /pci*) ;;
+  *)
+    echo "powerpc-qemu: selected Mac I/O path '$macio_path' is not under /pci" >&2
+    exit 1
+    ;;
+esac
+case "$macio_path" in
+  *mac-io*) ;;
+  *)
+    echo "powerpc-qemu: selected Mac I/O path '$macio_path' is not a mac-io node" >&2
+    exit 1
+    ;;
+esac
+
+macio_children="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: macio children escc=[0-9]+ ata=[0-9]+ disks=[0-9]+$' \
+  | tail -n 1)" || true
+if [ -z "$macio_children" ]; then
+  echo "powerpc-qemu: missing Mac I/O child report" >&2
+  exit 1
+fi
+escc_children=$(printf '%s\n' "$macio_children" | sed -E 's/^.*escc=([0-9]+) .*$/\1/')
+ata_children=$(printf '%s\n' "$macio_children" | sed -E 's/^.*ata=([0-9]+) .*$/\1/')
+if [ "$escc_children" -lt 1 ] || [ "$ata_children" -lt 1 ]; then
+  echo "powerpc-qemu: selected Mac I/O node has escc=$escc_children ata=$ata_children" >&2
+  exit 1
+fi
+
 # The ESCC line names the register window and both channel control ports.
 # Channel B's control port is the window base; channel A's is 0x20 above it.
 escc_line="$(tr -d '\r' < "$SERIAL" \
@@ -250,6 +305,11 @@ if [ "$escc_b" -ne "$escc_base" ]; then
 fi
 if [ "$escc_a" -ne $((escc_base + 0x20)) ]; then
   echo "powerpc-qemu: channel A control 0x$(printf '%x' "$escc_a") is not window+0x20" >&2
+  exit 1
+fi
+if [ "$escc_base" -lt "$macio_base" ] \
+  || [ $((escc_base + 0x40)) -gt $((macio_base + macio_size)) ]; then
+  echo "powerpc-qemu: ESCC window 0x$(printf '%x' "$escc_base") is outside the selected Mac I/O window" >&2
   exit 1
 fi
 
@@ -277,6 +337,13 @@ if [ "$selected" != "$expected" ]; then
   echo "powerpc-qemu: selected channel $selected does not match output-device '$console_path'" >&2
   exit 1
 fi
+case "$console_path" in
+  "$macio_path"/*) ;;
+  *)
+    echo "powerpc-qemu: console '$console_path' is not below the selected Mac I/O node '$macio_path'" >&2
+    exit 1
+    ;;
+esac
 
 # Both channels must carry exactly the same kernel output.  OpenBIOS writes
 # its own banner to channel A only, so compare from the BAT switch onward.
@@ -509,6 +576,11 @@ if [ "$ata_base" -lt "$io_base" ] \
   echo "powerpc-qemu: ATA window $ata_range is outside the Mac I/O BAT" >&2
   exit 1
 fi
+if [ "$ata_base" -lt "$macio_base" ] \
+  || [ $((ata_base + ata_size)) -gt $((macio_base + macio_size)) ]; then
+  echo "powerpc-qemu: ATA window $ata_range is outside the selected Mac I/O window" >&2
+  exit 1
+fi
 
 ata="$(tr -d '\r' < "$SERIAL" \
   | grep -E '^ppc: ata model=QEMU HARDDISK sectors=[0-9]+ lba48=[01]$' \
@@ -545,6 +617,59 @@ fi
 if [ "${module_report% *}" != "$MODULE_SIZE" ] \
   || [ "${module_report#* }" != "$MODULE_SHA" ]; then
   echo "powerpc-qemu: module report '$module_report' does not match $MODULE_SIZE bytes $MODULE_SHA" >&2
+  exit 1
+fi
+
+# Two controllers: the built-in Mac I/O is at PCI device 0x10 and carries the
+# ESCC and the attached disk.  An extra macio-oldworld device takes device
+# 0x03 and appears first in tree order with an ESCC but no disk.  The kernel
+# must select the built-in node by its children, not the first /pci child.
+TWO_SERIAL="$WORK/serial-two-controller.log"
+TWO_SERIAL_B="$WORK/serial-two-controller-b.log"
+rm -f "$TWO_SERIAL" "$TWO_SERIAL_B"
+set +e
+"$QEMU" \
+  -M g3beige \
+  -m "$MEMORY" \
+  -kernel "$IMAGE" \
+  -drive "file=$DISK,format=raw,if=ide,index=0,media=disk" \
+  -device macio-oldworld \
+  -nographic \
+  -serial "file:$TWO_SERIAL" \
+  -serial "file:$TWO_SERIAL_B" \
+  -monitor none \
+  -no-reboot &
+TWO_PID=$!
+deadline=$((SECONDS + 60))
+while kill -0 "$TWO_PID" 2>/dev/null; do
+  if grep -qF "ppc: halted" "$TWO_SERIAL" 2>/dev/null \
+    && grep -qF "ppc: halted" "$TWO_SERIAL_B" 2>/dev/null; then
+    break
+  fi
+  if [ "$SECONDS" -ge "$deadline" ]; then
+    break
+  fi
+  sleep 0.1
+done
+kill "$TWO_PID" 2>/dev/null
+wait "$TWO_PID" 2>/dev/null
+set -e
+two_path="$(tr -d '\r' < "$TWO_SERIAL" \
+  | sed -n 's/^ppc: macio path=\(.*\)$/\1/p' \
+  | tail -n 1)" || true
+if [ "$two_path" != "$macio_path" ]; then
+  echo "powerpc-qemu: selected '$two_path' with a second controller, expected '$macio_path'" >&2
+  exit 1
+fi
+for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" "ppc: halted"; do
+  if ! grep -qF -- "$marker" "$TWO_SERIAL"; then
+    echo "powerpc-qemu: two-controller boot missing marker: $marker" >&2
+    exit 1
+  fi
+done
+if ! grep -qF "MODULE-OK" "$TWO_SERIAL_B" \
+  || ! grep -qF "ppc: halted" "$TWO_SERIAL_B"; then
+  echo "powerpc-qemu: two-controller boot did not complete on channel B" >&2
   exit 1
 fi
 
@@ -593,4 +718,4 @@ if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both)"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both)"

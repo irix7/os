@@ -8,6 +8,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- PowerPC G3 Mac I/O selection and the PMU fallback.  The kernel walks
+  `/pci`, scores the Mac I/O nodes by their ESCC and disk children, and uses
+  the node that has both; on the M4753 this is `mac-io@10` rather than tree
+  order.  The QEMU gate adds a second `macio-oldworld` ahead of the built-in
+  node and requires the same selection.  A machine without a CUDA timer logs
+  `timer via=absent external-irq=skipped`, uses the decrementer and skips the
+  external-interrupt probe; a non-gate ATA disk skips the module load instead
+  of reading its LBAs as a module.  See #317.
+
 - PowerPC G3 flat-module load. `kernel-ppc` reserves a 2 MiB slot at
   `0x0180_0000` under IBAT2/DBAT2, reads a big-endian `IRIX7MOD` header and
   image from ATA LBAs 6 and 16, checks the image with `irix7-sha256`, zeroes
