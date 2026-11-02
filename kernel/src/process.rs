@@ -264,9 +264,12 @@ fn free_slot() -> Option<usize> {
 fn index_of_pid(pid: u32) -> Option<usize> {
     // SAFETY: single-threaded kernel.
     unsafe {
-        (*core::ptr::addr_of!(PROCESSES))
-            .iter()
-            .position(|slot| slot.state != State::Unused && slot.identity.pid == pid)
+        (*core::ptr::addr_of!(PROCESSES)).iter().position(|slot| {
+            matches!(
+                slot.state,
+                State::Runnable | State::Running | State::Blocked
+            ) && slot.identity.pid == pid
+        })
     }
 }
 
