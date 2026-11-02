@@ -34,6 +34,9 @@ pub enum Action {
     /// Start two kernels through the bounded hub and run only the #247 bulk
     /// measurement.
     Bulk,
+    /// Start two kernels and run the #337 stream gate: control during a
+    /// backpressured bulk transfer, cancel/reset and reuse.
+    Stream,
     /// Start the M3 shard slice: `--nodes` kernels, join through the direct
     /// two-node relay (or the experimental hub), shard evidence and one route.
     Shard,
@@ -67,6 +70,7 @@ impl Action {
         Some(match word {
             "run" => Self::Run,
             "bulk" => Self::Bulk,
+            "stream" => Self::Stream,
             "shard" => Self::Shard,
             "up" => Self::Up,
             "down" => Self::Down,
