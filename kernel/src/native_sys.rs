@@ -6,24 +6,35 @@
 //! `CELL_E_*` status and `$v1` holds the result; the kernel never returns a
 //! libc `errno`.  The `CellStart` capability ABI is separate (`native-abi.md`
 //! §4) and does not reuse these numbers.
+//!
+//! Most calls leave the frame in place and the trap epilogue advances `EPC`
+//! past the gate.  A call that switches threads replaces the whole frame, so
+//! it returns [`Gate::Resume`] and the epilogue must not advance it again.
 
 use native_abi::syscall::{
     SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXIT, SYS_FCNTL, SYS_FSTAT,
     SYS_FTRUNCATE, SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_LSEEK, SYS_MKDIR,
     SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL,
     SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SIGNAL, SYS_STAT,
-    SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE,
+    SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TRUNCATE,
+    SYS_UNLINK, SYS_WRITE, SYS_YIELD,
 };
 
 use crate::syserr::{SysResult, CELL_E_NOSYS};
+use crate::thread::Exit;
 use crate::traps::TrapFrame;
 
+/// What the trap epilogue must do with `EPC`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Gate {
+    /// The same thread continues; advance `EPC` past the gate instruction.
+    Continue,
+    /// The frame has already been replaced or prepared; do not touch `EPC`.
+    Resume,
+}
+
 /// Dispatch one native gate invocation.
-///
-/// Returns `true` if the call terminated the image (`exit`); the caller must
-/// not advance EPC in that case.  Every other path writes `$v0`/`$v1` and
-/// leaves EPC on the gate instruction.
-pub fn dispatch(tf: &mut TrapFrame) -> bool {
+pub fn dispatch(tf: &mut TrapFrame) -> Gate {
     let number = tf.arg(2);
     let a0 = tf.arg(4);
     let a1 = tf.arg(5);
@@ -32,7 +43,29 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
 
     if number == SYS_EXIT {
         crate::traps::finish_user_exit(tf, a0);
-        return true;
+        return Gate::Resume;
+    }
+
+    if number == SYS_YIELD {
+        tf.regs[2] = native_abi::status::CELL_OK as u64;
+        tf.regs[3] = 0;
+        // `yield_current` advances the outgoing EPC itself when it switches;
+        // without a peer the normal `Gate::Continue` path advances it.
+        return if crate::thread::yield_current(tf) {
+            Gate::Resume
+        } else {
+            Gate::Continue
+        };
+    }
+
+    if number == SYS_THREAD_EXIT {
+        return match crate::thread::exit_current(tf, a0) {
+            Exit::Switched => Gate::Resume,
+            Exit::Last => {
+                crate::traps::finish_user_exit(tf, a0);
+                Gate::Resume
+            }
+        };
     }
 
     let result: SysResult<u64> = match number {
@@ -74,6 +107,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
         // signal machinery, so this is an explicit no-op success, not ENOSYS.
         SYS_FCNTL => crate::user::fcntl_user(a0, a1, a2).map(|value| value as u64),
         SYS_SIGNAL => Ok(0),
+        SYS_THREAD_CREATE => crate::thread::create(tf.status, a0, a1, a2, a3).map(|tid| tid as u64),
         _ => Err(CELL_E_NOSYS),
     };
 
@@ -87,7 +121,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
             tf.regs[3] = 0;
         }
     }
-    false
+    Gate::Continue
 }
 
 #[cfg(test)]

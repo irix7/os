@@ -65,3 +65,10 @@ pub const SYS_RMDIR: u32 = 34;
 pub const SYS_FTRUNCATE: u32 = 35;
 /// `truncate(path, length_lo, length_hi)`; the path form of `ftruncate`.
 pub const SYS_TRUNCATE: u32 = 36;
+/// `thread_create(entry, arg, stack_top, tcb)` -> tid; the main thread is 1.
+pub const SYS_THREAD_CREATE: u32 = 37;
+/// `yield()`; save this thread's frame and resume the next runnable thread.
+pub const SYS_YIELD: u32 = 38;
+/// `thread_exit(status)`; retire this thread, or return to the console when
+/// it was the last one.
+pub const SYS_THREAD_EXIT: u32 = 39;

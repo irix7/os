@@ -1574,6 +1574,9 @@ success.  `SYS_EXIT` does not return.
 | 34 | `rmdir` | `path` |
 | 35 | `ftruncate` | `fd`, `length_lo`, `length_hi` |
 | 36 | `truncate` | `path`, `length_lo`, `length_hi` |
+| 37 | `thread_create` | `entry`, `arg`, `stack_top`, `tcb` |
+| 38 | `yield` | — |
+| 39 | `thread_exit` | `status` |
 
 The namespace behind these calls is the in-memory ramfs: a mutable tree of
 inodes with names, sizes and permissions.  `open` takes the path, flags and
@@ -1647,6 +1650,34 @@ space is `EAGAIN`, and a short count is returned when only part of the buffer fi
 Signals are still absent, so `signal` is an explicit no-op success.  `mmap` is a bump
 allocator over a fixed 1 MiB window; `munmap` and `mprotect` are metadata-only no-ops.
 These are bring-up boundaries, not the v1 POSIX contract.
+
+### 5.9 v0 cooperative thread gate
+
+The thread calls share the flat gate and the image's address space.  They are
+cooperative: a thread runs until it yields, exits, or the image exits.  There is no
+timer preemption and no per-thread kernel stack; a switch happens only at a syscall
+boundary, so the syscall's kernel frames complete on the single kernel stack before the
+incoming user frame is restored.
+
+`thread_create(entry, arg, stack_top, tcb)` returns the new thread id (2 and up; the
+main thread is 1).  `entry` must be word-aligned and mapped for execute, `stack_top`
+must be 16-byte aligned with a mapped byte below it, and `tcb` must be a mapped 16-byte
+`struct tcb` (§6.3).  The initial frame is `EPC=entry`, `SP=stack_top`, `$a0=arg`,
+`$28=tcb`, every other GPR zero.  `Status` inherits the creator's coprocessor and
+interrupt-mask bits, enters user mode with 64-bit addressing, and enables interrupts.
+The kernel owns only the TCB header; the libc owns the rest and may append a key table.
+
+`yield()` saves the current frame with `EPC` advanced past the gate, selects the next
+runnable thread round-robin and returns through the exception return path into it.  With
+no other runnable thread it returns `CELL_OK` without switching.  `thread_exit(status)`
+marks the caller dead, records the status and resumes the next thread; if it was the last
+live thread the image exits as `exit` would.  A `SYS_EXIT` from any thread ends the whole
+image (`exit_group` semantics), not just the caller.
+
+The table holds eight threads.  A thread id is unique only while its thread is alive;
+dead slots are reused.  There is no join yet: the exit status stays in the slot until it
+is reused.  Preemption, futexes, `pthread_create`/`pthread_join` and a process table are
+later slices.
 
 ---
 
