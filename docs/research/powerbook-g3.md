@@ -42,8 +42,9 @@ tree-order case.
 
 The interrupt controller in both nodes is the Heathrow register block, so the
 driver accepts `compatible = "heathrow"` and `"gatwick"`. The M4753's VIA is
-the PMU (`via-pmu`), not a CUDA, so the current CUDA timer proof still stops
-on this machine; the PMU is its own device with a command protocol.
+the PMU (`via-pmu`), not a CUDA. The kernel logs `ppc: timer via=absent
+external-irq=skipped`, uses the decrementer for its clock and skips the CUDA
+external-interrupt proof; the PMU command protocol is a later slice.
 
 ## What this changes
 
@@ -97,10 +98,11 @@ A new machine layer, in the same shape as the x86 one:
   install.
 - **No userland yet.** As on x86, userland follows the machine layer.
 - **The timer is in the PMU.** The M4753 exposes `via-pmu`, not `via-cuda`.
-  The current external-interrupt proof programs the CUDA's 6522 timer, so the
-  PowerBook reaches the console and disk selection and then stops at
-  `ppc: device tree has no CUDA timer`. The PMU command protocol is a separate
-  slice; the decrementer still ticks.
+  The external-interrupt proof programs the CUDA's 6522 timer, so on this
+  machine the kernel logs `ppc: timer via=absent external-irq=skipped`, skips
+  `IRQ-OK` and continues on the decrementer. The PMU command protocol is a
+  separate slice; the decrementer still ticks and the console, ATA and module
+  paths run.
 
 ## Netboot and the floppy
 

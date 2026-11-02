@@ -239,10 +239,10 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         }
     };
     let cuda = match cuda {
-        Some(cuda) => cuda,
+        Some(cuda) => Some(cuda),
         None => {
-            print_line(b"ppc: device tree has no CUDA timer");
-            halt();
+            print_line(b"ppc: timer via=absent external-irq=skipped");
+            None
         }
     };
     let disk = match disk {
@@ -259,7 +259,9 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_hex(disk.line);
     serial::write_byte(b'\n');
 
-    irq::prepare(controller.base, cuda.base, cuda.line);
+    if let Some(cuda) = &cuda {
+        irq::prepare(controller.base, cuda.base, cuda.line);
+    }
 
     timer::enable();
     let started = timer::timebase();
@@ -279,28 +281,32 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     probe::run();
     print_line(b"TRAPS-OK");
 
-    irq::start();
-    let irq_started = timer::timebase();
-    let irq_deadline = timebase.saturating_mul(2);
-    while irq::count() < irq::TARGET {
-        if timer::timebase().wrapping_sub(irq_started) > irq_deadline {
-            serial::write(b"ppc: irq stalled count=");
-            print_dec(irq::count());
-            serial::write_byte(b'\n');
-            print_line(b"ppc: halted");
-            halt();
+    if let Some(_cuda) = &cuda {
+        irq::start();
+        let irq_started = timer::timebase();
+        let irq_deadline = timebase.saturating_mul(2);
+        while irq::count() < irq::TARGET {
+            if timer::timebase().wrapping_sub(irq_started) > irq_deadline {
+                serial::write(b"ppc: irq stalled count=");
+                print_dec(irq::count());
+                serial::write_byte(b'\n');
+                print_line(b"ppc: halted");
+                halt();
+            }
+            core::hint::spin_loop();
         }
-        core::hint::spin_loop();
+        let (count, pending, ifr) = irq::stop();
+        serial::write(b"ppc: irq pending=");
+        print_hex(pending);
+        serial::write(b" ifr=");
+        print_hex(ifr);
+        serial::write_byte(b'\n');
+        serial::write(b"IRQ-OK count=");
+        print_dec(count);
+        serial::write_byte(b'\n');
+    } else {
+        print_line(b"IRQ-SKIP reason=no-cuda");
     }
-    let (count, pending, ifr) = irq::stop();
-    serial::write(b"ppc: irq pending=");
-    print_hex(pending);
-    serial::write(b" ifr=");
-    print_hex(ifr);
-    serial::write_byte(b'\n');
-    serial::write(b"IRQ-OK count=");
-    print_dec(count);
-    serial::write_byte(b'\n');
 
     let channel = ata::Channel::new(disk.base);
     let identify = match channel.identify() {
@@ -333,22 +339,27 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write_byte(b'\n');
     print_line(b"ATA-OK");
 
-    match module::load(channel) {
-        Ok(report) => {
-            serial::write(b"ppc: module status=");
-            print_dec(report.status as u32);
-            serial::write(b" tick=");
-            print_dec(u32::from(report.ticked));
-            serial::write(b" length=");
-            print_dec(report.length);
-            serial::write_byte(b'\n');
-            print_line(b"MODULE-OK");
+    let gate_disk = &sector[..16] == b"IRIX7-ATA-SIG001";
+    if gate_disk {
+        match module::load(channel) {
+            Ok(report) => {
+                serial::write(b"ppc: module status=");
+                print_dec(report.status as u32);
+                serial::write(b" tick=");
+                print_dec(u32::from(report.ticked));
+                serial::write(b" length=");
+                print_dec(report.length);
+                serial::write_byte(b'\n');
+                print_line(b"MODULE-OK");
+            }
+            Err(error) => {
+                error.report();
+                print_line(b"ppc: halted");
+                halt();
+            }
         }
-        Err(error) => {
-            error.report();
-            print_line(b"ppc: halted");
-            halt();
-        }
+    } else {
+        print_line(b"ppc: module skipped=not-gate-disk");
     }
 
     print_line(b"ppc: halted");

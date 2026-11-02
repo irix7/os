@@ -10,7 +10,9 @@ prints `TRAPS-OK`, takes ten external interrupts from the CUDA timer through
 the Heathrow interrupt controller at the `0x500` vector, prints `IRQ-OK
 count=10`, identifies the ATA disk on the selected Mac I/O channel, reads the
 signature sector at LBA 4 with polled PIO, prints `ATA-OK` and halts. Observed
-with QEMU 11.1.2 and its OpenBIOS 1.1 build.
+with QEMU 11.1.2 and its OpenBIOS 1.1 build. On a PMU machine such as the
+M4753 there is no `via-cuda`; the kernel skips the external-interrupt probe,
+continues on the decrementer and does not print `IRQ-OK`.
 
 ## The `-kernel` path
 
@@ -335,6 +337,11 @@ the controller, so the handler repeats the clear/acknowledge pair a bounded
 number of times instead of reporting a false failure. The stop path disables
 the interrupt, switches T1 to one-shot mode, loads the longest count and then
 clears the flag, so its final IFR read cannot race the next underflow.
+
+On the M4753 there is no `via-cuda` node.  `platform::cuda` returns `None`,
+`main` logs `ppc: timer via=absent external-irq=skipped`, and the IRQ probe is
+skipped; the decrementer still provides `clock_ms` and the boot continues to
+`BOOT-OK`, the fault probes, the ATA read and the module check.
 
 The `0x500` stub shares `trap_entry` with the fault vectors. An external
 interrupt is taken at an instruction boundary, so SRR0 already holds the
