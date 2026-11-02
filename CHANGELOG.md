@@ -30,7 +30,9 @@ All notable changes to IRIX 7 are recorded here. The format follows
   M4753 Geoport (channel A) and internal IR link (channel B) both show the boot
   log. The QEMU gate captures two serial files, asserts the channel addresses
   and the firmware selection, and requires channel B's kernel log to match
-  channel A byte for byte. See #313.
+  channel A byte for byte. The timer stop and acknowledge paths also tolerate
+  a second VIA underflow, so the interrupt marker gate is deterministic.
+  See #313.
 - PowerPC G3 ATA disk read. `kernel-ppc` finds the `ata-3` channel with a disk
   child in the Mac I/O device tree, takes its task-file window from `reg`, runs
   polled `IDENTIFY DEVICE` and one LBA28 `READ SECTORS`, and checks

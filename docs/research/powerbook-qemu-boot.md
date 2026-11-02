@@ -274,7 +274,12 @@ VIA registers are 0x200 bytes apart inside that window. Timer 1 runs in
 continuous mode at 4.7 MHz / 6: a latch of 781 gives one interrupt about every
 millisecond. The handler clears the VIA's T1 flag, writes the event bit to the
 controller's acknowledge port, and checks that the next event read has the
-bit clear. That write is both the acknowledge and the end of interrupt.
+bit clear. That write is both the acknowledge and the end of interrupt. A
+timer underflow can set the flag again between clearing it and acknowledging
+the controller, so the handler repeats the clear/acknowledge pair a bounded
+number of times instead of reporting a false failure. The stop path disables
+the interrupt, switches T1 to one-shot mode, loads the longest count and then
+clears the flag, so its final IFR read cannot race the next underflow.
 
 The `0x500` stub shares `trap_entry` with the fault vectors. An external
 interrupt is taken at an instruction boundary, so SRR0 already holds the
@@ -410,25 +415,25 @@ ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
 ppc: decrementer ticks=10
 BOOT-OK
 ppc: deliberate unmapped load
-ppc: trap vector=0x300 srr0=0x1002bcc srr1=0xa030 dsisr=0x40000000 dar=0x20000000
+ppc: trap vector=0x300 srr0=0x1002be4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
 FAULT-OK
 ppc: deliberate unmapped fetch
 ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
 ISI-OK
 ppc: deliberate misaligned load
-ppc: trap vector=0x600 srr0=0x1002c10 srr1=0xa030 dsisr=0x40000060 dar=0x1020261
+ppc: trap vector=0x600 srr0=0x1002c28 srr1=0xa030 dsisr=0x40000060 dar=0x1020261
 ALIGN-OK
 ppc: deliberate illegal instruction
-ppc: trap vector=0x700 srr0=0x1002c34 srr1=0x8a030
+ppc: trap vector=0x700 srr0=0x1002c4c srr1=0x8a030
 PROGRAM-OK
-ppc: trap vector=0xc00 srr0=0x1002c44 srr1=0xa030
+ppc: trap vector=0xc00 srr0=0x1002c5c srr1=0xa030
 ppc: syscall call=0x2a result=0x2b
 SYSCALL-OK
 TRAPS-OK
-ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1004a68 srr1=0xa030
-ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1004a68 srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1004abc srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1004abc srr1=0xa030
 ...
-ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1004a58 srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1004abc srr1=0xa030
 ppc: irq pending=0x0 ifr=0x0
 IRQ-OK count=10
 ppc: ata model=QEMU HARDDISK sectors=2048 lba48=1
