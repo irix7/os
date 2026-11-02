@@ -35,6 +35,14 @@ fn time_and_io_structs() {
 }
 
 #[test]
+fn pread_pwrite_block_is_16_bytes() {
+    assert_eq!((size_of::<io_at>(), align_of::<io_at>()), (16, 8));
+    assert_eq!(offset_of!(io_at, buf), 0);
+    assert_eq!(offset_of!(io_at, len), 4);
+    assert_eq!(offset_of!(io_at, offset), 8);
+}
+
+#[test]
 fn stat_is_the_relibc_136_byte_layout() {
     assert_eq!((size_of::<stat>(), align_of::<stat>()), (136, 8));
     assert_eq!(offset_of!(stat, st_dev), 0);
@@ -136,6 +144,63 @@ fn constant_sanity() {
     assert_eq!(O_RDWR, 2);
     assert_eq!(S_IFMT & S_IFREG, S_IFREG);
     assert_eq!(MAP_ANONYMOUS, MAP_ANON);
+}
+
+#[test]
+fn lseek_and_fd_flag_constants_match_posix() {
+    assert_eq!((SEEK_SET, SEEK_CUR, SEEK_END), (0, 1, 2));
+    assert_eq!((SEEK_DATA, SEEK_HOLE), (3, 4));
+    assert_eq!(FD_CLOEXEC, 1);
+    assert_eq!((F_GETFD, F_SETFD), (1, 2));
+}
+
+#[test]
+fn v0_syscall_table_is_pinned_and_distinct() {
+    // The numbers are the v0 table in docs/spec/native-abi.md §5.8.  They are
+    // replaced outright when the capability form lands; until then a change
+    // here is an ABI change and must move the document with it.
+    let table = [
+        SYS_WRITE,
+        SYS_EXIT,
+        SYS_MMAP,
+        SYS_MUNMAP,
+        SYS_MPROTECT,
+        SYS_OPEN,
+        SYS_CLOSE,
+        SYS_FCNTL,
+        SYS_DUP,
+        SYS_GETCWD,
+        SYS_POLL,
+        SYS_SIGNAL,
+        SYS_GETENTROPY,
+        SYS_CLOCK_GETTIME,
+        SYS_GETPID,
+        SYS_READ,
+        SYS_FSTAT,
+        SYS_STAT,
+        SYS_READDIR,
+        SYS_NANOSLEEP,
+        SYS_CHDIR,
+        SYS_PIPE,
+        SYS_TCGETWINSIZE,
+        SYS_TCSETWINSIZE,
+        SYS_LSEEK,
+        SYS_PREAD,
+        SYS_PWRITE,
+        SYS_DUP2,
+        SYS_PIPE2,
+        SYS_GETDENTS,
+    ];
+    for (index, number) in table.iter().enumerate() {
+        assert_eq!(
+            *number,
+            index as u32 + 1,
+            "syscall {} is renumbered",
+            index + 1
+        );
+    }
+    assert_eq!(SYS_GETDENTS, 30);
+    assert_eq!(SYS_LSEEK, 25);
 }
 
 #[test]

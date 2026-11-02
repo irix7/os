@@ -8,7 +8,9 @@
 
 use irix_elf::{Abi, Elf};
 
-use crate::syserr::{SysResult, CELL_E_FAULT, CELL_E_INVAL, CELL_E_NAMETOOLONG, CELL_E_NOMEM};
+use crate::syserr::{
+    SysResult, CELL_E_FAULT, CELL_E_INVAL, CELL_E_NAMETOOLONG, CELL_E_NOMEM, CELL_E_OVERFLOW,
+};
 
 use crate::{frames, scsi, tlb, traps};
 
@@ -707,15 +709,134 @@ pub fn tcsetwinsize_user(fd: u32, address: u32) -> SysResult<()> {
 
 /// Create a pipe and write `[read_fd, write_fd]` to the user buffer.
 pub fn pipe_user(address: u32) -> SysResult<()> {
+    pipe2_user(address, 0)
+}
+
+/// Create a pipe with `flags` (`O_CLOEXEC`, `O_NONBLOCK`) applied.
+pub fn pipe2_user(address: u32, flags: u32) -> SysResult<()> {
     if !range_ok(address, 8) {
         return Err(CELL_E_FAULT);
     }
-    let (read, write) = crate::fd::pipe()?;
+    let (read, write) = crate::fd::pipe2(flags)?;
     unsafe {
         core::ptr::write_volatile(address as *mut i32, read);
         core::ptr::write_volatile((address + 4) as *mut i32, write);
     }
     Ok(())
+}
+
+/// Duplicate a descriptor onto a chosen number.
+pub fn dup2_user(fd: u32, new_fd: u32) -> SysResult<i32> {
+    crate::fd::dup2(fd as i32, new_fd as i32)
+}
+
+/// `fcntl` with the v0 descriptor-flag commands.
+pub fn fcntl_user(fd: u32, cmd: u32, arg: u32) -> SysResult<i32> {
+    crate::fd::fcntl(fd as i32, cmd, arg)
+}
+
+/// `lseek(fd, offset, whence)` with the 64-bit offset split across `$a1`/`$a2`.
+pub fn lseek_user(fd: u32, low: u32, high: u32, whence: u32) -> SysResult<i64> {
+    let offset = (((high as u64) << 32) | low as u64) as i64;
+    crate::fd::lseek(fd as i32, offset, whence)
+}
+
+/// Read the 16-byte `io_at` block `pread`/`pwrite` take in `$a1`.
+fn read_io_at(address: u32) -> SysResult<(u32, u32, i64)> {
+    if !range_ok(address, core::mem::size_of::<native_abi::io_at>() as u32) {
+        return Err(CELL_E_FAULT);
+    }
+    let buffer = unsafe { core::ptr::read_volatile(address as *const u32) };
+    let length = unsafe { core::ptr::read_volatile((address + 4) as *const u32) };
+    let offset = unsafe { core::ptr::read_volatile((address + 8) as *const i64) };
+    if !range_ok(buffer, length) {
+        return Err(CELL_E_FAULT);
+    }
+    Ok((buffer, length, offset))
+}
+
+/// `pread(fd, io_at *)`.
+pub fn pread_user(fd: u32, block: u32) -> SysResult<u32> {
+    let (address, length, offset) = read_io_at(block)?;
+    let mut buffer = [0u8; 512];
+    let mut total = 0usize;
+    while total < length as usize {
+        let chunk = (length as usize - total).min(buffer.len());
+        let Some(position) = offset.checked_add(total as i64) else {
+            return Err(CELL_E_OVERFLOW);
+        };
+        let count = crate::fd::pread(fd as i32, position, &mut buffer[..chunk])?;
+        if count == 0 {
+            break;
+        }
+        for (index, byte) in buffer[..count].iter().enumerate() {
+            unsafe {
+                core::ptr::write_volatile((address as *mut u8).add(total + index), *byte);
+            }
+        }
+        total += count;
+        if count < chunk {
+            break;
+        }
+    }
+    Ok(total as u32)
+}
+
+/// `pwrite(fd, io_at *)`.
+pub fn pwrite_user(fd: u32, block: u32) -> SysResult<u32> {
+    let (address, length, offset) = read_io_at(block)?;
+    let mut buffer = [0u8; 512];
+    let mut total = 0usize;
+    while total < length as usize {
+        let chunk = (length as usize - total).min(buffer.len());
+        let Some(position) = offset.checked_add(total as i64) else {
+            return Err(CELL_E_OVERFLOW);
+        };
+        for (index, byte) in buffer[..chunk].iter_mut().enumerate() {
+            *byte = unsafe { core::ptr::read_volatile((address as *const u8).add(total + index)) };
+        }
+        let count = crate::fd::pwrite(fd as i32, position, &buffer[..chunk])?;
+        if count == 0 {
+            break;
+        }
+        total += count;
+        if count < chunk {
+            break;
+        }
+    }
+    Ok(total as u32)
+}
+
+/// `getdents(fd, buf, len)`: fill whole `dirent` records and advance the
+/// descriptor's cookie.  The scratch buffer keeps the user pointer out of the
+/// fd layer; the loop stops before a record would cross the caller's range.
+pub fn getdents_user(fd: u32, address: u32, length: u32) -> SysResult<u32> {
+    let record = core::mem::size_of::<native_abi::dirent>();
+    if (length as usize) < record {
+        return Err(CELL_E_INVAL);
+    }
+    if !range_ok(address, length) {
+        return Err(CELL_E_FAULT);
+    }
+    let mut scratch = [0u8; 1024];
+    let mut total = 0usize;
+    while (length as usize) - total >= record {
+        let chunk = ((length as usize) - total).min(scratch.len());
+        let count = crate::fd::getdents(fd as i32, &mut scratch[..chunk])?;
+        if count == 0 {
+            break;
+        }
+        for (index, byte) in scratch[..count].iter().enumerate() {
+            unsafe {
+                core::ptr::write_volatile((address as *mut u8).add(total + index), *byte);
+            }
+        }
+        total += count;
+        if count < chunk {
+            break;
+        }
+    }
+    Ok(total as u32)
 }
 
 /// Copy file contents from a descriptor into a validated user buffer.
