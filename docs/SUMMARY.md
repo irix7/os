@@ -46,6 +46,7 @@
 - [M2 two-node rig](plan/m2-rig.md)
 - [M3 first shard slice](plan/m3-rig.md)
 - [Roadmap tree (interactive)](roadmap-tree.md)
+- [The Logical Computer (film)](documentary.md)
 - [GitHub operating model](plan/github.md)
 - [Risk register](plan/risks.md)
 - [Interface specifications](plan/interfaces.md)
