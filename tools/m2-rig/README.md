@@ -173,7 +173,7 @@ kills the member with `SIGKILL` and drops the host relay; `recover` restarts it 
 the rig's process helpers, resets the survivor's guest link and waits for a two-ended
 epoch/digest match.  The transcript and `summary.md` are written under `<work>/demo/`.
 This is the M2 object/actor proof, not fork/exec over cells; that path lands after
-#326/#327.
+\#326/#327.
 
 ## NVRAM keys
 

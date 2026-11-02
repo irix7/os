@@ -802,7 +802,7 @@ the current serial logs and `serial-n1-before-failure.log`.  A sample pass is
 [`tools/one-computer/transcript.txt`](../../tools/one-computer/transcript.txt).  The
 assertions are:
 
-- the same `irix7> ` prompt before and after the failure and at the end;
+- the same `irix7>` prompt before and after the failure and at the end;
 - no user-facing command contains a node name, NodeId, route, HTTP path or port;
 - the named object was read at the peer and moved to the console node; a following read
   consumed exactly one `MOVED` and retried;
