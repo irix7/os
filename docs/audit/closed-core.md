@@ -29,7 +29,7 @@ gh run view <id> --repo irix7/os --json status,conclusion,headSha,jobs
 git log --all --oneline --grep '#<n>'
 git show --stat --oneline <commit>
 rg -n <pattern> kernel rom crates modules tools docs .github
-nl -ba <path>
+cat -n <path>
 nix develop --command cargo test -p boot-protocol-tests -p module-resolver -p wasm-host
 nix develop --command cargo test -p wasm-policy-host -p m1-policy-bridge
 nix develop --command cargo build -Z build-std=core,alloc -Zjson-target-spec \
@@ -414,7 +414,7 @@ This is a latent failure: the ROM passes `$a0 = 0`, so the code path is dead. It
 
 ### 4.2 The "live Wasm policy" is a bridge, not the kernel policy
 
-#205, #213 and #2 document a real slot-B policy with a committed root, actor, capability and home. The live kernel path for `/etc/motd` and `/dev/null` does use it. But:
+\#205, #213 and #2 document a real slot-B policy with a committed root, actor, capability and home. The live kernel path for `/etc/motd` and `/dev/null` does use it. But:
 
 - The kernel's own `Local.root` and native capability remain the native values (`kernel/src/logical.rs:304-331`); CI deliberately requires the guest root to differ (`ci.yml:567-573`).
 - The kernel does not import the guest capability into its capability table; `authorize` on the bridge is the only check for the guest path.

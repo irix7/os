@@ -71,7 +71,7 @@ table keeps the audited 39 so the verdicts remain traceable.
 | 271 | m1: the Wasm-autoload boot traps when the kernel's service table grows | core | implemented | medium | #272 bounds the stack; update stale stack-top docs |
 | 287 | arch: boot a PowerPC G3 kernel to serial under qemu-system-ppc | platform | implemented | low | Real G3/PowerBook run under #16 |
 | 288 | userland: boot a real C probe through the IRIX PAL | platform | implemented | high | CI relibc lane (#13); process/capability gate (#326/#10) |
-| 291 | ppc: install the kernel's own BATs and report a deliberate DSI | platform | implemented | low | Hardware BAT/TLB check under #16; delay-slot handling |
+| 291 | ppc: install the kernel's own BAT registers and report a deliberate DSI | platform | implemented | low | Hardware BAT/TLB check under #16; delay-slot handling |
 | 295 | ppc: complete the exception and system-call layer | platform | implemented | low | Hardware exception check under #16; real user ABI later |
 | 296 | userland: broaden the fd surface and give directories a cookie | platform | implemented | high | Per-process fd table (#326); `*at` surface |
 | 301 | ppc: take external timer interrupts through the Heathrow PIC | platform | partial | high | #335: the M4753 PMU path skips the proof |
@@ -146,7 +146,7 @@ Created:
 
 Existing work that now carries the remainder: #16 (hardware), #264 (membership), #322
 (blocking waits), #326/#327 (process cells), #13 (CI and relibc), #272 (stack budget),
-#328 (Rage LT), #329 (one-computer demo), #331 (Indy browser scenario).
+\#328 (Rage LT), #329 (one-computer demo), #331 (Indy browser scenario).
 
 ## Evidence and limits
 

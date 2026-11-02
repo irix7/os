@@ -22,7 +22,7 @@ reports.
 
 The other 22 closed issues in the repository are allocated to the core and
 mesh reports: #1, #2, #3, #33, #43, #115, #116, #117, #118, #119, #204, #205,
-#206, #213, #214, #217, #245, #246, #247, #248, #249, #271. The boundary is
+\#206, #213, #214, #217, #245, #246, #247, #248, #249, #271. The boundary is
 deliberate: #115 (console unify), #117 (TLB teardown), #118 (REX3) and #119
 (CI readiness) are core/boot or CI work even though they touch platform code.
 With #321 the closed set is 39 issues; 17 here plus 22 in the core and mesh
@@ -105,7 +105,7 @@ the verdict is downgraded if that claim is part of the acceptance.
 |---:|---|---|---|---|
 | #266 | arch: x86_64 as the second supported machine type | divergent | high | Reopen or re-scope #266; shared core and x86 userland via #267/#326 |
 | #287 | arch: boot a PowerPC G3 kernel to serial under qemu-system-ppc | implemented | low | Real G3/PowerBook run under #16 |
-| #291 | ppc: install the kernel's own BATs and report a deliberate DSI | implemented | low | Hardware BAT/TLB check under #16; delay-slot handling |
+| #291 | ppc: install the kernel's own BAT registers and report a deliberate DSI | implemented | low | Hardware BAT/TLB check under #16; delay-slot handling |
 | #295 | ppc: complete the exception and system-call layer | implemented | low | Hardware exception check under #16; real user syscall ABI later |
 | #301 | ppc: take external timer interrupts through the Heathrow PIC | partial | high | PMU timer slice; real M4753 under #16/#324 |
 | #305 | ppc: read the IDE disk through the Heathrow ATA controller | implemented | medium | Real disk timing under #16; DMA/interrupt slice |
@@ -209,14 +209,14 @@ is explicitly a QEMU gate, so the evidence matches the acceptance.
 Follow-up: a real G3/PowerBook boot under #16. No code change is needed for the
 slice itself.
 
-### #291 — ppc: install the kernel's own BATs and report a deliberate DSI
+### #291 — ppc: install the kernel's own BAT registers and report a deliberate DSI
 
 **Verdict:** implemented. **Foundation risk:** low. **Evidence grade:** QEMU
 gate, run locally; DSI fields parsed by the gate.
 
 `kernel-ppc/src/mmu.rs` installs IBAT0/DBAT0 for the image and boot stack,
 IBAT1 for the low 128 KiB vector page, DBAT1 for the Mac I/O window with
-`WIMG_IO = 0x28`, and IBAT2/DBAT2 for the module slot; the remaining BATs are
+`WIMG_IO = 0x28`, and IBAT2/DBAT2 for the module slot; the remaining BAT registers are
 cleared (`mmu.rs:78-101`). `activate` points SDR1 at a zeroed, 64 KiB-aligned
 hash table and invalidates the owned ranges page by page with `tlbie`, because
 QEMU's 750 model lacks `tlbia` (`mmu.rs:103-132`). The image BAT is sized from
@@ -450,7 +450,7 @@ firmware's selected channel, otherwise channel A, otherwise B
 (`main.rs:373-398`).
 
 `kernel-ppc/src/monitor.rs` implements the one-second first-key wait
-(`monitor.rs:17-20`, `53-67`), the `ppc> ` prompt, echo and backspace, a
+(`monitor.rs:17-20`, `53-67`), the `ppc>` prompt, echo and backspace, a
 32-character line buffer (`monitor.rs:22-25`, `76-105`), and the fixed
 `help`, `info` and `halt` commands (`monitor.rs:116-131`). `info` reports the
 selected Mac I/O base/size/path, console and input channel, memory, timebase,
@@ -685,7 +685,7 @@ address space is shared with no per-thread kernel stack
 in `docs/spec/architecture.md:893-935`.
 
 Follow-up: preemption, per-thread kernel stacks and a real join under #326;
-#322 for parking sleeps. Keep the cooperative gate until the scheduler
+\#322 for parking sleeps. Keep the cooperative gate until the scheduler
 replaces it.
 
 ### #314 — userland: futex wait/wake for cooperative threads

@@ -23,9 +23,9 @@ Six closed issues are audited here:
 
 The final partition of all 39 closed issues is core 16, mesh 6 (this report) and
 platform 17. Core owns #1, #2, #33, #43, #115, #116, #117, #118, #119, #204,
-#205, #206, #213, #214, #217 and #271. Platform owns #266, #287, #288, #291,
-#295, #296, #301, #302, #305, #306, #309, #310, #313, #314, #317, #318 and
-#321. This report does not audit either set; two core verdicts are cross-checked
+\#205, #206, #213, #214, #217 and #271. Platform owns #266, #287, #288, #291,
+\#295, #296, #301, #302, #305, #306, #309, #310, #313, #314, #317, #318 and
+\#321. This report does not audit either set; two core verdicts are cross-checked
 in Appendix A.
 
 ### 1.2 Method
@@ -85,7 +85,7 @@ test**, or **docs only**.
 
 The single highest-risk pattern is not a broken feature: it is a **closure
 pattern**. #249 was closed with "this issue is not complete" in its own body and
-#264 open carrying the remainder. #246 was closed with its cancellation bundle
+\#264 open carrying the remainder. #246 was closed with its cancellation bundle
 recorded as an open evidence item. #248 was closed as "event-driven" when the
 mechanism is a readiness poll with a hot-path shortcut. These are status-integrity
 gaps that will mislead M3/M4 planning more than any single missing test.
@@ -381,7 +381,7 @@ What is missing or wrong with the closure:
   remainder.
 
 The protocol and library work is substantial; the closure is not. A reader of
-#249 would believe per-link state and gossip exist. They do not.
+\#249 would believe per-link state and gossip exist. They do not.
 
 ## 4. Cross-cutting findings
 
