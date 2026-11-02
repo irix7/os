@@ -15,7 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::pic::Controller;
 use crate::via::Timer;
-use crate::{halt, print_dec, print_hex, print_line, serial};
+use crate::{console, halt, print_dec, print_hex, print_line};
 
 /// Timer 1 period in CUDA clocks: one millisecond minus the timer's two
 /// reload counts.
@@ -60,15 +60,15 @@ pub fn prepare(pic_base: u32, timer_base: u32, line: u32) {
     }
     Timer::new(timer_base).program(PERIOD_TICKS);
 
-    serial::write(b"ppc: irq controller=");
+    console::write(b"ppc: irq controller=");
     print_hex(pic_base);
-    serial::write(b" timer=");
+    console::write(b" timer=");
     print_hex(timer_base);
-    serial::write(b" line=");
+    console::write(b" line=");
     print_hex(line);
-    serial::write(b" period=");
+    console::write(b" period=");
     print_dec(u32::from(PERIOD_TICKS));
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 }
 
 /// Start the timer and unmask its controller line.
@@ -101,9 +101,9 @@ pub fn dispatch(srr0: u32, srr1: u32, call: u32) -> u32 {
     let events = controller.events(line);
 
     if events & bit == 0 {
-        serial::write(b"ppc: irq without a pending event events=");
+        console::write(b"ppc: irq without a pending event events=");
         print_hex(events);
-        serial::write_byte(b'\n');
+        console::write_byte(b'\n');
         print_line(b"ppc: halted");
         halt();
     }
@@ -117,14 +117,24 @@ pub fn dispatch(srr0: u32, srr1: u32, call: u32) -> u32 {
     controller.acknowledge(line, bit);
 
     let count = COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    serial::write(b"ppc: irq vector=0x500 line=");
+    console::write(b"ppc: irq vector=0x500 line=");
     print_hex(line);
-    serial::write(b" count=");
+    console::write(b" count=");
     print_dec(count);
-    serial::write(b" srr0=");
+    console::write(b" srr0=");
     print_hex(srr0);
-    serial::write(b" srr1=");
+    console::write(b" srr1=");
     print_hex(srr1);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
+
+    // The probe is a fixed count, and drawing the report on the framebuffer
+    // makes the handler slower than the one-millisecond timer.  Stop the
+    // source as soon as the target is reached so the count cannot run past
+    // it while the main context waits to observe it.  `stop` repeats the
+    // disable and acknowledge, so its final pending-event check still holds.
+    if count >= TARGET {
+        controller.disable(line);
+        timer().stop();
+    }
     call
 }

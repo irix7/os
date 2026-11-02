@@ -18,7 +18,7 @@
 
 use core::ptr::{read_volatile, write_volatile};
 
-use crate::{print_hex, serial, timer};
+use crate::{console, print_hex, timer};
 
 /// Each task-file register is 16 bytes apart in the Mac I/O window.
 const REGISTER_STRIDE: u32 = 16;
@@ -77,13 +77,13 @@ pub struct Error {
 
 impl Error {
     pub fn report(self) {
-        serial::write(b"ppc: ata error phase=");
-        serial::write(self.phase.as_bytes());
-        serial::write(b" status=");
+        console::write(b"ppc: ata error phase=");
+        console::write(self.phase.as_bytes());
+        console::write(b" status=");
         print_hex(u32::from(self.status));
-        serial::write(b" error=");
+        console::write(b" error=");
         print_hex(u32::from(self.error));
-        serial::write_byte(b'\n');
+        console::write_byte(b'\n');
     }
 }
 

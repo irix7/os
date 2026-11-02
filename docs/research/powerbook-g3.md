@@ -80,8 +80,9 @@ A new machine layer, in the same shape as the x86 one:
    controller, ATA for the disk and CD, ADB for keyboard and trackpad, and the
    PMU for NVRAM and RTC. The M4753 is an Old World Heathrow machine; it has
    no OpenPIC, which is the New World controller in KeyLargo.
-4. A console: Open Firmware's own console first, then either the serial port or
-   the ATI framebuffer.
+4. A console: Open Firmware's own console first, then the serial port and the
+   ATI framebuffer. The kernel now mirrors the ESCC log into the Open Firmware
+   display mode as a second output; there is no mode setting or input console.
 5. A network device. The listed configuration has a modem; mesh needs Ethernet,
    so the built-in Ethernet (if present on this model) or a PCMCIA card has to
    be confirmed before networking is planned.
@@ -106,6 +107,14 @@ A new machine layer, in the same shape as the x86 one:
   `IRQ-OK` and continues on the decrementer. The keyboard uses the same 6522
   through the PMU's command protocol, which is written but has not been run on
   hardware; QEMU cannot model it. PMU housekeeping is a separate slice.
+- **The framebuffer mode is Open Firmware's.** The kernel reads
+  `width`/`height`/`depth`/`linebytes` and the `assigned-addresses` aperture
+  from the Rage LT node and draws into it without setting a mode. 8, 16 and
+  32 bpp are supported; 15, 20 and 24 bpp print `GFX-SKIP reason=mode` and
+  leave the serial console. The 8 bpp path assumes the firmware palette's
+  entry 15 is white. The real-hardware check is an `output-device=screen`
+  boot with the log visible on the LCD from `ppc: mmu enabled` and the
+  bottom-right self-test block and `G` legible.
 
 ## Netboot and the floppy
 

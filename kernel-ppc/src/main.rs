@@ -27,7 +27,10 @@ use core::panic::PanicInfo;
 mod adb;
 mod ata;
 mod cache;
+mod console;
 mod cuda;
+mod fb;
+mod font;
 mod irq;
 mod keyboard;
 mod mmu;
@@ -52,38 +55,57 @@ extern "C" {
 }
 
 pub(crate) fn print_hex(value: u32) {
-    serial::write(b"0x");
+    console::write(b"0x");
     irix7_fmt::hex(u64::from(value), 1, false, &mut |byte| {
-        serial::write_byte(byte)
+        console::write_byte(byte)
     });
 }
 
 pub(crate) fn print_dec(value: u32) {
-    irix7_fmt::decimal(u64::from(value), &mut |byte| serial::write_byte(byte));
+    irix7_fmt::decimal(u64::from(value), &mut |byte| console::write_byte(byte));
 }
 
 pub(crate) fn print_dec64(value: u64) {
-    irix7_fmt::decimal(value, &mut |byte| serial::write_byte(byte));
+    irix7_fmt::decimal(value, &mut |byte| console::write_byte(byte));
 }
 
 pub(crate) fn print_line(bytes: &[u8]) {
-    serial::write(bytes);
-    serial::write_byte(b'\n');
+    console::write(bytes);
+    console::write_byte(b'\n');
 }
 
 fn print_range(label: &[u8], base: u32, size: u32) {
-    serial::write(label);
-    serial::write(b" base=");
+    console::write(label);
+    console::write(b" base=");
     print_hex(base);
-    serial::write(b" size=");
+    console::write(b" size=");
     print_dec(size);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
+}
+
+/// The BAT block for the display aperture.
+///
+/// The block covers both the aperture the firmware assigned and the visible
+/// frame, so a display whose `assigned-addresses` size is smaller than the
+/// mode still gets a mapped frame.  A 750 BAT block is at most 256 MiB; a
+/// larger aperture is refused rather than truncated.
+fn framebuffer_bat(display: Option<&platform::Display>) -> Option<mmu::Bat> {
+    let display = display?;
+    if !fb::supported(display) {
+        return None;
+    }
+    let size = display.size.max(display.frame_size());
+    if size > 0x1000_0000 {
+        return None;
+    }
+    let end = display.base.checked_add(size)?;
+    Some(mmu::cover(display.base, end))
 }
 
 pub(crate) fn print_hex_bytes(bytes: &[u8]) {
     for byte in bytes {
         irix7_fmt::hex(u64::from(*byte), 2, false, &mut |digit| {
-            serial::write_byte(digit)
+            console::write_byte(digit)
         });
     }
 }
@@ -93,24 +115,24 @@ pub(crate) fn print_model(model: &[u8; 40]) {
     while end > 0 && (model[end - 1] == b' ' || model[end - 1] == 0) {
         end -= 1;
     }
-    serial::write(&model[..end]);
+    console::write(&model[..end]);
 }
 
 fn print_channel(channel: Option<u32>) {
     match channel {
         Some(address) => print_hex(address),
-        None => serial::write(b"none"),
+        None => console::write(b"none"),
     }
 }
 
 fn print_property(property: &platform::Property) {
     if !property.present() {
-        serial::write(b"none");
+        console::write(b"none");
         return;
     }
     for byte in property.bytes() {
         let printable = (0x20..=0x7e).contains(byte);
-        serial::write_byte(if printable { *byte } else { b'?' });
+        console::write_byte(if printable { *byte } else { b'?' });
     }
 }
 
@@ -205,6 +227,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     let cuda = platform::cuda(&client, &macio);
     let disk = platform::ata(&client, &macio);
     let adb = platform::adb(&client, &macio);
+    let display = platform::display(&client);
 
     let io_end = match macio.base.checked_add(macio.size) {
         Some(end) => end,
@@ -219,64 +242,113 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     );
     let io = mmu::cover(macio.base, io_end);
     let module_slot = mmu::cover(module::SLOT_BASE, slot_end);
+    let framebuffer = framebuffer_bat(display.as_ref());
 
     // The vectors must be in place before the firmware mapping goes away.
     trap::install();
     timer::prepare(timebase);
-    mmu::install(image, io, module_slot);
-    let sdr1 = mmu::activate(image, io, module_slot);
+    mmu::install(image, io, module_slot, framebuffer);
+    let sdr1 = mmu::activate(image, io, module_slot, framebuffer);
 
-    serial::write(b"ppc: mmu enabled sdr1=");
+    console::write(b"ppc: mmu enabled sdr1=");
     print_hex(sdr1);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
     print_range(b"ppc: mmu image", image.base, image.size);
     print_range(b"ppc: mmu io", io.base, io.size);
-    serial::write(b"ppc: mmu io wimg=");
+    console::write(b"ppc: mmu io wimg=");
     print_hex(mmu::WIMG_IO);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
     print_range(b"ppc: mmu module", module_slot.base, module_slot.size);
+    if let Some(framebuffer) = framebuffer {
+        print_range(b"ppc: mmu fb", framebuffer.base, framebuffer.size);
+        console::write(b"ppc: mmu fb wimg=");
+        print_hex(mmu::WIMG_FB);
+        console::write_byte(b'\n');
+    }
+
+    match &display {
+        Some(display) => {
+            console::write(b"ppc: display path=");
+            console::write(display.path.bytes());
+            console::write(b" base=");
+            print_hex(display.base);
+            console::write(b" size=");
+            print_dec(display.size);
+            console::write(b" width=");
+            print_dec(display.width);
+            console::write(b" height=");
+            print_dec(display.height);
+            console::write(b" depth=");
+            print_dec(display.depth);
+            console::write(b" linebytes=");
+            print_dec(display.linebytes);
+            console::write_byte(b'\n');
+        }
+        None => print_line(b"ppc: display absent"),
+    }
+
+    // The framebuffer is mapped by the switch above, so initialising it now
+    // replays every byte printed since the first MMU line.  A machine with no
+    // display, or a mode this console cannot draw, keeps the serial log and
+    // reports the refusal.  The pixel self-test waits until the ATA read so
+    // its block and glyph are still on the final screen.
+    let graphics = display
+        .as_ref()
+        .is_some_and(|display| fb::supported(display) && fb::init(display));
+    if !graphics {
+        if let Some(display) = &display {
+            console::write(b"ppc: display unsupported depth=");
+            print_dec(display.depth);
+            console::write(b" linebytes=");
+            print_dec(display.linebytes);
+            console::write_byte(b'\n');
+            print_line(b"GFX-SKIP reason=mode");
+        } else {
+            print_line(b"GFX-SKIP reason=no-display");
+        }
+    }
 
     print_line(b"IRIX 7 PowerPC G3 bring-up");
     print_line(b"ppc: booted");
-    serial::write(b"ppc: of client=");
+    console::write(b"ppc: of client=");
     print_hex(of_client);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
     print_range(b"ppc: macio", macio.base, macio.size);
-    serial::write(b"ppc: macio path=");
-    serial::write(macio.path.bytes());
-    serial::write_byte(b'\n');
-    serial::write(b"ppc: macio children escc=");
+    console::write(b"ppc: macio path=");
+    console::write(macio.path.bytes());
+    console::write_byte(b'\n');
+    console::write(b"ppc: macio children escc=");
     print_dec(macio.escc);
-    serial::write(b" ata=");
+    console::write(b" ata=");
     print_dec(macio.ata);
-    serial::write(b" disks=");
+    console::write(b" disks=");
     print_dec(macio.disks);
-    serial::write_byte(b'\n');
-    serial::write(b"ppc: escc=");
+    console::write_byte(b'\n');
+    console::write(b"ppc: escc=");
     print_hex(escc.base);
-    serial::write(b" ch-a=");
+    console::write(b" ch-a=");
     print_channel(escc.channels[0]);
-    serial::write(b" ch-b=");
+    console::write(b" ch-b=");
     print_channel(escc.channels[1]);
-    serial::write_byte(b'\n');
-    serial::write(b"ppc: console output-device=");
+    console::write_byte(b'\n');
+    console::write(b"ppc: console output-device=");
     print_property(&escc.output_device);
-    serial::write(b" stdout-path=");
+    console::write(b" stdout-path=");
     print_property(&escc.stdout_path);
-    serial::write(b" selected=");
+    console::write(b" selected=");
     match escc.selected {
-        Some(channel) => serial::write_byte(channel.letter()),
-        None => serial::write(b"none"),
+        Some(channel) => console::write_byte(channel.letter()),
+        None => console::write(b"none"),
     }
     print_line(b" mirror=a+b");
 
-    serial::write(b"ppc: memory base=");
+    console::write(b"ppc: memory base=");
     print_hex(memory.base);
-    serial::write(b" size=");
+    console::write(b" size=");
     print_dec(memory.size / (1024 * 1024));
     print_line(b" MiB");
 
-    serial::write(b"ppc: timebase=");
+    console::write(b"ppc: timebase=");
     print_dec(timebase);
     print_line(b" Hz");
 
@@ -304,9 +376,9 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     };
 
     print_range(b"ppc: ata reg", disk.base, disk.size);
-    serial::write(b"ppc: ata irq=");
+    console::write(b"ppc: ata irq=");
     print_hex(disk.line);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 
     match &adb {
         Some(platform::AdbHost::Cuda { base, keyboard }) => {
@@ -340,9 +412,9 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         }
         core::hint::spin_loop();
     }
-    serial::write(b"ppc: decrementer ticks=");
+    console::write(b"ppc: decrementer ticks=");
     print_dec(timer::ticks());
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 
     print_line(b"BOOT-OK");
     probe::run();
@@ -354,23 +426,23 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         let irq_deadline = timebase.saturating_mul(2);
         while irq::count() < irq::TARGET {
             if timer::timebase().wrapping_sub(irq_started) > irq_deadline {
-                serial::write(b"ppc: irq stalled count=");
+                console::write(b"ppc: irq stalled count=");
                 print_dec(irq::count());
-                serial::write_byte(b'\n');
+                console::write_byte(b'\n');
                 print_line(b"ppc: halted");
                 halt();
             }
             core::hint::spin_loop();
         }
         let (count, pending, ifr) = irq::stop();
-        serial::write(b"ppc: irq pending=");
+        console::write(b"ppc: irq pending=");
         print_hex(pending);
-        serial::write(b" ifr=");
+        console::write(b" ifr=");
         print_hex(ifr);
-        serial::write_byte(b'\n');
-        serial::write(b"IRQ-OK count=");
+        console::write_byte(b'\n');
+        console::write(b"IRQ-OK count=");
         print_dec(count);
-        serial::write_byte(b'\n');
+        console::write_byte(b'\n');
     } else {
         print_line(b"IRQ-SKIP reason=no-cuda");
     }
@@ -384,13 +456,13 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
-    serial::write(b"ppc: ata model=");
+    console::write(b"ppc: ata model=");
     print_model(&identify.model);
-    serial::write(b" sectors=");
+    console::write(b" sectors=");
     print_dec64(identify.sectors);
-    serial::write(b" lba48=");
+    console::write(b" lba48=");
     print_dec(u32::from(identify.lba48));
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 
     const SIGNATURE_LBA: u32 = 4;
     let mut sector = [0u8; ata::SECTOR_SIZE];
@@ -399,25 +471,40 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         print_line(b"ppc: halted");
         halt();
     }
-    serial::write(b"ppc: ata lba=");
+    console::write(b"ppc: ata lba=");
     print_dec(SIGNATURE_LBA);
-    serial::write(b" sector=");
+    console::write(b" sector=");
     print_hex_bytes(&sector[..16]);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
     print_line(b"ATA-OK");
+
+    // Draw the self-test block and glyph now, so the final screen still shows
+    // them after the boot log has scrolled.  The readback is the same mapping
+    // the console uses, so a wrong stride, byte order or aperture fails here.
+    if graphics {
+        let passed = fb::selftest();
+        console::write(b"ppc: framebuffer bytes=");
+        print_dec(fb::rendered());
+        console::write_byte(b'\n');
+        if passed {
+            print_line(b"GFX-OK");
+        } else {
+            print_line(b"GFX-FAIL");
+        }
+    }
 
     let gate_disk = &sector[..16] == b"IRIX7-ATA-SIG001";
     let mut module_state = monitor::ModuleState::Skipped;
     if gate_disk {
         match module::load(channel) {
             Ok(report) => {
-                serial::write(b"ppc: module status=");
+                console::write(b"ppc: module status=");
                 print_dec(report.status as u32);
-                serial::write(b" tick=");
+                console::write(b" tick=");
                 print_dec(u32::from(report.ticked));
-                serial::write(b" length=");
+                console::write(b" length=");
                 print_dec(report.length);
-                serial::write_byte(b'\n');
+                console::write_byte(b'\n');
                 print_line(b"MODULE-OK");
                 module_state = monitor::ModuleState::Loaded {
                     length: report.length,

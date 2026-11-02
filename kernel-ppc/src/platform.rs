@@ -21,6 +21,33 @@ pub struct Memory {
     pub size: u32,
 }
 
+/// The Open Firmware display and the linear framebuffer it left active.
+///
+/// `width`, `height`, `depth` and `linebytes` describe the mode; `base`, `size`
+/// describe the aperture the firmware assigned to the display.  The kernel
+/// does not change the mode.
+pub struct Display {
+    pub base: u32,
+    pub size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub depth: u32,
+    pub linebytes: u32,
+    /// The display node's path, for the boot log.
+    pub path: Path,
+}
+
+impl Display {
+    pub fn frame_size(&self) -> u32 {
+        self.linebytes.saturating_mul(self.height)
+    }
+}
+
+/// The deepest level searched for a `device_type` `display` node.  A PCI
+/// display sits at `/pci@.../display@...`, two levels below the root; the
+/// spare levels tolerate a firmware that nests the host bridge further.
+const DISPLAY_MAX_DEPTH: u32 = 8;
+
 /// A device-tree path captured for the boot log.  The buffer is fixed-size
 /// because the tree is read before the heap exists.
 #[derive(Clone, Copy)]
@@ -105,6 +132,141 @@ pub fn memory(client: &Client) -> Option<Memory> {
         base: u32::from_be_bytes([reg[0], reg[1], reg[2], reg[3]]),
         size: u32::from_be_bytes([reg[4], reg[5], reg[6], reg[7]]),
     })
+}
+
+/// The display node and the framebuffer address Open Firmware assigned.
+///
+/// The node is found by `device_type = "display"`, not by a path or a name:
+/// QEMU's g3beige publishes `QEMU,VGA@1` and a PowerBook publishes a Rage LT
+/// node, and both use the same device type.  A display node without a full
+/// geometry and an assigned aperture is skipped so a firmware console node
+/// cannot hide the real display.
+pub fn display(client: &Client) -> Option<Display> {
+    let root = client.finddevice(b"/\0")?;
+    find_display(client, root, 0)
+}
+
+fn find_display(client: &Client, node: u32, depth: u32) -> Option<Display> {
+    if matches_property(client, node, b"device_type\0", b"display") {
+        if let Some(display) = display_node(client, node) {
+            return Some(display);
+        }
+    }
+    if depth >= DISPLAY_MAX_DEPTH {
+        return None;
+    }
+    let mut child = client.child(node);
+    while let Some(child_node) = child {
+        if let Some(display) = find_display(client, child_node, depth + 1) {
+            return Some(display);
+        }
+        child = client.peer(child_node);
+    }
+    None
+}
+
+fn display_node(client: &Client, node: u32) -> Option<Display> {
+    let width = client.getprop_u32(node, b"width\0")?;
+    let height = client.getprop_u32(node, b"height\0")?;
+    let depth = client.getprop_u32(node, b"depth\0")?;
+    let linebytes = client
+        .getprop_u32(node, b"linebytes\0")
+        .or_else(|| client.getprop_u32(node, b"line-bytes\0"))?;
+    if width == 0 || height == 0 || depth == 0 || linebytes == 0 {
+        return None;
+    }
+    let frame = linebytes.checked_mul(height)?;
+    let (base, size) = framebuffer_range(client, node, frame)?;
+    if size < frame {
+        return None;
+    }
+    Some(Display {
+        base,
+        size,
+        width,
+        height,
+        depth,
+        linebytes,
+        path: path(client, node),
+    })
+}
+
+/// The framebuffer address and aperture size.
+///
+/// `assigned-addresses` is the authoritative source: it holds the PCI address
+/// the firmware assigned, in 20-byte `[phys_hi, addr_hi, addr_lo, size_hi,
+/// size_lo]` entries.  `reg` is the fallback for a non-PCI display and for a
+/// firmware that publishes only the BAR tuple; the OpenBIOS VGA driver's
+/// `address` property is the last fallback.
+fn framebuffer_range(client: &Client, node: u32, frame: u32) -> Option<(u32, u32)> {
+    if let Some(range) = assigned_range(client, node, frame) {
+        return Some(range);
+    }
+    if let Some(range) = reg_range(client, node, frame) {
+        return Some(range);
+    }
+    let base = client.getprop_u32(node, b"address\0")?;
+    if base == 0 {
+        return None;
+    }
+    Some((base, frame))
+}
+
+fn assigned_range(client: &Client, node: u32, frame: u32) -> Option<(u32, u32)> {
+    let mut buffer = [0u8; 128];
+    let length = client.getprop(node, b"assigned-addresses\0", &mut buffer)?;
+    let length = length.min(buffer.len());
+    let mut offset = 0;
+    while offset + 20 <= length {
+        let phys_hi = word(&buffer, offset);
+        let address_hi = word(&buffer, offset + 4);
+        let address = word(&buffer, offset + 8);
+        let size_hi = word(&buffer, offset + 12);
+        let size = word(&buffer, offset + 16);
+        offset += 20;
+        // A 32-bit PCI memory BAR: p=1, t=0.  A 64-bit aperture or one above
+        // 4 GiB cannot be described by a 32-bit BAT and is left to the caller
+        // to refuse.
+        if phys_hi & 0x6000_0000 != 0x4000_0000 || address_hi != 0 || size_hi != 0 {
+            continue;
+        }
+        if address == 0 || size < frame {
+            continue;
+        }
+        return Some((address, size));
+    }
+    None
+}
+
+fn reg_range(client: &Client, node: u32, frame: u32) -> Option<(u32, u32)> {
+    let mut buffer = [0u8; 128];
+    let length = client.getprop(node, b"reg\0", &mut buffer)?;
+    let length = length.min(buffer.len());
+    // A PCI `reg` property repeats the 20-byte assigned-address shape with the
+    // unassigned address in the middle words, so it rarely helps; a non-PCI
+    // node publishes address/size pairs instead.
+    let mut offset = 0;
+    while offset + 8 <= length {
+        let address = word(&buffer, offset);
+        let size = word(&buffer, offset + 4);
+        offset += 8;
+        // A PCI BAR is a power of two and aligned to its size.  The same
+        // test rejects the middle words of a 20-byte PCI `reg` entry, which
+        // are not an address/size pair.
+        if address != 0 && size >= frame && size.is_power_of_two() && address & (size - 1) == 0 {
+            return Some((address, size));
+        }
+    }
+    None
+}
+
+fn word(buffer: &[u8], offset: usize) -> u32 {
+    u32::from_be_bytes([
+        buffer[offset],
+        buffer[offset + 1],
+        buffer[offset + 2],
+        buffer[offset + 3],
+    ])
 }
 
 /// The Mac I/O window that carries the boot console and disk.

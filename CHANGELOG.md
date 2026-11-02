@@ -29,6 +29,16 @@ All notable changes to IRIX 7 are recorded here. The format follows
   key, prints the scancode and character, and prints `KEY-OK`. The QEMU gate
   sends `a` on a monitor socket and requires the line and marker; a no-input
   boot requires the timeout marker and still halts. See #324.
+- PowerPC G3 framebuffer console. `kernel-ppc` finds the Open Firmware
+  `device_type = "display"` node, reads `width`, `height`, `depth` and
+  `linebytes` and the framebuffer aperture from `assigned-addresses`, maps it
+  cache-inhibited with `DBAT3`, draws an 8x16 IBM VGA font console and mirrors
+  the boot log to it while the ESCC transcript stays byte-identical. 8, 16 and
+  32 bpp are supported; another depth prints `GFX-SKIP reason=mode` and keeps
+  the serial console. The guest draws a solid block and a glyph, reads both
+  back from the framebuffer and prints `GFX-OK`; the QEMU gate checks the
+  display mode, stride, BAT coverage and marker, and the module, ATA and IRQ
+  markers and the floppy path are unchanged. See #323.
 
 - PowerPC G3 Mac I/O selection and the PMU fallback.  The kernel walks
   `/pci`, scores the Mac I/O nodes by their ESCC and disk children, and uses

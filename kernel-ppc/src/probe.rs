@@ -9,7 +9,7 @@
 use core::arch::asm;
 
 use crate::trap::{SYS_CALL_PROBE, SYS_CALL_RESULT};
-use crate::{halt, print_hex, print_line, serial};
+use crate::{console, halt, print_hex, print_line};
 
 /// Outside every BAT: 512 MiB, above the largest RAM size the gate uses and
 /// below the PCI hole.
@@ -101,9 +101,9 @@ fn system_call() {
     if result == SYS_CALL_RESULT {
         print_line(b"SYSCALL-OK");
     } else {
-        serial::write(b"ppc: syscall returned=");
+        console::write(b"ppc: syscall returned=");
         print_hex(result);
-        serial::write_byte(b'\n');
+        console::write_byte(b'\n');
         print_line(b"ppc: halted");
         halt();
     }
