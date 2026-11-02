@@ -169,7 +169,7 @@ All governing decisions apply. The numbered, dated ADRs live in
 | 0015 | Layered spec, similarity screen | This document's verification |
 | 0016 | Assembly replacement ROM replaces the factory PROM; n32/MIPS III from the PROM window into the n32 kernel | Boot path |
 | 0017 | Modern equivalents as references | Research method |
-| 0018 | GCC backend primary, LLVM parallel | Codegen |
+| 0018 | GCC backend primary, LLVM parallel — **amended to LLVM-only** by [M0-ADR-0001](adr/m0-0001-llvm-only.md) | Codegen |
 | 0019 | IRIX fork on `rust-lang/gcc` | GCC 17 trunk + libgccjit |
 | 0020 | Rebuild ladder | Recompile vs reconstruct |
 | 0021 | Native Rust std is load-bearing; its libc baseline is POSIX.1-2024 | Target/product split and std plan |
@@ -262,7 +262,7 @@ This is grounded in `irix7/project`, not speculation.
 | Host compiler | GCC 13 (pdaxrom-proven) | `stack.md` §1 |
 | binutils | 2.47 + IRIX series | `patches/binutils-2.47/` |
 | GCC | 17.0.0 trunk, `rust-lang/gcc` fork; IRIX series (8 patches) applies cleanly to 17 trunk | `irix7/gcc`, ADR-0019 |
-| libgccjit | built into the fork (`--enable-host-shared --enable-languages=c,jit`) | the Rust codegen backend |
+| libgccjit | built into the fork; **not used by IRIX 7 Rust builds** | M0-ADR-0001 |
 | Cross target | `mips-sgi-irix6.5`: big-endian MIPS, ELF32, o32/n32/n64, MIPS III/IV | ADR-0003 |
 | sysroot | captured IRIX 6.5.7m headers and libraries | `oracle/`, `scripts/irix-media/` |
 
@@ -270,20 +270,21 @@ This is grounded in `irix7/project`, not speculation.
 
 | Component | Choice | Status |
 |---|---|---|
-| rustc | nightly, `-Z build-std` for `core`/`alloc` | codegen proven |
-| Codegen backend | `rustc_codegen_gcc` (libgccjit from §3.1) — **primary** | ADR-0018 |
-| Parallel path | LLVM custom target `mips3-sgi-irix7-n32` (n32/MIPS III) | codegen proven |
+| rustc | `nightly-2026-10-03` (`1.101.0-nightly`, LLVM 23.1.1), `-Z build-std` for `core`/`alloc` | pinned in `rust-toolchain.toml` |
+| Codegen backend | rustc's LLVM backend — **the only backend** | M0-ADR-0001 |
+| Target specs | `targets/mips3-sgi-irix7-n32.json` (kernel/modules) and `targets/mips3-sgi-irix7-native-n32.json` (hosted native) | codegen and iris boot proven |
 | ABI | ROM assembly and the kernel are n32/MIPS III; o32 belongs to the compatibility container | — |
 
-The local kernel/module target spec is `targets/mips3-sgi-irix7-n32.json` (the LLVM
-path).  The hosted native target is `targets/mips3-sgi-irix7-native-n32.json`
-(`target_os = "irix7"`, Unix family); it is for the POSIX-2024 libc and Rust `std`, and
-is not used by the kernel.
+The local kernel/module target spec is `targets/mips3-sgi-irix7-n32.json` (the only
+Rust codegen path).  The hosted native target is
+`targets/mips3-sgi-irix7-native-n32.json` (`target_os = "irix7"`, Unix family); it is
+for the POSIX-2024 libc and Rust `std`, and is not used by the kernel.
 
-Current status (`stack.md` §5): codegen and `-Z build-std` for n32 are **proven**;
-the assembly ROM boots from the PROM image, and the kernel runs DHCP/NTP/HTTP under
-iris; the IRIX patch series applies cleanly to `rust-lang/gcc` — **proven**;
-GCC-backend build — **blocked** on disk space (the host is 99% full).
+Current status: LLVM codegen and `-Z build-std` for n32 are **proven**; the assembly ROM
+boots from the PROM image, and the kernel runs DHCP/NTP/HTTP under iris.  There is no
+`rustc_codegen_gcc` build path; ADR-0018's GCC-primary ordering is amended by
+[M0-ADR-0001](adr/m0-0001-llvm-only.md).  The IRIX patch series in `irix7/gcc` remains
+the system toolchain for the compatibility container, not the Rust backend.
 
 Prior art on Rust IRIX targets (issue #41 research): `danifunker/rust-irixlibstd`
 (o32/MIPS II + n32/MIPS III) and `atomchild411/rust-irix` (rustc fork, n32/MIPS IV).
@@ -306,21 +307,27 @@ Conclusion: no rustc/LLVM fork is required; a custom n32/MIPS III target spec +
 ### 3.4 Testing and the rig
 
 The emulated Indy runs under the `irix7/iris` emulator fork (a fork of
-`techomancer/iris`), managed by `scripts/rig/`. Each agent gets a private rig instance
-(`scripts/rig/task-rig.sh start|stop <item>`). The smoke harness (`scripts/smoke.sh`)
-compiles a test program against the captured sysroot, runs it on the guest, and diffs
-stdout against expected output — the primary testing seam, dynamic-first per ADR-0006.
+`techomancer/iris`). A single instance is launched with `iris` and driven over its
+control socket with `iris-ci`; `rom/tools/smoke.py` boots a PROM image, waits for DHCP
+and drives the telnet console. Two independent kernels, the M2 join/route/migration
+scenarios and the M3 shard slice run from the `tools/m2-rig` harness, and the
+one-prompt M2 object/actor transcript runs from `tools/one-computer/run.sh`.
+
+The smoke harness for IRIX 6.5 binaries (ADR-0006) compiles a test program against the
+captured sysroot, runs it on the guest, and diffs stdout against expected output. That
+dynamic-first seam belongs to the compatibility container; it is not the M0/M1 boot
+gate, which is the real kernel under iris.
 
 The MCP control plane (§14) extends this into an agent-driven loop: edit, build,
-deploy, boot, run, observe, reset. The loop is the development method; the smoke
-harness is the regression guard.
+deploy, boot, run, observe, reset. The loop is the development method; the smoke and
+rig harnesses are the regression guards.
 
 ### 3.5 Build risks
 
 | Risk | Effect | Mitigation |
 |---|---|---|
 | Host-toolchain glue | Clean builds need `cc` and `pkg-config` | CI installs GCC; the Nix devshell provides both |
-| GCC-backend disk space | Cannot build `rustc_codegen_gcc` | Free space; build on a larger volume; use the LLVM path in the meantime |
+| Pinned-nightly drift | `-Z build-std` and `-Zjson-target-spec` are nightly-only; a stale or stable rustc silently cannot build | `rust-toolchain.toml` is the single pin and the Nix devshell reads it through `rust-overlay` |
 | MIPS III + o32 | Legacy o32 binaries need a MIPS II decoder | ROM assembly and the kernel are n32/MIPS III; the compatibility container owns o32 |
 | Big-endian Rust ecosystem | Some crates assume little-endian | Use explicit codecs; test on the Indy; prefer endian-neutral crates |
 
@@ -1876,7 +1883,8 @@ planning aid, not a legal opinion.
 
 - **Smoke harness** (ADR-0006): compile against the IRIX 6.5.7m sysroot, run on the
   guest, diff stdout.
-- **Emulator rig**: per-agent `scripts/rig/task-rig.sh`, isolated instances.
+- **Emulator rig**: `tools/m2-rig` for the two-kernel M2/M3 gates, `tools/one-computer`
+  for the one-prompt transcript, and `iris`/`iris-ci` for a single instance.
 - **MCP loop**: agent-driven boot, serial log, screen capture, GDB.
 - **XFS oracle**: mount the image on the CI host, `fsck.erofs`/`dump.erofs` for EROFS,
   tree diffs for XFS.
@@ -1992,7 +2000,8 @@ corresponding implementation phase.
 - GDB stub protocol and multi-cell debugging.
 - Audit log and approval flow (future; v1 has none).
 - The exact granularity of the MCP device/MMIO tools (typed operations vs raw register access); v1 exposes both under full root.
-- The `-Z build-std` host-toolchain glue and the GCC-backend disk-space blocker.
+- The `-Z build-std` host-toolchain glue; the pinned nightly and its `rust-src` component
+  are the remaining drift risk ([M0-ADR-0001](adr/m0-0001-llvm-only.md)).
 - Benchmark suite: what to track (boot time, block throughput, X11 latency, audio
   glitches) even though it does not gate.
 

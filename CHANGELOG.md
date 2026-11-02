@@ -285,6 +285,22 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The optional NVRAM `wasm.url`/`wasm.sha256` pair autoloads the slot-B wasm
   probe at boot while MCP remains in slot A.
 
+### Changed
+
+- The Nix `#default` devshell now supplies the pinned `nightly-2026-10-03`
+  toolchain with `rust-src` through `rust-overlay`, so `nix develop` runs the
+  `-Z build-std` cross builds instead of a stable rustc that rejects `-Z`.  The
+  shell also provides `pkg-config`, puts `rust-lld`/`llvm-objcopy` on `PATH`,
+  and reads the one pin in `rust-toolchain.toml`.
+- The install and toolchain guides now use the exact release build commands
+  (kernel linker script and `opt-level=z`), the `iris`/`iris-ci` boot path, the
+  `tools/m2-rig` and `tools/one-computer` harnesses, and the current M2/M3
+  status.  The non-existent `scripts/rig` path is removed.
+- M0-ADR-0001 records LLVM as the only Rust code generation backend, amending
+  ADR-0018; the GCC-primary claims are removed from the architecture spec and
+  the GCC fork is scoped to the IRIX 6.5 compatibility container.  See #1, #43
+  and #330.
+
 ### Fixed
 
 - The release build compiles the kernel at opt-level `z`, matching the CI boot

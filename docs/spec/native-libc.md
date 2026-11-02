@@ -746,7 +746,7 @@ should implement unless review says otherwise.
 | 12 | Backtrace symbolisation | optional for v1; `dladdr`/`dl_iterate_phdr` later | ABI | post-v1 |
 | 13 | `__irix7_libc_abi_version` name and value | keep the name, value 1 | ABI | before 1.0 |
 | 14 | Auxv key set | §4.5 recommended set | ABI / loader | M9 |
-| 15 | GCC backend for userland `std` | spike `rustc_codegen_gcc` for n32; amend ADR-0018 if needed | toolchain | M9.5 |
+| 15 | LLVM backend for userland `std` | rustc's LLVM backend is the only codegen path (M0-ADR-0001); no GCC-backend spike | toolchain | M9.5 |
 | 16 | Upstream the native target and libc module | after v1; tier-3 requires a named maintainer | ABI | post-v1 |
 | 17 | Compatibility floor (6.5.7m sysroot vs 6.5.22 prior art) | compat-only; do not mix | compat | compat track |
 

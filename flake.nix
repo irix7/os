@@ -1,12 +1,26 @@
 {
   description = "IRIX 7 OS development environment";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # Binary distributions of the exact rustup channels named in
+    # rust-toolchain.toml, including rust-src.  nixpkgs' rustc is a stable
+    # release without rust-src, so it cannot run -Z build-std.
+    rust-overlay.url = "github:oxalica/rust-overlay";
+  };
 
-  outputs = { self, nixpkgs }:
+  outputs = { self, nixpkgs, rust-overlay }:
     let
       system = "x86_64-linux";
-      pkgs = nixpkgs.legacyPackages.${system};
+      pkgs = import nixpkgs {
+        inherit system;
+        overlays = [ (import rust-overlay) ];
+      };
+
+      # The single pin: rust-toolchain.toml.  The devshell, a rustup user and
+      # CI all read the same channel and component list, so a shell cannot
+      # drift from the toolchain CI proves.
+      rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
 
       # Host tools every cross build needs: -Zbuild-std compiles
       # compiler-builtins' build script with the host C compiler, and the
@@ -16,6 +30,7 @@
         pkgs.gcc
         pkgs.binutils
         pkgs.python3
+        pkgs.pkg-config
         pkgs.llvmPackages.bintools
       ];
     in {
@@ -23,25 +38,23 @@
         default = pkgs.mkShell {
           name = "irix7-os-dev";
 
-          nativeBuildInputs = [
-            # Host toolchain pinned by rust-toolchain.toml (nightly + rust-src).
-            pkgs.rustc
-            pkgs.cargo
-            pkgs.rustfmt
-            pkgs.clippy
-            # Host C compiler/linker needed by build-std (compiler-rt build scripts).
-            pkgs.gcc
-            pkgs.binutils
-          ];
+          nativeBuildInputs = crossTools ++ [ rust ];
 
-          # The custom MIPS/IRIX target specs live in targets/ and are pinned in
-          # this repo. Build with:
-          #   cargo build -Z build-std=core,alloc -Zjson-target-spec \
-          #     --target targets/mips3-sgi-irix7-n32.json
+          # rust-toolchain.toml names nightly-2026-10-03 with rust-src and
+          # llvm-tools-preview, so this shell runs the M0 gate directly:
           #
-          # rust-toolchain.toml pins the nightly channel; rust-src is required for
-          # -Z build-std and is pulled in automatically by rustup/toolchain file.
+          #   cargo build -Z build-std=core,alloc -Zjson-target-spec \
+          #     --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
+          #
+          # rust-lld and llvm-objcopy live beside the toolchain, not in its
+          # bin/, so put the host rustlib directory on PATH exactly as CI does.
           shellHook = ''
+            sysroot="$(rustc --print sysroot)"
+            host="$(rustc -vV | sed -n 's/^host: //p')"
+            export PATH="$sysroot/lib/rustlib/$host/bin:$PATH"
+            if [ ! -d "$sysroot/lib/rustlib/src/rust/library" ]; then
+              echo "irix7: rust-src is missing; -Z build-std will fail" >&2
+            fi
             echo "IRIX 7 devshell (${system})"
             echo "rustc: $(rustc --version 2>/dev/null || echo 'not on PATH')"
             echo "Target specs: $PWD/targets"
@@ -49,10 +62,8 @@
         };
 
         # PowerBook G3 (PowerPC 750) cross shell.  This shell uses rustup rather
-        # than nixpkgs' rustc: -Zbuild-std needs the rust-src component and the
-        # PowerPC backend of the nightly pinned in rust-toolchain.toml, and
-        # nixpkgs ships a stable toolchain without rust-src.  The first entry
-        # downloads that nightly into RUSTUP_HOME.
+        # than the pinned toolchain derivation: its first entry downloads the
+        # channel named in rust-toolchain.toml into RUSTUP_HOME.
         powerbook = pkgs.mkShell {
           name = "irix7-powerbook-dev";
 

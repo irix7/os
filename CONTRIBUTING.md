@@ -19,7 +19,9 @@ Discussion or comment on an issue.
 
 ## Development setup
 
-The toolchain lives in `irix7/project`. The short version:
+The toolchain is pinned by `rust-toolchain.toml` and supplied by the Nix devshell;
+[`docs/toolchain.md`](docs/toolchain.md) has the full setup and cross-build commands.
+The short version:
 
 ```sh
 # Nix is the supported environment
@@ -28,14 +30,16 @@ nix develop
 # GitHub CLI, authenticated with project/repo/workflow scopes
 gh auth status
 
-# Build and test (once the workspace exists)
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
+# Build and test
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
 cargo test
 ```
 
-The emulator is `irix7/iris`; the rig scripts are in `irix7/project/scripts/rig/`.
-The MCP development loop is described in [`docs/spec/mcp.md`](docs/spec/mcp.md).
+The emulator is `irix7/iris`, driven by `iris` and `iris-ci`; the two-kernel rig is
+[`tools/m2-rig`](tools/m2-rig/README.md) and the one-prompt M2 transcript is
+[`tools/one-computer`](tools/one-computer/README.md). The MCP development loop is
+described in [`docs/spec/mcp.md`](docs/spec/mcp.md).
 
 ## Pre-release compatibility
 
