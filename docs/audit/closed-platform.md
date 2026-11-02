@@ -1,7 +1,8 @@
 # Closed platform and userland issues — foundations audit
 
 Tracking issue: [#330](https://github.com/irix7/os/issues/330)
-Base: `origin/main` at `cac1a5a`, branch `audit-platform`
+Base: `origin/main` at `cac1a5a`, plus `5aff96e` (#325) for #321; branch
+`audit-platform`
 Date: 2026-11-02
 
 ## 1. Scope and method
@@ -11,12 +12,12 @@ the M0/M1 boot, core, console, REX3 or CI issues, and it does not audit the
 mesh, module-resolver or M2/M3 issues; those belong to the core and mesh
 reports.
 
-### 1.1 Issues audited here (16)
+### 1.1 Issues audited here (17)
 
 | Group | Issues |
 |---|---|
 | Machine type | #266 |
-| PowerPC boot and hardware | #287, #291, #295, #301, #305, #309, #313, #317 |
+| PowerPC boot and hardware | #287, #291, #295, #301, #305, #309, #313, #317, #321 |
 | Userland, PAL, threads, futex, ramfs, fd | #288, #296, #302, #306, #310, #314, #318 |
 
 The other 22 closed issues in the repository are allocated to the core and
@@ -24,16 +25,19 @@ mesh reports: #1, #2, #3, #33, #43, #115, #116, #117, #118, #119, #204, #205,
 #206, #213, #214, #217, #245, #246, #247, #248, #249, #271. The boundary is
 deliberate: #115 (console unify), #117 (TLB teardown), #118 (REX3) and #119
 (CI readiness) are core/boot or CI work even though they touch platform code.
+With #321 the closed set is 39 issues; 17 here plus 22 in the core and mesh
+reports covers all 39.
 
 ### 1.2 Sources read
 
-- Issue bodies and acceptance criteria for all 16 issues.
-- Merged PRs: #278, #289, #293, #298, #303, #307, #311, #315, #320, #290,
-  #294, #299, #304, #308, #312, #316, #319.
+- Issue bodies and acceptance criteria for all 17 issues.
+- Merged PRs: #278, #289, #293, #298, #303, #307, #311, #315, #320, #325,
+  #290, #294, #299, #304, #308, #312, #316, #319.
 - Merge commits and diffs, including `git show --stat` for the userland
   slices to confirm which repository each change touched.
-- Code: `kernel-ppc/src/` (main, platform, serial, mmu, trap, irq, pic, via,
-  ata, module, services, cache, probe), `kernel-x86/`, `kernel/src/user.rs`,
+- Code: `kernel-ppc/src/` (main, platform, serial, monitor, mmu, trap, irq,
+  pic, via, ata, module, services, cache, probe), `kernel-x86/`,
+  `kernel/src/user.rs`,
   `kernel/src/thread.rs`, `kernel/src/fd.rs`, `kernel/src/ramfs.rs`,
   `kernel/src/native_sys.rs`, `crates/native-abi`, `crates/irix7-libc`,
   `tools/powerpc-qemu.sh`, `tools/powerpc-floppy.sh`, `tools/ppc-xcoff`,
@@ -46,7 +50,10 @@ deliberate: #115 (console unify), #117 (TLB teardown), #118 (REX3) and #119
 ### 1.3 Commands and gates run
 
 - `gh issue list --repo irix7/os --state closed --limit 1000` — 38 closed
-  issues, matching the audit target.
+  issues at the first pass; #321 closed after that pass, so the audited set
+  is 39. `gh issue view 321` for the later issue.
+- `git show 5aff96e` for the #321 merge, and `git show 5aff96e:<path>` for
+  the monitor, serial, main and gate files, so the branch was not rebased.
 - `gh pr view` for each linked PR; `git log --all --oneline --grep '#NNN'`.
 - `tools/powerpc-qemu.sh /tmp/opencode/ppc-audit` under
   `nix develop .#powerbook`, at `cac1a5a`. Exit 0. The gate printed:
@@ -56,6 +63,12 @@ deliberate: #115 (console unify), #117 (TLB teardown), #118 (REX3) and #119
   bytes 44d8a8c7..., escc ch-a=0x81093020 ch-b=0x81093000 selected=a
   mirror=both)`. This reproduces the QEMU claims for #287, #291, #295, #301,
   #305, #309, #313 and #317 at 64 MiB.
+- `tools/powerpc-qemu.sh` at `5aff96e` (the #321 monitor gate), extracted to
+  `/tmp/opencode/audit-321` and run under `nix develop .#powerbook` at 64 MiB.
+  Exit 0; the gate printed `powerpc-qemu: ok (... monitor info/help/halt
+  path=/pci@80000000/mac-io@10 console=a input=a timebase=16600000)`, with
+  the `info`, `help` and `halt` transcript and the no-input
+  `ppc: monitor timeout` marker.
 - `tools/x86-qemu.sh /tmp/opencode/x86-audit` under
   `nix develop .#powerbook`, at `cac1a5a`. Exit 0; the gate printed
   `x86-qemu: ok (255 MiB usable, exit 1)`, with `wasm: run=42`,
@@ -99,6 +112,7 @@ the verdict is downgraded if that claim is part of the acceptance.
 | #309 | ppc: load a verified flat module from the ATA disk | implemented | medium | Signed boot configuration; slot/linker fix |
 | #313 | ppc: make the boot console work on either ESCC channel | implemented | medium | Real Geoport wiring under #16 |
 | #317 | ppc: select the Mac I/O node with the ESCC and ATA children | implemented | medium | Real two-controller tree under #16 |
+| #321 | ppc: serial input and a minimal boot monitor | implemented | medium | Bounded RX queue and real Geoport test under #16/#324 |
 | #288 | userland: boot a real C probe through the IRIX PAL | implemented | high | CI probe gate (#13); process/capability gate (#326/#10) |
 | #296 | userland: broaden the fd surface and give directories a cookie | implemented | high | Per-process fd table (#326); `*at` surface |
 | #302 | userland: poll and non-blocking descriptors | partial | medium | Wait queues and scheduler (#322/#326); remove busy loop |
@@ -107,7 +121,7 @@ the verdict is downgraded if that claim is part of the acceptance.
 | #314 | userland: futex wait/wake for cooperative threads | implemented | medium | Timer-driven wakeups (#322); real wait queues |
 | #318 | userland: pthread_create/join and a mutex on the thread gate | implemented | high | Preemption, condvars and cancellation (#326/#322) |
 
-Counts: **13 implemented, 2 partial, 1 divergent, 0 contract-only, 0
+Counts: **14 implemented, 2 partial, 1 divergent, 0 contract-only, 0
 superseded**.
 
 ## 3. Per-issue evidence
@@ -418,6 +432,72 @@ PMU/NVRAM and a second Mac I/O driver remain out of scope.
 Follow-up: real two-controller tree under #16. If both controllers can carry
 an ESCC and a disk, the selection rule needs a boot-device or
 `device_type`/`compatible` tie-break, not tree order.
+
+### #321 — ppc: serial input and a minimal boot monitor
+
+**Verdict:** implemented. **Foundation risk:** medium. **Evidence grade:**
+QEMU `g3beige` monitor gate and PR #325 green checks; code read at `5aff96e`.
+
+The receive path is in `kernel-ppc/src/serial.rs`. `read_status` selects RR0
+and tests bit 0 for a waiting character (`serial.rs:39-41`, `129-134`);
+`read_data` reads the data port; `drain` clears up to 16 stale bytes at
+initialisation (`serial.rs:136-152`); `read_byte` polls the selected channel
+and returns `None` when none is waiting (`serial.rs:182-190`). Output stays
+mirrored to both channels, but input is deliberately one channel: the
+firmware's selected channel, otherwise channel A, otherwise B
+(`serial.rs:11-14`, `84-107`). `main.rs` passes `escc.selected` into
+`serial::init` (`main.rs:130`) and uses the returned channel for the monitor
+(`main.rs:373-398`).
+
+`kernel-ppc/src/monitor.rs` implements the one-second first-key wait
+(`monitor.rs:17-20`, `53-67`), the `ppc> ` prompt, echo and backspace, a
+32-character line buffer (`monitor.rs:22-25`, `76-105`), and the fixed
+`help`, `info` and `halt` commands (`monitor.rs:116-131`). `info` reports the
+selected Mac I/O base/size/path, console and input channel, memory, timebase,
+ATA model and sectors, and module state (`monitor.rs:39-51`, `140-179`).
+Silence prints `ppc: monitor timeout` and the unchanged `ppc: halted`
+(`main.rs:387-401`), so a headless boot keeps the old markers.
+
+The gate covers the acceptance. Its marker list adds
+`ppc: monitor wait input=a` and `ppc: monitor timeout`
+(`tools/powerpc-qemu.sh:229-231`). A second boot replaces channel A with a
+pipe chardev, waits for `ppc: monitor wait`, sends `info`, `help` and `halt`
+one byte at a time, and asserts at least three prompts, the echo lines, every
+help line, the Mac I/O values against the boot log, `console=input=selected`,
+the memory size, timebase, ATA sectors and module status
+(`tools/powerpc-qemu.sh:631-791`). It also requires channel B to mirror the
+whole session (`:793-810`) and requires the no-input boot never to print a
+prompt (`:812-817`). The two-controller boot also requires
+`ppc: monitor timeout` (`:860`). PR #325 reports the PowerPC, iris, x86 and
+module gates green, including `Boot (PowerPC G3 QEMU)` and
+`Boot (x86_64 QEMU)`.
+
+The known limits are present and documented: three fixed commands, a
+32-character line buffer, no line editor or history, serial-only input (no
+ADB keyboard wiring), and input only on the selected ESCC channel
+(`docs/research/powerbook-qemu-boot.md:415-438`). The new finding is that the
+scope's "bounded console input queue" is not implemented. `read_byte` polls
+the ESCC's single receive register and `monitor::read_blocking` spins on it
+(`serial.rs:182-190`; `monitor.rs:107-114`); there is no ring buffer between
+the receiver and the line buffer. The gate compensates by writing one byte
+every 30 ms (`tools/powerpc-qemu.sh:687-695`) and its own comment explains
+that a burst loses every byte after the first until the monitor drains the
+register (`:631-635`). A human typing works; a paste or a fast host does not.
+The gate also only exercises the selected-A path; a B-selected channel and
+the fallback-A path are code-only. The acceptance criteria are met; the queue
+is a scope gap and a robustness limitation, not an acceptance failure, which
+is why the verdict stays implemented.
+
+Limits: no real Geoport test, no keyboard, no line editing, no history, no
+argument parsing, no module loading from the monitor. The monitor is polled,
+not interrupt-driven; that is within the issue's "polled or interrupt-driven"
+scope. `info` reports the loader's status, which is always zero because the
+loader rejects a nonzero status (`module.rs:169-185`).
+
+Follow-up: add a bounded RX ring and a burst/backspace/overlong/unknown-command
+gate; test a B-selected channel; run the monitor on a real Geoport under #16.
+The input path is the base for #323 and #324 but does not yet provide their
+keyboard or framebuffer coverage.
 
 ### #288 — userland: boot a real C probe through the IRIX PAL
 
@@ -753,6 +833,11 @@ It is not evidence for the M4753. The differences that matter:
 - **Console.** `#313` mirrors both channels, which is the right hedge for
   unknown Geoport wiring, but the actual channel, baud and cable are
   unmeasured.
+- **Serial input.** `#321` reads only the selected channel; output stays
+  mirrored. There is no receive queue, so the monitor depends on draining the
+  one-byte ESCC register before the next byte arrives; the gate sends one
+  byte every 30 ms (`tools/powerpc-qemu.sh:687-695`). Only the selected-A
+  path is tested; a B-selected channel and the real Geoport are code-only.
 - **Mac I/O selection.** `#317` selects by child score; the gate's second
   controller is a QEMU device, not the M4753's `gatwick` tree. If both
   controllers have an ESCC and a disk, tree order is still the tie-break
@@ -767,9 +852,11 @@ It is not evidence for the M4753. The differences that matter:
   the Indy's POSIX level and should not be described as such.
 
 The highest-risk hardware claim is #301: the issue's title and goal name the
-PowerBook, and the real target path skips the proof. #305, #313 and #317 are
-also QEMU-only but their acceptance is explicitly a QEMU gate or a build
-check, so they are implemented with a hardware caveat.
+PowerBook, and the real target path skips the proof. #305, #313, #317 and #321
+are also QEMU-only but their acceptance is explicitly a QEMU gate or a build
+check, so they are implemented with a hardware caveat. #321's missing receive
+queue is the one functional gap in that group: the gate sends bytes slowly
+enough to hide it.
 
 ### 4.3 Userland POSIX coverage versus the native-libc contract
 
@@ -859,8 +946,9 @@ is the weakest evidence in the platform/userland set and the reason the
 audit's "simulator or log only" rule bites: the code is real, but the
 acceptance run is not gate-backed, and iris is an emulator rather than a real
 Indy (#16 stands). The PPC gate is marker-based but parses the DSI, ISI,
-alignment, program, IRQ and ESCC fields, so it is not a log-only assertion;
-the userland evidence is a transcript with no gate.
+alignment, program, IRQ and ESCC fields and now the monitor prompt, echo and
+`info` values, so it is not a log-only assertion; the userland evidence is a
+transcript with no gate.
 
 The documentation has drifted in both directions:
 
@@ -910,7 +998,10 @@ so the stale x86 status is a real gap, not a cosmetic one.
    Run the PowerPC gate on a real G3/PowerBook. For #301, add a PMU timer
    path (the M4753 has `via-pmu`, not `via-cuda`) or explicitly record the
    issue as QEMU-CUDA-only and move the real acceptance to a PMU slice. #324
-   is the natural home for PMU/ADB device work.
+   is the natural home for PMU/ADB device work. For #321, add the bounded RX
+   queue the scope asked for (the current path polls the one-byte ESCC
+   register), test a B-selected channel and a burst, and run the monitor on a
+   real Geoport.
 
 5. **Preemptive scheduling and blocking waits (#322, #326).**
    Replace the 100 ms bounded spin in `poll`, blocking read/write, futex and
@@ -930,7 +1021,7 @@ so the stale x86 status is a real gap, not a cosmetic one.
    Update `docs/plan/x86.md` to the post-#278 state, update the Phase 6
    status in `docs/plan/milestones.md`, and correct the native-libc status
    sentence for cooperative pthreads. Add the PPC hardware caveats from
-   #301/#305/#313/#317 to the PowerBook documents.
+   #301/#305/#313/#317/#321 to the PowerBook documents.
 
 8. **PPC module trust and layout (#309 follow-up).**
    Take the module digest from the signed boot configuration rather than the
@@ -941,12 +1032,16 @@ so the stale x86 status is a real gap, not a cosmetic one.
 ## 6. Limits of this audit
 
 - No PowerPC or x86 real hardware was available. The PPC gate was run under
-  QEMU at 64 MiB; the 32 and 128 MiB runs were not repeated. The x86 gate was
-  run from the same tree; its CI job is the stronger evidence.
+  QEMU at 64 MiB, and the #321 monitor gate at `5aff96e` was run from an
+  extracted tree at 64 MiB; the 32 and 128 MiB runs were not repeated. The
+  x86 gate was run from the `cac1a5a` tree; its CI job is the stronger
+  evidence.
 - The relibc probes were not rebuilt. The audits of #288/#296/#302/#306/#310/
   #314/#318 rely on the in-tree probe sources, the pinned fork commit and
   the transcripts in `docs/research/`; the host `native-abi` layout tests
   were run. The missing CI gate is recorded as a finding, not treated as a
   pass.
-- The 22 core/mesh issues are outside this report. The split is declared in
-  §1.1 so the three reports together cover the 38 closed issues.
+- The report base is `cac1a5a`; #321 is audited at the later merged commit
+  `5aff96e` without rebasing the branch. The 22 core/mesh issues are outside
+  this report. The split is declared in §1.1 so the three reports together
+  cover the 39 closed issues.
