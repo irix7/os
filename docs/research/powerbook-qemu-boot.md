@@ -1,18 +1,21 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the seventh boot slice of #287, tracked as #317, selects the Mac
-I/O node that carries the ESCC console and the ATA disk. `kernel-ppc` is
-loaded by OpenBIOS, reads the machine description from the device tree,
-installs its own BAT entries, points SDR1 at an empty table, prints to both
-ESCC serial ports, takes ten decrementer ticks and prints `BOOT-OK`. It then
-proves the DSI, ISI, alignment, program and system-call vectors in order,
-prints `TRAPS-OK`, takes ten external interrupts from the CUDA timer through
-the Heathrow interrupt controller at the `0x500` vector, prints `IRQ-OK
-count=10`, identifies the ATA disk on the selected Mac I/O channel, reads the
-signature sector at LBA 4 with polled PIO, prints `ATA-OK` and halts. Observed
-with QEMU 11.1.2 and its OpenBIOS 1.1 build. On a PMU machine such as the
-M4753 there is no `via-cuda`; the kernel skips the external-interrupt probe,
-continues on the decrementer and does not print `IRQ-OK`.
+**Status:** the eighth boot slice of #287, tracked as #321, adds serial input
+and a minimal boot monitor. `kernel-ppc` is loaded by OpenBIOS, reads the
+machine description from the device tree, installs its own BAT entries, points
+SDR1 at an empty table, prints to both ESCC serial ports, takes ten
+decrementer ticks and prints `BOOT-OK`. It then proves the DSI, ISI,
+alignment, program and system-call vectors in order, prints `TRAPS-OK`, takes
+ten external interrupts from the CUDA timer through the Heathrow interrupt
+controller at the `0x500` vector, prints `IRQ-OK count=10`, identifies the ATA
+disk on the selected Mac I/O channel, reads the signature sector at LBA 4 with
+polled PIO, prints `ATA-OK`, loads and enters the flat module, and prints
+`MODULE-OK`. It then polls the selected ESCC channel for one second: a key
+enters a `ppc>` monitor with `help`, `info` and `halt`, and silence prints
+`ppc: monitor timeout` and halts. Observed with QEMU 11.1.2 and its OpenBIOS
+1.1 build. On a PMU machine such as the M4753 there is no `via-cuda`; the
+kernel skips the external-interrupt probe, continues on the decrementer and
+does not print `IRQ-OK`.
 
 ## The `-kernel` path
 
@@ -183,14 +186,24 @@ ppc: escc=0x81093000 ch-a=0x81093020 ch-b=0x81093000
 ppc: console output-device=/pci@80000000/mac-io@10/escc/ch-a stdout-path=none selected=a mirror=a+b
 ```
 
-The selection is informational: output is always mirrored to both channels.
-The PowerBook G3 M4753 developer note wires the internal infrared link to
-serial port B; the external GeoPort is the channel A port. The boot firmware
-and the cable can still disagree with that expectation, and QEMU's `-serial`
-mapping is its own. Mirroring makes the boot visible on either wiring without a
-machine-specific default. On QEMU, `-nographic` makes OpenBIOS name the serial
-path; `-display none` leaves `output-device=screen`, in which case the kernel
-reports `selected=none` and still mirrors.
+The selection is informational for output: output is always mirrored to both
+channels. The PowerBook G3 M4753 developer note wires the internal infrared
+link to serial port B; the external GeoPort is the channel A port. The boot
+firmware and the cable can still disagree with that expectation, and QEMU's
+`-serial` mapping is its own. Mirroring makes the boot visible on either
+wiring without a machine-specific default. On QEMU, `-nographic` makes
+OpenBIOS name the serial path; `-display none` leaves `output-device=screen`,
+in which case the kernel reports `selected=none` and still mirrors.
+
+Input is not mirrored. Both receivers are enabled (WR3 = `0xc1`), but the
+monitor polls exactly one channel: the one the firmware selected, or channel A
+when the firmware names no ESCC channel. Channel A is the external Geoport on
+the M4753, and reading both channels into one line buffer would interleave two
+terminals. `serial::read_byte` selects RR0, tests bit 0 (Rx character
+available) and reads the channel's data port; `serial::init` drains any byte
+latched before the monitor existed. The receiver is polled rather than
+interrupt-driven, and RR1 is not inspected: an overrun drops a byte instead of
+reporting it.
 
 The Geoport is a mini-DIN-9 serial connector, backwards-compatible with the
 8-pin Mac serial port, on SCC channel A. A modem card in the communication slot
@@ -399,6 +412,57 @@ translation did not cover the ATA window at `+0x20080` and the first ATA
 register access raised a DSI. `mmu::Bat::upper` now encodes
 `size / 128 KiB - 1`.
 
+## Boot monitor
+
+After the module check the kernel prints `ppc: monitor wait input=a` and polls
+the input channel for 1000 ms of timebase. A received byte enters the monitor;
+silence prints `ppc: monitor timeout` and the unchanged `ppc: halted` line, so
+a headless boot and every gate marker stay the same. The wait is measured on
+the timebase and is independent of the decrementer.
+
+The monitor reads one line of at most 32 printable ASCII characters. It echoes
+each character, erases with `\b \b` on backspace or delete, ends the line on CR
+or LF, and matches whole command names:
+
+| Command | Output |
+|---|---|
+| `help` | the three command names |
+| `info` | Mac I/O base, size and path, console and input channel, memory size, timebase, ATA model and sectors, module status |
+| `halt` | `monitor: halt`, `ppc: halted`, then the spin loop |
+
+The prompt is `ppc> ` and is printed before the first line and after every
+command. There is no line editor, history, argument parsing, boot command or
+module loader. `info` reports copies of the boot values; the module line is
+the loader's report, or `skipped=not-gate-disk` when the disk was not the gate
+disk. A line whose name matches nothing prints `monitor: unknown command: `
+and the line, then returns to the prompt.
+
+The gate types at channel A through a pipe chardev:
+
+```
+ppc: monitor wait input=a
+ppc: monitor ready
+ppc> info
+monitor: macio base=0x81080000 size=524288 path=/pci@80000000/mac-io@10 console=a input=a
+monitor: memory base=0x0 size=64 MiB
+monitor: timebase=16600000 Hz
+monitor: ata model=QEMU HARDDISK sectors=8192
+monitor: module status=0 tick=1 length=708
+ppc> help
+monitor: help    list commands
+monitor: info    machine selection and status
+monitor: halt    stop the machine
+ppc> halt
+monitor: halt
+ppc: halted
+```
+
+The first key is consumed by the one-second wait and then processed by the
+monitor, so a command can begin in the same write that wakes the machine. The
+gate sends each byte separately: QEMU's ESCC model holds a single received
+character, and a burst written in one call loses every byte after the first
+until the monitor drains the register.
+
 ## Gate
 
 The build needs `cargo`, a host C compiler for the compiler-builtins build
@@ -417,6 +481,22 @@ qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
   -nographic -serial file:serial.log -serial file:serial-b.log \
   -monitor none -no-reboot
 ```
+
+That boot has no input path. A second boot replaces channel A's file with a
+pipe chardev, so the gate can type at the console:
+
+```sh
+qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
+  -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
+  -nographic -chardev pipe,id=mon0,path=serial-monitor \
+  -serial chardev:mon0 -serial file:serial-monitor-b.log \
+  -monitor none -no-reboot
+```
+
+The gate creates `serial-monitor.in` and `serial-monitor.out`, writes one byte
+at a time to `.in`, and copies `.out` to `serial-monitor.log`. It waits for
+`ppc: monitor wait` before typing and for each command's output before typing
+the next.
 
 The gate creates `ata.img` as 8192 zero sectors and writes
 `IRIX7-ATA-SIG001` at LBA 4. It attaches that image to the first Mac I/O ATA
@@ -457,6 +537,13 @@ order it must appear on channel A, then parses the exception reports:
 - channel B's kernel log is byte-for-byte identical to channel A's from
   `ppc: mmu enabled` onward, so the banner and every marker reached both
   ports;
+- the no-input boot prints `ppc: monitor wait input=a`, `ppc: monitor timeout`
+  and `ppc: halted`, and never a `ppc>` prompt;
+- a pipe-chardev boot enters the monitor, echoes `info`, `help` and `halt`,
+  prints three prompts, and repeats the boot's Mac I/O base, size, path,
+  console and input channel, memory size, timebase and ATA sector count in the
+  `info` output; the module line names the loaded image; the whole monitor
+  session is mirrored to channel B;
 - the ATA window from the `ata-3` node lies inside the Mac I/O BAT, the identify
   model is `QEMU HARDDISK`, the sector count equals the attached image's size in
   512-byte sectors, and the bytes read from LBA 4 match the image;
@@ -513,6 +600,14 @@ IRQ-OK count=10
 ppc: ata model=QEMU HARDDISK sectors=8192 lba48=1
 ppc: ata lba=4 sector=49524958372d4154412d534947303031
 ATA-OK
+ppc: module length=708 digest=44d8a8c78bd75eec6a05fcaab7049e83e6c371a3ab187c38fb903bd1d1a3c64e
+PPC-MODULE-RUN
+module info: ppc: g3beige
+module tick
+ppc: module status=0 tick=1 length=708
+MODULE-OK
+ppc: monitor wait input=a
+ppc: monitor timeout
 ppc: halted
 ```
 
@@ -530,8 +625,8 @@ ppc: halted
   the interrupted stack with `MSR[EE]` clear; a fault inside a handler would
   recurse.
 - The external interrupt path is the Heathrow controller and one timer source,
-  not a general interrupt layer. There is no console input, block device,
-  network device, ADB or PMU, and no handler is shared between devices.
+  not a general interrupt layer. There is no block device, network device, ADB
+  or PMU, and no handler is shared between devices.
 - The ATA driver is polled PIO only. It reads one 512-byte sector per command,
   addresses LBA28, and performs no DMA, writes, ATAPI commands, partition
   parsing or filesystem access. The block layer and the interrupt-driven path
@@ -549,10 +644,16 @@ ppc: halted
   `macio-oldworld` instance with an ESCC and empty ATA channels, so it proves
   tree-order independence and ATA selection, not the Gatwick media-bay
   wiring.
-- The console is transmit-only at a fixed 38400 8N1. It programs WR11, WR12,
-  WR13 and WR14 for the 3.6864 MHz ESCC clock, but there is no receive path,
-  flow control, termios, or baud negotiation, and no keyboard or framebuffer
-  console.
+- The console receives on one ESCC channel at a fixed 38400 8N1. It programs
+  WR11, WR12, WR13 and WR14 for the 3.6864 MHz ESCC clock and enables both
+  receivers, but input is polled on the selected channel only. There is no
+  interrupt-driven input, flow control, termios or baud negotiation, and no
+  ADB keyboard or framebuffer console. An overrun drops a byte because RR1 is
+  not read.
+- The monitor is fixed at three commands with no line editor, history,
+  cursor movement or argument parsing. A line longer than 32 characters is
+  truncated and reported as an unknown command. There is no command to boot,
+  load a module or dump memory.
 - Mirroring proves that both ESCC register banks accept the boot log. It does
   not prove that both are electrically wired on a particular PowerBook: QEMU's
   channel B is a chardev, and the Geoport/IR wiring still needs the hardware

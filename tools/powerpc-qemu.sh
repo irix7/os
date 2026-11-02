@@ -18,8 +18,14 @@
 # captures the same kernel log on channel A and channel B.  A second boot adds
 # an extra `macio-oldworld` device ahead of the built-in controller in tree
 # order and requires the kernel to keep selecting the node with the ESCC and
-# the disk.  QEMU's g3beige machine has no debug-exit device, so the gate stops
-# QEMU once the final `ppc: halted` reaches both serial files.
+# the disk.
+#
+# After the module check the kernel waits one second for a key on the selected
+# ESCC channel.  Silence prints `ppc: monitor timeout` and halts as before.
+# A pipe chardev on channel A in a separate boot carries `info`, `help` and
+# `halt` at the `ppc>` prompt, and the gate checks the echo, the prompt and
+# every reported value.  QEMU's g3beige machine has no debug-exit device, so
+# the gate stops QEMU once the final `ppc: halted` reaches both serial files.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -220,6 +226,8 @@ markers=(
   "module tick"
   "ppc: module status=0 tick=1 length=${MODULE_SIZE}"
   "MODULE-OK"
+  "ppc: monitor wait input=a"
+  "ppc: monitor timeout"
   "ppc: halted"
 )
 
@@ -620,6 +628,194 @@ if [ "${module_report% *}" != "$MODULE_SIZE" ] \
   exit 1
 fi
 
+# Monitor boot.  Channel A is a pipe chardev so the gate can type at the
+# console; the read side of the pipe is copied to the log.  The kernel prints
+# `ppc: monitor wait input=a` and polls for one second.  Commands are sent one
+# byte at a time because QEMU's ESCC model holds a single received character:
+# a burst would lose every byte until the monitor drains the next one.
+MONITOR_SERIAL="$WORK/serial-monitor.log"
+MONITOR_SERIAL_B="$WORK/serial-monitor-b.log"
+MONITOR_PIPE="$WORK/serial-monitor"
+MONITOR_IN="$MONITOR_PIPE.in"
+MONITOR_OUT="$MONITOR_PIPE.out"
+rm -f "$MONITOR_SERIAL" "$MONITOR_SERIAL_B" "$MONITOR_IN" "$MONITOR_OUT"
+mkfifo "$MONITOR_IN" "$MONITOR_OUT"
+cat "$MONITOR_OUT" > "$MONITOR_SERIAL" &
+MONITOR_DRAIN=$!
+set +e
+"$QEMU" \
+  -M g3beige \
+  -m "$MEMORY" \
+  -kernel "$IMAGE" \
+  -drive "file=$DISK,format=raw,if=ide,index=0,media=disk" \
+  -nographic \
+  -chardev "pipe,id=mon0,path=$MONITOR_PIPE" \
+  -serial chardev:mon0 \
+  -serial "file:$MONITOR_SERIAL_B" \
+  -monitor none \
+  -no-reboot &
+MONITOR_PID=$!
+set -e
+
+stop_monitor() {
+  kill "$MONITOR_PID" 2>/dev/null || true
+  wait "$MONITOR_PID" 2>/dev/null || true
+  kill "$MONITOR_DRAIN" 2>/dev/null || true
+  wait "$MONITOR_DRAIN" 2>/dev/null || true
+}
+
+monitor_fail() {
+  echo "powerpc-qemu: $*" >&2
+  tr -d '\r' < "$MONITOR_SERIAL" 2>/dev/null | tail -n 40 >&2 || true
+  stop_monitor
+  exit 1
+}
+
+monitor_wait() {
+  local pattern="$1"
+  local seconds="${2:-30}"
+  local deadline=$((SECONDS + seconds))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    if grep -qF -- "$pattern" "$MONITOR_SERIAL" 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  return 1
+}
+
+monitor_send_line() {
+  local text="$1"
+  local index
+  for ((index = 0; index < ${#text}; index++)); do
+    printf '%s' "${text:index:1}" > "$MONITOR_IN"
+    sleep 0.03
+  done
+  printf '\r' > "$MONITOR_IN"
+}
+
+monitor_wait "ppc: monitor wait" || monitor_fail "the monitor did not wait for a key"
+monitor_send_line "info"
+monitor_wait "monitor: module status=0 tick=1 length=$MODULE_SIZE" \
+  || monitor_fail "the info command did not report the module"
+monitor_send_line "help"
+monitor_wait "monitor: halt    stop the machine" \
+  || monitor_fail "the help command did not list halt"
+monitor_send_line "halt"
+monitor_wait "ppc: halted" || monitor_fail "the halt command did not stop the monitor"
+stop_monitor
+
+echo "--- monitor session ---"
+tr -d '\r' < "$MONITOR_SERIAL" | sed -n '/^ppc: monitor wait/,$p'
+echo "------------------------"
+
+monitor_text="$(tr -d '\r' < "$MONITOR_SERIAL")"
+prompts="$(printf '%s\n' "$monitor_text" | grep -c '^ppc> ')" || true
+if [ -z "$prompts" ] || [ "$prompts" -lt 3 ]; then
+  echo "powerpc-qemu: the monitor printed $prompts prompts, expected three" >&2
+  exit 1
+fi
+for echo_line in "ppc> info" "ppc> help" "ppc> halt"; do
+  if ! printf '%s\n' "$monitor_text" | grep -qF -- "$echo_line"; then
+    echo "powerpc-qemu: the monitor did not echo '$echo_line'" >&2
+    exit 1
+  fi
+done
+for help_line in \
+  "monitor: help    list commands" \
+  "monitor: info    machine selection and status" \
+  "monitor: halt    stop the machine"; do
+  if ! printf '%s\n' "$monitor_text" | grep -qF -- "$help_line"; then
+    echo "powerpc-qemu: help did not print '$help_line'" >&2
+    exit 1
+  fi
+done
+
+monitor_macio="$(printf '%s\n' "$monitor_text" \
+  | grep -E '^monitor: macio base=0x[0-9a-f]+ size=[0-9]+ path=/[^ ]+ console=(a|b) input=(a|b)$' \
+  | tail -n 1)" || true
+if [ -z "$monitor_macio" ]; then
+  echo "powerpc-qemu: the monitor did not report the Mac I/O selection" >&2
+  exit 1
+fi
+mon_base=$(( $(printf '%s\n' "$monitor_macio" | sed -E 's/^monitor: macio base=(0x[0-9a-f]+) .*$/\1/') ))
+mon_size=$(printf '%s\n' "$monitor_macio" | sed -E 's/^.* size=([0-9]+) path=.*$/\1/')
+mon_path=$(printf '%s\n' "$monitor_macio" | sed -E 's/^.* path=([^ ]+) console=.*$/\1/')
+mon_console=$(printf '%s\n' "$monitor_macio" | sed -E 's/^.* console=(a|b) input=(a|b)$/\1/')
+mon_input=$(printf '%s\n' "$monitor_macio" | sed -E 's/^.* console=(a|b) input=(a|b)$/\2/')
+if [ "$mon_base" -ne "$macio_base" ] || [ "$mon_size" -ne "$macio_size" ] \
+  || [ "$mon_path" != "$macio_path" ]; then
+  echo "powerpc-qemu: the monitor reports Mac I/O 0x$(printf '%x' "$mon_base") size=$mon_size path=$mon_path, expected 0x$(printf '%x' "$macio_base") size=$macio_size path=$macio_path" >&2
+  exit 1
+fi
+if [ "$mon_console" != "$selected" ] || [ "$mon_input" != "$selected" ]; then
+  echo "powerpc-qemu: the monitor console=$mon_console input=$mon_input, expected selected=$selected" >&2
+  exit 1
+fi
+
+monitor_memory="$(printf '%s\n' "$monitor_text" \
+  | sed -n 's/^monitor: memory base=0x[0-9a-f]* size=\([0-9][0-9]*\) MiB$/\1/p' \
+  | tail -n 1)" || true
+if [ -z "$monitor_memory" ] || [ "$monitor_memory" -ne "$ram_mib" ]; then
+  echo "powerpc-qemu: the monitor reports '$monitor_memory' MiB, expected $ram_mib" >&2
+  exit 1
+fi
+
+main_timebase="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: timebase=\([0-9][0-9]*\) Hz$/\1/p' \
+  | tail -n 1)" || true
+monitor_timebase="$(printf '%s\n' "$monitor_text" \
+  | sed -n 's/^monitor: timebase=\([0-9][0-9]*\) Hz$/\1/p' \
+  | tail -n 1)" || true
+if [ -z "$monitor_timebase" ] || [ "$monitor_timebase" != "$main_timebase" ]; then
+  echo "powerpc-qemu: the monitor reports timebase '$monitor_timebase', expected $main_timebase" >&2
+  exit 1
+fi
+
+monitor_ata="$(printf '%s\n' "$monitor_text" \
+  | grep -E '^monitor: ata model=QEMU HARDDISK sectors=[0-9]+$' \
+  | tail -n 1)" || true
+if [ -z "$monitor_ata" ]; then
+  echo "powerpc-qemu: the monitor did not report the ATA identify data" >&2
+  exit 1
+fi
+monitor_ata_sectors="$(printf '%s\n' "$monitor_ata" | sed -E 's/^.*sectors=([0-9]+)$/\1/')"
+if [ "$monitor_ata_sectors" -ne "$ata_sectors" ]; then
+  echo "powerpc-qemu: the monitor reports $monitor_ata_sectors sectors, expected $ata_sectors" >&2
+  exit 1
+fi
+if ! printf '%s\n' "$monitor_text" \
+  | grep -qF "monitor: module status=0 tick=1 length=$MODULE_SIZE"; then
+  echo "powerpc-qemu: the monitor did not report the loaded module" >&2
+  exit 1
+fi
+
+# The monitor boot mirrors its whole session to channel B, including the
+# prompt and the echoed commands.
+monitor_a="$WORK/monitor-a.log"
+monitor_b="$WORK/monitor-b.log"
+sed -n '/^ppc: mmu enabled sdr1=0x/,$p' "$MONITOR_SERIAL" | tr -d '\r' > "$monitor_a"
+tr -d '\r' < "$MONITOR_SERIAL_B" > "$monitor_b"
+case "$(head -n 1 "$monitor_b")" in
+  "ppc: mmu enabled sdr1=0x"*) ;;
+  *)
+    echo "powerpc-qemu: monitor channel B did not start with the kernel banner" >&2
+    exit 1
+    ;;
+esac
+if ! cmp -s "$monitor_a" "$monitor_b"; then
+  echo "powerpc-qemu: monitor channel B is not a mirror of channel A" >&2
+  diff -u "$monitor_a" "$monitor_b" 2>/dev/null | head -n 20 >&2 || true
+  exit 1
+fi
+
+# The no-input boot must never reach the prompt: the monitor wait expires and
+# the machine halts with the same marker as before.
+if grep -qF "ppc> " "$SERIAL"; then
+  echo "powerpc-qemu: the no-input boot entered the monitor" >&2
+  exit 1
+fi
+
 # Two controllers: the built-in Mac I/O is at PCI device 0x10 and carries the
 # ESCC and the attached disk.  An extra macio-oldworld device takes device
 # 0x03 and appears first in tree order with an ESCC but no disk.  The kernel
@@ -661,7 +857,7 @@ if [ "$two_path" != "$macio_path" ]; then
   echo "powerpc-qemu: selected '$two_path' with a second controller, expected '$macio_path'" >&2
   exit 1
 fi
-for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" "ppc: halted"; do
+for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" "ppc: monitor timeout" "ppc: halted"; do
   if ! grep -qF -- "$marker" "$TWO_SERIAL"; then
     echo "powerpc-qemu: two-controller boot missing marker: $marker" >&2
     exit 1
@@ -718,4 +914,4 @@ if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both)"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase)"

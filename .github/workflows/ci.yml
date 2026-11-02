@@ -1372,6 +1372,8 @@ jobs:
           path: |
             ${{ runner.temp }}/powerpc-qemu/serial.log
             ${{ runner.temp }}/powerpc-qemu/serial-b.log
+            ${{ runner.temp }}/powerpc-qemu/serial-monitor.log
+            ${{ runner.temp }}/powerpc-qemu/serial-monitor-b.log
             ${{ runner.temp }}/irix7-powerpc-floppy.img
 
   x86:
