@@ -37,8 +37,11 @@ miscompiles this libc write/exit flow at `-Oz` (the post-write continuation can
 be replaced by a break).  The image remains under the loader's 256 KiB limit.
 
 The loader builds the conventional initial stack: `argc` at `$sp`, followed by
-the `argv` and `envp` pointer arrays, with `"hello"`, `"PATH=/"` and `"HOME=/"`
-above them.  `$a0`, `$a1` and `$a2` hold `argc`, `argv` and `envp` on entry.
+the `argv` and `envp` pointer arrays, then the auxiliary-vector pairs.  The
+strings `"hello"`, `"PATH=/"`, `"HOME=/"`, `"mips"` and a 16-byte `AT_RANDOM`
+value sit above them.  `$a0`, `$a1`, `$a2` and `$a3` hold `argc`, `argv`, `envp`
+and `auxv` on entry; `$28` is zero until the startup code sets the thread
+pointer.
 `write` sends bytes to the console and the console service mirrors them to
 serial and telnet; fd 0/1/2 are console descriptors, and the ramfs/`/dev/null`
 descriptors are available to the std image.  The std heap is a 1 MiB anonymous
@@ -72,3 +75,24 @@ The kernel reads up to 256 KiB from target 2, so the raw image is padded to
 sleep, a read/write ramfs, `stat`, `read_dir`, `chdir` and relative paths.  See
 [`std-hello/README.md`](std-hello/README.md) and the
 [bring-up report](../docs/research/std-hello-bringup.md).
+
+## c-probe
+
+`user/c-probe` is the freestanding n32 C probe for the native syscall ABI.  It
+is not linked against relibc: it contains its own `_start`, syscall stubs and
+the C oracle for the 136-byte `struct stat`, the 280-byte `struct dirent`, the
+`CELL_E_*` status map, the auxiliary-vector keys and the 16-byte TCB header.
+It calls `write`, `getpid`, `stat`, `fstat` and `exit` through `syscall 0x1F7`,
+checks two deterministic negative results (`EBADF` and `ENOENT`), and exits 1
+if any check fails.
+
+Build and run it from the repository root:
+
+```sh
+CLANG=/path/to/clang user/c-probe/build.sh /tmp/c-probe
+# attach /tmp/c-probe/probe.raw as SCSI target 2 and boot iris
+```
+
+The kernel enters target 2 automatically after `BOOT-READY`.  The expected
+serial transcript is in
+[`docs/research/c-probe-bringup.md`](../docs/research/c-probe-bringup.md).

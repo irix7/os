@@ -21,7 +21,7 @@
 //! and all 64-bit fields are naturally aligned.
 //!
 //! ```text
-//! assert_eq!(core::mem::size_of::<native_abi::stat>(), 128);
+//! assert_eq!(core::mem::size_of::<native_abi::stat>(), 136);
 //! assert_eq!(core::mem::offset_of!(native_abi::stat, st_mtim), 80);
 //! ```
 
@@ -30,7 +30,11 @@
 #![allow(non_camel_case_types)]
 
 pub mod constants;
+pub mod status;
+pub mod syscall;
 pub mod types;
 
 pub use constants::*;
+pub use status::*;
+pub use syscall::*;
 pub use types::*;

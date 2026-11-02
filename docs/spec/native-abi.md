@@ -280,11 +280,18 @@ The loader calls the cell as if it were a C function:
 | `$sp` | `CellStart.stack_top` (16-byte aligned) |
 | `$gp` | The image's `_gp` value, or 0 |
 | `$28` | 0; the libc allocates its TCB and sets `$28` before entering Rust (v0.1) |
+| `$a1` | 0 in the capability form |
+| `$a2` | 0 in the capability form |
+| `$a3` | 0 in the capability form |
 | `$ra` | 0 |
-| `$v0`, `$v1`, `$at`, `$a1`–`$a3`, `$t0`–`$t9`, `$s0`–`$s8` | 0 |
+| `$v0`, `$v1`, `$at`, `$t0`–`$t9`, `$s0`–`$s8` | 0 |
 | `$k0`, `$k1` | Kernel trap scratch; the cell must not rely on them |
 | `Status` | Kernel mode, `IE = 1`, `EXL = 0`, `CP1 = 0` (soft-float) |
 | `EPC` | `entry` |
+
+The **v0 POSIX gate** (§5.8) does not pass a `CellStart`: it enters with
+`$a0 = argc`, `$a1 = argv`, `$a2 = envp`, `$a3 = auxv` and the System V stack shape
+in §3.4.  The libc sets `$28` itself in both forms.
 
 `_start` must never return.  A return jumps to 0 and faults; the kernel terminates the
 cell with reason `BAD_ENTRY`.  The cell must not use `$k0`/`$k1` (kernel trap scratch);
@@ -499,8 +506,24 @@ The set is a recommended default and remains open (§10).  Unknown keys are igno
 readers; a pointer-valued key that the loader does not know is not validated.  `AT_SECURE`
 is always 0: there are no setuid cells and no privilege gain on exec.
 
-`CellStart` is the authoritative source for `argv`, `envp` and `auxv`; the loader need
-not duplicate them on the initial stack.  The libc's `_start` may build the conventional
+**v0 POSIX gate stack shape.**  The v0 loader passes no `CellStart`.  It builds the
+System V layout on the initial stack and points `$sp` at the first word:
+
+```text
+sp+0:   argc
+sp+4:   argv[0] .. argv[argc-1], NULL
+sp+..:  envp[0] .. envp[envc-1], NULL
+sp+..:  auxv[0].type, auxv[0].value, ..., AT_NULL, 0
+```
+
+`$sp` is 16-byte aligned and `$a3` points at the first `CellAux` pair.  `AT_ENTRY` is the
+image entry, `AT_PAGESZ` is 4096, `AT_CLKTCK` is 100, and `AT_SECURE` is 0.  `AT_RANDOM`
+points to 16 readable bytes on the stack; the v0 source is the CP0 Count plus the wall
+clock, not a cryptographic generator.  `AT_EXECFN` points to the fixed image name
+`hello` and `AT_PLATFORM` to `mips`.
+
+`CellStart` is the authoritative source for `argv`, `envp` and `auxv` when it exists; the
+loader need not duplicate them on the initial stack.  The libc's `_start` may build the conventional
 System V stack shape from these fields for a C runtime, but `std` and the native libc read
 `CellStart` directly.  This keeps one copy of the startup data and avoids a second
 layout that could disagree with the struct.
@@ -1490,6 +1513,63 @@ forged handle, a stale generation, a pointer outside the VMAR, a block that over
 and a missing `EXECUTE` right.  Every negative test must terminate or return a status;
 none may panic the kernel or hang.
 
+### 5.8 v0 native POSIX syscall gate
+
+The v0 user-image path implements a **flat native syscall gate** on the same
+`syscall 0x1F7` instruction.  It carries a native syscall number, not the capability
+selector of §4.5, because there is no capability cell loader yet.  The instruction code
+keeps it disjoint from IRIX 6.5's plain `syscall`.  When the capability form lands, this
+flat form is removed outright; the two are never selected by a version or fallback.
+
+| Register | On entry | On return |
+|---|---|---|
+| `$v0` | Native syscall number | Status: `CELL_OK` or `CELL_E_*` (§5.3) |
+| `$v1` | — | Result value; 0 on error |
+| `$a0`–`$a3` | Arguments 0–3 | Preserved |
+| `$28` | Thread pointer (TCB) | Preserved |
+| `$at` | — | Clobbered |
+| Other GPRs | — | Preserved |
+
+The gate is a standalone instruction, never in a branch delay slot; the kernel returns
+to `EPC + 4`.  Arguments are 32-bit and the kernel ignores the upper halves.  The kernel
+returns a `CELL_E_*` status, never a libc `errno`; the libc maps it through
+`native_abi::status_to_errno()` and sets `errno` in the TCB.  An unknown status is not a
+success.  `SYS_EXIT` does not return.
+
+| No. | Call | Arguments |
+|---:|---|---|
+| 1 | `write` | `fd`, `buf`, `len` |
+| 2 | `exit` | `status` |
+| 3 | `mmap` | `addr` (ignored in v0), `len`, `prot`, `flags` |
+| 4 | `munmap` | `addr`, `len` |
+| 5 | `mprotect` | `addr`, `len`, `prot` |
+| 6 | `open` | `path`, `flags`, `mode` |
+| 7 | `close` | `fd` |
+| 8 | `fcntl` | `fd`, `cmd`, `arg` |
+| 9 | `dup` | `fd` |
+| 10 | `getcwd` | `buf`, `len` |
+| 11 | `poll` | `fds`, `count` |
+| 12 | `signal` | `sig`, `handler` |
+| 13 | `getentropy` | `buf`, `len` |
+| 14 | `clock_gettime` | `clock_id`, `timespec` |
+| 15 | `getpid` | — |
+| 16 | `read` | `fd`, `buf`, `len` |
+| 17 | `fstat` | `fd`, `struct stat *` |
+| 18 | `stat` | `path`, `struct stat *` |
+| 19 | `readdir` | `fd`, `index`, `buf`, `len` |
+| 20 | `nanosleep` | `timespec` |
+| 21 | `chdir` | `path` |
+| 22 | `pipe` | `int[2]` |
+| 23 | `tcgetwinsize` | `fd`, `struct winsize *` |
+| 24 | `tcsetwinsize` | `fd`, `struct winsize *` |
+
+The current v0 kernel returns `CELL_OK` with no effect for `fcntl` and `signal`;
+there are no per-fd flags and no signal machinery yet, and the shim relies on
+that no-op boundary.  `mmap` is a bump allocator over a fixed 1 MiB window;
+`munmap` and `mprotect` are metadata-only no-ops.  `readdir` returns one name
+and its `DT_*` type, not a `getdents` record.  These are bring-up boundaries,
+not the v1 POSIX contract.
+
 ---
 
 ## 6. Cell lifecycle, threads, TLS, signals and `fork`
@@ -1558,25 +1638,40 @@ v0.1 uses **pthread keys**, not ELF TLS.  The native target sets
 `has-thread-local: false`, which selects `std`'s pthread-key implementation
 (native-libc §4.4).
 
-- **Thread pointer.**  `$28` is the thread pointer (TP), matching the MIPS TLS ABI
-  register.  It points to a libc-owned TCB.  The kernel preserves `$28` across traps and
-  sets it on `THREAD_CREATE`.
-- **TCB.**  The libc owns the layout.  The ABI fixes only the first two words: `self`
-  (a pointer to the TCB, for `pthread_self`) and `dtv` (0 in v0.1).  Key 0 is reserved
-  for `errno`; keys 1..127 are `pthread_key_t` values.  `PTHREAD_KEYS_MAX` is at least
-  128 and `PTHREAD_DESTRUCTOR_ITERATIONS` at least 4.
+- **Thread pointer.**  `$28` is the thread pointer (TP).  MIPS III has no `rdhwr` and
+  no CP0 UserLocal, so there is no hardware thread-pointer register; `$28` is the only
+  register the ABI reserves.  Native images are compiled with `+noabicalls` and `G0`, so
+  `$28` is not a GOT pointer.  It points to a libc-owned TCB.  The kernel preserves
+  `$28` across traps and sets it on `THREAD_CREATE`.  A native C build must not use
+  `$gp`-relative small data; the C probe pins `-mno-abicalls -G0`.  The static Rust
+  `std` bring-up shim is the exception: it still sets `$gp` in `_start` and has no TLS,
+  so migrating it to this convention needs a no-small-data target rebuild.
+- **TCB.**  The ABI fixes the first 16 bytes; the libc appends its key table:
+
+  ```c
+  struct NativeTcb {
+      uint32_t self;       /* 0x00: &self, for pthread_self */
+      uint32_t dtv;        /* 0x04: 0 in v0 (no ELF TLS) */
+      int32_t  errno;      /* 0x08: __errno_location() == TP + 8 */
+      uint32_t libc_data;  /* 0x0C: libc-private (the C probe puts the last
+                                     native status here) */
+  };                       /* 16 bytes */
+  ```
+
+  The thread pointer is `&self`.  Key 0 is reserved for `errno`; keys 1..127 are
+  `pthread_key_t` values.  `PTHREAD_KEYS_MAX` is at least 128 and
+  `PTHREAD_DESTRUCTOR_ITERATIONS` at least 4.
 - **Main thread.**  `CellStart.tls_base`/`tls_size` are 0 in v0.1; the libc's `_start`
-  allocates the main TCB on the stack, sets `$28`, and only then calls Rust.  This keeps
-  the TCB layout out of the loader.
+  allocates the main TCB (on the stack or in its BSS) and sets `$28` before calling any
+  function that can use `errno`.  This keeps the TCB layout out of the loader.
 - **New threads.**  The libc allocates the TCB and passes its address to
   `THREAD_CREATE`; the kernel sets `$28` before entering the trampoline.
 - **ELF TLS.**  `PT_TLS`, `__tls_get_addr`, the static TLS block and the DTV are post-v1
   (open, §10).  When they arrive, `$28` and the first two TCB words stay the same; the
   DTV word becomes valid and `has-thread-local` may become `true`.  The pthread-key ABI
   remains for source compatibility.
-- **`errno`.**  `__errno_location` returns a per-thread pointer; key 0 (or a reserved
-  TCB slot) holds it.  `errno` starts at zero in each new thread and is not cleared by a
-  successful call.
+- **`errno`.**  `__errno_location` returns `TP + 8`; `errno` starts at zero in each new
+  thread and is not cleared by a successful call.
 
 ### 6.4 Signals and events
 
@@ -2362,7 +2457,7 @@ struct CellFileStat {
 };                          /* 0x70 = 112 */
 ```
 
-The libc maps this to its 128-byte `struct stat`; the kernel does not depend on the
+The libc maps this to its 136-byte `struct stat`; the kernel does not depend on the
 libc's layout.
 
 ### A.2 `CellDirEntry` (32 bytes + name)

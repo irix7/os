@@ -26,7 +26,7 @@ this crate at compile time; see [`tools/std-spike`](../../tools/std-spike) and
 ## Use
 
 ```rust
-assert_eq!(core::mem::size_of::<native_abi::stat>(), 128);
+assert_eq!(core::mem::size_of::<native_abi::stat>(), 136);
 assert_eq!(core::mem::offset_of!(native_abi::stat, st_mtim), 80);
 assert_eq!(native_abi::EWOULDBLOCK, native_abi::EAGAIN);
 ```

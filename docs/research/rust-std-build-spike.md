@@ -137,10 +137,11 @@ It follows [`native-libc.md`](../spec/native-libc.md) §4.1 for the type widths
 (`size_t`/`ssize_t` 32-bit, `off_t`/`ino_t`/`dev_t`/`time_t` 64-bit, `long`
 32-bit) and the public struct list `std` touches. Notable choices:
 
-- `struct stat` is 128 bytes with `st_dev`, `st_ino`, `st_mode`, `st_nlink`,
+- `struct stat` is 136 bytes with `st_dev`, `st_ino`, `st_nlink`, `st_mode`,
   `st_uid`, `st_gid`, `st_rdev`, `st_size`, `st_blksize`, `st_blocks`,
-  `st_atim`, `st_mtim`, `st_ctim` and 16 reserved bytes. The POSIX field names
-  are used; the Linux `st_mtime_nsec` spelling is **not** added.
+  `st_atim`, `st_mtim`, `st_ctim` and 24 reserved bytes, matching relibc's
+  n32 layout. The POSIX field names are used; the Linux `st_mtime_nsec`
+  spelling is **not** added.
 - `struct dirent` exposes `d_type` as the documented extension, at the same
   offset `std`'s minimal `dirent64_min` expects (`d_ino` 0, `d_type` 18).
 - `errno` uses the Linux/asm-generic numbers recommended by §4.3, with

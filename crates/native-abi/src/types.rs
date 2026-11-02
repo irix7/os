@@ -117,14 +117,18 @@ pub struct rlimit {
     pub rlim_max: rlim_t,
 }
 
-/// `struct stat`: provisional 128-byte layout.
+/// `struct stat`: 136-byte n32 layout shared with relibc.
+///
+/// The field order is relibc's `src/header/sys_stat/mod.rs`: `st_nlink`
+/// precedes `st_mode`, and the trailing 24 bytes are reserved.  `timespec`
+/// is 16 bytes, so each timestamp occupies two 8-byte words.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct stat {
     pub st_dev: dev_t,
     pub st_ino: ino_t,
-    pub st_mode: mode_t,
     pub st_nlink: nlink_t,
+    pub st_mode: mode_t,
     pub st_uid: uid_t,
     pub st_gid: gid_t,
     pub st_rdev: dev_t,
@@ -135,7 +139,7 @@ pub struct stat {
     pub st_atim: timespec,
     pub st_mtim: timespec,
     pub st_ctim: timespec,
-    pub _reserved: [u8; 16],
+    pub _pad: [u8; 24],
 }
 
 /// `struct dirent`: 280 bytes in this provisional layout.

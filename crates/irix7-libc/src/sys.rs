@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Provisional syscall ABI shared with the kernel.
+//! Native syscall entry for the bring-up shim.
 //!
-//! Numbers are local to the bring-up ABI and will be replaced by the native
-//! capability ABI when relibc's `irix7` backend lands.
+//! The numbers are the v0 native POSIX numbers from
+//! `crates/native-abi/src/syscall.rs`.  The gate returns a `CELL_E_*` status
+//! and maps it to `errno`; the shim does not guess.
 
 pub const SYS_WRITE: usize = 1;
 pub const SYS_EXIT: usize = 2;
@@ -22,83 +23,66 @@ pub const SYS_GETPID: usize = 15;
 pub const SYS_READ: usize = 16;
 pub const SYS_FSTAT: usize = 17;
 pub const SYS_STAT: usize = 18;
+pub const SYS_READDIR: usize = 19;
+pub const SYS_NANOSLEEP: usize = 20;
+pub const SYS_CHDIR: usize = 21;
 pub const SYS_PIPE: usize = 22;
 pub const SYS_TCGETWINSIZE: usize = 23;
 pub const SYS_TCSETWINSIZE: usize = 24;
 
-#[inline(always)]
-pub unsafe fn syscall0(n: usize) -> usize {
-    let result: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("$2") n => result,
-        out("$4") _,
-        out("$5") _,
-        out("$6") _,
-        out("$7") _,
-        options(nostack),
-    );
-    result
-}
+pub type SysResult = Result<usize, u32>;
 
+/// One native gate invocation: `$v0` status, `$v1` value.
 #[inline(always)]
-pub unsafe fn syscall1(n: usize, a0: usize) -> usize {
-    let result: usize;
+pub unsafe fn syscall4(n: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> SysResult {
+    let status: usize;
+    let value: usize;
     core::arch::asm!(
-        "syscall",
-        inout("$2") n => result,
-        inout("$4") a0 => _,
-        out("$5") _,
-        out("$6") _,
-        out("$7") _,
-        options(nostack),
-    );
-    result
-}
-
-#[inline(always)]
-pub unsafe fn syscall2(n: usize, a0: usize, a1: usize) -> usize {
-    let result: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("$2") n => result,
-        inout("$4") a0 => _,
-        inout("$5") a1 => _,
-        out("$6") _,
-        out("$7") _,
-        options(nostack),
-    );
-    result
-}
-
-#[inline(always)]
-pub unsafe fn syscall3(n: usize, a0: usize, a1: usize, a2: usize) -> usize {
-    let result: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("$2") n => result,
-        inout("$4") a0 => _,
-        inout("$5") a1 => _,
-        inout("$6") a2 => _,
-        out("$7") _,
-        options(nostack),
-    );
-    result
-}
-
-#[inline(always)]
-pub unsafe fn syscall4(n: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
-    let result: usize;
-    core::arch::asm!(
-        "syscall",
-        inout("$2") n => result,
+        "syscall 0x1F7",
+        inout("$2") n => status,
         inout("$4") a0 => _,
         inout("$5") a1 => _,
         inout("$6") a2 => _,
         inout("$7") a3 => _,
+        lateout("$3") value,
         options(nostack),
     );
-    result
+    if status == 0 {
+        Ok(value)
+    } else {
+        Err(status as u32)
+    }
+}
+
+#[inline(always)]
+pub unsafe fn syscall0(n: usize) -> SysResult {
+    syscall4(n, 0, 0, 0, 0)
+}
+
+#[inline(always)]
+pub unsafe fn syscall1(n: usize, a0: usize) -> SysResult {
+    syscall4(n, a0, 0, 0, 0)
+}
+
+#[inline(always)]
+pub unsafe fn syscall2(n: usize, a0: usize, a1: usize) -> SysResult {
+    syscall4(n, a0, a1, 0, 0)
+}
+
+#[inline(always)]
+pub unsafe fn syscall3(n: usize, a0: usize, a1: usize, a2: usize) -> SysResult {
+    syscall4(n, a0, a1, a2, 0)
+}
+
+fn set_errno(status: u32) {
+    unsafe {
+        *__errno_location() = native_abi::status_to_errno(status);
+    }
+}
+
+fn fail(status: u32) -> isize {
+    set_errno(status);
+    -1
 }
 
 use crate::mem;
@@ -134,23 +118,17 @@ pub struct PollFd {
 
 #[no_mangle]
 pub unsafe extern "C" fn write(fd: i32, buf: *const u8, count: usize) -> isize {
-    let result = syscall3(SYS_WRITE, fd as usize, buf as usize, count);
-    if result == usize::MAX {
-        *__errno_location() = 5;
-        -1
-    } else {
-        result as isize
+    match syscall3(SYS_WRITE, fd as usize, buf as usize, count) {
+        Ok(written) => written as isize,
+        Err(status) => fail(status),
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
-    let result = syscall3(SYS_READ, fd as usize, buf as usize, count);
-    if result == usize::MAX {
-        *__errno_location() = 5;
-        -1
-    } else {
-        result as isize
+    match syscall3(SYS_READ, fd as usize, buf as usize, count) {
+        Ok(read) => read as isize,
+        Err(status) => fail(status),
     }
 }
 
@@ -173,23 +151,23 @@ pub unsafe extern "C" fn writev(fd: i32, iov: *const Iovec, count: i32) -> isize
 
 #[no_mangle]
 pub unsafe extern "C" fn open(path: *const u8, flags: i32, _mode: i32) -> i32 {
-    let result = syscall3(SYS_OPEN, path as usize, flags as usize, 0);
-    if result == usize::MAX {
-        *__errno_location() = 2;
-        -1
-    } else {
-        result as i32
+    match syscall3(SYS_OPEN, path as usize, flags as usize, 0) {
+        Ok(fd) => fd as i32,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn close(fd: i32) -> i32 {
-    let result = syscall1(SYS_CLOSE, fd as usize);
-    if result == usize::MAX {
-        *__errno_location() = 9;
-        -1
-    } else {
-        0
+    match syscall1(SYS_CLOSE, fd as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
@@ -203,111 +181,120 @@ pub struct WinSize {
 
 #[no_mangle]
 pub unsafe extern "C" fn tcgetwinsize(fd: i32, ws: *mut WinSize) -> i32 {
-    let result = syscall2(SYS_TCGETWINSIZE, fd as usize, ws as usize);
-    if result == usize::MAX {
-        *__errno_location() = 22;
-        -1
-    } else {
-        0
+    match syscall2(SYS_TCGETWINSIZE, fd as usize, ws as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn tcsetwinsize(fd: i32, ws: *const WinSize) -> i32 {
-    let result = syscall2(SYS_TCSETWINSIZE, fd as usize, ws as usize);
-    if result == usize::MAX {
-        *__errno_location() = 22;
-        -1
-    } else {
-        0
+    match syscall2(SYS_TCSETWINSIZE, fd as usize, ws as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn pipe(fds: *mut i32) -> i32 {
-    let result = syscall1(SYS_PIPE, fds as usize);
-    if result == usize::MAX {
-        *__errno_location() = 24;
-        -1
-    } else {
-        0
+    match syscall1(SYS_PIPE, fds as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn dup(fd: i32) -> i32 {
-    let result = syscall1(SYS_DUP, fd as usize);
-    if result == usize::MAX {
-        *__errno_location() = 9;
-        -1
-    } else {
-        result as i32
+    match syscall1(SYS_DUP, fd as usize) {
+        Ok(new_fd) => new_fd as i32,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn fcntl(fd: i32, cmd: i32, arg: i32) -> i32 {
-    let result = syscall3(SYS_FCNTL, fd as usize, cmd as usize, arg as usize);
-    if result == usize::MAX {
-        *__errno_location() = 9;
-        -1
-    } else {
-        result as i32
+    match syscall3(SYS_FCNTL, fd as usize, cmd as usize, arg as usize) {
+        Ok(value) => value as i32,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn getcwd(buf: *mut u8, size: usize) -> *mut u8 {
-    let result = syscall2(SYS_GETCWD, buf as usize, size);
-    if result == usize::MAX {
-        *__errno_location() = 34;
-        core::ptr::null_mut()
-    } else {
-        buf
+    match syscall2(SYS_GETCWD, buf as usize, size) {
+        Ok(_) => buf,
+        Err(status) => {
+            set_errno(status);
+            core::ptr::null_mut()
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn poll(fds: *mut PollFd, nfds: usize, timeout: i32) -> i32 {
-    let result = syscall3(SYS_POLL, fds as usize, nfds, timeout as usize);
-    if result == usize::MAX {
-        *__errno_location() = 22;
-        -1
-    } else {
-        result as i32
+    match syscall3(SYS_POLL, fds as usize, nfds, timeout as usize) {
+        Ok(ready) => ready as i32,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn signal(_signal: i32, handler: usize) -> usize {
-    syscall2(SYS_SIGNAL, _signal as usize, handler)
+    match syscall2(SYS_SIGNAL, _signal as usize, handler) {
+        Ok(value) => value,
+        Err(status) => {
+            set_errno(status);
+            usize::MAX
+        }
+    }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn getentropy(buf: *mut u8, len: usize) -> i32 {
-    let result = syscall2(SYS_GETENTROPY, buf as usize, len);
-    if result == usize::MAX {
-        *__errno_location() = 5;
-        -1
-    } else {
-        0
+    match syscall2(SYS_GETENTROPY, buf as usize, len) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn clock_gettime(_clock: i32, ts: *mut Timespec) -> i32 {
-    let result = syscall2(SYS_CLOCK_GETTIME, _clock as usize, ts as usize);
-    if result == usize::MAX {
-        *__errno_location() = 22;
-        -1
-    } else {
-        0
+    match syscall2(SYS_CLOCK_GETTIME, _clock as usize, ts as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn getpid() -> i32 {
-    syscall0(SYS_GETPID) as i32
+    match syscall0(SYS_GETPID) {
+        Ok(pid) => pid as i32,
+        Err(_) => -1,
+    }
 }
 
 #[no_mangle]
@@ -394,40 +381,40 @@ pub unsafe extern "C" fn aligned_alloc(align: usize, size: usize) -> *mut u8 {
 pub struct Stat {
     pub st_dev: u64,
     pub st_ino: u64,
-    pub st_mode: u32,
     pub st_nlink: u32,
+    pub st_mode: u32,
     pub st_uid: u32,
     pub st_gid: u32,
     pub st_rdev: u64,
     pub st_size: i64,
     pub st_blksize: i32,
-    pub _pad: u32,
+    pub _pad0: u32,
     pub st_blocks: i64,
     pub st_atim: [i64; 2],
     pub st_mtim: [i64; 2],
     pub st_ctim: [i64; 2],
-    pub spare: [u8; 16],
+    pub _pad: [u8; 24],
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn fstat(fd: i32, stat: *mut Stat) -> i32 {
-    let result = syscall2(SYS_FSTAT, fd as usize, stat as usize);
-    if result == usize::MAX {
-        *__errno_location() = 9;
-        -1
-    } else {
-        0
+    match syscall2(SYS_FSTAT, fd as usize, stat as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn stat(path: *const u8, stat: *mut Stat) -> i32 {
-    let result = syscall2(SYS_STAT, path as usize, stat as usize);
-    if result == usize::MAX {
-        *__errno_location() = 2;
-        -1
-    } else {
-        0
+    match syscall2(SYS_STAT, path as usize, stat as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
@@ -470,10 +457,6 @@ pub unsafe extern "C" fn fstat64(fd: i32, stat: *mut Stat) -> i32 {
 pub unsafe extern "C" fn lstat64(path: *const u8, stat: *mut Stat) -> i32 {
     self::stat(path, stat)
 }
-
-pub const SYS_READDIR: usize = 19;
-pub const SYS_NANOSLEEP: usize = 20;
-pub const SYS_CHDIR: usize = 21;
 
 #[repr(C)]
 pub struct Dirent {
@@ -546,22 +529,26 @@ pub unsafe extern "C" fn readdir(stream: *mut DirStream) -> *mut Dirent {
         return core::ptr::null_mut();
     }
     let mut name = [0u8; 256];
-    let result = syscall4(
+    let kind = match syscall4(
         SYS_READDIR,
         (*stream).fd as usize,
         (*stream).index,
         name.as_mut_ptr() as usize,
         name.len(),
-    );
-    if result == 0 || result == usize::MAX {
-        return core::ptr::null_mut();
-    }
+    ) {
+        Ok(0) => return core::ptr::null_mut(),
+        Ok(kind) => kind,
+        Err(status) => {
+            set_errno(status);
+            return core::ptr::null_mut();
+        }
+    };
     (*stream).index += 1;
     let entry = &mut (*stream).entry;
     entry.d_ino = (*stream).index as u64;
     entry.d_off = (*stream).index as i64;
     entry.d_reclen = core::mem::size_of::<Dirent>() as u16;
-    entry.d_type = result as u8;
+    entry.d_type = kind as u8;
     for (index, slot) in entry.d_name.iter_mut().enumerate() {
         *slot = name[index] as i8;
         if name[index] == 0 {
@@ -612,22 +599,22 @@ pub unsafe extern "C" fn dirfd(stream: *mut DirStream) -> i32 {
 
 #[no_mangle]
 pub unsafe extern "C" fn nanosleep(request: *const Timespec, _remaining: *mut Timespec) -> i32 {
-    let result = syscall1(SYS_NANOSLEEP, request as usize);
-    if result == usize::MAX {
-        *__errno_location() = 22;
-        -1
-    } else {
-        0
+    match syscall1(SYS_NANOSLEEP, request as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }
 
 #[no_mangle]
 pub unsafe extern "C" fn chdir(path: *const u8) -> i32 {
-    let result = syscall1(SYS_CHDIR, path as usize);
-    if result == usize::MAX {
-        *__errno_location() = 2;
-        -1
-    } else {
-        0
+    match syscall1(SYS_CHDIR, path as usize) {
+        Ok(_) => 0,
+        Err(status) => {
+            set_errno(status);
+            -1
+        }
     }
 }

@@ -255,8 +255,8 @@ crate and its layout assertions):
 | `sigset_t` | 128 bytes (1024 signals); open: confirm with the scheduler's signal limit |
 | `stack_t` | 12 bytes (`ss_sp`, `ss_size`, `ss_flags`) |
 | `rlimit` | 16 bytes (`rlim_cur`, `rlim_max`, both 64-bit) |
-| `stat` | `st_dev`, `st_ino`, `st_mode`, `st_nlink`, `st_uid`, `st_gid`, `st_rdev`, `st_size`, `st_blksize`, `st_blocks`, `st_atim`, `st_mtim`, `st_ctim`; total size open, recommended 128 bytes |
-| `dirent` | `d_ino` (64-bit), `d_off` (64-bit), `d_reclen` (16-bit), `d_type` (8-bit, extension), `d_name` (256 bytes); open: `NAME_MAX` |
+| `stat` | `st_dev`, `st_ino`, `st_nlink`, `st_mode`, `st_uid`, `st_gid`, `st_rdev`, `st_size`, `st_blksize`, `st_blocks`, `st_atim`, `st_mtim`, `st_ctim`; 136 bytes, matching relibc's n32 layout (`st_nlink` before `st_mode`, 24 reserved bytes) |
+| `dirent` | `d_ino` (64-bit), `d_off` (64-bit), `d_reclen` (16-bit), `d_type` (8-bit, extension), `d_name` (256 bytes); 280 bytes with 8-byte alignment |
 | `posix_dent` | `d_ino`, `d_off`, `d_reclen`, `d_type`, `d_name[]`; the POSIX-2024 directory record |
 | `sigaction` | handler union, `sa_mask`, `sa_flags`, an optional restorer pointer; open: exact order and size |
 | `siginfo_t` | at least 128 bytes; open: the signal payload union |
@@ -326,7 +326,9 @@ native reader is `posix_getdents` (or `readdir`).
   `has-thread-local` may become `true`, but the pthread-key ABI stays for source
   compatibility.  This is open (§9) and does not block M9.
 - The thread pointer convention and the static TLS block layout belong to the loader
-  contract, not to POSIX; the cell loader and the libc must agree on one.
+  contract, not to POSIX; the cell loader and the libc must agree on one.  On MIPS III
+  there is no `rdhwr`; the native ABI uses `$28` and the 16-byte TCB header in
+  [`native-abi.md`](native-abi.md) §6.3, with `__errno_location() == TP + 8`.
 
 ### 4.5 Startup, `_start`, argv/envp/auxv
 

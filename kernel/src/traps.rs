@@ -186,7 +186,7 @@ extern "C" {
     pub fn user_from_console_elf();
     pub fn user_from_console_loaded();
     pub fn user_return_trampoline();
-    fn user_eret(user_sp: u32, argc: u32, argv: u32, envp: u32) -> !;
+    fn user_eret(user_sp: u32, argc: u32, argv: u32, envp: u32, auxv: u32) -> !;
 }
 
 core::arch::global_asm!(
@@ -322,9 +322,10 @@ user_from_console_loaded:
     jr      $ra
     nop
 
-    /* Enter user mode from C ABI arguments: $sp, $a0, $a1, $a2.  Keeping
+    /* Enter user mode from C ABI arguments: $sp, $a0, $a1, $a2, $a3.  Keeping
        this in assembly avoids clobbering inline-asm inputs while loading
-       the fixed argument registers. */
+       the fixed argument registers.  $28 is the thread pointer; the libc
+       allocates the main TCB and sets it in _start, so the loader clears it. */
     .section .text.user_eret, "ax", @progbits
     .align 4
     .globl user_eret
@@ -333,6 +334,8 @@ user_eret:
     move    $a0, $5
     move    $a1, $6
     move    $a2, $7
+    move    $a3, $8
+    move    $28, $zero
     move    $ra, $zero
     eret
     nop
@@ -757,7 +760,7 @@ pub fn badvaddr_read() -> u32 {
 }
 
 /// Return from a user exit syscall to the kernel console trampoline.
-fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
+pub(crate) fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
     crate::user::cleanup();
     crate::print_str("user: exit syscall code=0x");
     crate::print_hex32(code);
@@ -785,10 +788,24 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause as u32;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
 
-    // User-mode syscall smoke test.  Code 1 is a console write and returns to
-    // user mode; code 2 exits to a kernel continuation.  This is deliberately
-    // a fixed ABI for the smoke test, not the native syscall ABI.
+    // User-mode syscall entry.  A plain `syscall` (code 0) is the provisional
+    // bring-up ABI used by the static Rust shim; `syscall 0x1F7` is the native
+    // POSIX gate with a `CELL_E_*` status channel.
     if exc_code == EXC_SYS && tf.status as u32 & STATUS_KSU_MASK == STATUS_KSU_USER {
+        let Some(code) = user_syscall_code(tf) else {
+            fatal_trap(tf, exc_code);
+        };
+        if code == native_abi::syscall::NATIVE_GATE_CODE {
+            if crate::native_sys::dispatch(tf) {
+                return;
+            }
+            tf.advance_epc();
+            return;
+        }
+        if code != 0 {
+            fatal_trap(tf, exc_code);
+        }
+
         if user_abi() == UserAbi::O32 {
             match tf.arg(2) {
                 1 => {
@@ -796,30 +813,30 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                     return;
                 }
                 3 => {
-                    let result = crate::user::read_fd(tf.arg(4), tf.arg(5), tf.arg(6));
+                    let result = legacy_u32(crate::user::read_fd(tf.arg(4), tf.arg(5), tf.arg(6)));
                     tf.set_result(result);
                     tf.regs[7] = if result == u32::MAX { 1 } else { 0 };
                     tf.advance_epc();
                     return;
                 }
                 4 => {
-                    let result = crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6));
+                    let result = legacy_u32(crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6)));
                     tf.set_result(result);
                     tf.regs[7] = if result == u32::MAX { 1 } else { 0 };
                     tf.advance_epc();
                     return;
                 }
                 5 => {
-                    let result = crate::user::open_path(tf.arg(4), tf.arg(5));
-                    tf.set_result(result as u32);
-                    tf.regs[7] = if result < 0 { 1 } else { 0 };
+                    let (result, error) = legacy_fd(crate::user::open_path(tf.arg(4), tf.arg(5)));
+                    tf.set_result(result);
+                    tf.regs[7] = error as u64;
                     tf.advance_epc();
                     return;
                 }
                 6 => {
-                    let result = crate::fd::close(tf.arg(4) as i32);
-                    tf.set_result(result as u32);
-                    tf.regs[7] = if result < 0 { 1 } else { 0 };
+                    let (result, error) = legacy_close(crate::fd::close(tf.arg(4) as i32));
+                    tf.set_result(result);
+                    tf.regs[7] = error as u64;
                     tf.advance_epc();
                     return;
                 }
@@ -839,13 +856,17 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
         }
         match tf.arg(2) {
             1 => {
-                tf.set_result(crate::user::write_fd(tf.arg(4), tf.arg(5), tf.arg(6)) as u32);
+                tf.set_result(legacy_u32(crate::user::write_fd(
+                    tf.arg(4),
+                    tf.arg(5),
+                    tf.arg(6),
+                )));
                 tf.advance_epc();
             }
             3 => {
                 // Provisional anonymous mmap(addr, length, prot, flags):
                 // the address, protection and flags are ignored in v0.
-                tf.set_result(crate::user::mmap(tf.arg(5)) as u32);
+                tf.set_result(legacy_u32(crate::user::mmap(tf.arg(5))));
                 tf.advance_epc();
             }
             4 => {
@@ -859,11 +880,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             6 => {
-                tf.set_result(crate::user::open_path(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(crate::user::open_path(tf.arg(4), tf.arg(5)).unwrap_or(-1) as u32);
                 tf.advance_epc();
             }
             7 => {
-                tf.set_result(crate::fd::close(tf.arg(4) as i32) as u32);
+                tf.set_result(legacy_unit(crate::fd::close(tf.arg(4) as i32)));
                 tf.advance_epc();
             }
             8 => {
@@ -871,15 +892,15 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             9 => {
-                tf.set_result(crate::fd::dup(tf.arg(4) as i32) as u32);
+                tf.set_result(crate::fd::dup(tf.arg(4) as i32).unwrap_or(-1) as u32);
                 tf.advance_epc();
             }
             10 => {
-                tf.set_result(crate::user::getcwd_text(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::getcwd_text(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             11 => {
-                tf.set_result(crate::user::poll_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_u32(crate::user::poll_user(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             12 => {
@@ -888,11 +909,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             13 => {
-                tf.set_result(crate::user::entropy_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::entropy_user(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             14 => {
-                tf.set_result(crate::user::clock_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::clock_user(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             15 => {
@@ -900,41 +921,53 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             16 => {
-                tf.set_result(crate::user::read_fd(tf.arg(4), tf.arg(5), tf.arg(6)) as u32);
+                tf.set_result(legacy_u32(crate::user::read_fd(
+                    tf.arg(4),
+                    tf.arg(5),
+                    tf.arg(6),
+                )));
                 tf.advance_epc();
             }
             17 => {
-                tf.set_result(crate::user::fstat_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::fstat_user(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             18 => {
-                tf.set_result(crate::user::stat_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::stat_user(tf.arg(4), tf.arg(5))));
                 tf.advance_epc();
             }
             19 => {
                 tf.set_result(
-                    crate::user::readdir_user(tf.arg(4), tf.arg(5), tf.arg(6), tf.arg(7)) as u32,
+                    crate::user::readdir_user(tf.arg(4), tf.arg(5), tf.arg(6), tf.arg(7))
+                        .map(|entry| entry.unwrap_or(0))
+                        .unwrap_or(u32::MAX),
                 );
                 tf.advance_epc();
             }
             20 => {
-                tf.set_result(crate::user::sleep_user(tf.arg(4)) as u32);
+                tf.set_result(legacy_unit(crate::user::sleep_user(tf.arg(4))));
                 tf.advance_epc();
             }
             21 => {
-                tf.set_result(crate::user::chdir_user(tf.arg(4)) as u32);
+                tf.set_result(legacy_unit(crate::user::chdir_user(tf.arg(4))));
                 tf.advance_epc();
             }
             22 => {
-                tf.set_result(crate::user::pipe_user(tf.arg(4)) as u32);
+                tf.set_result(legacy_unit(crate::user::pipe_user(tf.arg(4))));
                 tf.advance_epc();
             }
             23 => {
-                tf.set_result(crate::user::tcgetwinsize_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::tcgetwinsize_user(
+                    tf.arg(4),
+                    tf.arg(5),
+                )));
                 tf.advance_epc();
             }
             24 => {
-                tf.set_result(crate::user::tcsetwinsize_user(tf.arg(4), tf.arg(5)) as u32);
+                tf.set_result(legacy_unit(crate::user::tcsetwinsize_user(
+                    tf.arg(4),
+                    tf.arg(5),
+                )));
                 tf.advance_epc();
             }
             2 => finish_user_exit(tf, tf.arg(4)),
@@ -970,6 +1003,51 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
         }
         _ => fatal_trap(tf, exc_code),
     }
+}
+
+/// Map a `SysResult<u32>` onto the provisional `u32::MAX` error convention.
+fn legacy_u32(result: crate::syserr::SysResult<u32>) -> u32 {
+    result.unwrap_or(u32::MAX)
+}
+
+/// Map a `SysResult<()>` onto the provisional `u32::MAX` error convention.
+fn legacy_unit(result: crate::syserr::SysResult<()>) -> u32 {
+    result.map(|_| 0).unwrap_or(u32::MAX)
+}
+
+/// Map a fallible fd to the provisional `(value, error)` pair.
+fn legacy_fd(result: crate::syserr::SysResult<i32>) -> (u32, u32) {
+    match result {
+        Ok(fd) => (fd as u32, 0),
+        Err(_) => (u32::MAX, 1),
+    }
+}
+
+/// Map `close` to the provisional `(value, error)` pair.
+fn legacy_close(result: crate::syserr::SysResult<()>) -> (u32, u32) {
+    match result {
+        Ok(()) => (0, 0),
+        Err(_) => (u32::MAX, 1),
+    }
+}
+
+/// Decode the 20-bit code of the `syscall` instruction at EPC.
+///
+/// A gate in a branch-delay slot is invalid.  The EPC must be inside a
+/// recorded user range; the loader records every image and stack range.
+fn user_syscall_code(tf: &TrapFrame) -> Option<u32> {
+    if tf.cause as u32 & CAUSE_BD != 0 {
+        return None;
+    }
+    let epc = tf.epc as u32;
+    if !crate::user::range_ok(epc, 4) {
+        return None;
+    }
+    let instruction = unsafe { core::ptr::read_volatile(epc as *const u32) };
+    if instruction & 0x3F != 0x0C {
+        return None;
+    }
+    Some((instruction >> 6) & 0xFFFFF)
 }
 
 /// TLB refill vector target.  The software refill path is not implemented yet.
@@ -1131,19 +1209,30 @@ pub extern "C" fn user_smoke() -> ! {
 
     crate::tlb::map_page_at(0x1000_2000, stack_phys, 0, 41, 0, true);
     crate::tlb::map_page_at(0x1000_0000, code_phys, 0, 40, 0, true);
+    crate::user::record_range(0x1000_0000, 0x1000_2000);
+    crate::user::record_range(0x1000_2000, 0x1000_3000);
 
-    run_user(0x1000_0000, 0x1000_2000, 0, 0, 0)
+    run_user(0x1000_0000, 0x1000_2000, 0, 0, 0, 0)
 }
 
-/// Enter user mode at `entry` with `user_sp`, `argc`, `argv` and `envp`.
+/// Enter user mode at `entry` with `user_sp`, `argc`, `argv`, `envp` and
+/// `auxv` (the System V auxiliary-vector pointer).
 ///
 /// This is the native n32 entry; the legacy loader uses [`run_user_abi`].
-pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! {
-    run_user_abi(UserAbi::N32, entry, user_sp, argc, argv, envp)
+pub fn run_user(entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32, auxv: u32) -> ! {
+    run_user_abi(UserAbi::N32, entry, user_sp, argc, argv, envp, auxv)
 }
 
 /// Enter user mode with an explicit ABI.
-pub fn run_user_abi(abi: UserAbi, entry: u32, user_sp: u32, argc: u32, argv: u32, envp: u32) -> ! {
+pub fn run_user_abi(
+    abi: UserAbi,
+    entry: u32,
+    user_sp: u32,
+    argc: u32,
+    argv: u32,
+    envp: u32,
+    auxv: u32,
+) -> ! {
     // SAFETY: single-threaded kernel; the trap handler reads this.
     unsafe {
         USER_ABI = abi;
@@ -1166,7 +1255,7 @@ pub fn run_user_abi(abi: UserAbi, entry: u32, user_sp: u32, argc: u32, argv: u32
 
     crate::println("user: entering user mode");
     crate::graphics_console::flush();
-    unsafe { user_eret(user_sp, argc, argv, envp) }
+    unsafe { user_eret(user_sp, argc, argv, envp, auxv) }
 }
 
 /// Exercise the general exception vector, frame save/restore and `eret`.
