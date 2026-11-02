@@ -63,6 +63,17 @@ pub const ARENA_BASE: usize = 0x884c_0000;
 pub const ARENA_REGION_SIZE: usize = 0x0004_0000;
 /// Number of runtime arena regions.
 pub const ARENA_REGION_COUNT: usize = 5;
+
+// The M1 bridge record sits below the module area so no slot or arena write
+// can reach it.
+const _: () = assert!(
+    m1_policy_bridge::BRIDGE_BASE + m1_policy_bridge::BRIDGE_SIZE <= ARENA_BASE,
+    "M1 bridge overlaps the runtime arena"
+);
+const _: () = assert!(
+    m1_policy_bridge::BRIDGE_BASE + m1_policy_bridge::BRIDGE_SIZE <= MODULE_BASE,
+    "M1 bridge overlaps the module area"
+);
 /// One multiplexer entry per boot slot and runtime region.
 pub const MODULE_REGION_COUNT: usize = 2 + ARENA_REGION_COUNT;
 
@@ -147,11 +158,15 @@ pub fn area(slot: Slot) -> &'static mut [u8] {
 }
 
 /// Zero one module slot before a download.
+///
+/// Clearing slot B invalidates the Wasm policy publication record, but not the
+/// kernel's adopted policy: a fetch, digest or entry failure must leave the
+/// previous live policy unchanged.
 pub fn clear(slot: Slot) {
     let index = slot as usize;
     clear_tick(index);
     if slot == Slot::B {
-        crate::logical::forget_wasm();
+        crate::logical::begin_wasm_load();
     }
     // SAFETY: the region is reserved for modules and is not aliased.
     unsafe {

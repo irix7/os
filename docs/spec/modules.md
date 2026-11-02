@@ -87,12 +87,19 @@ environment lives at offset `0x10` (the RTC registers occupy `0x00`–`0x0F`), o
 | Slot A | 512 KiB at `0x8840_0000`; MCP/control slot |
 | Slot B | 1.5 MiB at `0x8848_0000`; first 256 KiB for the manager |
 | Runtime arena | 1.25 MiB at `0x884c_0000`; five 256 KiB regions after the manager |
+| M1 bridge record | 24 bytes at `0x883f_d000`, below the module area |
 | Total area | 2 MiB (`0x0020_0000`) |
-| Placement | inside the reserved low window, above the kernel stack top (`0x8830_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
+| Placement | inside the reserved low window, above the kernel stack top (`0x883f_0000`), below the frame allocator's first frame (`0x08B0_0000`) |
 | Image format | flat binary, entry at offset 0 |
 | Cache | kseg0 is cacheable; the loader must write back the data cache and invalidate the instruction cache before the call |
 
 A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by its own linker script. The manager is limited to the first 256 KiB of slot B; the five runtime regions follow it. There is no load-time relocation: every image is linked for its final region. The Seeq device's uncached DMA structures start at physical `0x0860_0000`, immediately after the module area, so a full 2 MiB module is the limit.
+
+The M1 bridge record is not part of slot B. It lives in its own page at
+`0x883f_d000`, between the kernel stack top and the module area, so a module
+loaded into any of the five arena regions cannot overwrite the live publication
+record. The record contains only a magic, version and an opaque pointer to the
+committed policy on the kernel heap; it is not an executable module region.
 
 ### Slots on the other machines
 
@@ -231,6 +238,11 @@ A one-shot module can simply return null (status 0) or a vtable with `tick = nul
   callback before writing. `module_execute` validates the returned vtable against the
   verified image and installs its tick; `module_unload` clears the callback and the
   region. A failed fetch or a non-zero entry leaves no callback behind.
+- Clearing slot B also unpublishes the M1 bridge record. It does not drop the
+  kernel's adopted policy: a failed fetch, digest or entry leaves the previous
+  live root, actor, capability and home authoritative. A successful guest
+  republishes the record only after commit, and the kernel adopts it after the
+  entry returns successfully.
 - `module::poll` runs every registered callback at most once per 10 ms, in region order.
   A callback returning non-zero unregisters itself. MCP in A, the manager in B and an
   independent arena tick can therefore run concurrently without overwriting each other.
@@ -294,18 +306,26 @@ to target 3, then verifies the readback. It is a probe, not the final package ca
 `modules/wasm` is the slot-B Wasm core for M1. It is linked for slot B, embeds a
 small Rust guest, instantiates it with the no_std interpreter and runs its `run`
 export. The guest drives the local policy: it chooses the `/etc` namespace
-layout, stores `/etc/motd`, resolves the root home, derives the local actor,
-chooses the capability rights and validates the allow and deny cases. It prints
-`wasm: host=1`, reproducible `m1-wasm: root=... actor=... cap=ok rights=35 home=...`
-evidence matching the native `m1:` root, actor, rights and home, and `wasm: run=42`.
-The guest imports only the `i7host` surface through its own `extern "C"` block;
-the host side uses the no_std `wasm-host` crate and supplies the staged
-CAS/namespace, actor table, capability table, clock and console through
-`HostHooks::policy`. `commit` publishes the stage as one value
-and the module aborts on a guest trap or a non-42 result, so a failed policy
-leaves no partial object, actor or capability. Load it with `module b ...`;
-slot A (MCP) remains live. The kernel's native `m1:` policy remains the
-fallback. The image must stay within the 1,572,864-byte slot-B limit.
+layout, stores `/etc/motd` and `/dev/null`, resolves the root home, derives the
+local actor, chooses the capability rights and validates the allow and deny
+cases. It prints `wasm: host=1`, reproducible
+`m1-wasm: root=... actor=... cap=ok rights=35 home=...` evidence, and
+`wasm: run=42`. The guest root and actor are distinct from the native bootstrap
+values; rights and home are the same policy values.
+
+On a successful entry the kernel reads the publication record and adopts the
+committed policy: the guest root, actor, root capability rights and home
+replace the bootstrap `Local` values, and `m1:` is reported again with
+`policy=wasm`. The guest imports only the `i7host` surface through its own
+`extern "C"` block; the host side uses the no_std `wasm-host` crate and supplies
+the staged CAS/namespace, actor table, capability table, clock and console
+through `HostHooks::policy`. `commit` publishes the stage as one value and the
+module aborts on a guest trap or a non-42 result, so a failed policy leaves no
+partial object, actor or capability. Load it with `module b ...`; slot A (MCP)
+remains live. The native `m1:` line before adoption is the bootstrap policy, not
+a second live authority. A failed slot-B reload prints
+`m1-reload: failed policy=retained` and keeps the adopted policy. The image must
+stay within the 1,572,864-byte slot-B limit.
 
 `modules/logical` is the M1 single-node policy probe. It links the architecture
 crates into a module (so the compressed PROM does not grow), builds a local

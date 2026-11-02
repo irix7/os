@@ -11,9 +11,10 @@
 //!
 //! On success the guest prints `wasm: host=1` and
 //! `m1-wasm: root=... actor=... cap=ok rights=35 home=...`; this module prints
-//! `wasm: run=42`.  A guest trap or a non-42 result aborts the stage, so no
-//! partial object, actor or capability is published.  The kernel's native
-//! `m1:` policy remains the fallback and is not modified by this module.
+//! `wasm: run=42` and publishes the committed policy pointer at the reserved
+//! bridge page. A guest trap or a non-42 result aborts the stage, so no partial
+//! object, actor or capability is published. The kernel adopts the committed
+//! root, actor, capability rights and home after this entry returns.
 
 #![no_std]
 #![no_main]
@@ -25,7 +26,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
-use m1_policy_bridge::{bridge_address, Bridge, MAGIC, VERSION};
+use m1_policy_bridge::{bridge_address, Bridge};
 use module_abi::{ModuleVtable, Services};
 use sys_primitives::{ActorId, NodeId};
 use wasm_host::{Host, HostHooks, PolicyHooks};
@@ -35,8 +36,6 @@ use wasm_policy_host::Policy;
 const GUEST: &[u8] = include_bytes!("guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
-/// Actor identity captured from the guest's `host_actor_spawn` call.
-static mut LIVE_ACTOR: [u8; 16] = [0; 16];
 
 struct ModuleAllocator;
 
@@ -236,12 +235,7 @@ fn hook_home(context: usize, oid: &[u8; 32], out: &mut [u8; 16]) -> i32 {
 
 fn hook_actor_spawn(context: usize, id: &[u8; 16]) -> i32 {
     match policy(context).map(|policy| policy.actor_spawn(ActorId(*id))) {
-        Some(Ok(())) => {
-            // SAFETY: the guest is synchronous on the module's single thread;
-            // the bridge reads this only after the policy commits.
-            unsafe { LIVE_ACTOR = *id };
-            0
-        }
+        Some(Ok(())) => 0,
         _ => -1,
     }
 }
@@ -318,119 +312,11 @@ fn hook_stats(context: usize, out: &mut [u32; 4]) -> i32 {
     }
 }
 
-unsafe extern "C" fn bridge_root(context: usize, out: *mut u8) -> i32 {
-    let Some(policy) = policy(context) else {
-        return -1;
-    };
-    match policy.root() {
-        Ok(oid) => {
-            if out.is_null() {
-                return -1;
-            }
-            unsafe { core::ptr::copy_nonoverlapping(oid.as_bytes().as_ptr(), out, 32) };
-            0
-        }
-        Err(_) => -1,
-    }
-}
-
-unsafe extern "C" fn bridge_actor(context: usize, out: *mut u8) -> i32 {
-    if policy(context).is_none() || out.is_null() {
-        return -1;
-    }
-    // SAFETY: the bridge is read after commit; LIVE_ACTOR is module-owned.
-    let actor = unsafe { LIVE_ACTOR };
-    if actor.iter().all(|&byte| byte == 0) {
-        return -1;
-    }
-    unsafe { core::ptr::copy_nonoverlapping(actor.as_ptr(), out, actor.len()) };
-    0
-}
-
-unsafe extern "C" fn bridge_lookup(
-    context: usize,
-    path: *const u8,
-    len: usize,
-    out: *mut u8,
-) -> i32 {
-    if path.is_null() || out.is_null() || len == 0 || len > 160 {
-        return -1;
-    }
-    let Some(policy) = policy(context) else {
-        return -1;
-    };
-    let bytes = unsafe { core::slice::from_raw_parts(path, len) };
-    let Ok(path) = core::str::from_utf8(bytes) else {
-        return -1;
-    };
-    match policy.lookup(path) {
-        Ok(oid) => {
-            unsafe { core::ptr::copy_nonoverlapping(oid.as_bytes().as_ptr(), out, 32) };
-            0
-        }
-        Err(_) => -1,
-    }
-}
-
-unsafe extern "C" fn bridge_get(
-    context: usize,
-    oid: *const u8,
-    kind_out: *mut i32,
-    out: *mut u8,
-    capacity: usize,
-) -> isize {
-    if oid.is_null() || kind_out.is_null() || out.is_null() || capacity > 512 {
-        return -1;
-    }
-    let Some(policy) = policy(context) else {
-        return -1;
-    };
-    let mut bytes = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(oid, bytes.as_mut_ptr(), 32) };
-    let object = sys_primitives::ObjectId(bytes);
-    match policy.get(&object) {
-        Ok((kind, data)) => {
-            if data.len() > capacity {
-                return -1;
-            }
-            unsafe {
-                core::ptr::copy_nonoverlapping(data.as_ptr(), out, data.len());
-                *kind_out = kind as i32;
-            }
-            data.len() as isize
-        }
-        Err(_) => -1,
-    }
-}
-
-unsafe extern "C" fn bridge_authorize(context: usize, oid: *const u8, rights: u32) -> i32 {
-    if oid.is_null() {
-        return -1;
-    }
-    let Some(policy) = policy(context) else {
-        return -1;
-    };
-    let mut bytes = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(oid, bytes.as_mut_ptr(), 32) };
-    if policy.authorize(rights, &sys_primitives::ObjectId(bytes)) {
-        0
-    } else {
-        -1
-    }
-}
-
 unsafe fn publish_bridge(policy: *mut Policy) -> bool {
-    let bridge = Bridge {
-        magic: MAGIC,
-        version: VERSION,
-        reserved: 0,
-        context: policy as usize,
-        root: bridge_root,
-        actor: bridge_actor,
-        lookup: bridge_lookup,
-        get: bridge_get,
-        authorize: bridge_authorize,
-    };
+    if policy.is_null() {
+        return false;
+    }
+    let bridge = Bridge::published(policy as usize);
     unsafe { core::ptr::write_volatile(bridge_address() as *mut Bridge, bridge) };
     true
 }

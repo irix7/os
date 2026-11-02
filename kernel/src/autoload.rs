@@ -79,10 +79,14 @@ pub fn boot_wasm() {
         console_println(" ms");
         match result {
             Ok(0) => console_println("autoload: wasm returned"),
-            Ok(_) => console_println("autoload: wasm returned non-zero"),
+            Ok(_) => {
+                console_println("autoload: wasm returned non-zero");
+                crate::logical::report_reload_failure();
+            }
             Err(error) => {
                 console_println("autoload: wasm failed");
                 console_println(error);
+                crate::logical::report_reload_failure();
             }
         }
         return;
@@ -118,10 +122,14 @@ pub fn boot_wasm() {
     console_println(" ms");
     match result {
         Ok(0) => console_println("autoload: wasm returned"),
-        Ok(_) => console_println("autoload: wasm returned non-zero"),
+        Ok(_) => {
+            console_println("autoload: wasm returned non-zero");
+            crate::logical::report_reload_failure();
+        }
         Err(error) => {
             console_println("autoload: wasm failed");
             console_println(error);
+            crate::logical::report_reload_failure();
         }
     }
 }

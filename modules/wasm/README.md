@@ -13,9 +13,11 @@ capability rights and validates every allow and deny case. It prints
 m1-wasm: root=<64 hex> actor=<32 hex> cap=ok rights=35 home=<32 hex> objects=9 actors=1 queued=1 caps=1
 ```
 
-The root, actor, rights, home and capability state match the native `m1:` line.
-The module prints `wasm: run=42` only when the guest returns success and the
-policy is committed.
+The guest root and actor are distinct from the native bootstrap values; rights
+and home are the same policy values. The module prints `wasm: run=42` only when
+the guest returns success and the policy is committed. The kernel then adopts
+the guest root, actor, root capability rights and home into its live `Local`
+state and prints a second `m1:` line with `policy=wasm`.
 
 The guest imports only the `i7host` surface; it has no WASI or native import
 and never receives the kernel service table. The host side supplies the clock,
@@ -33,8 +35,10 @@ console and these staged policy primitives through `wasm-host::HostHooks`:
 
 Every mutation is staged. `commit` publishes the stage as one value and
 `abort` discards it; the module aborts on a guest trap or a non-42 result, so a
-failed policy leaves no partial object, actor, queue entry or capability. The
-kernel's native `m1:` policy remains the fallback.
+failed policy leaves no partial object, actor, queue entry or capability. On
+success the module publishes a 24-byte record at `0x883f_d000`, outside the
+module area. A failed slot-B reload invalidates that record but leaves the
+kernel's adopted policy live and prints `m1-reload: failed policy=retained`.
 
 Build the guest from `guest/` and then the flat slot-B image:
 

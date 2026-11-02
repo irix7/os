@@ -8,6 +8,14 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- The M1 slot-B Wasm policy is the live kernel policy. On a successful guest
+  commit the kernel adopts the guest root, actor, root capability rights and
+  home into `Local`, reads `/etc/motd` and `/dev/null` through the committed
+  policy, and reports what it adopted in a second `m1:` line marked
+  `policy=wasm`. The publication record moved to its own page at
+  `0x883f_d000`, outside every module slot and arena region. Clearing or
+  failing to reload slot B invalidates the record but keeps the adopted policy
+  and prints `m1-reload: failed policy=retained`. See #213, #217 and #330.
 - PowerPC G3 serial input and a boot monitor.  The ESCC receiver is enabled
   on both channels and polled on the channel the firmware selected, with
   channel A as the fallback when the firmware names no ESCC channel.  After

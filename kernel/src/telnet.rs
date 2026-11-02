@@ -278,6 +278,7 @@ pub fn poll() {
     if let Some((req, slot)) = module_request {
         let host = core::str::from_utf8(&req.host[..req.host_len]).unwrap_or("");
         let path = core::str::from_utf8(&req.path[..req.path_len]).unwrap_or("/");
+        let retained = slot == crate::module::Slot::B && crate::logical::has_policy();
         let outcome: Result<i32, &'static str> = match resolve_host(&req.host[..req.host_len]) {
             Some(ip) => {
                 // Zero the area first: the flat image does not include .bss.
@@ -310,6 +311,25 @@ pub fn poll() {
             }
             None => Err("unknown host"),
         };
+
+        // A slot-B reload adopts only after a successful entry. A fetch, hash
+        // or entry failure invalidates the publication record, not the live
+        // policy that the kernel already holds.
+        if slot == crate::module::Slot::B {
+            match outcome {
+                Ok(0) if crate::logical::adopt_wasm() => {}
+                Ok(0) => {
+                    if retained {
+                        crate::console_println("m1-reload: failed policy=retained");
+                    }
+                }
+                _ => {
+                    if retained {
+                        crate::console_println("m1-reload: failed policy=retained");
+                    }
+                }
+            }
+        }
 
         let handle = unsafe { CONSOLE.as_ref() }.map(|console| console.handle);
         if let Some(handle) = handle {
