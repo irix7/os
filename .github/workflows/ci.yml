@@ -1407,7 +1407,7 @@ jobs:
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
         with:
-          version: v0.1.10+irix7
+          version: v0.1.13+irix7
       - name: Build the two-node artefacts
         run: |
           set -euo pipefail
@@ -1539,7 +1539,7 @@ jobs:
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
         with:
-          version: v0.1.10+irix7
+          version: v0.1.13+irix7
       - name: Build the kernel and the slot probe
         run: |
           set -euo pipefail
