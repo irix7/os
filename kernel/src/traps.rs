@@ -743,6 +743,7 @@ fn wait_from_handler() {
     // EXL is cleared, the CPU can take it before the `wait` below; its `eret`
     // would then return to the user PC with kernel status.  Point EPC at the
     // wait instruction first, so either path lands there.
+    let saved_epc = epc_read();
     epc_write(__irix7_wait_point as usize as u32);
     let status = status_read();
     status_write((status & !(STATUS_EXL | STATUS_KSU_MASK)) | STATUS_IE);
@@ -751,6 +752,7 @@ fn wait_from_handler() {
     unsafe {
         __irix7_wait_point();
     }
+    epc_write(saved_epc);
     status_write(status | STATUS_EXL);
 }
 
