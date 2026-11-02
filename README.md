@@ -23,6 +23,10 @@ node, without an application-level remote-mount or RPC protocol.
 > **The Tree of IRIX 7** — [irix7.github.io/os/tree](https://irix7.github.io/os/tree/)
 > is the living roadmap. The implementation plan is in
 > [`docs/plan/milestones.md`](docs/plan/milestones.md).
+>
+> **The Logical Computer** — [a 12-chapter animated documentary](https://irix7.github.io/os/film/)
+> makes the design argument from first principles. Its notes and chapter
+> transcript are in [`docs/documentary.md`](docs/documentary.md).
 
 ## Architecture
 

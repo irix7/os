@@ -16,6 +16,11 @@ not yet joined a mesh. See [Current status](#current-status).
 > interactive view of the Indy baseline, the 1/2/8/128 mesh gates and the
 > native compatibility tracks. The active sequencing is in
 > [`plan/milestones.md`](plan/milestones.md).
+>
+> **Watch the argument:** [The Logical Computer](documentary.md) is a
+> 12-chapter animated documentary about the design, the 1994 Indy and the four
+> mesh gates. [Watch the film](https://irix7.github.io/os/film/) or read
+> [the notes](documentary.md).
 
 Start here:
 

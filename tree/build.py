@@ -922,6 +922,7 @@ def build_page(roadmap: Roadmap) -> str:
         <kbd>⌘K</kbd>
       </button>
       <a class="ghost-btn" href="{esc(data["meta"]["docs"])}">Docs</a>
+      <a class="ghost-btn" href="../film/">Film</a>
       <a class="icon-btn" href="{esc(data["meta"]["repo"])}" aria-label="Source on GitHub" title="Source on GitHub">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 8-4 4 4 4M16 8l4 4-4 4M13 5l-2 14"/></svg>
       </a>
