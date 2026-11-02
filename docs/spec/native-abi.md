@@ -1706,9 +1706,11 @@ thread's deadline, resumes it with its timeout result and only then reports the 
 as finished.  `SYS_EXIT` from any thread still ends every thread.
 
 The table holds eight threads and each parked futex wait occupies one slot.  A thread
-id is unique only while its thread is alive; dead slots are reused.  There is no join
-yet: the exit status stays in the slot until it is reused.  Preemption,
-`pthread_create`/`pthread_join` and a process table are later slices.
+id is unique only while its thread is alive; dead slots are reused.  The kernel has no
+join primitive: the exit status stays in the slot until the slot is reused.  The libc
+implements `pthread_join` in userland by recording the start routine's return value in
+a libc-owned write word and waking the joiner with `futex_wake` when the thread
+retires.  Preemption and a process table are later slices.
 
 ---
 
@@ -1787,7 +1789,9 @@ v0.1 uses **pthread keys**, not ELF TLS.  The native target sets
   `-mno-abicalls -G0`.  The static Rust
   `std` bring-up shim is the exception: it still sets `$gp` in `_start` and has no TLS,
   so migrating it to this convention needs a no-small-data target rebuild.
-- **TCB.**  The ABI fixes the first 16 bytes; the libc appends its key table:
+- **TCB.**  The ABI fixes the first 16 bytes; the libc appends its pthread state
+  (relibc appends its `Tcb` and `Pthread` records, so `$28 + 16` is that record) and
+  its key table:
 
   ```c
   struct NativeTcb {

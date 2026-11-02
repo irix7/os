@@ -1,0 +1,921 @@
+From 729bdc3bbbc9c4cb1fc2ca1ffeac92ea7d551383 Mon Sep 17 00:00:00 2001
+From: Jupiter Belic <belikh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 20:30:45 +1000
+Subject: [PATCH 7/7] irix7: run pthreads on the cooperative thread gate
+
+Give the IRIX 7 PAL a real pthread layer.  The kernel thread pointer ($28)
+still points at the 16-byte ABI header; relibc's Tcb and Pthread records are
+appended after it, both for the main thread in crt0's BSS and for workers
+mapped by Tcb::new.  pthread_self and __errno_location read $28, and every
+thread gets its own key map, cleanup list, thread-exit handlers and errno.
+
+pthread_create keeps relibc's existing stack-frame contract and maps
+SYS_THREAD_CREATE through rlct_clone, recording the returned kernel tid in
+the new Pthread before the creator can yield.  pthread_join waits on the
+thread's libc-owned exit word with futex_wait; the worker posts its start
+routine's return value and retires with SYS_THREAD_EXIT.  A joined worker's
+TCB and stack are released; a detached thread can only drop its table entry
+because it is still running on that stack.
+
+sched_yield and exit_thread map to the native thread calls, and gettid now
+reads the current thread's tid instead of returning the process id.  The
+mutex owner word therefore differs per thread, so the existing RlctMutex
+fast path and futex contention path work across threads.  The default stack
+for this target drops to 64 KiB because the kernel's anonymous heap is a
+fixed 1 MiB shared with the allocator.
+
+Refs irix7/os#318.
+
+Signed-off-by: Jupiter Belic <belikh@users.noreply.github.com>
+---
+ generic-rt/src/lib.rs      |  22 ++++---
+ src/crt0/src/lib.rs        |   6 +-
+ src/cxa.rs                 |  28 +++++----
+ src/header/pthread/attr.rs |   5 ++
+ src/header/pthread/mod.rs  |  29 +++++++---
+ src/header/pthread/tls.rs  |  66 +++++++++++++--------
+ src/ld_so/mod.rs           |   4 +-
+ src/ld_so/tcb.rs           |  91 +++++++++++++++++++++--------
+ src/platform/irix7/mod.rs  | 115 +++++++++++++++++++++++++++++++------
+ src/platform/mod.rs        |  13 ++---
+ src/pthread/mod.rs         | 102 +++++++++++++++++++++++++++++---
+ src/sync/pthread_mutex.rs  |  18 ++++--
+ 12 files changed, 385 insertions(+), 114 deletions(-)
+
+diff --git a/generic-rt/src/lib.rs b/generic-rt/src/lib.rs
+index 587a9d42..abc3fd7e 100644
+--- a/generic-rt/src/lib.rs
++++ b/generic-rt/src/lib.rs
+@@ -103,15 +103,23 @@ impl<Os> GenericTcb<Os> {
+         }
+     }
+ 
+-    /// IRIX 7: no thread pointer and no TCB.
++    /// Architecture specific code to read a usize from the TCB - IRIX 7
+     ///
+-    /// `rdhwr` is a MIPS32r2/MIPS64r2 instruction, but the IRIX 7 target is
+-    /// MIPS III (`+mips3`), so it cannot be used at all.  Returning zero makes
+-    /// `current_ptr()` report "no TCB" instead of dereferencing an undefined
+-    /// thread pointer.
++    /// MIPS III has no `rdhwr`, so `$28` is the thread pointer.  The ABI fixes
++    /// the first 16 bytes of the TCB as libc-owned header (`self`, `dtv`,
++    /// `errno`, libc-private); relibc's [`GenericTcb`] is appended directly
++    /// after it.  `$28` therefore points at the header and every read is
++    /// relative to `$28 + 16`.
+     #[cfg(all(target_arch = "mips64", target_os = "irix7"))]
+-    pub unsafe fn arch_read(_offset: usize) -> usize {
+-        0
++    pub unsafe fn arch_read(offset: usize) -> usize {
++        let tp: usize;
++        unsafe {
++            asm!("move {}, $28", out(reg) tp, options(nomem, nostack));
++        }
++        if tp < 0x1000 {
++            return 0;
++        }
++        unsafe { *((tp + 16 + offset) as *const usize) }
+     }
+ 
+     pub unsafe fn current_ptr() -> Option<*mut Self> {
+diff --git a/src/crt0/src/lib.rs b/src/crt0/src/lib.rs
+index a8385343..0c51a59f 100644
+--- a/src/crt0/src/lib.rs
++++ b/src/crt0/src/lib.rs
+@@ -79,7 +79,9 @@ _start:
+ // `$a3` pointing at the auxiliary vector, and `$28` zero.  Establish the
+ // main-thread TCB (`self` at 0, `dtv` 0 at 4, `errno` at 8, libc-private at 12)
+ // before any Rust code runs, and stash `$a3` for `Stack::auxv`.  MIPS III has
+-// no `rdhwr`, so `$28` is the only thread pointer.
++// no `rdhwr`, so `$28` is the only thread pointer.  The buffer is larger than
++// the 16-byte header because relibc appends its `Tcb` and `Pthread` records
++// directly after it; `pthread::init` asserts that they fit.
+ //
+ // `-mno-abicalls` is required by the target, so use an absolute `la`/`jalr`
+ // call rather than `$gp`-relative abicalls.
+@@ -112,7 +114,7 @@ _start:
+     .bss
+     .align 4
+ __irix7_main_tcb:
+-    .space 16
++    .space 1024
+ "
+ );
+ 
+diff --git a/src/cxa.rs b/src/cxa.rs
+index 0c4b5318..fdf30555 100644
+--- a/src/cxa.rs
++++ b/src/cxa.rs
+@@ -10,20 +10,29 @@ struct CxaAtExitFunc {
+     dso: usize,
+ }
+ 
+-#[derive(Clone, Copy)]
+-struct CxaThreadAtExitFunc {
+-    func: extern "C" fn(*mut c_void),
+-    obj: *mut c_void,
+-    dso: *mut c_void,
++#[derive(Clone, Copy, Debug)]
++pub(crate) struct CxaThreadAtExitFunc {
++    pub(crate) func: extern "C" fn(*mut c_void),
++    pub(crate) obj: *mut c_void,
++    pub(crate) dso: *mut c_void,
+ }
+ 
+ static CXA_ATEXIT_FUNCS: Mutex<Vec<Option<CxaAtExitFunc>>> = Mutex::new(Vec::new());
+ #[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static DTORS: RefCell<Vec<CxaThreadAtExitFunc>> = RefCell::new(Vec::new());
++
++#[cfg(not(target_os = "irix7"))]
++fn with_dtors<R>(f: impl FnOnce(&mut Vec<CxaThreadAtExitFunc>) -> R) -> R {
++    f(&mut DTORS.borrow_mut())
++}
++
+ #[cfg(target_os = "irix7")]
+-static DTORS: crate::platform::SingleThread<RefCell<Vec<CxaThreadAtExitFunc>>> =
+-    crate::platform::SingleThread(RefCell::new(Vec::new()));
++fn with_dtors<R>(f: impl FnOnce(&mut Vec<CxaThreadAtExitFunc>) -> R) -> R {
++    let thread =
++        crate::pthread::current_thread().expect("thread atexit handler without a current thread");
++    f(&mut thread.thread_dtors.borrow_mut())
++}
+ 
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __cxa_atexit(
+@@ -85,13 +94,12 @@ pub unsafe extern "C" fn __cxa_thread_atexit_impl(
+     dso: *mut c_void,
+ ) {
+     let entry = CxaThreadAtExitFunc { func, obj, dso };
+-    DTORS.borrow_mut().push(entry);
++    with_dtors(|handlers| handlers.push(entry));
+ }
+ 
+ // called internally
+ pub unsafe fn __cxa_thread_finalize() {
+-    let mut dtors = DTORS.borrow_mut();
+-    while let Some(entry) = dtors.pop() {
++    while let Some(entry) = with_dtors(|handlers| handlers.pop()) {
+         (entry.func)(entry.obj);
+     }
+ }
+diff --git a/src/header/pthread/attr.rs b/src/header/pthread/attr.rs
+index c3d64f04..3c7e5794 100644
+--- a/src/header/pthread/attr.rs
++++ b/src/header/pthread/attr.rs
+@@ -35,6 +35,11 @@ impl Default for RlctAttr {
+             // TODO
+             stack: 0,
+             // TODO
++            // The native kernel has a fixed 1 MiB anonymous heap shared with
++            // relibc's allocator, so a 1 MiB default stack cannot be mapped.
++            #[cfg(target_os = "irix7")]
++            stacksize: 64 * 1024,
++            #[cfg(not(target_os = "irix7"))]
+             stacksize: 1024 * 1024,
+             param: sched_param {
+                 // TODO
+diff --git a/src/header/pthread/mod.rs b/src/header/pthread/mod.rs
+index f64003fa..6ce2f387 100644
+--- a/src/header/pthread/mod.rs
++++ b/src/header/pthread/mod.rs
+@@ -329,10 +329,18 @@ pub(crate) struct CleanupLinkedListEntry {
+ #[thread_local]
+ pub(crate) static CLEANUP_LL_HEAD: Cell<*const CleanupLinkedListEntry> =
+     Cell::new(core::ptr::null());
++
++#[cfg(not(target_os = "irix7"))]
++fn with_cleanup_head<R>(f: impl FnOnce(&Cell<*const CleanupLinkedListEntry>) -> R) -> R {
++    f(&CLEANUP_LL_HEAD)
++}
++
+ #[cfg(target_os = "irix7")]
+-pub(crate) static CLEANUP_LL_HEAD: crate::platform::SingleThread<
+-    Cell<*const CleanupLinkedListEntry>,
+-> = crate::platform::SingleThread(Cell::new(core::ptr::null()));
++fn with_cleanup_head<R>(f: impl FnOnce(&Cell<*const CleanupLinkedListEntry>) -> R) -> R {
++    let thread =
++        crate::pthread::current_thread().expect("cleanup handler without a current thread");
++    f(&thread.cleanup_head)
++}
+ 
+ // TODO: unwind? setjmp/longjmp?
+ 
+@@ -340,13 +348,18 @@ pub(crate) static CLEANUP_LL_HEAD: crate::platform::SingleThread<
+ pub unsafe extern "C" fn __relibc_internal_pthread_cleanup_push(new_entry: *mut c_void) {
+     let new_entry = unsafe { &mut *new_entry.cast::<CleanupLinkedListEntry>() };
+ 
+-    new_entry.prev = CLEANUP_LL_HEAD.get().cast();
+-    CLEANUP_LL_HEAD.set(new_entry);
++    with_cleanup_head(|head| {
++        new_entry.prev = head.get().cast();
++        head.set(new_entry);
++    });
+ }
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __relibc_internal_pthread_cleanup_pop(execute: c_int) {
+-    let prev_head = unsafe { CLEANUP_LL_HEAD.get().read() };
+-    CLEANUP_LL_HEAD.set(prev_head.prev.cast());
++    let prev_head = with_cleanup_head(|head| {
++        let prev_head = unsafe { head.get().read() };
++        head.set(prev_head.prev.cast());
++        prev_head
++    });
+ 
+     if execute != 0 {
+         (prev_head.routine)(prev_head.arg);
+@@ -356,7 +369,7 @@ pub unsafe extern "C" fn __relibc_internal_pthread_cleanup_pop(execute: c_int) {
+ pub(crate) unsafe fn run_destructor_stack() {
+     unsafe { crate::cxa::__cxa_thread_finalize() };
+ 
+-    let mut ptr = CLEANUP_LL_HEAD.get();
++    let mut ptr = with_cleanup_head(|head| head.get());
+ 
+     while !ptr.is_null() {
+         let entry = unsafe { ptr.read() };
+diff --git a/src/header/pthread/tls.rs b/src/header/pthread/tls.rs
+index 8f10aaf5..218909cd 100644
+--- a/src/header/pthread/tls.rs
++++ b/src/header/pthread/tls.rs
+@@ -20,16 +20,28 @@ use crate::{
+ 
+ type Dtor = Option<extern "C" fn(value: *mut c_void)>;
+ 
+-struct Record {
+-    data: *mut c_void,
++#[derive(Debug)]
++pub(crate) struct Record {
++    pub(crate) data: *mut c_void,
+ }
+ 
+ #[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static VALUES: RefCell<BTreeMap<pthread_key_t, Record>> = RefCell::new(BTreeMap::new());
++
++#[cfg(not(target_os = "irix7"))]
++fn with_values<R>(f: impl FnOnce(&mut BTreeMap<pthread_key_t, Record>) -> R) -> R {
++    f(&mut VALUES.borrow_mut())
++}
++
++/// Each thread owns its key map, appended to its TCB by the pthread record.
+ #[cfg(target_os = "irix7")]
+-static VALUES: crate::platform::SingleThread<RefCell<BTreeMap<pthread_key_t, Record>>> =
+-    crate::platform::SingleThread(RefCell::new(BTreeMap::new()));
++fn with_values<R>(f: impl FnOnce(&mut BTreeMap<pthread_key_t, Record>) -> R) -> R {
++    let thread = crate::pthread::current_thread()
++        .expect("pthread-specific storage without a current thread");
++    f(&mut thread.tls_values.borrow_mut())
++}
++
+ static KEYS: Mutex<BTreeMap<pthread_key_t, Dtor>> = Mutex::new(BTreeMap::new());
+ static NEXTKEY: AtomicUsize = AtomicUsize::new(1);
+ 
+@@ -42,11 +54,12 @@ pub unsafe extern "C" fn pthread_getspecific(key: pthread_key_t) -> *mut c_void
+     // do this check when debug assertions are explicitly enabled to avoid
+     // acquiring the global [`KEYS`] lock when it is not necessary.
+     debug_assert!(KEYS.lock().contains_key(&key));
+-    VALUES
+-        .borrow_mut()
+-        .get(&key)
+-        .map(|record| record.data)
+-        .unwrap_or(ptr::null_mut())
++    with_values(|values| {
++        values
++            .get(&key)
++            .map(|record| record.data)
++            .unwrap_or(ptr::null_mut())
++    })
+ }
+ 
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_setspecific.html>.
+@@ -58,14 +71,14 @@ pub unsafe extern "C" fn pthread_setspecific(key: pthread_key_t, value: *const c
+         return EINVAL;
+     }
+ 
+-    let mut guard = VALUES.borrow_mut();
++    with_values(|values| {
++        let record = values.entry(key).or_insert(Record {
++            data: core::ptr::null_mut(),
++        });
++        //println!("Valid key for pthread_setspecific key {:#0x} value {:p} (was {:p})", key, value, record.data);
+ 
+-    let record = guard.entry(key).or_insert(Record {
+-        data: core::ptr::null_mut(),
++        record.data = value.cast_mut();
+     });
+-    //println!("Valid key for pthread_setspecific key {:#0x} value {:p} (was {:p})", key, value, record.data);
+-
+-    record.data = value.cast_mut();
+     0
+ }
+ 
+@@ -96,8 +109,10 @@ pub unsafe extern "C" fn pthread_key_delete(key: pthread_key_t) -> c_int {
+     }
+ 
+     // POSIX recommends to return EINVAL if the value does not "refers"
+-    // to this key, but we do not map VALUES back to KEYS
+-    VALUES.borrow_mut().remove(&key);
++    // to this key, but we do not map pthread-specific values back to KEYS
++    with_values(|values| {
++        values.remove(&key);
++    });
+ 
+     0
+ }
+@@ -115,15 +130,16 @@ pub(crate) unsafe fn run_all_destructors() {
+         // According to POSIX (issue 8): There is no specific order in which we
+         // have to run the destructors.
+         for (key, dtor) in dtors {
+-            let mut values = VALUES.borrow_mut();
+-            if let Some(record) = values.get_mut(&key) {
+-                let val = record.data;
+-                if val.is_null() {
+-                    continue;
++            let value = with_values(|values| match values.get_mut(&key) {
++                Some(record) if !record.data.is_null() => {
++                    let value = record.data;
++                    record.data = ptr::null_mut();
++                    Some(value)
+                 }
+-                record.data = ptr::null_mut();
+-                drop(values);
+-                dtor(val);
++                _ => None,
++            });
++            if let Some(value) = value {
++                dtor(value);
+                 any_run = true;
+             }
+         }
+diff --git a/src/ld_so/mod.rs b/src/ld_so/mod.rs
+index c45cf391..3865a913 100644
+--- a/src/ld_so/mod.rs
++++ b/src/ld_so/mod.rs
+@@ -224,7 +224,7 @@ pub unsafe fn fini() {
+ /// kernel loader maps `PT_LOAD` segments only.
+ ///
+ /// There is no interpreter, no `PT_DYNAMIC` relocation processing and no TLS
+-/// block to activate, so startup is a no-op.  `fini()` above still works: with
+-/// no TCB, `Tcb::current()` returns `None`.
++/// block to activate, so startup is a no-op.  The main TCB that pthreads
++/// installs has a null `linker_ptr`, so `fini()` has no linker to finalise.
+ #[cfg(target_os = "irix7")]
+ pub unsafe fn init(_sp: &'static Stack) {}
+diff --git a/src/ld_so/tcb.rs b/src/ld_so/tcb.rs
+index 464393e6..55ed5f00 100644
+--- a/src/ld_so/tcb.rs
++++ b/src/ld_so/tcb.rs
+@@ -1,10 +1,8 @@
+ use alloc::vec::Vec;
+ use core::{
+-    cell::UnsafeCell,
+     mem,
+     ops::{Deref, DerefMut},
+     ptr, slice,
+-    sync::atomic::AtomicBool,
+ };
+ use generic_rt::GenericTcb;
+ 
+@@ -12,8 +10,8 @@ use crate::{
+     header::sys_mman,
+     ld_so::linker::Linker,
+     platform::{Pal, Sys},
+-    pthread::{OsTid, Pthread},
+-    sync::{mutex::Mutex, waitval::Waitval},
++    pthread::Pthread,
++    sync::mutex::Mutex,
+ };
+ 
+ use super::linker::DlError;
+@@ -100,16 +98,7 @@ impl Tcb {
+                 masters_len: 0,
+                 num_copied_masters: 0,
+                 linker_ptr: ptr::null(),
+-                pthread: Pthread {
+-                    waitval: Waitval::new(),
+-                    flags: Default::default(),
+-                    has_enabled_cancelation: AtomicBool::new(false),
+-                    has_queued_cancelation: AtomicBool::new(false),
+-                    stack_base: core::ptr::null_mut(),
+-                    stack_size: 0,
+-                    os_tid: UnsafeCell::new(OsTid::default()),
+-                    tcb_selfref: UnsafeCell::new(tcb_ptr),
+-                },
++                pthread: Pthread::new(tcb_ptr, 0),
+ 
+                 dtv_ptr: ptr::null_mut(),
+                 dtv_len: 0,
+@@ -119,6 +108,38 @@ impl Tcb {
+         Ok(&mut *tcb_ptr)
+     }
+ 
++    /// Build the main thread's TCB inside the buffer `_start` reserved.
++    ///
++    /// `tp` is the 16-byte ABI header the kernel and `_start` agree on; the
++    /// relibc [`Tcb`] is appended at `tp + 16`.  The buffer is 1024 bytes in
++    /// `crt0`, and `pthread::init` asserts the appended record fits.
++    #[cfg(target_os = "irix7")]
++    pub unsafe fn init_main(tp: *mut u8) -> &'static mut Self {
++        let tcb_ptr = unsafe { tp.add(16).cast::<Self>() };
++        unsafe {
++            ptr::write(
++                tcb_ptr,
++                Self {
++                    generic: GenericTcb {
++                        tls_end: tp.add(16),
++                        tls_len: 0,
++                        tcb_ptr: tcb_ptr.cast(),
++                        tcb_len: mem::size_of::<Self>(),
++                        os_specific: OsSpecific::default(),
++                    },
++                    masters_ptr: ptr::null_mut(),
++                    masters_len: 0,
++                    num_copied_masters: 0,
++                    linker_ptr: ptr::null(),
++                    pthread: Pthread::new(tcb_ptr, 1),
++                    dtv_ptr: ptr::null_mut(),
++                    dtv_len: 0,
++                },
++            );
++            &mut *tcb_ptr
++        }
++    }
++
+     /// Get the current TCB
+     pub unsafe fn current() -> Option<&'static mut Self> {
+         unsafe { Some(&mut *GenericTcb::<OsSpecific>::current_ptr()?.cast()) }
+@@ -363,16 +384,30 @@ impl Tcb {
+         }
+     }
+ 
+-    /// IRIX 7: the kernel does not provide TLS.
++    /// IRIX 7: allocate the 16-byte ABI header and append relibc's TCB.
+     ///
+-    /// There is no thread pointer register to program and no syscall to set
+-    /// one.  Returning `Malformed` keeps `Tcb::new` from handing out a TCB that
+-    /// user code would immediately dereference through `$29`.
++    /// `$28` points at the header, not at [`Tcb`], because the first 16 bytes
++    /// are the kernel/libc contract: `self`, `dtv`, `errno` and a libc-private
++    /// word.  The returned `tcb` slice starts after the header, so
++    /// [`Tcb::new`] writes relibc's record there and `$28 + 16` is the
++    /// [`Tcb`] pointer.
+     #[cfg(target_os = "irix7")]
+     unsafe fn os_new(
+-        _size: usize,
++        size: usize,
+     ) -> Result<(&'static mut [u8], &'static mut [u8], &'static mut [u8]), DlError> {
+-        Err(DlError::Malformed)
++        let page_size = Sys::getpagesize();
++        let total = (16 + mem::size_of::<Self>() + size).next_multiple_of(page_size);
++        let mapping = unsafe { Self::map(total)? };
++        let (header, rest) = mapping.split_at_mut(16);
++        let (tls, tcb) = rest.split_at_mut(size);
++
++        let self_ptr = header.as_mut_ptr() as usize as u32;
++        header[0..4].copy_from_slice(&self_ptr.to_ne_bytes());
++        header[4..8].copy_from_slice(&0u32.to_ne_bytes());
++        header[8..12].copy_from_slice(&0i32.to_ne_bytes());
++        header[12..16].copy_from_slice(&0u32.to_ne_bytes());
++
++        Ok((header, tls, tcb))
+     }
+ 
+     /// OS and architecture specific code to activate TLS - Linux x86_64
+@@ -408,11 +443,21 @@ impl Tcb {
+         }
+     }
+ 
+-    /// IRIX 7: no thread pointer exists, so there is nothing to activate.
++    /// IRIX 7: `$28` is the thread pointer.
+     ///
+-    /// Unreachable today because [`Self::os_new`] refuses to allocate a TCB.
++    /// [`Self::os_new`] places the ABI header immediately before the TCB, so
++    /// the header is 16 bytes below `tls_end` (the TCB's own address).
+     #[cfg(target_os = "irix7")]
+-    unsafe fn os_arch_activate(_os: &(), _tls_end: usize, _tls_len: usize) {}
++    unsafe fn os_arch_activate(_os: &(), tls_end: usize, _tls_len: usize) {
++        let tp = tls_end - 16;
++        unsafe {
++            core::arch::asm!(
++                "move $28, {tp}",
++                tp = in(reg) tp,
++                options(nostack, nomem),
++            );
++        }
++    }
+ 
+     #[cfg(target_os = "redox")]
+     unsafe fn os_arch_activate(
+diff --git a/src/platform/irix7/mod.rs b/src/platform/irix7/mod.rs
+index 00913404..c33de197 100644
+--- a/src/platform/irix7/mod.rs
++++ b/src/platform/irix7/mod.rs
+@@ -14,9 +14,10 @@
+ //!
+ //! * `poll` and blocking descriptor I/O are bounded by the cooperative kernel;
+ //!   `nanosleep` is a busy wait.
+-//! * `futex_wait`/`futex_wake` map to the native futex gate.  The kernel has
+-//!   cooperative threads, but this PAL does not create them yet, so
+-//!   `exit_thread` and `sched_yield` remain stubs for the main thread.
++//! * `futex_wait`/`futex_wake` map to the native futex gate.
++//! * `pthread_create` maps to `SYS_THREAD_CREATE`; the kernel is cooperative,
++//!   so a thread runs only when the creator yields, blocks or exits.  There is
++//!   no preemption and no timer wake-up.
+ //! * `getentropy` reports success but the kernel zero-fills the buffer.
+ //! * There is no process, signal or socket support, hence the ENOSYS stubs in
+ //!   [`PalSignal`], [`PalSocket`], [`PalEpoll`] and [`PalPtrace`].
+@@ -92,15 +93,51 @@ const SYS_RENAME: usize = 32;
+ const SYS_MKDIR: usize = 33;
+ const SYS_RMDIR: usize = 34;
+ const SYS_FTRUNCATE: usize = 35;
++const SYS_THREAD_CREATE: usize = 37;
++const SYS_YIELD: usize = 38;
++const SYS_THREAD_EXIT: usize = 39;
+ const SYS_FUTEX_WAIT: usize = 40;
+ const SYS_FUTEX_WAKE: usize = 41;
+ 
++// First instruction of a new thread.
++//
++// `rlct_clone` hands the kernel this address and the stack pointer that
++// `pthread::create` prepared.  The prepared frame is the same one relibc's
++// Linux `clone` path consumes: `[shim, entry, arg, tcb, mutex]`.  Load the
++// arguments, drop the frame and call the shim; it never returns.
++core::arch::global_asm!(
++    r#"
++    .set noreorder
++    .set mips3
++    .globl __irix7_thread_start
++    .type __irix7_thread_start, @function
++__irix7_thread_start:
++    lw      $25, 0($29)
++    lw      $4, 4($29)
++    lw      $5, 8($29)
++    lw      $6, 12($29)
++    lw      $7, 16($29)
++    addiu   $29, $29, 32
++    jalr    $25
++    nop
++1:
++    b       1b
++    nop
++    .size __irix7_thread_start, . - __irix7_thread_start
++"#
++);
++
++unsafe extern "C" {
++    fn __irix7_thread_start();
++}
++
+ /// The process umask.  `mkdir` and `open(O_CREAT)` apply it to the mode the
+ /// caller passes; the kernel stores the resulting permission bits.
+ static mut UMASK: mode_t = 0o022;
+ 
+ fn umask() -> mode_t {
+-    // SAFETY: single-threaded target; every access is a plain read.
++    // SAFETY: process-wide state; the cooperative kernel cannot interleave
++    // another thread between these instructions.
+     unsafe { UMASK }
+ }
+ 
+@@ -246,9 +283,9 @@ impl Sys {
+     /// Poll the kernel's console, pipe and file surface.
+     ///
+     /// `timeout` is milliseconds and is passed through: zero probes once, a
+-    /// negative value asks for no deadline.  The kernel is single-threaded and
+-    /// bounds a negative or long timeout internally, so this call always
+-    /// returns.  `revents` is written by the kernel for every record.
++    /// negative value asks for no deadline.  The cooperative kernel bounds a
++    /// negative or long timeout internally, so this call always returns.
++    /// `revents` is written by the kernel for every record.
+     pub unsafe fn poll(fds: &mut [crate::header::poll::pollfd], timeout: c_int) -> Result<c_int> {
+         // A zero count carries no records; the kernel ignores the pointer.
+         let pointer = if fds.is_empty() {
+@@ -338,8 +375,13 @@ impl Pal for Sys {
+     }
+ 
+     unsafe fn exit_thread(_stack_base: *mut (), _stack_size: usize) -> ! {
+-        // There are no threads; leaving the process is the only correct action.
+-        Self::exit(0)
++        // The joinable return value is already posted on the thread's wait
++        // word.  Retiring the thread with a zero status lets the kernel resume
++        // a joiner; with none left the image ends.
++        unsafe {
++            let _ = syscall(SYS_THREAD_EXIT, 0, 0, 0, 0);
++        }
++        unreachable!("SYS_THREAD_EXIT never returns to the caller")
+     }
+ 
+     fn fchdir(_fildes: c_int) -> Result<()> {
+@@ -636,8 +678,19 @@ impl Pal for Sys {
+     }
+ 
+     fn gettid() -> pid_t {
+-        // Single-threaded: the thread id is the process id.
+-        Self::getpid()
++        // The kernel tid is stored in the current thread's pthread record; the
++        // main thread uses tid 1 and has no table entry.
++        match crate::pthread::current_thread() {
++            Some(thread) => {
++                let tid = unsafe { thread.os_tid.get().read().thread_id };
++                if tid == 0 {
++                    Self::getpid()
++                } else {
++                    tid as pid_t
++                }
++            }
++            None => Self::getpid(),
++        }
+     }
+ 
+     fn gettimeofday(mut tp: Out<timeval>, tzp: Option<Out<timezone>>) -> Result<()> {
+@@ -836,19 +889,46 @@ impl Pal for Sys {
+     }
+ 
+     unsafe fn rlct_clone(
+-        _stack: *mut usize,
++        stack: *mut usize,
+         _os_specific: &mut crate::ld_so::tcb::OsSpecific,
+     ) -> Result<crate::pthread::OsTid, Errno> {
+-        enosys()
++        // `pthread::create` pushed [shim, entry, arg, tcb, mutex] at `stack`.
++        // The kernel's `$28` argument is the 16-byte ABI header, which sits
++        // immediately before relibc's Tcb pointer in slot 3.
++        let tcb = unsafe { *stack.add(3) };
++        let Some(header) = tcb.checked_sub(16) else {
++            return Err(Errno(EINVAL));
++        };
++        let tid = unsafe {
++            syscall(
++                SYS_THREAD_CREATE,
++                __irix7_thread_start as *const () as usize,
++                stack as usize,
++                stack as usize,
++                header,
++            )
++        }?;
++        // No peer can run before the creator yields, so record the tid in the
++        // new TCB before returning to `pthread::create`.
++        let thread = tcb as *mut crate::ld_so::tcb::Tcb;
++        unsafe {
++            (*thread)
++                .pthread
++                .os_tid
++                .get()
++                .write(crate::pthread::OsTid { thread_id: tid });
++        }
++        Ok(crate::pthread::OsTid { thread_id: tid })
+     }
+ 
+     unsafe fn rlct_kill(_os_tid: crate::pthread::OsTid, _signal: usize) -> Result<()> {
++        // Cancellation needs signal delivery; the cooperative kernel has none.
+         enosys()
+     }
+ 
+     fn current_os_tid() -> crate::pthread::OsTid {
+         crate::pthread::OsTid {
+-            thread_id: self::Sys::getpid() as usize,
++            thread_id: Self::gettid() as usize,
+         }
+     }
+ 
+@@ -944,8 +1024,9 @@ impl Pal for Sys {
+     }
+ 
+     fn sched_yield() -> Result<()> {
+-        // This PAL does not create threads, so the caller is the only one.
+-        Ok(())
++        // With no other runnable thread the kernel returns success without
++        // switching, matching POSIX.
++        unsafe { syscall(SYS_YIELD, 0, 0, 0, 0) }.map(|_| ())
+     }
+ 
+     unsafe fn setgroups(_size: size_t, _list: *const gid_t) -> Result<()> {
+@@ -1012,7 +1093,7 @@ impl Pal for Sys {
+     }
+ 
+     fn umask(mask: mode_t) -> mode_t {
+-        // SAFETY: single-threaded target; swap and return the previous value.
++        // SAFETY: process-wide state; no thread can interleave here.
+         unsafe {
+             let previous = UMASK;
+             UMASK = mask & 0o777;
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index 6f65eb37..c30a8fe9 100644
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -103,18 +103,17 @@ impl TcbErrno {
+ #[cfg(target_os = "irix7")]
+ pub static ERRNO: TcbErrno = TcbErrno;
+ 
+-/// A `static` that is shared by the whole process because the platform has no
+-/// threads.
++/// A `static` that POSIX leaves process-wide on this target.
+ ///
+ /// Rust requires `static` items to be `Sync`, but `Cell` and `RefCell` are
+-/// deliberately not.  The IRIX 7 kernel runs one thread, so the interior
+-/// mutability cannot race; this wrapper states that fact at each declaration
+-/// instead of weakening the type globally.
++/// deliberately not.  The remaining user is `h_errno`, which POSIX leaves
++/// process-wide; pthread keys, cleanup handlers, thread-exit handlers and
++/// errno live in the TCB and the `Pthread` record.
+ #[cfg(target_os = "irix7")]
+ pub struct SingleThread<T>(pub T);
+ 
+-// SAFETY: the IRIX 7 kernel has no threads and no signal delivery, so there is
+-// no concurrent access to these values.
++// SAFETY: the cooperative kernel has no preemption and no signal delivery, so
++// these process-wide values cannot be touched concurrently between syscalls.
+ #[cfg(target_os = "irix7")]
+ unsafe impl<T> Sync for SingleThread<T> {}
+ 
+diff --git a/src/pthread/mod.rs b/src/pthread/mod.rs
+index e1e81113..89375de5 100644
+--- a/src/pthread/mod.rs
++++ b/src/pthread/mod.rs
+@@ -1,12 +1,12 @@
+ //! Relibc Threads, or RLCT.
+ 
+ use core::{
+-    cell::UnsafeCell,
++    cell::{Cell, RefCell, UnsafeCell},
+     ptr,
+     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
+ };
+ 
+-use alloc::collections::BTreeMap;
++use alloc::{collections::BTreeMap, vec::Vec};
+ #[cfg(target_os = "redox")]
+ use redox_rt::{
+     RtTcb,
+@@ -19,19 +19,36 @@ use crate::{
+     ld_so::tcb::Tcb,
+     platform::{
+         Pal, Sys,
+-        types::{c_int, c_void, clockid_t, pthread_t},
++        types::{c_int, c_void, clockid_t, pthread_key_t, pthread_t},
+     },
+ };
+ 
+ use crate::sync::{Mutex, waitval::Waitval};
+ 
+ /// Called only by the main thread, as part of relibc_start.
++///
++/// `_start` has already reset `$28` to the 16-byte main-thread header.  Build
++/// relibc's [`Tcb`] (and the [`Pthread`] record it contains) directly after
++/// it.  `crt0` reserves 1024 bytes for this and the assertion keeps the two
++/// crates in step.
+ #[cfg(target_os = "irix7")]
+ pub unsafe fn init() {
+-    // The kernel has no thread pointer and no TCB.  Creating a Pthread record
+-    // would require one, so there is nothing to install.  `pthread_self()`
+-    // and TLS-based pthread services are unsupported until the kernel grows a
+-    // thread pointer.
++    const MAIN_TCB_SIZE: usize = 1024;
++
++    let tp: usize;
++    unsafe {
++        core::arch::asm!("move {}, $28", out(reg) tp, options(nomem, nostack));
++    }
++    assert!(tp >= 0x1000, "main thread has no $28");
++    assert!(
++        16 + core::mem::size_of::<Tcb>() <= MAIN_TCB_SIZE,
++        "crt0's __irix7_main_tcb buffer is too small for relibc's Tcb"
++    );
++    let tcb = unsafe { Tcb::init_main(tp as *mut u8) };
++    unsafe {
++        tcb.pthread.os_tid.get().write(OsTid { thread_id: 1 });
++        tcb.activate();
++    }
+ }
+ 
+ /// Called only by the main thread, as part of relibc_start.
+@@ -95,6 +112,52 @@ pub struct Pthread {
+     pub(crate) tcb_selfref: UnsafeCell<*mut Tcb>,
+ 
+     pub os_tid: UnsafeCell<OsTid>,
++
++    /// Pthread-specific values.  POSIX gives each thread its own key map, so
++    /// the single-thread `VALUES` static is not usable once create works.
++    #[cfg(target_os = "irix7")]
++    pub(crate) tls_values: RefCell<BTreeMap<pthread_key_t, crate::header::pthread::tls::Record>>,
++    /// Head of this thread's cleanup handler list.
++    #[cfg(target_os = "irix7")]
++    pub(crate) cleanup_head: Cell<*const crate::header::pthread::CleanupLinkedListEntry>,
++    /// `__cxa_thread_atexit` handlers registered by this thread.
++    #[cfg(target_os = "irix7")]
++    pub(crate) thread_dtors: RefCell<Vec<crate::cxa::CxaThreadAtExitFunc>>,
++    /// Whether the TCB sits in the mmap heap and can be released on join.
++    #[cfg(target_os = "irix7")]
++    pub(crate) tcb_heap: bool,
++}
++
++impl Pthread {
++    /// Construct the pthread record for a TCB.
++    ///
++    /// `thread_id` is the kernel tid for a running thread, or 0 for a worker
++    /// whose tid is not known until `SYS_THREAD_CREATE` returns.
++    pub(crate) fn new(tcb_selfref: *mut Tcb, thread_id: usize) -> Self {
++        #[cfg(any(target_os = "linux", target_os = "irix7"))]
++        let os_tid = OsTid { thread_id };
++        #[cfg(not(any(target_os = "linux", target_os = "irix7")))]
++        let os_tid = OsTid::default();
++
++        Self {
++            waitval: Waitval::new(),
++            has_enabled_cancelation: AtomicBool::new(false),
++            has_queued_cancelation: AtomicBool::new(false),
++            flags: PthreadFlags::empty().bits().into(),
++            stack_base: ptr::null_mut(),
++            stack_size: 0,
++            tcb_selfref: UnsafeCell::new(tcb_selfref),
++            os_tid: UnsafeCell::new(os_tid),
++            #[cfg(target_os = "irix7")]
++            tls_values: RefCell::new(BTreeMap::new()),
++            #[cfg(target_os = "irix7")]
++            cleanup_head: Cell::new(ptr::null()),
++            #[cfg(target_os = "irix7")]
++            thread_dtors: RefCell::new(Vec::new()),
++            #[cfg(target_os = "irix7")]
++            tcb_heap: false,
++        }
++    }
+ }
+ 
+ #[derive(Clone, Copy, Debug, Default, Ord, Eq, PartialOrd, PartialEq)]
+@@ -180,6 +243,10 @@ pub(crate) unsafe fn create(
+     new_tcb.pthread.flags = flags.bits().into();
+     new_tcb.pthread.stack_base = stack_base;
+     new_tcb.pthread.stack_size = stack_size;
++    #[cfg(target_os = "irix7")]
++    {
++        new_tcb.pthread.tcb_heap = true;
++    }
+ 
+     new_tcb.masters_ptr = current_tcb.masters_ptr;
+     new_tcb.masters_len = current_tcb.masters_len;
+@@ -349,6 +416,27 @@ unsafe fn dealloc_thread(thread: &Pthread) {
+     unsafe {
+         OS_TID_TO_PTHREAD.lock().remove(&thread.os_tid.get().read());
+     }
++    // A joined worker owns its TCB and stack; a detached thread calls this
++    // from its own running stack and can only drop the table entry.
++    #[cfg(target_os = "irix7")]
++    {
++        let is_current = current_thread().is_some_and(|this| core::ptr::eq(this, thread));
++        if !is_current && thread.tcb_heap {
++            let tcb = unsafe { thread.tcb_selfref.get().read() };
++            if !tcb.is_null() {
++                // The mapping is header + TLS + TCB.
++                let tcb_len = unsafe { (&*tcb).tcb_len + (&*tcb).tls_len };
++                let stack_base = thread.stack_base;
++                let stack_size = thread.stack_size;
++                unsafe {
++                    let _ = Sys::munmap(tcb.cast::<u8>().sub(16).cast(), 16 + tcb_len);
++                    if !stack_base.is_null() && stack_size != 0 {
++                        let _ = Sys::munmap(stack_base, stack_size);
++                    }
++                }
++            }
++        }
++    }
+     #[cfg(target_os = "redox")]
+     unsafe {
+         let tcb = thread.tcb_selfref.get().read();
+diff --git a/src/sync/pthread_mutex.rs b/src/sync/pthread_mutex.rs
+index 569a22b8..efa7b7f6 100644
+--- a/src/sync/pthread_mutex.rs
++++ b/src/sync/pthread_mutex.rs
+@@ -1,7 +1,6 @@
+-use core::{
+-    cell::Cell,
+-    sync::atomic::{AtomicU32 as AtomicUint, Ordering},
+-};
++#[cfg(not(target_os = "irix7"))]
++use core::cell::Cell;
++use core::sync::atomic::{AtomicU32 as AtomicUint, Ordering};
+ 
+ use crate::{
+     error::Errno,
+@@ -237,11 +236,18 @@ enum Ty {
+ #[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static CACHED_OS_TID_INVALID_AFTER_FORK: Cell<u32> = Cell::new(0);
++// Assumes TIDs are unique between processes, which I only know is true for Redox.
+ #[cfg(target_os = "irix7")]
+-static CACHED_OS_TID_INVALID_AFTER_FORK: crate::platform::SingleThread<Cell<u32>> =
+-    crate::platform::SingleThread(Cell::new(0));
++fn os_tid_invalid_after_fork() -> u32 {
++    // Kernel tids are stable while a thread lives and come from `$28`'s TCB,
++    // so the single-thread cache below would give every thread the main tid.
++    let tid = Sys::gettid();
++    assert_ne!(tid, -1, "failed to obtain current thread ID");
++    tid.cast_unsigned()
++}
+ 
+ // Assumes TIDs are unique between processes, which I only know is true for Redox.
++#[cfg(not(target_os = "irix7"))]
+ fn os_tid_invalid_after_fork() -> u32 {
+     // TODO: Coordinate better if using shared == PTHREAD_PROCESS_SHARED, with up to 2^32 separate
+     // threads within possibly distinct processes, using the mutex. OS thread IDs on Redox are
+-- 
+2.55.0
+
