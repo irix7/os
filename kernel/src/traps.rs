@@ -108,7 +108,7 @@ const EXC_WATCH: u32 = 23; // Reference to watchpoint address
 /// bytes; `trap_entry` uses the same offsets and a compile-time size check
 /// below keeps the two definitions in step.
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TrapFrame {
     pub regs: [u64; 32], // $0..$31
     pub hi: u64,
@@ -124,6 +124,19 @@ pub struct TrapFrame {
 const _: () = assert!(core::mem::size_of::<TrapFrame>() == 0x140);
 
 impl TrapFrame {
+    /// An all-zero frame: the starting point for a thread that has not run.
+    pub const ZERO: Self = TrapFrame {
+        regs: [0; 32],
+        hi: 0,
+        lo: 0,
+        epc: 0,
+        badvaddr: 0,
+        cause: 0,
+        status: 0,
+        entryhi: 0,
+        pagemask: 0,
+    };
+
     /// Low 32 bits of a saved GPR (the n32 syscall ABI uses 32-bit words).
     #[inline]
     pub fn arg(&self, index: usize) -> u32 {
@@ -759,8 +772,21 @@ pub fn badvaddr_read() -> u32 {
     v
 }
 
+/// Derive a new thread's initial `Status` from the creator's saved word.
+///
+/// The creator's coprocessor and interrupt-mask bits are inherited; the new
+/// frame starts in user mode with 64-bit addressing and interrupts enabled,
+/// which is the state the creator's own `eret` would restore.
+pub(crate) fn thread_entry_status(saved: u64) -> u64 {
+    let mut status = (saved as u32) & !STATUS_EXL;
+    status &= !STATUS_KSU_MASK;
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15);
+    status as u64
+}
+
 /// Return from a user exit syscall to the kernel console trampoline.
 pub(crate) fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
+    crate::thread::exit_all();
     crate::user::cleanup();
     crate::print_str("user: exit syscall code=0x");
     crate::print_hex32(code);
@@ -796,10 +822,10 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
             fatal_trap(tf, exc_code);
         };
         if code == native_abi::syscall::NATIVE_GATE_CODE {
-            if crate::native_sys::dispatch(tf) {
-                return;
+            match crate::native_sys::dispatch(tf) {
+                crate::native_sys::Gate::Continue => tf.advance_epc(),
+                crate::native_sys::Gate::Resume => {}
             }
-            tf.advance_epc();
             return;
         }
         if code != 0 {
@@ -1249,6 +1275,9 @@ pub fn run_user_abi(
         core::arch::asm!("move {0}, $gp", out(reg) kernel_gp);
         USER_KERNEL_GP = kernel_gp;
     }
+
+    // A fresh image starts with tid 1 as its only running thread.
+    crate::thread::reset();
 
     // Set up the user entry with interrupts masked by EXL.  If IE is enabled
     // before EPC is set, a timer interrupt can overwrite EPC; the following

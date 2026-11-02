@@ -216,6 +216,7 @@ pub fn run_image(image: &[u8]) {
 /// command calls it again after a load failure.  It is idempotent.
 pub fn cleanup() {
     crate::fd::reset();
+    crate::thread::reset();
     unsafe {
         let pages = &*core::ptr::addr_of!(USER_PAGES);
         for index in 0..USER_PAIR_COUNT {

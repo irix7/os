@@ -113,6 +113,28 @@ pub struct io_at {
     pub offset: off_t,
 }
 
+/// The first 16 bytes of a thread's TCB; every thread's `$28` points here.
+///
+/// The libc allocates the TCB and appends its own key table.  The kernel
+/// preserves `$28` across traps and sets it on `SYS_THREAD_CREATE`; it never
+/// interprets `dtv` or `libc_data`.  `errno` starts at zero in each new
+/// thread and is not cleared by a successful call.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct tcb {
+    /// `&self`, so `pthread_self` can recover the TCB from the thread pointer.
+    pub self_ptr: u32,
+    /// Dynamic thread vector; 0 in v0 (no ELF TLS).
+    pub dtv: u32,
+    /// `__errno_location() == TP + 8`.
+    pub errno: c_int,
+    /// Libc-private word.
+    pub libc_data: u32,
+}
+
+const _: () = assert!(core::mem::size_of::<tcb>() == 16);
+const _: () = assert!(core::mem::offset_of!(tcb, errno) == 8);
+
 /// `struct winsize`: 8 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

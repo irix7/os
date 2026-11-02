@@ -59,6 +59,7 @@ pub mod scsi;
 pub mod status;
 pub mod syserr;
 pub mod telnet;
+pub mod thread;
 pub mod tlb;
 pub mod tls;
 pub mod traps;

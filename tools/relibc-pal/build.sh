@@ -33,6 +33,8 @@ WANT=${RELIBC_COMMIT:-$PINNED}
 REMOTE=${RELIBC_REMOTE:-https://github.com/irix7/relibc}
 TARGET="$REPO/targets/mips3-sgi-irix7-native-n32.json"
 PROBE="$REPO/user/relibc-probe"
+THREAD_PROBE="$REPO/user/relibc-thread-probe"
+LINKER="$PROBE/linker.ld"
 CARGO=${CARGO:-cargo}
 TARGET_DIR=${CARGO_TARGET_DIR:-$OUT/target}
 
@@ -111,7 +113,17 @@ LDFLAGS="-mabi=n32 -march=mips3 -msoft-float -mno-abicalls -fno-pic \
 # shellcheck disable=SC2086
 "$CC" $CFLAGS -c "$PROBE/probe.c" -o "$OUT/probe.o"
 # shellcheck disable=SC2086
-"$CC" $LDFLAGS -T "$PROBE/linker.ld" -o "$OUT/probe.elf" "$OUT/probe.o" \
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/probe.elf" "$OUT/probe.o" \
+    -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$THREAD_PROBE/probe.c" -o "$OUT/thread-probe.o"
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$THREAD_PROBE/native.S" -o "$OUT/thread-native.o"
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/thread-probe.elf" \
+    "$OUT/thread-probe.o" "$OUT/thread-native.o" \
     -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
     -Wl,--end-group
 
@@ -122,27 +134,39 @@ STRIP=$(dirname "$CC")/mips64-buildroot-linux-uclibc-strip
 if [ ! -x "$STRIP" ]; then
     STRIP=$(command -v llvm-strip || command -v strip || true)
 fi
-if [ -n "$STRIP" ]; then
-    "$STRIP" --strip-all "$OUT/probe.elf" -o "$OUT/probe.stripped.elf"
-    mv "$OUT/probe.stripped.elf" "$OUT/probe.elf"
-fi
 
-size=$(stat -c%s "$OUT/probe.elf")
-if [ "$size" -gt 262144 ]; then
-    echo "build-relibc-probe: probe.elf is $size bytes; the image slot is 262144" >&2
-    exit 1
-fi
-cp "$OUT/probe.elf" "$OUT/probe.raw"
-truncate -s 262144 "$OUT/probe.raw"
+finish_image() {
+    elf=$1
+    raw=$2
+    if [ -n "$STRIP" ]; then
+        "$STRIP" --strip-all "$elf" -o "$elf.stripped"
+        mv "$elf.stripped" "$elf"
+    fi
+    size=$(stat -c%s "$elf")
+    if [ "$size" -gt 262144 ]; then
+        echo "build-relibc-probe: $elf is $size bytes; the image slot is 262144" >&2
+        exit 1
+    fi
+    cp "$elf" "$raw"
+    truncate -s 262144 "$raw"
+    echo "$size"
+}
+
+probe_size=$(finish_image "$OUT/probe.elf" "$OUT/probe.raw")
+thread_size=$(finish_image "$OUT/thread-probe.elf" "$OUT/thread-probe.raw")
 
 {
     echo "relibc=$have"
     echo "cargo=$($CARGO --version)"
     echo "cc=$($CC --version | sed -n '1p')"
-    echo "probe_elf=$size bytes"
+    echo "probe_elf=$probe_size bytes"
+    echo "thread_probe_elf=$thread_size bytes"
 } >"$OUT/BUILD-PROVENANCE.txt"
-sha256sum "$OUT/probe.elf" "$OUT/probe.raw" >"$OUT/SHA256SUMS"
+sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
+    "$OUT/thread-probe.elf" "$OUT/thread-probe.raw" >"$OUT/SHA256SUMS"
 
 echo "build-relibc-probe: ELF $OUT/probe.elf"
 echo "build-relibc-probe: raw $OUT/probe.raw"
+echo "build-relibc-probe: thread ELF $OUT/thread-probe.elf"
+echo "build-relibc-probe: thread raw $OUT/thread-probe.raw"
 cat "$OUT/BUILD-PROVENANCE.txt"
