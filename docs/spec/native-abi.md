@@ -1643,7 +1643,8 @@ v0.1 uses **pthread keys**, not ELF TLS.  The native target sets
   register the ABI reserves.  Native images are compiled with `+noabicalls` and `G0`, so
   `$28` is not a GOT pointer.  It points to a libc-owned TCB.  The kernel preserves
   `$28` across traps and sets it on `THREAD_CREATE`.  A native C build must not use
-  `$gp`-relative small data; the C probe pins `-mno-abicalls -G0`.  The static Rust
+  `$gp`-relative small data; the C probe and the relibc PAL pin
+  `-mno-abicalls -G0`.  The static Rust
   `std` bring-up shim is the exception: it still sets `$gp` in `_start` and has no TLS,
   so migrating it to this convention needs a no-small-data target rebuild.
 - **TCB.**  The ABI fixes the first 16 bytes; the libc appends its key table:

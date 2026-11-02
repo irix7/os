@@ -16,8 +16,9 @@ not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.
 | [`rust-std-irix7.md`](rust-std-irix7.md) | What `std` for IRIX 7 means, the native-vs-compat split, the POSIX.1-2024 native libc ABI it requires, and the implementation and PR plan. |
 | [`rust-std-build-spike.md`](rust-std-build-spike.md) | The measured spike: build the `std` rlib for the native n32 target from a patched `rust-src` and libc, the exact method and patch set, the result, and the remaining runtime gaps. |
 | [`std-hello-bringup.md`](std-hello-bringup.md) | The first linked and running static `std` image: the 42-symbol shim, kernel syscall additions, loader fixes, output and remaining POSIX gaps. |
-| [`c-probe-bringup.md`](c-probe-bringup.md) | The first C probe on the native gate: the 136-byte `stat` layout, `CELL_E_*` status channel, auxv, `$28` TCB convention, serial transcript and the relibc-side changes still needed. |
-| [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional (linked, not booted) IRIX PAL scaffold. |
+| [`c-probe-bringup.md`](c-probe-bringup.md) | The first C probe on the native gate: the 136-byte `stat` layout, `CELL_E_*` status channel, auxv, `$28` TCB convention, serial transcript and the relibc-side changes that followed. |
+| [`relibc-n32-bringup.md`](relibc-n32-bringup.md) | The relibc n32/QEMU gate: patched relibc, TLS, setjmp, pthreads, and the provisional IRIX PAL scaffold. |
+| [`relibc-pal-bringup.md`](relibc-pal-bringup.md) | The relibc-linked C probe on iris: the `irix7-pal` commit, the native gate, 136-byte `stat`, `$28` TCB, `$a3` auxv, serial transcript and the `std-hello` regression run. |
 | [`m2-completion-audit.md`](m2-completion-audit.md) | The adversarial audit of M2 closure against issue #3, with the three remaining gaps. |
 | [`m2-remediation.md`](m2-remediation.md) | The remediation gate: signed persistent epoch, two-node CI, provenance, engineering review and the remaining limits. |
 | [`quic-primary.md`](quic-primary.md) | Whether QUIC should replace TCP as the native transport, the Indy's crypto/code/memory budget, the recommended QUIC profile and the measured spike that decides it. |

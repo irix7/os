@@ -9,8 +9,9 @@ under this C ABI), [`elf.md`](elf.md) (ELF loader contract),
 [`driver-interface.md`](driver-interface.md) (`ctl`/`data`/`status` and `posix_devctl`),
 [`modules.md`](modules.md) (kernel modules are `no_std`), the
 [`std` research report](../research/rust-std-irix7.md), the
-[first running std image](../research/std-hello-bringup.md), and the
-[relibc n32 gate](../research/relibc-n32-bringup.md).
+[first running std image](../research/std-hello-bringup.md), the
+[relibc n32 gate](../research/relibc-n32-bringup.md), and the
+[relibc PAL bring-up](../research/relibc-pal-bringup.md).
 
 **Machine-readable manifest:** [`native-libc-symbols.json`](native-libc-symbols.json).
 **Rust layout source:** [`crates/native-abi`](../../crates/native-abi/README.md) — provisional v0 types,
@@ -25,14 +26,16 @@ libc-to-capability boundary and the conformance rules.  The **source API** is
 [POSIX.1-2024](posix.md) plus a documented XSI subset and a short extension list.  POSIX
 defines the C source contract; it does not define this binary contract.
 
-This is a specification, not a certification claim.  No POSIX-conformant native
-libc exists yet.  The current `crates/irix7-libc` is a 42-symbol bring-up shim,
-and a static Rust `std` image runs on top of it with args, time, sleep and a tiny
-read/write ramfs.  The production C ABI layer will be the
+This is a specification, not a certification claim.  No complete POSIX-conformant
+native libc exists yet.  The current `crates/irix7-libc` is a 42-symbol bring-up
+shim, and a static Rust `std` image runs on top of it with args, time, sleep and
+a tiny read/write ramfs.  The production C ABI layer is the
 [`relibc` fork](https://github.com/irix7/relibc); its n32 big-endian Linux/QEMU
-gate passes.  A provisional `irix7-pal` scaffold builds and links C probes, but
-it has not run on IRIX 7 and the kernel error channel, TLS and `stat` ABI remain
-to be settled.
+gate passes TLS, `setjmp` and pthreads, and the native `irix7-pal` branch now
+boots a relibc-linked C probe on the v0 gate: `syscall 0x1F7`, `CELL_E_*`
+status, the 136-byte n32 `stat`, the `$28` TCB with `errno` at `TP+8` and the
+`$a3` auxiliary vector.  Threads, signals, sockets and the capability boundary
+are still absent.
 M9 builds the full POSIX libc and M9.5 the first native `std` subset
 ([`../plan/milestones.md`](../plan/milestones.md)).  Every statement below is a
 requirement on that work, not a report of shipped behaviour.

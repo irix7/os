@@ -1,9 +1,9 @@
 # Native user images
 
 These are small **native IRIX 7** n32 user images.  They are not IRIX 6.5
-compatibility binaries.  They use either the tiny `user/libc` Rust API or the
-42-symbol C ABI shim in `crates/irix7-libc`; the production POSIX libc will be
-the [relibc fork](https://github.com/irix7/relibc).
+compatibility binaries.  They use either the tiny `user/libc` Rust API, the
+42-symbol C ABI shim in `crates/irix7-libc`, or the production
+[relibc fork](https://github.com/irix7/relibc) `irix7-pal` branch.
 
 ## native libc v0
 
@@ -96,3 +96,12 @@ CLANG=/path/to/clang user/c-probe/build.sh /tmp/c-probe
 The kernel enters target 2 automatically after `BOOT-READY`.  The expected
 serial transcript is in
 [`docs/research/c-probe-bringup.md`](../docs/research/c-probe-bringup.md).
+
+## relibc probe
+
+`user/relibc-probe` is the first C program linked against `librelibc.a` from the
+`irix7-pal` branch.  It uses relibc's crt0, `write`, `stat`, `fstat`, `getpid`,
+`getauxval` and `__errno_location`; it prints `IRIX7-RELIB-PROBE-1`, checks the
+136-byte `struct stat`, `$28`/`TP+8`, the `$a3` auxiliary vector, `EBADF` and
+`ENOENT`, and exits 0.  Build and run instructions are in
+[`../tools/relibc-pal/README.md`](../tools/relibc-pal/README.md).
