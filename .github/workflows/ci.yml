@@ -1332,7 +1332,7 @@ jobs:
   x86:
     name: Boot (x86_64 QEMU)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
       - name: Install rustup
@@ -1363,12 +1363,28 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/module-layout-check.sh "$RUNNER_TEMP/module-layout"
+      - name: Run the two-guest x86 mesh
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          work="$RUNNER_TEMP/x86-qemu"
+          harness="$RUNNER_TEMP/x86-mesh-rig"
+          cargo build --release --manifest-path tools/m2-rig/Cargo.toml \
+            --target-dir "$harness"
+          "$harness/release/m2-rig" x86-mesh \
+            --work "$RUNNER_TEMP/x86-mesh" \
+            --rom "$work/target/x86_64-unknown-none/release/kernel-x86" \
+            --module "$work/mcp-x86.module" \
+            --wasm "$work/wasm-x86.module" \
+            --base-port 12000
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: x86-qemu
           if-no-files-found: warn
-          path: ${{ runner.temp }}/x86-qemu/serial.log
+          path: |
+            ${{ runner.temp }}/x86-qemu/serial.log
+            ${{ runner.temp }}/x86-mesh/*.serial
 
   mesh-real:
     name: Mesh two-kernel (M2 gate)
