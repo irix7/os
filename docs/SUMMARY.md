@@ -77,3 +77,4 @@
 - [Bulk buffers and batching](research/bulk-batching.md)
 - [Direct peer transport](research/direct-peer.md)
 - [Bounded mesh streams](research/mesh-streams.md)
+- [PowerPC G3 QEMU boot](research/powerbook-qemu-boot.md)
