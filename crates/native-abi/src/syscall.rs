@@ -27,6 +27,7 @@ pub const SYS_CLOSE: u32 = 7;
 pub const SYS_FCNTL: u32 = 8;
 pub const SYS_DUP: u32 = 9;
 pub const SYS_GETCWD: u32 = 10;
+/// `poll(fds, count, timeout_ms)`; a negative timeout is bounded by the kernel.
 pub const SYS_POLL: u32 = 11;
 pub const SYS_SIGNAL: u32 = 12;
 pub const SYS_GETENTROPY: u32 = 13;

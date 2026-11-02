@@ -4,13 +4,13 @@
 (`librelibc.a`) rather than the freestanding oracle in [`../c-probe`](../c-probe).
 It uses relibc's `write`, `stat`, `fstat`, `getpid`, `getauxval`,
 `__errno_location`, `open`, `lseek`, `pread`, `pwrite`, `dup`, `dup2`,
-`fcntl`, `pipe`, `pipe2`, `opendir`, `readdir`, `seekdir`, `telldir` and
-`posix_getdents`, and relibc's MIPS n32 `crt0` `_start`.
+`fcntl`, `pipe`, `pipe2`, `poll`, `opendir`, `readdir`, `seekdir`, `telldir`
+and `posix_getdents`, and relibc's MIPS n32 `crt0` `_start`.
 
 Build and run it with [`../../tools/relibc-pal/build.sh`](../../tools/relibc-pal/build.sh)
 and [`../../tools/relibc-pal/README.md`](../../tools/relibc-pal/README.md).
 
-The fixed marker is `IRIX7-RELIB-PROBE-2`.  The program exits 0 only if every
+The fixed marker is `IRIX7-RELIB-PROBE-3`.  The program exits 0 only if every
 check passes:
 
 - `write` returns the marker length;
@@ -32,9 +32,19 @@ check passes:
   `EBADF`;
 - `O_CLOEXEC`, `fcntl(F_GETFD)`, `fcntl(F_SETFD)`, `dup` and `dup2` carry
   close-on-exec as per-descriptor state;
-- a pipe round-trips four bytes, an empty read is `EAGAIN` while the writer is
-  open, a write after the reader closes is `EPIPE`, and closing every writer
-  makes the reader report end-of-file; `lseek` on a pipe is `ESPIPE`;
+- `fcntl(F_GETFL)` reports the access mode, `fcntl(F_SETFL)` sets and clears
+  `O_NONBLOCK`, and `dup` shares the status flags with its description;
+- a pipe round-trips four bytes, a non-blocking empty read is `EAGAIN` while
+  the writer is open, a write after the reader closes is `EPIPE`, and closing
+  every writer makes the reader report end-of-file; `lseek` on a pipe is
+  `ESPIPE`;
+- `poll` with a zero timeout reports an empty pipe as not readable and its
+  writer as `POLLOUT`, sees data as `POLLIN`, reports `POLLHUP` after the last
+  writer closes and `POLLERR` on a write end with no reader, ignores a negative
+  descriptor and reports a closed one as `POLLNVAL`;
+- `poll` with a negative timeout on an idle pipe returns after the kernel's
+  fixed bound, and a negative timeout on the always-writable console returns
+  immediately;
 - `pipe2(O_CLOEXEC)` marks both descriptors and rejects unknown flags;
 - `posix_getdents` fills three records in one 1024-byte call with `d_off`
   cookies 1, 2, 3, continues with 4 and 5, returns 0 at the end, resumes at

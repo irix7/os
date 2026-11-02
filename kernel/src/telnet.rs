@@ -842,19 +842,11 @@ pub fn local_prompt() {
     crate::write_bytes(b"sash> ");
 }
 
-/// Poll the local keyboard and feed it to the local sash session.
+/// Poll the local console and feed it to the local sash session.
 pub fn poll_local() {
-    loop {
-        let Some(key) = crate::kbd::poll_key() else {
-            break;
-        };
-        let byte = match key {
-            crate::kbd::Key::Char(byte) => byte,
-            crate::kbd::Key::Enter => b'\r',
-            crate::kbd::Key::Backspace => 0x7F,
-            crate::kbd::Key::Escape => 0x1B,
-            _ => continue,
-        };
+    // Read through the shared queue: bytes typed while a user image ran are
+    // queued there, and this loop must not bypass them.
+    while let Some(byte) = crate::kbd::read_input_byte() {
         local_input(byte);
     }
 }

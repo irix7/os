@@ -43,7 +43,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
         SYS_CLOSE => crate::fd::close(a0 as i32).map(|()| 0),
         SYS_DUP => crate::fd::dup(a0 as i32).map(|fd| fd as u64),
         SYS_GETCWD => crate::user::getcwd_text(a0, a1).map(|()| 0),
-        SYS_POLL => crate::user::poll_user(a0, a1).map(|ready| ready as u64),
+        SYS_POLL => crate::user::poll_user(a0, a1, a2 as i32).map(|ready| ready as u64),
         SYS_GETENTROPY => crate::user::entropy_user(a0, a1).map(|()| 0),
         SYS_CLOCK_GETTIME => crate::user::clock_user(a0, a1).map(|()| 0),
         SYS_GETPID => Ok(1),
