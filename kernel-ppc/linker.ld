@@ -11,6 +11,7 @@ ENTRY(_start)
 SECTIONS
 {
     . = 0x01000000;
+    __kernel_start = .;
 
     .text : ALIGN(16) {
         KEEP(*(.text.boot))
@@ -42,6 +43,9 @@ SECTIONS
     }
 
     __kernel_end = .;
+
+    /* The image, .bss and the boot stack share one BAT block. */
+    ASSERT(__kernel_end <= 0x02000000, "kernel image exceeds the first 16 MiB")
 
     /DISCARD/ : {
         *(.eh_frame)

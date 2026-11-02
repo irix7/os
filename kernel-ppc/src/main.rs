@@ -1,23 +1,36 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! IRIX 7 PowerPC G3 machine.
 //!
-//! The first slice of #287: QEMU's g3beige machine loads the raw image at
-//! 0x01000000 and OpenBIOS enters it with the MMU on and the Open Firmware
-//! client interface in r5.  This code reads the machine description from the
-//! device tree, brings up the ESCC console, takes decrementer ticks through
-//! the 0x900 exception vector, and halts.
+//! The second slice of #287, tracked as #291.  QEMU's g3beige machine loads
+//! the raw image at 0x01000000 and OpenBIOS enters it with the MMU on and the
+//! Open Firmware client interface in r5.  The kernel reads the machine
+//! description from the device tree, installs its own BAT entries, points
+//! SDR1 at an empty table, and from then on runs on translations it owns.  It
+//! takes decrementer ticks through the 0x900 vector, then takes a deliberate
+//! unmapped load through the 0x300 vector to prove fault reporting.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
+mod mmu;
 mod of;
 mod platform;
 mod serial;
 mod timer;
+mod trap;
 
 core::arch::global_asm!(include_str!("boot.S"));
+
+/// Outside every BAT: 512 MiB, above the largest RAM size the gate uses and
+/// below the PCI hole.
+const UNMAPPED: u32 = 0x2000_0000;
+
+extern "C" {
+    static __kernel_start: u8;
+    static __kernel_end: u8;
+}
 
 fn print_hex(value: u32) {
     serial::write(b"0x");
@@ -35,21 +48,95 @@ fn print_line(bytes: &[u8]) {
     serial::write_byte(b'\n');
 }
 
+fn print_range(label: &[u8], base: u32, size: u32) {
+    serial::write(label);
+    serial::write(b" base=");
+    print_hex(base);
+    serial::write(b" size=");
+    print_dec(size);
+    serial::write_byte(b'\n');
+}
+
 fn halt() -> ! {
     loop {
         core::hint::spin_loop();
     }
 }
 
+/// Take one load from an address no BAT covers.
+///
+/// If the DSI vector is not installed, this returns and the gate fails on the
+/// missing report.
+fn deliberate_fault() -> ! {
+    print_line(b"ppc: deliberate unmapped load");
+    // SAFETY: the access is the point of the test.  Every BAT is identity
+    // mapped and none covers 0x2000_0000, so the load must raise a DSI.
+    unsafe {
+        core::ptr::read_volatile(UNMAPPED as *const u32);
+    }
+    print_line(b"ppc: dsi did not fire");
+    print_line(b"ppc: halted");
+    halt()
+}
+
 #[no_mangle]
 pub extern "C" fn kernel_main(of_client: u32) -> ! {
     let client = of::Client::new(of_client);
-    let escc = match platform::escc(&client) {
+    let macio = match platform::macio(&client) {
+        Some(macio) => macio,
+        // The ESCC lives inside the Mac I/O window, so without it there is
+        // no console to report on.
+        None => halt(),
+    };
+    let escc = match platform::escc(&client, &macio) {
         Some(base) => base,
         // Without the console there is nowhere to report the failure.
         None => halt(),
     };
     serial::init(escc);
+
+    let memory = match platform::memory(&client) {
+        Some(memory) => memory,
+        None => {
+            print_line(b"ppc: device tree has no /memory reg");
+            halt();
+        }
+    };
+    let timebase = match platform::timebase(&client) {
+        Some(timebase) => timebase,
+        None => {
+            print_line(b"ppc: device tree has no timebase-frequency");
+            halt();
+        }
+    };
+
+    let io_end = match macio.base.checked_add(macio.size) {
+        Some(end) => end,
+        None => {
+            print_line(b"ppc: mac-io window wraps the address space");
+            halt();
+        }
+    };
+    let image = mmu::cover(
+        core::ptr::addr_of!(__kernel_start) as u32,
+        core::ptr::addr_of!(__kernel_end) as u32,
+    );
+    let io = mmu::cover(macio.base, io_end);
+
+    // The vectors must be in place before the firmware mapping goes away.
+    trap::install();
+    timer::prepare(timebase);
+    mmu::install(image, io);
+    let sdr1 = mmu::activate(image, io);
+
+    serial::write(b"ppc: mmu enabled sdr1=");
+    print_hex(sdr1);
+    serial::write_byte(b'\n');
+    print_range(b"ppc: mmu image", image.base, image.size);
+    print_range(b"ppc: mmu io", io.base, io.size);
+    serial::write(b"ppc: mmu io wimg=");
+    print_hex(mmu::WIMG_IO);
+    serial::write_byte(b'\n');
 
     print_line(b"IRIX 7 PowerPC G3 bring-up");
     print_line(b"ppc: booted");
@@ -60,31 +147,17 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_hex(escc);
     serial::write_byte(b'\n');
 
-    let memory = match platform::memory(&client) {
-        Some(memory) => memory,
-        None => {
-            print_line(b"ppc: device tree has no /memory reg");
-            halt();
-        }
-    };
     serial::write(b"ppc: memory base=");
     print_hex(memory.base);
     serial::write(b" size=");
     print_dec(memory.size / (1024 * 1024));
     print_line(b" MiB");
 
-    let timebase = match platform::timebase(&client) {
-        Some(timebase) => timebase,
-        None => {
-            print_line(b"ppc: device tree has no timebase-frequency");
-            halt();
-        }
-    };
     serial::write(b"ppc: timebase=");
     print_dec(timebase);
     print_line(b" Hz");
 
-    timer::start(timebase);
+    timer::enable();
     let started = timer::timebase();
     let deadline = timebase.saturating_mul(2);
     while timer::ticks() < 10 {
@@ -98,9 +171,8 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_dec(timer::ticks());
     serial::write_byte(b'\n');
 
-    print_line(b"ppc: halted");
     print_line(b"BOOT-OK");
-    halt()
+    deliberate_fault()
 }
 
 #[panic_handler]

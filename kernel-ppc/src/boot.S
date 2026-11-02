@@ -63,6 +63,29 @@ of_call:
 .size of_call, . - of_call
 
 /*
+ * Data storage interrupt vector target.
+ *
+ * The 0x300 vector branches here.  DSISR, DAR and SRR0 describe the fault;
+ * pass them to Rust in r3, r4 and r5 and never return.  The interrupted
+ * stack is abandoned in favour of the top of the boot stack, because this
+ * path halts and must not overwrite the frame the fault came from.
+ */
+.section .text
+.align 4
+.global dsi_handler
+.type dsi_handler, @function
+dsi_handler:
+    lis     1, __stack_top@ha
+    addi    1, 1, __stack_top@l
+    mfspr   3, 18                   /* DSISR */
+    mfspr   4, 19                   /* DAR */
+    mfspr   5, 26                   /* SRR0 */
+    bl      dsi_report
+1:
+    b       1b
+.size dsi_handler, . - dsi_handler
+
+/*
  * Decrementer exception vector target.  The hardware clears MSR[EE] on entry,
  * so the handler is not re-entered.  It counts the tick, re-arms the
  * decrementer, and returns through rfi.
