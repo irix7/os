@@ -85,6 +85,23 @@ fn field(body: &str, key: &str) -> Option<String> {
 }
 
 /// Wait until both guests report a two-member view, returning those views.
+/// Wait until both guests log their mesh listener.
+fn wait_listen(nodes: &[&Node], timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if nodes
+            .iter()
+            .all(|node| crate::rig::read_serial(node).contains("mesh-transport: listening on port"))
+        {
+            return Ok(());
+        }
+        if Instant::now() >= deadline {
+            return Err("timed out waiting for both mesh listeners".into());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn wait_two_members(nodes: &[Node], timeout: Duration) -> Result<Vec<String>, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -163,6 +180,91 @@ fn restart_guest(
         }
     }
     Ok(relay)
+}
+
+/// One Indy guest and one x86 guest joined through the relay.  This is the
+/// cross-architecture wire check: the same join, homes and route code on two
+/// machines with different ABIs.
+pub fn mixed(options: &Options) -> Result<i32, String> {
+    require_file(&options.module, "MCP module (--module)")?;
+    require_file(&options.x86_module, "x86 MCP module (--x86-module)")?;
+    require_file(&options.wasm, "wasm module (--wasm)")?;
+    let iris_nodes = rig::derive_nodes(options)?;
+    let iris = iris_nodes.first().cloned().ok_or("mixed: no iris node")?;
+    let x86 = derive_node(options, 1)?;
+    let nodes = [iris.clone(), x86.clone()];
+
+    let module_bytes = fs::read(&options.module).map_err(|e| e.to_string())?;
+    let module_sha = crate::sha256::hex(&crate::sha256::digest(&module_bytes));
+    let mcp =
+        Fixture::start(module_bytes).map_err(|error| format!("start MCP fixture: {error}"))?;
+    let x86_mcp = Fixture::start(fs::read(&options.x86_module).map_err(|e| e.to_string())?)
+        .map_err(|error| format!("start x86 MCP fixture: {error}"))?;
+    let wasm = Fixture::start(fs::read(&options.wasm).map_err(|e| e.to_string())?)
+        .map_err(|error| format!("start wasm fixture: {error}"))?;
+
+    let (environments, _authority, _wrong) =
+        rig::mesh_environments(&nodes, rig::Fault::None, rig::Transport::Relay);
+
+    // Indy node.
+    rig::write_nvram(&iris, mcp.port, &module_sha, environments[0].as_ref())?;
+    let mut running = rig::start_node(options, &iris)?;
+    rig::wait_ci_ready(options, &iris, crate::timing::secs(20))?;
+    rig::start_cpu(options, &iris)?;
+    rig::wait_serial(
+        options,
+        &mut running,
+        "BOOT-READY",
+        crate::timing::secs(120),
+    )?;
+
+    // x86 node.
+    fs::create_dir_all(&x86.state_dir)
+        .map_err(|error| format!("create {}: {error}", x86.state_dir.display()))?;
+    let mut lines = Vec::new();
+    if let Some(environment) = environments[1].as_ref() {
+        for (key, value) in x86.environment(mcp.port, Some(environment)) {
+            lines.push(format!("{key}={value}"));
+        }
+    }
+    let mcp_image = fs::read(&options.x86_module).unwrap_or_default();
+    let wasm_image = fs::read(&options.wasm).unwrap_or_default();
+    let disk = x86.state_dir.join("boot.img");
+    write_boot_disk(
+        &disk,
+        &lines,
+        (&mcp_image, x86_mcp.port),
+        (&wasm_image, wasm.port),
+    )?;
+    let mut child = launch(options, &x86, &disk)?;
+
+    let result = (|| -> Result<(), String> {
+        wait_boot(&x86.serial_log, crate::timing::secs(120))?;
+        // The Indy listener appears well after its BOOT-READY, once its
+        // userland has run.  A relay session that connects before the guest
+        // side is listening is accepted by iris and then holds the forward's
+        // single pending slot, so the member's own connection is reset behind
+        // it.  Wait for both listeners, as the shared run path does.
+        wait_listen(&[&iris, &x86], crate::timing::secs(120))?;
+        let _relay = crate::relay::MeshRelay::start(
+            (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
+            (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
+        )
+        .map_err(|error| format!("start mesh relay: {error}"))?;
+        let views = wait_two_members(&nodes, crate::timing::secs(120))?;
+        for view in views {
+            println!("x86-mixed: {view}");
+        }
+        Ok(())
+    })();
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let stop = rig::stop_node(options, &mut running);
+    result?;
+    stop?;
+    println!("x86-mixed: Indy and x86 joined on one epoch");
+    Ok(0)
 }
 
 pub fn mesh(options: &Options) -> Result<i32, String> {

@@ -101,6 +101,7 @@ fn run() -> Result<i32, String> {
         Action::PrintConfig => print_config(&options),
         Action::X86Smoke => x86::smoke(&options),
         Action::X86Mesh => x86::mesh(&options),
+        Action::X86Mixed => x86::mixed(&options),
         Action::Clean => clean(&options),
     }
 }

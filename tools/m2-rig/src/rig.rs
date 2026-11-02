@@ -53,6 +53,8 @@ pub enum Action {
     X86Smoke,
     /// Boot two x86 QEMU guests and join them through the relay.
     X86Mesh,
+    /// Join one Indy guest and one x86 guest through the relay.
+    X86Mixed,
     /// Remove the rig work directory.
     Clean,
 }
@@ -72,6 +74,7 @@ impl Action {
             "print-config" => Self::PrintConfig,
             "x86-smoke" => Self::X86Smoke,
             "x86-mesh" => Self::X86Mesh,
+            "x86-mixed" => Self::X86Mixed,
             "clean" => Self::Clean,
             _ => return None,
         })
@@ -191,10 +194,15 @@ pub struct Options {
     pub iris: PathBuf,
     /// `iris-ci` binary.
     pub iris_ci: PathBuf,
-    /// PROM image for iris, or the x86 kernel ELF for `x86-smoke`.
+    /// x86 kernel ELF for the x86 actions, or the PROM for iris when `prom`
+    /// is not set.
     pub rom: PathBuf,
+    /// PROM image for iris.  Defaults to `rom`.
+    pub prom: PathBuf,
     /// Fresh MCP module image.
     pub module: PathBuf,
+    /// x86 MCP module image for a mixed run.  `module` is the MIPS image.
+    pub x86_module: PathBuf,
     /// Wasm module image (x86 autoload).
     pub wasm: PathBuf,
     /// qemu-system-x86_64 binary.
@@ -273,7 +281,9 @@ where
     let mut iris = None;
     let mut iris_ci = None;
     let mut rom = None;
+    let mut prom = None;
     let mut module = None;
+    let mut x86_module = None;
     let mut wasm = None;
     let mut qemu = None;
     let mut base_port = 9100u16;
@@ -295,7 +305,11 @@ where
             "--iris" => iris = Some(PathBuf::from(next_value(&mut iter, "--iris")?)),
             "--iris-ci" => iris_ci = Some(PathBuf::from(next_value(&mut iter, "--iris-ci")?)),
             "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
+            "--prom" => prom = Some(PathBuf::from(next_value(&mut iter, "--prom")?)),
             "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
+            "--x86-module" => {
+                x86_module = Some(PathBuf::from(next_value(&mut iter, "--x86-module")?))
+            }
             "--wasm" => wasm = Some(PathBuf::from(next_value(&mut iter, "--wasm")?)),
             "--qemu" => qemu = Some(PathBuf::from(next_value(&mut iter, "--qemu")?)),
             "--base-port" => {
@@ -361,6 +375,7 @@ where
     let rom = rom.unwrap_or_else(|| work.join("irix7-rom.bin"));
     let module = module.unwrap_or_else(|| work.join("mcp.module"));
 
+    let prom = prom.unwrap_or_else(|| rom.clone());
     Ok(Some(Options {
         action,
         repo,
@@ -368,7 +383,9 @@ where
         iris,
         iris_ci,
         rom,
+        prom,
         module,
+        x86_module: x86_module.unwrap_or_default(),
         wasm: wasm.unwrap_or_default(),
         qemu: qemu.unwrap_or_else(|| PathBuf::from("qemu-system-x86_64")),
         base_port,
@@ -1002,7 +1019,7 @@ pub fn start_node(options: &Options, node: &Node) -> Result<RunningNode, String>
         .arg("--port-base")
         .arg(node.port_base.to_string())
         .arg("--prom")
-        .arg(&options.rom)
+        .arg(&options.prom)
         .arg("--nvram")
         .arg(node.state_dir.join("nvram.bin"))
         .arg("--ci")
@@ -1664,7 +1681,9 @@ mod tests {
             iris: PathBuf::from("iris"),
             iris_ci: PathBuf::from("iris-ci"),
             rom: PathBuf::from("rom"),
+            prom: PathBuf::from("rom"),
             module: PathBuf::from("module"),
+            x86_module: PathBuf::from("module"),
             wasm: PathBuf::new(),
             qemu: PathBuf::from("qemu-system-x86_64"),
             base_port: 9100,

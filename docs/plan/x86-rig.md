@@ -50,8 +50,11 @@ HTTP fixture.
 
 The configuration must carry what the Indy rig puts in NVRAM:
 
-- `mesh.peer=10.0.2.2:<relay-port>` for the relay transport, where 10.0.2.2 is
-  QEMU's host alias inside the user network;
+- `mesh.peer=10.0.2.2:<peer-mesh-port>` for the relay transport, where
+  10.0.2.2 is QEMU's host alias inside the user network and the port is the
+  peer node's host mesh forward.  Slirp maps that address to host loopback, so
+  the member reaches the root's forward directly; the relay is the second
+  path the rig opens for restarts, as on the iris side;
 - the node identity keys the join uses (`mesh.peer_id`, authority key), copied
   from the same lab authority the iris rig uses;
 - the MCP token when the run sets one.
@@ -96,7 +99,11 @@ restarted member's transcript kept as `serial-n1-boot2.log`.
   10.0.2.2. Whether slirp allows that connection to a loopback-bound listener
   must be tested before the gate depends on it.
 - **Timing.** The x86 guest boots in seconds and has a real timer, but QEMU on a
-  loaded runner still changes ordering. The gate's waits stay generous.
+  loaded runner still changes ordering. The gate's waits stay generous.  The
+  Indy's mesh listener starts well after its `BOOT-READY`, so the mixed action
+  waits for both listener lines before it opens the relay; a relay session
+  that arrives first holds the forward's single pending slot and the member's
+  own connection is reset behind it.
 - **No shell.** The existing guest-to-guest probe cannot be reused; replacing it
   must not weaken the control-plane check.
 - **MAC collisions.** Two nodes must never share `52:54:00:12:34:56`, the QEMU
@@ -105,8 +112,13 @@ restarted member's transcript kept as `serial-n1-boot2.log`.
 ## Slices
 
 1. Launcher, boot-disk writer, readiness, `up`/`down`/`status` for one x86 node;
-   verify by fetching `/mcp` from the host.
+   verify by fetching `/mcp` from the host.  Done: `x86-smoke`.
 2. Two nodes, mesh configuration, join through the relay; verify `/mesh/join`
-   and `/mesh/homes` on both.
-3. The full M2 mode: route, migration, member and root restart.
-4. Mixed run: one iris and one x86 node in the same mesh.
+   and `/mesh/homes` on both.  Done: `x86-mesh` covers this through `homes`.
+3. The full M2 mode: route, migration, member and root restart.  Done:
+   `x86-mesh` runs route/`MOVED` both ways, the L0 migration, and both
+   restarts with the epoch restored.
+4. Mixed run: one iris and one x86 node in the same mesh.  Done: `x86-mixed`
+   joins both machines through the relay and checks that both report epoch 2,
+   two members and the same homes digest.  The MCP module is built per target;
+   `--module` is the MIPS image and `--x86-module` the x86 image.
