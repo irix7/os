@@ -34,6 +34,13 @@ jobs:
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
           MODULE_SIGNING_EPOCH: ${{ vars.MODULE_SIGNING_EPOCH }}
         run: ./scripts/release/build.sh
+      - name: Build the PowerPC floppy image
+        run: |
+          if ! command -v hformat >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y hfsutils
+          fi
+          tools/powerpc-floppy.sh dist/irix7-powerpc-floppy.img
       - name: Boot-check the x86_64 release image
         run: |
           if ! command -v qemu-system-x86_64 >/dev/null 2>&1; then
@@ -72,6 +79,7 @@ jobs:
           files: |
             dist/*.bin
             dist/*.elf
+            dist/*.img
             dist/*.module
             dist/*.conf
             dist/*.json

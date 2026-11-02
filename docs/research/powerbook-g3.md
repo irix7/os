@@ -106,6 +106,31 @@ the development loop a trusted LAN is acceptable, and fetching the kernel and
 modules in one stage avoids needing a PowerPC NIC driver in the kernel for the
 first console tests.
 
+### Release floppy image
+
+The release workflow builds `irix7-powerpc-floppy.img` with
+`tools/powerpc-floppy.sh`: a 1.44 MB HFS floppy containing `IRIX7.XCF` and
+`README.TXT`.  `IRIX7.XCF` is the kernel wrapped by `tools/ppc-xcoff`; the
+wrapper is needed because Open Firmware 2.0.1 loads XCOFF and the kernel links
+as ELF.  This image boots the kernel directly; it is not the netbooter.
+
+Write it with a USB floppy drive on macOS:
+
+```sh
+hdiutil convert irix7-powerpc-floppy.img -format UDRW -o irix7-powerpc-floppy.dmg
+```
+
+Then in Disk Utility: File > Open Disk Image, select the `.dmg`, select the
+floppy drive, and Restore.  `sudo dd if=irix7-powerpc-floppy.img of=/dev/rdiskN
+bs=512` is the direct alternative; check the device with `diskutil list` before
+writing.  The boot command is `boot fd2:,\IRIX7.XCF` with the module in the
+left MediaBay.
+
+The image has not been booted on real hardware yet.  The kernel's console is
+the ESCC channel named by the device tree; if the Geoport is on the other
+channel the boot will be silent, so capture the Open Firmware output before
+changing the console path.
+
 ## Bring-up slices
 
 1. Open Firmware loads an image and prints to the firmware console; read the
