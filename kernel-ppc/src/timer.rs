@@ -7,7 +7,7 @@
 //! once the kernel's own address translation is active.
 
 use core::arch::asm;
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 pub const MSR_EE: u32 = 1 << 15;
 
@@ -19,8 +19,15 @@ pub static TICKS: AtomicU32 = AtomicU32::new(0);
 #[no_mangle]
 pub static mut TICK_RELOAD: u32 = 0;
 
+static FREQUENCY: AtomicU32 = AtomicU32::new(0);
+
 pub fn ticks() -> u32 {
-    TICKS.load(core::sync::atomic::Ordering::Relaxed)
+    TICKS.load(Ordering::Relaxed)
+}
+
+/// The timebase frequency the device tree reported, for bounded waits.
+pub fn frequency() -> u32 {
+    FREQUENCY.load(Ordering::Relaxed)
 }
 
 /// The low word of the timebase, used to bound waits.
@@ -36,6 +43,7 @@ pub fn timebase() -> u32 {
 /// Program a 10 ms period so ten ticks take a tenth of a second at any
 /// plausible timebase frequency.  Interrupts stay disabled.
 pub fn prepare(timebase_hz: u32) {
+    FREQUENCY.store(timebase_hz, Ordering::Relaxed);
     let reload = timebase_hz / 100;
     unsafe {
         TICK_RELOAD = reload;

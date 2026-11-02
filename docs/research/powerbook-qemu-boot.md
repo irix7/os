@@ -1,12 +1,14 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the fourth boot slice of #287, tracked as #301, works. `kernel-ppc`
-is loaded by OpenBIOS, reads the machine description from the device tree,
-installs its own BAT entries, points SDR1 at an empty table, prints to the ESCC
-serial port, takes ten decrementer ticks and prints `BOOT-OK`. It then proves
-the DSI, ISI, alignment, program and system-call vectors in order, prints
-`TRAPS-OK`, takes ten external interrupts from the CUDA timer through the
-Heathrow interrupt controller at the `0x500` vector, prints `IRQ-OK count=10`
+**Status:** the fifth boot slice of #287, tracked as #305, exposes the Mac I/O
+ATA disk read to the kernel. `kernel-ppc` is loaded by OpenBIOS, reads the
+machine description from the device tree, installs its own BAT entries, points
+SDR1 at an empty table, prints to the ESCC serial port, takes ten decrementer
+ticks and prints `BOOT-OK`. It then proves the DSI, ISI, alignment, program and
+system-call vectors in order, prints `TRAPS-OK`, takes ten external interrupts
+from the CUDA timer through the Heathrow interrupt controller at the `0x500`
+vector, prints `IRQ-OK count=10`, identifies the ATA disk on the first Mac I/O
+channel, reads the signature sector at LBA 4 with polled PIO, prints `ATA-OK`
 and halts. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build.
 
 ## The `-kernel` path
@@ -71,6 +73,8 @@ mapping; see [The kernel's mapping](#the-kernels-mapping).
 | `/pci/mac-io/escc:reg` | the ESCC offset inside the Mac I/O BAR (`0x13000`) |
 | `/pci/mac-io/via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
 | `/pci/mac-io/via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
+| `/pci/mac-io/ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
+| `/pci/mac-io/ata-3@20000:AAPL,interrupts` | the ATA channel's interrupt controller line (`0x0d`) |
 | `/cpus/PowerPC,750@0:timebase-frequency` | `16600000` Hz on g3beige |
 
 The Mac I/O BAR is assigned, not fixed. With no extra PCI devices it is
@@ -238,6 +242,40 @@ IRQ-OK count=10
 The wait is bounded by two seconds of timebase, so a timer that never fires
 prints `ppc: irq stalled count=N` and halts instead of hanging the gate.
 
+## ATA disk
+
+The disk path is the Mac I/O ATA controller, not an ISA IDE port. QEMU's
+`hw/ide/macio.c` places each channel in the Mac I/O BAR at a firmware-assigned
+offset and gives each task-file register a 16-byte stride. The `ata-3` node
+publishes two `reg` ranges — the task-file window and the DBDMA channel — plus
+`AAPL,interrupts = <line, dma-line>`. `platform::ata` walks the children of
+`/pci/mac-io`, accepts `device_type = "ata"`, prefers the channel with a `disk`
+child, and takes the first `reg` range. The channel base is the Mac I/O BAR plus
+that offset; no ATA address is compiled in.
+
+`ata::Channel` performs two operations, both polled:
+
+- `IDENTIFY DEVICE` (`0xec`) after selecting device 0, reading 256 data words;
+- one `READ SECTORS` (`0x20`) for a 28-bit LBA.
+
+Every wait is bounded by two seconds of timebase and checks `BSY`, `DRQ`,
+`DRDY`, `ERR` and `DF`. The drive's `nIEN` bit is set, so the channel never
+raises its interrupt line; line `0x0d` is read from the tree and logged but
+stays masked at the Heathrow controller.
+
+The data port is a 16-bit little-endian register on a big-endian bus. A
+halfword load returns the two wire bytes in memory order, which is the order a
+sector buffer needs. Identify word fields are little-endian on the wire, so
+each word is byte-swapped before the feature word and the LBA capacities are
+read; the model string then comes out of the swapped word in character order.
+
+This slice also corrects the BAT layer. The 750's BL field is the block size in
+128 KiB units minus one, not a power-of-two exponent. The 512 KiB Mac I/O block
+had been installed as BL=2 (384 KiB) instead of BL=3 (512 KiB), so the
+translation did not cover the ATA window at `+0x20080` and the first ATA
+register access raised a DSI. `mmu::Bat::upper` now encodes
+`size / 128 KiB - 1`.
+
 ## Gate
 
 The build needs `cargo`, a host C compiler for the compiler-builtins build
@@ -252,8 +290,13 @@ The image is built with `-Zbuild-std=core`, the raw binary is extracted with
 
 ```sh
 qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
+  -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
   -display none -serial file:serial.log -monitor none -no-reboot
 ```
+
+The gate creates `ata.img` as 2048 zero sectors and writes
+`IRIX7-ATA-SIG001` at LBA 4. It attaches that image to the first Mac I/O ATA
+channel, so the device tree's `ata-3@20000` node has a `disk` child.
 
 The g3beige machine has no `isa-debug-exit` device and no RTAS shutdown call,
 so the kernel halts in a spin loop after `ppc: halted` and the gate stops QEMU
@@ -278,6 +321,9 @@ order it must appear, then parses the exception reports:
 - at least four external interrupts were counted, `IRQ-OK` repeats the same
   count, and the controller's pending-event and the timer's flag register are
   both zero after the last acknowledge;
+- the ATA window from the `ata-3` node lies inside the Mac I/O BAT, the identify
+  model is `QEMU HARDDISK`, the sector count equals the attached image's size in
+  512-byte sectors, and the bytes read from LBA 4 match the image;
 - the image contains no FP instruction.
 
 Observed serial output:
@@ -297,6 +343,8 @@ ppc: of client=0xfff025d0
 ppc: escc=0x81093000
 ppc: memory base=0x0 size=64 MiB
 ppc: timebase=16600000 Hz
+ppc: ata reg base=0x810a0000 size=4096
+ppc: ata irq=0xd
 ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
 ppc: decrementer ticks=10
 BOOT-OK
@@ -322,6 +370,9 @@ ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1002b20 srr1=0xa030
 ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1002b20 srr1=0xa030
 ppc: irq pending=0x0 ifr=0x0
 IRQ-OK count=10
+ppc: ata model=QEMU HARDDISK sectors=2048 lba48=1
+ppc: ata lba=4 sector=49524958372d4154412d534947303031
+ATA-OK
 ppc: halted
 ```
 
@@ -341,6 +392,10 @@ ppc: halted
 - The external interrupt path is the Heathrow controller and one timer source,
   not a general interrupt layer. There is no console input, block device,
   network device, ADB or PMU, and no handler is shared between devices.
+- The ATA driver is polled PIO only. It reads one 512-byte sector per command,
+  addresses LBA28, and performs no DMA, writes, ATAPI commands, partition
+  parsing or filesystem access. The block layer and the interrupt-driven path
+  come with the disk service slice.
 - The PowerBook G3 M4753 has no OpenPIC; a New World machine with the KeyLargo
   OpenPIC needs a separate controller driver and a different machine tree.
 - The ESCC baud generator is not programmed; QEMU's model ignores it. Real

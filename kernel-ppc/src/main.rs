@@ -10,13 +10,15 @@
 //! exception path it owns: a DSI, an ISI, an alignment fault, an illegal
 //! instruction and one system call round-trip.  Finally it programs the CUDA
 //! timer, takes external interrupts through the Heathrow controller at the
-//! 0x500 vector, acknowledges each one and reports the count.
+//! 0x500 vector, acknowledges each one and reports the count, then identifies
+//! the ATA disk named by the Mac I/O device tree and reads one PIO sector.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
+mod ata;
 mod irq;
 mod mmu;
 mod of;
@@ -46,6 +48,10 @@ pub(crate) fn print_dec(value: u32) {
     irix7_fmt::decimal(u64::from(value), &mut |byte| serial::write_byte(byte));
 }
 
+pub(crate) fn print_dec64(value: u64) {
+    irix7_fmt::decimal(value, &mut |byte| serial::write_byte(byte));
+}
+
 pub(crate) fn print_line(bytes: &[u8]) {
     serial::write(bytes);
     serial::write_byte(b'\n');
@@ -58,6 +64,22 @@ fn print_range(label: &[u8], base: u32, size: u32) {
     serial::write(b" size=");
     print_dec(size);
     serial::write_byte(b'\n');
+}
+
+fn print_hex_bytes(bytes: &[u8]) {
+    for byte in bytes {
+        irix7_fmt::hex(u64::from(*byte), 2, false, &mut |digit| {
+            serial::write_byte(digit)
+        });
+    }
+}
+
+fn print_model(model: &[u8; 40]) {
+    let mut end = model.len();
+    while end > 0 && (model[end - 1] == b' ' || model[end - 1] == 0) {
+        end -= 1;
+    }
+    serial::write(&model[..end]);
 }
 
 pub(crate) fn halt() -> ! {
@@ -110,6 +132,14 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
+    let disk = match platform::ata(&client, &macio) {
+        Some(disk) => disk,
+        None => {
+            print_line(b"ppc: device tree has no ATA disk");
+            print_line(b"ppc: halted");
+            halt();
+        }
+    };
 
     let io_end = match macio.base.checked_add(macio.size) {
         Some(end) => end,
@@ -158,6 +188,11 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_dec(timebase);
     print_line(b" Hz");
 
+    print_range(b"ppc: ata reg", disk.base, disk.size);
+    serial::write(b"ppc: ata irq=");
+    print_hex(disk.line);
+    serial::write_byte(b'\n');
+
     irq::prepare(controller.base, cuda.base, cuda.line);
 
     timer::enable();
@@ -200,6 +235,37 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write(b"IRQ-OK count=");
     print_dec(count);
     serial::write_byte(b'\n');
+
+    let channel = ata::Channel::new(disk.base);
+    let identify = match channel.identify() {
+        Ok(identify) => identify,
+        Err(error) => {
+            error.report();
+            print_line(b"ppc: halted");
+            halt();
+        }
+    };
+    serial::write(b"ppc: ata model=");
+    print_model(&identify.model);
+    serial::write(b" sectors=");
+    print_dec64(identify.sectors);
+    serial::write(b" lba48=");
+    print_dec(u32::from(identify.lba48));
+    serial::write_byte(b'\n');
+
+    const SIGNATURE_LBA: u32 = 4;
+    let mut sector = [0u8; ata::SECTOR_SIZE];
+    if let Err(error) = channel.read_sector(SIGNATURE_LBA, &mut sector) {
+        error.report();
+        print_line(b"ppc: halted");
+        halt();
+    }
+    serial::write(b"ppc: ata lba=");
+    print_dec(SIGNATURE_LBA);
+    serial::write(b" sector=");
+    print_hex_bytes(&sector[..16]);
+    serial::write_byte(b'\n');
+    print_line(b"ATA-OK");
 
     print_line(b"ppc: halted");
     halt()
