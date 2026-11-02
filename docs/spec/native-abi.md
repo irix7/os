@@ -1577,6 +1577,8 @@ success.  `SYS_EXIT` does not return.
 | 37 | `thread_create` | `entry`, `arg`, `stack_top`, `tcb` |
 | 38 | `yield` | — |
 | 39 | `thread_exit` | `status` |
+| 40 | `futex_wait` | `uaddr`, `expected`, `timeout_ms` |
+| 41 | `futex_wake` | `uaddr`, `count` |
 
 The namespace behind these calls is the in-memory ramfs: a mutable tree of
 inodes with names, sizes and permissions.  `open` takes the path, flags and
@@ -1654,10 +1656,10 @@ These are bring-up boundaries, not the v1 POSIX contract.
 ### 5.9 v0 cooperative thread gate
 
 The thread calls share the flat gate and the image's address space.  They are
-cooperative: a thread runs until it yields, exits, or the image exits.  There is no
-timer preemption and no per-thread kernel stack; a switch happens only at a syscall
-boundary, so the syscall's kernel frames complete on the single kernel stack before the
-incoming user frame is restored.
+cooperative: a thread runs until it yields, exits, parks on a futex, or the image exits.
+There is no timer preemption and no per-thread kernel stack; a switch happens only at a
+syscall boundary, so the syscall's kernel frames complete on the single kernel stack
+before the incoming user frame is restored.
 
 `thread_create(entry, arg, stack_top, tcb)` returns the new thread id (2 and up; the
 main thread is 1).  `entry` must be word-aligned and mapped for execute, `stack_top`
@@ -1670,14 +1672,43 @@ The kernel owns only the TCB header; the libc owns the rest and may append a key
 `yield()` saves the current frame with `EPC` advanced past the gate, selects the next
 runnable thread round-robin and returns through the exception return path into it.  With
 no other runnable thread it returns `CELL_OK` without switching.  `thread_exit(status)`
-marks the caller dead, records the status and resumes the next thread; if it was the last
-live thread the image exits as `exit` would.  A `SYS_EXIT` from any thread ends the whole
-image (`exit_group` semantics), not just the caller.
+marks the caller dead, records the status and resumes the next thread; with none left the
+image finishes as `exit` would.  A `SYS_EXIT` from any thread ends the whole image
+(`exit_group` semantics), not just the caller.
 
-The table holds eight threads.  A thread id is unique only while its thread is alive;
-dead slots are reused.  There is no join yet: the exit status stays in the slot until it
-is reused.  Preemption, futexes, `pthread_create`/`pthread_join` and a process table are
-later slices.
+`futex_wait(uaddr, expected, timeout_ms)` parks the calling thread while the 32-bit
+word at `uaddr` equals `expected`.  The address must be 4-byte aligned and inside a
+mapped user range (`CELL_E_INVAL` for misalignment, `CELL_E_FAULT` otherwise).  The
+word is compared before the thread parks, so a mismatch returns `CELL_E_AGAIN` without
+a switch; a matching word with a zero timeout returns `CELL_E_TIMEDOUT` without
+parking.  The comparison is a single 32-bit load, and the kernel does not re-check it
+on wake.
+
+`futex_wake(uaddr, count)` marks up to `count` threads parked on that address
+runnable, writes `CELL_OK` into their saved `$v0` and returns the number woken; a
+wake with no waiter returns 0.  The woken threads run when the waker next yields or
+exits, so the waker sees the count before either waiter resumes.  `count` is unsigned:
+a caller may pass `0xFFFF_FFFF` to wake every waiter.
+
+Every parked wait is bounded by the poll rule.  `timeout_ms` is a relative millisecond
+timeout; a negative value (POSIX "no deadline") is bounded by `WAIT_LIMIT_MS` (100 ms)
+and a longer positive value is clamped to the same bound.  Timeouts are applied at
+scheduling points (yield, block or exit), because the cooperative kernel has no timer
+interrupt, and the word is read again then: a changed value resumes the waiter with
+`CELL_E_AGAIN`, an unchanged one with `CELL_E_TIMEDOUT`.  When no other thread is
+runnable no wake can arrive, so the wait is performed in the kernel for the same bound
+instead of parking.  The libc re-parks when a bounded expiry precedes a real deadline
+and when the caller asked to wait indefinitely; a wake is the normal path.
+
+A thread exit does not abandon a parked peer.  When the last runnable thread exits
+while another thread is still parked, the kernel stays in the kernel until the parked
+thread's deadline, resumes it with its timeout result and only then reports the image
+as finished.  `SYS_EXIT` from any thread still ends every thread.
+
+The table holds eight threads and each parked futex wait occupies one slot.  A thread
+id is unique only while its thread is alive; dead slots are reused.  There is no join
+yet: the exit status stays in the slot until it is reused.  Preemption,
+`pthread_create`/`pthread_join` and a process table are later slices.
 
 ---
 

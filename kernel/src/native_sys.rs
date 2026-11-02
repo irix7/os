@@ -13,15 +13,15 @@
 
 use native_abi::syscall::{
     SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXIT, SYS_FCNTL, SYS_FSTAT,
-    SYS_FTRUNCATE, SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_LSEEK, SYS_MKDIR,
-    SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL,
-    SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SIGNAL, SYS_STAT,
-    SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TRUNCATE,
-    SYS_UNLINK, SYS_WRITE, SYS_YIELD,
+    SYS_FTRUNCATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE, SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY,
+    SYS_GETPID, SYS_LSEEK, SYS_MKDIR, SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN,
+    SYS_PIPE, SYS_PIPE2, SYS_POLL, SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME,
+    SYS_RMDIR, SYS_SIGNAL, SYS_STAT, SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE,
+    SYS_THREAD_EXIT, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE, SYS_YIELD,
 };
 
 use crate::syserr::{SysResult, CELL_E_NOSYS};
-use crate::thread::Exit;
+use crate::thread::{Exit, Wait};
 use crate::traps::TrapFrame;
 
 /// What the trap epilogue must do with `EPC`.
@@ -68,6 +68,15 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         };
     }
 
+    if number == SYS_FUTEX_WAIT {
+        // A wait may park this thread, so it returns through the same
+        // frame-replacement path as `yield` and `thread_exit`.
+        return match crate::thread::futex_wait(tf, a0, a1, a2 as i32) {
+            Wait::Switched => Gate::Resume,
+            Wait::Continue => Gate::Continue,
+        };
+    }
+
     let result: SysResult<u64> = match number {
         SYS_WRITE => crate::user::write_fd(a0, a1, a2).map(|count| count as u64),
         SYS_READ => crate::user::read_fd(a0, a1, a2).map(|count| count as u64),
@@ -108,6 +117,7 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         SYS_FCNTL => crate::user::fcntl_user(a0, a1, a2).map(|value| value as u64),
         SYS_SIGNAL => Ok(0),
         SYS_THREAD_CREATE => crate::thread::create(tf.status, a0, a1, a2, a3).map(|tid| tid as u64),
+        SYS_FUTEX_WAKE => crate::thread::futex_wake(a0, a1).map(|woken| woken as u64),
         _ => Err(CELL_E_NOSYS),
     };
 
