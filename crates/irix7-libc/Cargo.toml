@@ -9,6 +9,9 @@ publish = false
 name = "irix7c"
 crate-type = ["rlib"]
 
+[dependencies]
+native-abi = { path = "../native-abi" }
+
 [profile.release]
 panic = "abort"
 opt-level = 2

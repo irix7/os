@@ -257,7 +257,7 @@
 +    st_ctim
 +);
 +const _: () = assert!(
-+    core::mem::offset_of!(stat, __st_spare) == core::mem::offset_of!(native_abi::stat, _reserved)
++    core::mem::offset_of!(stat, __st_spare) == core::mem::offset_of!(native_abi::stat, _pad)
 +);
 +same_fields!(
 +    dirent,

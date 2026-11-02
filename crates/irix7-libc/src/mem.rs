@@ -12,10 +12,10 @@ static mut HEAP_LEFT: usize = 0;
 
 unsafe fn grow(minimum: usize) -> bool {
     let request = minimum.max(32 * 1024);
-    let result = syscall2(SYS_MMAP, 0, request);
-    if result == usize::MAX || result == 0 {
-        return false;
-    }
+    let result = match syscall2(SYS_MMAP, 0, request) {
+        Ok(address) if address != 0 => address,
+        _ => return false,
+    };
     HEAP_NEXT = result;
     HEAP_LEFT = request;
     true

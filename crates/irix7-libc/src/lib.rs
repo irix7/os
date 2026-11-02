@@ -4,7 +4,8 @@
 //! This is deliberately not the final POSIX libc.  It implements the small
 //! symbol set a static, single-threaded `std` hello needs, so the toolchain
 //! and loader can be validated before the relibc fork is brought up.  The
-//! functions use the provisional kernel syscall ABI.
+//! functions use the v0 native gate (`syscall 0x1F7`) and map `CELL_E_*`
+//! statuses to `errno`; they do not guess an error code.
 #![cfg(target_arch = "mips64")]
 #![no_std]
 #![feature(asm_experimental_arch)]

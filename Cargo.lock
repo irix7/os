@@ -627,6 +627,9 @@ version = "0.1.0"
 [[package]]
 name = "irix7-libc"
 version = "0.1.0"
+dependencies = [
+ "native-abi",
+]
 
 [[package]]
 name = "irix7-netif"
@@ -662,6 +665,7 @@ dependencies = [
  "module-abi",
  "module-block",
  "module-tcp",
+ "native-abi",
  "platform-api",
  "rand_core",
  "smoltcp",

@@ -42,6 +42,7 @@ erofs = { path = "../crates/erofs", default-features = false, optional = true }
 hpc3 = { path = "../crates/hpc3" }
 irix-elf = { path = "../crates/irix-elf" }
 mesh-core = { path = "../crates/mesh-core" }
+native-abi = { path = "../crates/native-abi" }
 m1-policy-bridge = { path = "../crates/m1-policy-bridge" }
 mesh-service = { path = "../crates/mesh-service", default-features = false }
 platform-api = { path = "../crates/platform-api" }

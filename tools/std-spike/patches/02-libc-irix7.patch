@@ -168,8 +168,8 @@
 +    pub struct stat {
 +        pub st_dev: dev_t,
 +        pub st_ino: ino_t,
-+        pub st_mode: mode_t,
 +        pub st_nlink: nlink_t,
++        pub st_mode: mode_t,
 +        pub st_uid: uid_t,
 +        pub st_gid: gid_t,
 +        pub st_rdev: dev_t,
@@ -179,9 +179,9 @@
 +        pub st_atim: timespec,
 +        pub st_mtim: timespec,
 +        pub st_ctim: timespec,
-+        /// Reserved so the structure can grow without breaking the ABI
-+        /// (spec §8: append-only only inside reserved space).
-+        pub __st_spare: [u8; 16],
++        /// Distributed with relibc's n32 `struct stat`.
++        /// The trailing reserve keeps the total at 136 bytes.
++        pub __st_spare: [u8; 24],
 +    }
 +
 +    pub struct statvfs {

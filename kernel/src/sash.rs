@@ -125,7 +125,7 @@ pub fn execute(line: &[u8], out: &mut dyn Sink) -> Outcome {
         b"cd" => {
             if argument.is_empty() {
                 out.write(b"cd: missing directory\r\n");
-            } else if fd::set_cwd(argument) {
+            } else if fd::set_cwd(argument).is_ok() {
                 // cd is silent on success, as in sash.
             } else {
                 out.write(b"cd: no such directory\r\n");
@@ -520,16 +520,23 @@ fn list(out: &mut dyn Sink, path: &[u8]) {
     } else {
         path
     };
-    let fd = fd::open_path(path, 0);
-    if fd < 0 {
-        out.write(b"ls: no such file or directory\r\n");
-        return;
-    }
+    let fd = match fd::open_path(path, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            out.write(b"ls: no such file or directory\r\n");
+            return;
+        }
+    };
     let mut writer = Writer { out };
     if matches!(fd::kind(fd), Kind::Dir(_)) {
         let mut name = [0u8; 256];
         let mut index = 0usize;
-        while let Some((kind, _)) = fd::readdir(fd, index, &mut name) {
+        loop {
+            let entry = match fd::readdir(fd, index, &mut name) {
+                Ok(Some(entry)) => entry,
+                Ok(None) | Err(_) => break,
+            };
+            let (kind, _) = entry;
             let len = name.iter().position(|byte| *byte == 0).unwrap_or(0);
             if &name[..len] != b"." && &name[..len] != b".." {
                 let _ = writer.write_str(core::str::from_utf8(&name[..len]).unwrap_or("?"));
@@ -540,7 +547,7 @@ fn list(out: &mut dyn Sink, path: &[u8]) {
             }
             index += 1;
         }
-    } else if let Some((mode, size)) = fd::metadata(fd) {
+    } else if let Ok((mode, size)) = fd::metadata(fd) {
         let _ = writer.write_str("file mode=0o");
         let _ = write!(writer, "{:o} size={}\r\n", mode, size);
     }
@@ -552,22 +559,26 @@ fn cat(out: &mut dyn Sink, path: &[u8]) {
         out.write(b"cat: missing file\r\n");
         return;
     }
-    let fd = fd::open_path(path, 0);
-    if fd < 0 {
-        out.write(b"cat: no such file\r\n");
-        return;
-    }
+    let fd = match fd::open_path(path, 0) {
+        Ok(fd) => fd,
+        Err(_) => {
+            out.write(b"cat: no such file\r\n");
+            return;
+        }
+    };
     let mut buffer = [0u8; 512];
     loop {
-        let count = fd::read(fd, &mut buffer);
-        if count < 0 {
-            out.write(b"cat: read error\r\n");
-            break;
-        }
+        let count = match fd::read(fd, &mut buffer) {
+            Ok(count) => count,
+            Err(_) => {
+                out.write(b"cat: read error\r\n");
+                break;
+            }
+        };
         if count == 0 {
             break;
         }
-        out.write(&buffer[..count as usize]);
+        out.write(&buffer[..count]);
     }
     let _ = fd::close(fd);
 }

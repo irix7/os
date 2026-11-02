@@ -35,16 +35,23 @@ fn time_and_io_structs() {
 }
 
 #[test]
-fn stat_is_the_recommended_128_byte_layout() {
-    assert_eq!((size_of::<stat>(), align_of::<stat>()), (128, 8));
+fn stat_is_the_relibc_136_byte_layout() {
+    assert_eq!((size_of::<stat>(), align_of::<stat>()), (136, 8));
+    assert_eq!(offset_of!(stat, st_dev), 0);
     assert_eq!(offset_of!(stat, st_ino), 8);
+    assert_eq!(offset_of!(stat, st_nlink), 16);
+    assert_eq!(offset_of!(stat, st_mode), 20);
+    assert_eq!(offset_of!(stat, st_uid), 24);
+    assert_eq!(offset_of!(stat, st_gid), 28);
+    assert_eq!(offset_of!(stat, st_rdev), 32);
     assert_eq!(offset_of!(stat, st_size), 40);
     assert_eq!(offset_of!(stat, st_blksize), 48);
+    assert_eq!(offset_of!(stat, _pad0), 52);
     assert_eq!(offset_of!(stat, st_blocks), 56);
     assert_eq!(offset_of!(stat, st_atim), 64);
     assert_eq!(offset_of!(stat, st_mtim), 80);
     assert_eq!(offset_of!(stat, st_ctim), 96);
-    assert_eq!(offset_of!(stat, _reserved), 112);
+    assert_eq!(offset_of!(stat, _pad), 112);
 }
 
 #[test]
@@ -129,4 +136,16 @@ fn constant_sanity() {
     assert_eq!(O_RDWR, 2);
     assert_eq!(S_IFMT & S_IFREG, S_IFREG);
     assert_eq!(MAP_ANONYMOUS, MAP_ANON);
+}
+
+#[test]
+fn native_gate_and_status_mapping() {
+    assert_eq!(NATIVE_GATE_CODE, 0x1F7);
+    assert_eq!(NATIVE_GATE_INSTRUCTION, 0x0000_7DCC);
+    assert_eq!(status_to_errno(CELL_OK), 0);
+    assert_eq!(status_to_errno(CELL_E_BADF), EBADF);
+    assert_eq!(status_to_errno(CELL_E_NOENT), ENOENT);
+    assert_eq!(status_to_errno(CELL_E_FAULT), EFAULT);
+    assert_eq!(status_to_errno(CELL_E_NOTSUP), ENOTSUP);
+    assert_eq!(status_to_errno(CELL_E_REVOKED), EBADF);
 }

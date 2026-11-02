@@ -2,12 +2,18 @@
 
 Status: **bring-up result**. 2026-10-25.
 
+> **2026-11-02 update:** the shim now enters through the v0 native gate
+> (`syscall 0x1F7`), maps `CELL_E_*` statuses to `errno` instead of guessing,
+> and uses the 136-byte relibc `struct stat`.  The image still passes; see
+> [`c-probe-bringup.md`](c-probe-bringup.md) for the C probe and the current
+> serial transcript.
+
 ## Result
 
 A static Rust `std` binary now runs on IRIX 7 under iris. It prints through the
 kernel console, reads its initial argument vector, and exits with status 0:
 
-```
+```text
 userelf: entry=0x10000360
 user: entering user mode
 hello from std
@@ -72,7 +78,7 @@ POSIX environment.  The production C ABI layer is now the
 The `std` source and libc declarations come from the patched spike tree
 prepared by `tools/std-spike/build-std.sh`. The image is built with:
 
-```
+```text
 cargo build --release -Zbuild-std=std,panic_abort -Zbuild-std-features= \
   -Zjson-target-spec \
   --target targets/mips3-sgi-irix7-native-n32.json

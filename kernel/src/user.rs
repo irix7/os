@@ -8,6 +8,8 @@
 
 use irix_elf::{Abi, Elf};
 
+use crate::syserr::{SysResult, CELL_E_FAULT, CELL_E_INVAL, CELL_E_NAMETOOLONG, CELL_E_NOMEM};
+
 use crate::{frames, scsi, tlb, traps};
 
 /// Enough for the static `std` bring-up image and its section table.
@@ -198,12 +200,12 @@ pub fn run_image(image: &[u8]) {
     }
     record_range(STACK_BASE, STACK_TOP);
 
-    let (user_sp, argc, argv, envp) = initial_stack();
+    let (user_sp, argc, argv, envp, auxv) = initial_stack(plan.entry());
     crate::cache::sync();
     crate::print_str("userelf: entry=0x");
     crate::print_hex32(plan.entry());
     crate::println("");
-    traps::run_user_abi(user_abi, plan.entry(), user_sp, argc, argv, envp)
+    traps::run_user_abi(user_abi, plan.entry(), user_sp, argc, argv, envp, auxv)
 }
 
 /// Release every pair the loader mapped and clear the user range table.
@@ -279,29 +281,29 @@ fn map_heap() -> bool {
 }
 
 /// Allocate zero-filled anonymous memory from the fixed heap window.
-pub fn mmap(length: u32) -> u32 {
+pub fn mmap(length: u32) -> SysResult<u32> {
     if !map_heap() {
-        return u32::MAX;
+        return Err(CELL_E_NOMEM);
     }
     let Some(length) = length.checked_add(0xFFF).map(|value| value & !0xFFF) else {
-        return u32::MAX;
+        return Err(CELL_E_INVAL);
     };
     if length == 0 {
-        return u32::MAX;
+        return Err(CELL_E_INVAL);
     }
     unsafe {
         let start = HEAP_NEXT;
         let Some(end) = start.checked_add(length) else {
-            return u32::MAX;
+            return Err(CELL_E_NOMEM);
         };
         if end > HEAP_LIMIT {
-            return u32::MAX;
+            return Err(CELL_E_NOMEM);
         }
         if !record_range(start, end) {
-            return u32::MAX;
+            return Err(CELL_E_NOMEM);
         }
         HEAP_NEXT = end;
-        start
+        Ok(start)
     }
 }
 
@@ -311,27 +313,76 @@ pub fn mmap(length: u32) -> u32 {
 /// sp+0:  argc
 /// sp+4:  argv[0] ... argv[argc-1], NULL
 /// sp+..: envp[0] ... envp[n-1], NULL
+/// sp+..: auxv[0].a_type, auxv[0].a_val, ..., AT_NULL, 0
 /// ```
 ///
 /// The strings live above the pointer array.  The image is a fixed hello
 /// fixture, so the argument and environment contents are fixed for now.
-fn initial_stack() -> (u32, u32, u32, u32) {
+/// `$a3` carries the auxv pointer in addition to the System V stack shape.
+fn initial_stack(entry: u32) -> (u32, u32, u32, u32, u32) {
     let mut cursor = STACK_TOP;
     let home = push_bytes(&mut cursor, b"HOME=/\0");
     let path = push_bytes(&mut cursor, b"PATH=/\0");
     let arg0 = push_bytes(&mut cursor, b"hello\0");
+    let platform = push_bytes(&mut cursor, b"mips\0");
+    let execfn = push_bytes(&mut cursor, b"hello\0");
+    let mut random_bytes = [0u8; 16];
+    let mut seed = crate::traps::count_read()
+        ^ crate::ntp::now_unix().unwrap_or(0) as u32
+        ^ (entry.rotate_left(11));
+    for byte in &mut random_bytes {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        *byte = seed as u8;
+    }
+    let random = push_bytes(&mut cursor, &random_bytes);
 
     let argc: u32 = 1;
     let envc: u32 = 2;
-    let pointer_words = 1 + argc + 1 + envc + 1;
-    let sp = (cursor & !7) - pointer_words * 4;
-    write_word(sp, argc);
-    write_word(sp + 4, arg0);
-    write_word(sp + 8, 0);
-    write_word(sp + 12, path);
-    write_word(sp + 16, home);
-    write_word(sp + 20, 0);
-    (sp, argc, sp + 4, sp + 12)
+    let auxc: u32 = 16;
+    let pointer_words = 1 + argc + 1 + envc + 1 + auxc * 2;
+    let mut sp = (cursor & !15) - pointer_words * 4;
+    sp &= !15;
+    let mut at = sp;
+    write_word(at, argc);
+    at += 4;
+    write_word(at, arg0);
+    at += 4;
+    write_word(at, 0);
+    at += 4;
+    let envp = at;
+    write_word(at, path);
+    at += 4;
+    write_word(at, home);
+    at += 4;
+    write_word(at, 0);
+    at += 4;
+    let auxv = at;
+    let aux = [
+        (1u32, 4096u32), // AT_PAGESZ
+        (2, entry),      // AT_ENTRY
+        (3, 0),          // AT_PHDR
+        (4, 0),          // AT_PHNUM
+        (5, 0),          // AT_BASE
+        (6, random),     // AT_RANDOM
+        (7, execfn),     // AT_EXECFN
+        (8, 0),          // AT_UID
+        (9, 0),          // AT_EUID
+        (10, 0),         // AT_GID
+        (11, 0),         // AT_EGID
+        (12, 0),         // AT_HWCAP
+        (13, 100),       // AT_CLKTCK
+        (14, 0),         // AT_SECURE
+        (15, platform),  // AT_PLATFORM
+        (0, 0),          // AT_NULL
+    ];
+    for (key, value) in aux {
+        write_word(at, key);
+        write_word(at + 4, value);
+        at += 8;
+    }
+    (sp, argc, sp + 4, envp, auxv)
 }
 
 fn push_bytes(cursor: &mut u32, bytes: &[u8]) -> u32 {
@@ -352,7 +403,7 @@ fn write_word(address: u32, value: u32) {
 }
 
 /// Record `[start, end)` in the user range table, merging adjacent ranges.
-fn record_range(start: u32, end: u32) -> bool {
+pub(crate) fn record_range(start: u32, end: u32) -> bool {
     unsafe {
         let ranges = &mut *core::ptr::addr_of_mut!(USER_RANGES);
         let mut count = USER_RANGE_COUNT;
@@ -458,28 +509,26 @@ fn error_text(error: irix_elf::Error) -> &'static str {
 }
 
 /// Copy a NUL-terminated path out of user memory.
-fn read_path(address: u32) -> Option<([u8; 64], usize)> {
+fn read_path(address: u32) -> SysResult<([u8; 64], usize)> {
     let mut path = [0u8; 64];
     let mut length = 0;
     while length < path.len() {
         if !range_ok(address + length as u32, 1) {
-            return None;
+            return Err(CELL_E_FAULT);
         }
         let byte = unsafe { core::ptr::read_volatile((address as *const u8).add(length)) };
         if byte == 0 {
-            return Some((path, length));
+            return Ok((path, length));
         }
         path[length] = byte;
         length += 1;
     }
-    None
+    Err(CELL_E_NAMETOOLONG)
 }
 
 /// Open a path in the tiny bring-up namespace.
-pub fn open_path(address: u32, flags: u32) -> i32 {
-    let Some((path, length)) = read_path(address) else {
-        return -1;
-    };
+pub fn open_path(address: u32, flags: u32) -> SysResult<i32> {
+    let (path, length) = read_path(address)?;
     crate::fd::open_path(&path[..length], flags)
 }
 
@@ -497,7 +546,7 @@ pub fn read_user(address: u32, length: u32, buffer: &mut [u8]) -> Option<usize> 
 
 /// Write to a bring-up descriptor.  `Console` goes to the serial/graphics
 /// console; `Null` accepts and discards.
-pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
+pub fn write_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
     let kind = crate::fd::kind(fd as i32);
     match kind {
         crate::fd::Kind::Console => {
@@ -506,7 +555,7 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
             while done < length as usize {
                 let chunk = (length as usize - done).min(buffer.len());
                 if !range_ok(address + done as u32, chunk as u32) {
-                    return u32::MAX;
+                    return Err(CELL_E_FAULT);
                 }
                 for (index, byte) in buffer[..chunk].iter_mut().enumerate() {
                     *byte = unsafe {
@@ -517,37 +566,34 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> u32 {
                 done += chunk;
             }
             crate::graphics_console::flush();
-            length
+            Ok(length)
         }
-        crate::fd::Kind::Null => length,
+        crate::fd::Kind::Null => Ok(length),
         crate::fd::Kind::File(_) | crate::fd::Kind::PipeWrite(_) => {
             let mut buffer = [0u8; 512];
             let mut done = 0usize;
             while done < length as usize {
                 let chunk = (length as usize - done).min(buffer.len());
                 if !range_ok(address + done as u32, chunk as u32) {
-                    return u32::MAX;
+                    return Err(CELL_E_FAULT);
                 }
                 for (index, byte) in buffer[..chunk].iter_mut().enumerate() {
                     *byte = unsafe {
                         core::ptr::read_volatile((address as *const u8).add(done + index))
                     };
                 }
-                let count = crate::fd::write(fd as i32, &buffer[..chunk]);
-                if count < 0 {
-                    return u32::MAX;
-                }
-                done += count as usize;
-                if (count as usize) < chunk {
+                let count = crate::fd::write(fd as i32, &buffer[..chunk])?;
+                done += count;
+                if count < chunk {
                     break;
                 }
             }
-            done as u32
+            Ok(done as u32)
         }
-        crate::fd::Kind::Dir(_) | crate::fd::Kind::PipeRead(_) | crate::fd::Kind::Logical => {
-            u32::MAX
-        }
-        crate::fd::Kind::Closed => u32::MAX,
+        crate::fd::Kind::Dir(_) => Err(crate::syserr::CELL_E_ISDIR),
+        crate::fd::Kind::Logical => Err(crate::syserr::CELL_E_BADF),
+        crate::fd::Kind::PipeRead(_) => Err(crate::syserr::CELL_E_BADF),
+        crate::fd::Kind::Closed => Err(crate::syserr::CELL_E_BADF),
     }
 }
 
@@ -559,10 +605,10 @@ struct UserPollFd {
 }
 
 /// A tiny poll implementation: console and null descriptors are always ready.
-pub fn poll_user(address: u32, count: u32) -> u32 {
+pub fn poll_user(address: u32, count: u32) -> SysResult<u32> {
     let bytes = count as usize * core::mem::size_of::<UserPollFd>();
     if !range_ok(address, bytes as u32) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let mut ready = 0u32;
     for index in 0..count as usize {
@@ -579,23 +625,26 @@ pub fn poll_user(address: u32, count: u32) -> u32 {
             core::ptr::write_volatile((base + 6) as *mut i16, revents);
         }
     }
-    ready
+    Ok(ready)
 }
 
-pub fn getcwd_user(address: u32, size: u32) -> u32 {
+pub fn getcwd_user(address: u32, size: u32) -> SysResult<()> {
     if size < 2 || !range_ok(address, 2) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     unsafe {
         core::ptr::write_volatile(address as *mut u8, b'/');
         core::ptr::write_volatile((address + 1) as *mut u8, 0);
     }
-    0
+    Ok(())
 }
 
-pub fn clock_user(clock: u32, address: u32) -> u32 {
+pub fn clock_user(clock: u32, address: u32) -> SysResult<()> {
+    if clock > 1 {
+        return Err(CELL_E_INVAL);
+    }
     if !range_ok(address, 16) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let (seconds, nanos) = match clock {
         // CLOCK_REALTIME: the RTC/NTP wall clock.
@@ -614,142 +663,116 @@ pub fn clock_user(clock: u32, address: u32) -> u32 {
         core::ptr::write_volatile((address + 8) as *mut i32, nanos as i32);
         core::ptr::write_volatile((address + 12) as *mut u32, 0);
     }
-    0
+    Ok(())
 }
 
-pub fn entropy_user(address: u32, length: u32) -> u32 {
+pub fn entropy_user(address: u32, length: u32) -> SysResult<()> {
     if !range_ok(address, length) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     for index in 0..length as usize {
         unsafe {
             core::ptr::write_volatile((address as *mut u8).add(index), 0);
         }
     }
-    0
+    Ok(())
 }
 
 /// POSIX `tcgetwinsize`: copy the 8-byte winsize from the console.
-pub fn tcgetwinsize_user(fd: u32, address: u32) -> u32 {
+pub fn tcgetwinsize_user(fd: u32, address: u32) -> SysResult<()> {
     if !range_ok(address, 8) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let mut value = [0u16; 4];
-    if !crate::fd::get_winsize(fd as i32, &mut value) {
-        return u32::MAX;
-    }
+    crate::fd::get_winsize(fd as i32, &mut value)?;
     for (index, field) in value.iter().enumerate() {
         unsafe {
             core::ptr::write_volatile((address + index as u32 * 2) as *mut u16, *field);
         }
     }
-    0
+    Ok(())
 }
 
 /// POSIX `tcsetwinsize`: update the console size from the 8-byte winsize.
-pub fn tcsetwinsize_user(fd: u32, address: u32) -> u32 {
+pub fn tcsetwinsize_user(fd: u32, address: u32) -> SysResult<()> {
     if !range_ok(address, 8) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let mut value = [0u16; 4];
     for (index, field) in value.iter_mut().enumerate() {
         *field = unsafe { core::ptr::read_volatile((address + index as u32 * 2) as *const u16) };
     }
-    if crate::fd::set_winsize(fd as i32, &value) {
-        0
-    } else {
-        u32::MAX
-    }
+    crate::fd::set_winsize(fd as i32, &value)
 }
 
 /// Create a pipe and write `[read_fd, write_fd]` to the user buffer.
-pub fn pipe_user(address: u32) -> u32 {
+pub fn pipe_user(address: u32) -> SysResult<()> {
     if !range_ok(address, 8) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
-    let (read, write) = crate::fd::pipe();
-    if read < 0 || write < 0 {
-        return u32::MAX;
-    }
+    let (read, write) = crate::fd::pipe()?;
     unsafe {
         core::ptr::write_volatile(address as *mut i32, read);
         core::ptr::write_volatile((address + 4) as *mut i32, write);
     }
-    0
+    Ok(())
 }
 
 /// Copy file contents from a descriptor into a validated user buffer.
-pub fn read_fd(fd: u32, address: u32, length: u32) -> u32 {
+pub fn read_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
     if !range_ok(address, length) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let mut buffer = [0u8; 512];
     let mut total = 0usize;
     while total < length as usize {
         let chunk = (length as usize - total).min(buffer.len());
-        let count = crate::fd::read(fd as i32, &mut buffer[..chunk]);
-        if count < 0 {
-            return u32::MAX;
-        }
+        let count = crate::fd::read(fd as i32, &mut buffer[..chunk])?;
         if count == 0 {
             break;
         }
-        for (index, byte) in buffer[..count as usize].iter().enumerate() {
+        for (index, byte) in buffer[..count].iter().enumerate() {
             unsafe {
                 core::ptr::write_volatile((address as *mut u8).add(total + index), *byte);
             }
         }
-        total += count as usize;
-        if (count as usize) < chunk {
+        total += count;
+        if count < chunk {
             break;
         }
     }
-    total as u32
+    Ok(total as u32)
 }
 
-/// Native n32 `struct stat`, matching the ABI used by the std spike.
-#[repr(C)]
-struct KernelStat {
-    st_dev: u64,
-    st_ino: u64,
-    st_mode: u32,
-    st_nlink: u32,
-    st_uid: u32,
-    st_gid: u32,
-    st_rdev: u64,
-    st_size: i64,
-    st_blksize: i32,
-    _pad: u32,
-    st_blocks: i64,
-    st_atim: [i64; 2],
-    st_mtim: [i64; 2],
-    st_ctim: [i64; 2],
-    spare: [u8; 16],
-}
-
-fn fill_stat(address: u32, mode: u32, size: i64) -> u32 {
-    if !range_ok(address, core::mem::size_of::<KernelStat>() as u32) {
-        return u32::MAX;
+/// Native n32 `struct stat`, shared with relibc through `native-abi`.
+fn fill_stat(address: u32, mode: u32, size: i64) -> SysResult<()> {
+    if !range_ok(address, core::mem::size_of::<native_abi::stat>() as u32) {
+        return Err(CELL_E_FAULT);
     }
-    let stat = KernelStat {
+    let timestamp = native_abi::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+        _pad: 0,
+    };
+    let stat = native_abi::stat {
         st_dev: 0,
         st_ino: 1,
-        st_mode: mode,
         st_nlink: 1,
+        st_mode: mode,
         st_uid: 0,
         st_gid: 0,
         st_rdev: 0,
         st_size: size,
         st_blksize: 4096,
-        _pad: 0,
+        _pad0: 0,
         st_blocks: (size + 511) / 512,
-        st_atim: [0; 2],
-        st_mtim: [0; 2],
-        st_ctim: [0; 2],
-        spare: [0; 16],
+        st_atim: timestamp,
+        st_mtim: timestamp,
+        st_ctim: timestamp,
+        _pad: [0; 24],
     };
-    let source = &stat as *const KernelStat as *const u8;
-    for index in 0..core::mem::size_of::<KernelStat>() {
+    let source = &stat as *const native_abi::stat as *const u8;
+    for index in 0..core::mem::size_of::<native_abi::stat>() {
         unsafe {
             core::ptr::write_volatile(
                 (address as *mut u8).add(index),
@@ -757,60 +780,57 @@ fn fill_stat(address: u32, mode: u32, size: i64) -> u32 {
             );
         }
     }
-    0
+    Ok(())
 }
 
-pub fn fstat_user(fd: u32, address: u32) -> u32 {
-    match crate::fd::metadata(fd as i32) {
-        Some((mode, size)) => fill_stat(address, mode, size),
-        None => u32::MAX,
-    }
+pub fn fstat_user(fd: u32, address: u32) -> SysResult<()> {
+    let (mode, size) = crate::fd::metadata(fd as i32)?;
+    fill_stat(address, mode, size)
 }
 
-pub fn stat_user(path_address: u32, stat_address: u32) -> u32 {
-    let Some((path, length)) = read_path(path_address) else {
-        return u32::MAX;
-    };
-    match crate::fd::metadata_path(&path[..length]) {
-        Some((mode, size)) => fill_stat(stat_address, mode, size),
-        None => u32::MAX,
-    }
+pub fn stat_user(path_address: u32, stat_address: u32) -> SysResult<()> {
+    let (path, length) = read_path(path_address)?;
+    let (mode, size) = crate::fd::metadata_path(&path[..length])?;
+    fill_stat(stat_address, mode, size)
 }
 
 /// Copy one static directory entry into a user buffer.  Returns the dirent
-/// type (4 directory, 8 regular file, 2 device) or zero at end of directory.
-pub fn readdir_user(fd: u32, index: u32, address: u32, length: u32) -> u32 {
+/// type (4 directory, 8 regular file, 2 device) or `None` at end of directory.
+pub fn readdir_user(fd: u32, index: u32, address: u32, length: u32) -> SysResult<Option<u32>> {
     if !range_ok(address, length) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
     let mut buffer = [0u8; 256];
-    let Some((kind, _)) = crate::fd::readdir(fd as i32, index as usize, &mut buffer) else {
-        return 0;
+    let Some((kind, _)) = crate::fd::readdir(fd as i32, index as usize, &mut buffer)? else {
+        return Ok(None);
     };
     let name_len = buffer.iter().position(|byte| *byte == 0).unwrap_or(0);
     if name_len + 1 > length as usize {
-        return u32::MAX;
+        return Err(CELL_E_INVAL);
     }
     for index in 0..=name_len {
         unsafe {
             core::ptr::write_volatile((address as *mut u8).add(index), buffer[index]);
         }
     }
-    kind as u32
+    Ok(Some(kind as u32))
 }
 
 /// Busy-wait for a user `timespec`.  The syscall path runs with interrupts
 /// masked by EXL, so CP0 Count keeps advancing while no timer interrupt can
 /// preempt the wait.  This is a bring-up sleep, not the scheduler.
-pub fn sleep_user(address: u32) -> u32 {
+pub fn sleep_user(address: u32) -> SysResult<()> {
     if !range_ok(address, 16) {
-        return u32::MAX;
+        return Err(CELL_E_FAULT);
     }
-    let seconds = unsafe { core::ptr::read_volatile(address as *const i64) }.max(0) as u64;
-    let nanos = unsafe { core::ptr::read_volatile((address + 8) as *const i32) }.max(0) as u64;
-    let ticks = seconds
+    let seconds = unsafe { core::ptr::read_volatile(address as *const i64) };
+    let nanos = unsafe { core::ptr::read_volatile((address + 8) as *const i32) };
+    if seconds < 0 || nanos < 0 || nanos >= 1_000_000_000 {
+        return Err(CELL_E_INVAL);
+    }
+    let ticks = (seconds as u64)
         .saturating_mul(33_000_000)
-        .saturating_add(nanos.saturating_mul(33) / 1_000);
+        .saturating_add((nanos as u64).saturating_mul(33) / 1_000);
     let start = crate::traps::count_read();
     let mut elapsed = 0u64;
     while elapsed < ticks {
@@ -818,25 +838,19 @@ pub fn sleep_user(address: u32) -> u32 {
         elapsed = now.wrapping_sub(start) as u64;
         core::hint::spin_loop();
     }
-    0
+    Ok(())
 }
 
-pub fn chdir_user(address: u32) -> u32 {
-    let Some((path, length)) = read_path(address) else {
-        return u32::MAX;
-    };
-    if crate::fd::set_cwd(&path[..length]) {
-        0
-    } else {
-        u32::MAX
-    }
+pub fn chdir_user(address: u32) -> SysResult<()> {
+    let (path, length) = read_path(address)?;
+    crate::fd::set_cwd(&path[..length])
 }
 
-pub fn getcwd_text(address: u32, size: u32) -> u32 {
+pub fn getcwd_text(address: u32, size: u32) -> SysResult<()> {
     let mut path = [0u8; 64];
     let length = crate::fd::copy_cwd(&mut path);
     if size as usize <= length || !range_ok(address, (length + 1) as u32) {
-        return u32::MAX;
+        return Err(CELL_E_INVAL);
     }
     for index in 0..length {
         unsafe {
@@ -846,5 +860,5 @@ pub fn getcwd_text(address: u32, size: u32) -> u32 {
     unsafe {
         core::ptr::write_volatile((address as *mut u8).add(length), 0);
     }
-    0
+    Ok(())
 }
