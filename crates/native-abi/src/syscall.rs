@@ -6,6 +6,10 @@
 //! (`syscall 0x1F7`) selects this ABI, and the capability method encoding in
 //! `docs/spec/native-abi.md` §4 will replace the flat calls without reusing
 //! these numbers.
+//!
+//! The numbers are pinned by the v0 table in `docs/spec/native-abi.md` §5.8.
+//! `SYS_GETDENTS` and `SYS_LSEEK` carry the directory cookie; `SYS_READDIR`
+//! stays as the one-name wrapper the static `std` shim uses.
 
 /// The 20-bit `syscall` code field for the native gate.
 pub const NATIVE_GATE_CODE: u32 = 0x1F7;
@@ -37,3 +41,14 @@ pub const SYS_CHDIR: u32 = 21;
 pub const SYS_PIPE: u32 = 22;
 pub const SYS_TCGETWINSIZE: u32 = 23;
 pub const SYS_TCSETWINSIZE: u32 = 24;
+/// `lseek(fd, offset_lo, offset_hi, whence)`; returns the new offset.
+pub const SYS_LSEEK: u32 = 25;
+/// `pread(fd, io_at *)`; the block carries the buffer, length and 64-bit offset.
+pub const SYS_PREAD: u32 = 26;
+/// `pwrite(fd, io_at *)`; the block carries the buffer, length and 64-bit offset.
+pub const SYS_PWRITE: u32 = 27;
+pub const SYS_DUP2: u32 = 28;
+pub const SYS_PIPE2: u32 = 29;
+/// `getdents(fd, buf, len)`; fills whole `dirent` records and advances the
+/// descriptor's directory cookie.
+pub const SYS_GETDENTS: u32 = 30;

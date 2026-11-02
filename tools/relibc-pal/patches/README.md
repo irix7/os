@@ -1,8 +1,9 @@
 # Patch mirror
 
-`0001-irix7-run-the-native-PAL-on-the-v0-syscall-gate.patch` and
-`0002-irix7-format-the-native-PAL-changes.patch` are
-`git format-patch a36041ac..d484536c` from the `irix7-pal` branch of
+`0001-irix7-run-the-native-PAL-on-the-v0-syscall-gate.patch`,
+`0002-irix7-format-the-native-PAL-changes.patch` and
+`0003-irix7-add-native-file-calls-and-directory-cookies.patch` are
+`git format-patch a36041ac..d5fd3d04` from the `irix7-pal` branch of
 `https://github.com/irix7/relibc`.
 
 They apply in order on top of

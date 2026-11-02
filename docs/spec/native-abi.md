@@ -1562,13 +1562,48 @@ success.  `SYS_EXIT` does not return.
 | 22 | `pipe` | `int[2]` |
 | 23 | `tcgetwinsize` | `fd`, `struct winsize *` |
 | 24 | `tcsetwinsize` | `fd`, `struct winsize *` |
+| 25 | `lseek` | `fd`, `offset_lo`, `offset_hi`, `whence` |
+| 26 | `pread` | `fd`, `io_at *` |
+| 27 | `pwrite` | `fd`, `io_at *` |
+| 28 | `dup2` | `fd`, `new_fd` |
+| 29 | `pipe2` | `int[2]`, `flags` |
+| 30 | `getdents` | `fd`, `buf`, `len` |
 
-The current v0 kernel returns `CELL_OK` with no effect for `fcntl` and `signal`;
-there are no per-fd flags and no signal machinery yet, and the shim relies on
-that no-op boundary.  `mmap` is a bump allocator over a fixed 1 MiB window;
-`munmap` and `mprotect` are metadata-only no-ops.  `readdir` returns one name
-and its `DT_*` type, not a `getdents` record.  These are bring-up boundaries,
-not the v1 POSIX contract.
+The flat gate has four 32-bit argument registers and a 64-bit `off_t`.  `lseek` takes
+the offset as two words (`offset_lo` in `$a1`, `offset_hi` in `$a2`, the two's-complement
+halves).  `pread`/`pwrite` take the descriptor in `$a0` and a 16-byte `io_at` block in
+`$a1`:
+
+```c
+struct io_at {          /* 16 bytes, 8-aligned */
+    uint32_t buf;       /* 0x00: MEM buffer */
+    uint32_t len;       /* 0x04 */
+    int64_t  offset;    /* 0x08 */
+};
+```
+
+`lseek` implements `SEEK_SET`, `SEEK_CUR`, `SEEK_END`, `SEEK_DATA` and `SEEK_HOLE` on
+regular files and directories; pipes and the console return `ESPIPE`.  Directories use
+the same 32-bit cookie that `getdents` reports in `d_off`.
+
+`getdents` fills whole native `dirent` records (280 bytes, `d_name` 256 bytes) and
+advances the descriptor's directory cookie.  `d_off` is the cookie of the next entry,
+so `lseek(fd, d_off, SEEK_SET)` resumes where the record left off; the one-name
+`readdir(fd, index, buf, len)` remains as a wrapper over the same table.  A buffer too
+small for one record is `EINVAL`.
+
+Pipes are bounded and non-blocking on this single-threaded kernel.  A read of an empty
+pipe with a live writer is `EAGAIN`; when every writer is closed it is a zero-length
+read.  A write with no reader is `EPIPE`; a write with no space is `EAGAIN`, and a
+short count is returned when only part of the buffer fits.  `pipe2` accepts `O_CLOEXEC`
+and `O_NONBLOCK` (the latter states the behaviour that already holds) and rejects other
+flags with `EINVAL`.
+
+`fcntl` implements `F_GETFD` and `F_SETFD` with real `FD_CLOEXEC` state; `open` records
+`O_CLOEXEC`, `dup` and `dup2` clear it on the new descriptor, and every other `fcntl`
+command is `EINVAL`.  Signals are still absent, so `signal` is an explicit no-op
+success.  `mmap` is a bump allocator over a fixed 1 MiB window; `munmap` and `mprotect`
+are metadata-only no-ops.  These are bring-up boundaries, not the v1 POSIX contract.
 
 ---
 

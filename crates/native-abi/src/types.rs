@@ -99,6 +99,20 @@ pub struct pollfd {
     pub revents: c_short,
 }
 
+/// The v0 `pread`/`pwrite` argument block: 16 bytes, 8-byte aligned.
+///
+/// The flat gate passes four 32-bit arguments, so a 64-bit `off_t` cannot be
+/// one of them.  `SYS_PREAD` and `SYS_PWRITE` take the descriptor in `$a0`
+/// and a pointer to this block in `$a1`; the buffer is a `MEM` range checked
+/// against the caller's mappings.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct io_at {
+    pub buf: u32,
+    pub len: size_t,
+    pub offset: off_t,
+}
+
 /// `struct winsize`: 8 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

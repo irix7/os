@@ -8,10 +8,10 @@
 //! §4) and does not reuse these numbers.
 
 use native_abi::syscall::{
-    SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_EXIT, SYS_FCNTL, SYS_FSTAT, SYS_GETCWD,
-    SYS_GETENTROPY, SYS_GETPID, SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN,
-    SYS_PIPE, SYS_POLL, SYS_READ, SYS_READDIR, SYS_SIGNAL, SYS_STAT, SYS_TCGETWINSIZE,
-    SYS_TCSETWINSIZE, SYS_WRITE,
+    SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXIT, SYS_FCNTL, SYS_FSTAT,
+    SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_LSEEK, SYS_MMAP, SYS_MPROTECT,
+    SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL, SYS_PREAD, SYS_PWRITE,
+    SYS_READ, SYS_READDIR, SYS_SIGNAL, SYS_STAT, SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_WRITE,
 };
 
 use crate::syserr::{SysResult, CELL_E_NOSYS};
@@ -52,15 +52,21 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
         SYS_READDIR => {
             crate::user::readdir_user(a0, a1, a2, a3).map(|entry| entry.unwrap_or(0) as u64)
         }
+        SYS_GETDENTS => crate::user::getdents_user(a0, a1, a2).map(|count| count as u64),
+        SYS_LSEEK => crate::user::lseek_user(a0, a1, a2, a3).map(|offset| offset as u64),
+        SYS_PREAD => crate::user::pread_user(a0, a1).map(|count| count as u64),
+        SYS_PWRITE => crate::user::pwrite_user(a0, a1).map(|count| count as u64),
+        SYS_DUP2 => crate::user::dup2_user(a0, a1).map(|fd| fd as u64),
+        SYS_PIPE2 => crate::user::pipe2_user(a0, a1).map(|()| 0),
         SYS_NANOSLEEP => crate::user::sleep_user(a0).map(|()| 0),
         SYS_CHDIR => crate::user::chdir_user(a0).map(|()| 0),
         SYS_PIPE => crate::user::pipe_user(a0).map(|()| 0),
         SYS_TCGETWINSIZE => crate::user::tcgetwinsize_user(a0, a1).map(|()| 0),
         SYS_TCSETWINSIZE => crate::user::tcsetwinsize_user(a0, a1).map(|()| 0),
-        // The bring-up has no per-fd flags and no signal machinery.  These are
-        // explicit no-op successes, not ENOSYS: std sets FD_CLOEXEC and ignores
-        // SIGPIPE, and neither has state to change yet.
-        SYS_FCNTL | SYS_SIGNAL => Ok(0),
+        // Signals are still absent.  std ignores SIGPIPE, and the kernel has no
+        // signal machinery, so this is an explicit no-op success, not ENOSYS.
+        SYS_FCNTL => crate::user::fcntl_user(a0, a1, a2).map(|value| value as u64),
+        SYS_SIGNAL => Ok(0),
         _ => Err(CELL_E_NOSYS),
     };
 

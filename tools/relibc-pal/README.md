@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `d484536c49fed26a5377d2c511962b891e1c8dfb` |
+| Commit | `d5fd3d04c88fac4117132ae25d3959f6e55277b7` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls) |
 | Probe source | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..d484536c` and applies
+The mirror is generated with `git format-patch a36041ac..d5fd3d04` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -31,8 +31,13 @@ the branch commit, not the patch.
    plain static on this target.
 4. `$a3` carries the auxiliary vector.  `_start` stores it, `Stack::auxv`
    returns it, and `getauxval` uses the native vector numbering.
-5. `getdents` remains synthesised over the kernel's one-entry `readdir` call;
-   there is no directory cookie to advance yet.
+5. `lseek`, `pread`, `pwrite`, `dup2`, `pipe2` and `getdents` map to the
+   native calls.  `getdents` fills whole `dirent` records and advances the
+   kernel's cookie; `d_off` is the next cookie and `dir_seek` writes it back
+   through `lseek`, so `telldir`/`seekdir` work.  The one-entry `readdir`
+   synthesis is gone.
+6. `fcntl F_GETFD`/`F_SETFD` carry real close-on-exec state, `O_CLOEXEC` is
+   recorded on `open`, and `dup`/`dup2` clear it.
 
 `futex_wait` and `futex_wake` are no-ops: the kernel has no futex and there is
 one thread, so returning `ENOSYS` makes every mutex unlock panic.  `printf`
@@ -91,23 +96,26 @@ iris-ci --socket /tmp/opencode/relibc-pal-work/probe.sock start
 The expected tail is:
 
 ```text
-IRIX7-RELIB-PROBE-1
-IRIX7-RELIB-PROBE-1: stat size=28 mode=100644 blksize=4096 blocks=1
-IRIX7-RELIB-PROBE-1: tp=0x10026710 auxv pagesz=4096 failures=0
+IRIX7-RELIB-PROBE-2
+IRIX7-RELIB-PROBE-2: stat size=28 mode=100644 blksize=4096 blocks=1
+IRIX7-RELIB-PROBE-2: tp=0x1002aac0 auxv pagesz=4096
+IRIX7-RELIB-PROBE-2: checks=110 failures=0
 user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 ```
 
-The probe checks the marker write, `argc`/`argv`, `getpid`, `AT_PAGESZ`,
-`AT_ENTRY`, `AT_CLKTCK`, `$28 != 0`, `__errno_location == TP + 8`,
-`stat("/hello.txt")` fields, `fstat(999) == -1` with `EBADF`, and
-`stat("/missing") == -1` with `ENOENT`.
+The probe keeps the startup checks (marker, `argc`/`argv`, `getpid`,
+`AT_PAGESZ`/`AT_ENTRY`/`AT_CLKTCK`, `$28`, `__errno_location`, `stat`,
+`fstat(999)` with `EBADF`, `stat("/missing")` with `ENOENT`) and adds the file
+surface: `lseek` in all mode, `pread`/`pwrite`, shared offsets across
+`dup`/`dup2`, `F_GETFD`/`F_SETFD`, `pipe`/`pipe2` with `EAGAIN` and `EPIPE`,
+and a directory read in whole records with `d_off` cookies, then resumed with
+`lseek` and walked through `readdir`/`seekdir`/`telldir`.
 
 ## Limits
 
 - Single-threaded: no threads, TLS block, signals or process table.
-- `getdents` has one entry per call and no cookie; `lseek`, `pread`/`pwrite`,
-  `dup2`, `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
+- `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.
 - The kernel's console/ramfs fd table is the only filesystem.

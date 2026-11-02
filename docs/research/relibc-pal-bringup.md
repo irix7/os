@@ -9,42 +9,49 @@ slice.  Supersedes the scaffold limits recorded in
 ## Result
 
 A C program linked against `librelibc.a` from the `irix7-pal` branch boots on
-iris 0.1.13 through SCSI target 2, prints `IRIX7-RELIB-PROBE-1`, performs
-`write`, `stat` and two failing calls that set `errno` through
-`__errno_location`, and exits 0:
+iris 0.1.13 through SCSI target 2, prints `IRIX7-RELIB-PROBE-2`, exercises the
+native file surface and exits 0:
 
 ```text
 kernel: starting userland from SCSI target 2
 userelf: entry=0x10000000
 user: entering user mode
-IRIX7-RELIB-PROBE-1
-IRIX7-RELIB-PROBE-1: stat size=28 mode=100644 blksize=4096 blocks=1
-IRIX7-RELIB-PROBE-1: tp=0x10026710 auxv pagesz=4096 failures=0
+IRIX7-RELIB-PROBE-2
+IRIX7-RELIB-PROBE-2: stat size=28 mode=100644 blksize=4096 blocks=1
+IRIX7-RELIB-PROBE-2: tp=0x1002aac0 auxv pagesz=4096
+IRIX7-RELIB-PROBE-2: checks=110 failures=0
 user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 sash> m1-post: mesh=0/0/0 actor=08006912345600000000000000000001
 ```
 
-The image was run on the merged kernel at
-`e13afe52204a71fdbe157067f2db11afd9631e5a`; the rebuilt ROM is 483,540 bytes
-with SHA-256
-`eb980e92fc24198a442dbb29674902e0c89396da8db3b7ffe60e93dddf64366e`.  The
-probe image (`probe.raw`) is
-`5679fb31888a24215d6c23a9543b7af78ce1ee43d9f5193f8d84919fc11dd1a7`.
+The image was run on the kernel at
+`9af2069cb8ace0f7f7c70296583072f0cb2eed9d` plus this slice.  The committed
+source builds a 485,384-byte ROM with SHA-256
+`8050bd892672ad59f7f7f1fc2ffbfaabfb1a911170bf168f9b231c08669b6def`, and the
+probe passed on that build.  An earlier working-tree build of the same logic
+before the final formatting pass hashed to
+`0dae3b06b398f8f0aec873e621f4580dcece390c7fa71b77e58083896ac9905b`; the 51
+differing bytes are panic-location line numbers, not code.  The pinned probe
+build (`probe.raw`) is
+`84287ef5427ad323f5e6694cbd0a42f4d47079d318aa727266916bdfc63aaf86`; it
+embeds relibc `d5fd3d04` and 110 checks passed on it.
+The earlier `IRIX7-RELIB-PROBE-1` result and its hashes are recorded in the
+previous revision of this file; the startup checks are unchanged.
 
 ## Fork
 
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` in <https://github.com/irix7/relibc> |
-| Commit | `d484536c49fed26a5377d2c511962b891e1c8dfb` |
-| Parent | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
+| Commit | `d5fd3d04c88fac4117132ae25d3959f6e55277b7` |
+| Parent | `d484536c49fed26a5377d2c511962b891e1c8dfb` |
 | DCO | `Signed-off-by: Jupiter Belic <belikh@users.noreply.github.com>` |
 | Mirror | [`tools/relibc-pal/patches/`](../../tools/relibc-pal/patches/) |
 
 The branch is the source of truth.  This repository pins the commit in
 [`tools/relibc-pal/README.md`](../../tools/relibc-pal/README.md) and its build
-script; the patch is review mirror only.
+script; the patches are review mirror only.
 
 ## What the branch changes
 
@@ -64,10 +71,24 @@ script; the patch is review mirror only.
 4. **Auxiliary vector.** `_start` stores `$a3`; `Stack::auxv` returns it, and
    `getauxval` reads the kernel's native vector numbering
    (`AT_PAGESZ` 1, `AT_ENTRY` 2, `AT_CLKTCK` 13, and so on).
-5. **`getdents`.** Still synthesised over the kernel's one-entry
-   `readdir(fd, index, name, len)`; there is no directory cookie to advance.
+5. **`getdents` and directory cookies.** `getdents` maps to the kernel call,
+   which fills whole `dirent` records and advances the descriptor's cookie.
+   `d_off` is the cookie of the next entry and `dir_seek` writes it back with
+   `lseek`, so `telldir`/`seekdir` work.  The one-entry `readdir` synthesis is
+   gone.
+6. **The file surface.** `lseek` (`SEEK_SET`/`CUR`/`END`/`DATA`/`HOLE`),
+   `pread`, `pwrite`, `dup2` and `pipe2` map to the native calls.  The 64-bit
+   offset is split across two argument registers, and `pread`/`pwrite` pass a
+   16-byte `{ buf, len, offset }` block.
+7. **Close-on-exec.** `fcntl F_GETFD`/`F_SETFD` carry real state,
+   `O_CLOEXEC` is recorded on `open`, and `dup`/`dup2` clear it on the new
+   descriptor.  Pipes are bounded and non-blocking: `EAGAIN` on an empty read
+   with a live writer, `EPIPE` when no reader remains.
 
-Two follow-on fixes are part of the same commit:
+The first five items are the `d484536c` commit.  Items 5–7 and the file calls
+are `d5fd3d04`.
+
+The first commit also carries two follow-on fixes:
 
 - `futex_wait`/`futex_wake` are no-ops.  The kernel has no futex and one
   thread; `ENOSYS` there made `printf` panic on the first mutex unlock.
@@ -95,10 +116,10 @@ export RELIBC_SRC=/tmp/opencode/relibc-pal-src
 tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 ```
 
-The script verifies `d484536c`, builds `librelibc.a` and `libcrt0.a`, then
+The script verifies `d5fd3d04`, builds `librelibc.a` and `libcrt0.a`, then
 links [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c) with
-`--gc-sections`.  The unstripped link is about 250 KiB; stripping leaves a
-223 KiB ELF and the 256 KiB raw image is padded.
+`--gc-sections`.  The unstripped link is about 260 KiB; stripping leaves a
+241 KiB ELF and the 256 KiB raw image is padded.
 
 ## Run
 
@@ -133,9 +154,11 @@ GIO-timeout loop on this kernel.
 ## What the probe proves
 
 - **A relibc-linked C binary, not the shim.** The image calls relibc's
-  `write`, `stat`, `fstat`, `getpid`, `getauxval` and `__errno_location`, and
-  enters through relibc's `crt0::_start`.  `_Static_assert`s pin the 136-byte
-  `stat` and its field offsets at compile time.
+  `write`, `stat`, `fstat`, `getpid`, `getauxval`, `__errno_location`, `open`,
+  `lseek`, `pread`, `pwrite`, `dup`, `dup2`, `fcntl`, `pipe`, `pipe2`,
+  `opendir`, `readdir`, `seekdir`, `telldir` and `posix_getdents`, and enters
+  through relibc's `crt0::_start`.  `_Static_assert`s pin the 136-byte `stat`,
+  the 280-byte `dirent` and their field offsets at compile time.
 - **The gate and its error channel.** `fstat(999)` returns status
   `CELL_E_BADF` (5), which the PAL maps to `EBADF` (9) and returns as `-1`.
   `stat("/missing")` independently returns `CELL_E_NOENT` (2) -> `ENOENT` (2),
@@ -147,51 +170,70 @@ GIO-timeout loop on this kernel.
   supply.
 - **The 136-byte `stat`.** `stat("/hello.txt")` reports a regular file with one
   link, 28 bytes, a 4096-byte block size and one block.
+- **The file surface.** `lseek` moves and reports the position in every mode,
+  `pread`/`pwrite` transfer at an explicit offset without moving it, `dup` and
+  `dup2` share the open file description (a seek through one moves the other),
+  and `dup2` from a bad descriptor is `EBADF`.
+- **Close-on-exec is state.** `open(O_CLOEXEC)` is visible in `F_GETFD`,
+  `F_SETFD` clears and sets it, and `dup`/`dup2` clear it on the new descriptor.
+- **The pipe contract.** A pipe round-trips bytes; an empty read with a live
+  writer is `EAGAIN`; a write after the reader closes is `EPIPE`; closing every
+  writer makes the reader report end-of-file; `lseek` on a pipe is `ESPIPE`;
+  `pipe2(O_CLOEXEC)` marks both ends and unknown flags are `EINVAL`.
+- **Directory cookies.** One `posix_getdents` call returns three records in a
+  1024-byte buffer with `d_off` 1, 2 and 3, the next returns 4 and 5, the call
+  at the end returns 0, and `lseek` to cookie 1 resumes at `..`.  `d_reclen`
+  is 280, `d_type` is filled and `d_ino` is stable across the seek.  A buffer
+  smaller than one record is `EINVAL`.  `readdir`, `seekdir` and `telldir`
+  reach the same entries through the wrapper.
 - **The loader path is unchanged.** The image is a padded 256 KiB raw SCSI
   target-2 file, like `user/c-probe` and `std-hello`.
 
 ## `std-hello` regression
 
-The same ROM booted the existing static Rust `std` image.  Rebuilding
-`tools/build-std-hello.sh` reproduced the existing `std-hello.raw`
-byte-for-byte (SHA-256
-`983a28e371ff5e2f9d9e5d968b1457c482ebb0eb91429dba8fd62ec93da15808`):
+The existing `packages/userland/std-hello.raw`
+(SHA-256 `0a2d2fa1449f358b0f367b129d64d1e9affbdaf6b2c7637a36b031f3dbe1630a`)
+does **not** complete on this kernel.  It prints through
+`relative=Welcome to IRIX 7.` and then traps:
 
 ```text
-hello from std
-arg=hello
-slept_ms=10
-time=1793597182
-file=hello from the IRIX 7 ramfs
-write=ok
-after_write=rewritten by std
-chdir=ok
-cwd=/etc
-relative=Welcome to IRIX 7.
-stat_size=17
-dev_null=ok
-entry=hello.txt
-entry=etc
-entry=dev
-user: exit syscall code=0x00000000
-kernel: userland returned to kernel console
+trap: TLB refill epc=0x10017264 cause=0x00000008 badvaddr=0x00000004 (software refill not implemented)
 ```
 
-The std shim still uses its own `$gp` startup; the relibc PAL is the
-`-mno-abicalls -G0` image.
+The same image traps at the same address on a ROM built from the unmodified
+tree at `9af2069` (483,564 bytes, SHA-256
+`d7fa8d6976178e08545eb24c148136738a9709834c583fb4c2f87214c1643ebb`), so the
+failure predates this slice and is not caused by the new calls.  The image is
+built against the plain-`syscall` legacy shim, not the `syscall 0x1F7` gate.
+It carries the 128-byte `KernelStat` from #133 (`st_mode` at 16, `st_nlink`
+at 20, 16 spare bytes); the kernel has written the 136-byte native `stat`
+since #290 (`st_nlink` at 16, `st_mode` at 20, 24 spare bytes).  The `stat`
+call after `relative=Welcome to IRIX 7.` therefore overruns the image's stack
+buffer by eight bytes and scrambles the two fields, and the next `println!`
+formats through a corrupted trait object in `core::fmt::write`.  The artifact
+was last committed in #183 and was not rebuilt when the layout changed.
+
+Rebuilding it needs the `tools/std-spike` rust-src tree, which was not present
+in this environment.  Refreshing `packages/userland/std-hello.raw` is an open
+item for the next userland slice; the relibc probe is the regression evidence
+for the native gate until then.
 
 ## Limits
 
 - Single-threaded.  No threads, ELF TLS block, signals or process table.  The
   `SingleThread` wrappers are a truthful statement of that kernel state, not a
   general threading solution.
-- `getdents` yields one entry per call and has no directory cookie.  `lseek`,
-  `pread`/`pwrite`, `dup2`, `fork`, `execve`, `waitpid`, `pipe2` and the socket
-  API remain `ENOSYS`.
+- Pipes are always non-blocking because there is no scheduler; `O_NONBLOCK` is
+  accepted but describes the only behaviour.  There is no `poll` wakeup.
+- `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.
-- The console/ramfs fd table is the only filesystem.
+- The console/ramfs fd table is the only filesystem; there is no file creation,
+  unlinking or permissions.
 - `uname` describes the ABI, not the running kernel; there is no `uname`
   syscall.
+- The static `std` image at `packages/userland/std-hello.raw` traps in
+  `core::fmt::write` on this kernel and on the unmodified baseline; see the
+  regression section.
 - The fork's Linux/QEMU gate still builds but was not re-run under
   `qemu-mipsn32` for this change; the host control build passes.
