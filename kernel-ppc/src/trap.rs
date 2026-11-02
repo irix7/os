@@ -15,7 +15,7 @@
 use core::arch::asm;
 use core::ptr::addr_of;
 
-use crate::{halt, print_hex, print_line, serial};
+use crate::{console, halt, print_hex, print_line};
 
 pub const DSI_VECTOR: u32 = 0x300;
 pub const ISI_VECTOR: u32 = 0x400;
@@ -120,11 +120,11 @@ pub extern "C" fn trap_dispatch(vector: u32, call: u32, link: u32) -> u32 {
 
     if vector == SYSTEM_CALL_VECTOR {
         let result = call.wrapping_add(1);
-        serial::write(b"ppc: syscall call=");
+        console::write(b"ppc: syscall call=");
         print_hex(call);
-        serial::write(b" result=");
+        console::write(b" result=");
         print_hex(result);
-        serial::write_byte(b'\n');
+        console::write_byte(b'\n');
         result
     } else {
         call
@@ -132,19 +132,19 @@ pub extern "C" fn trap_dispatch(vector: u32, call: u32, link: u32) -> u32 {
 }
 
 fn report(vector: u32, srr0: u32, srr1: u32) {
-    serial::write(b"ppc: trap vector=");
+    console::write(b"ppc: trap vector=");
     print_hex(vector);
-    serial::write(b" srr0=");
+    console::write(b" srr0=");
     print_hex(srr0);
-    serial::write(b" srr1=");
+    console::write(b" srr1=");
     print_hex(srr1);
     if vector == DSI_VECTOR || vector == ALIGNMENT_VECTOR {
-        serial::write(b" dsisr=");
+        console::write(b" dsisr=");
         print_hex(read_dsisr());
-        serial::write(b" dar=");
+        console::write(b" dar=");
         print_hex(read_dar());
     }
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 }
 
 fn read_srr0() -> u32 {

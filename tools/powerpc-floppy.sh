@@ -94,8 +94,10 @@ README="$WORK/README.TXT"
     echo "Commit: $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo
     echo "Console: the kernel drives both ESCC channels and mirrors the boot"
-    echo "log, so the Geoport and the internal IR link both show it.  The"
-    echo "Open Firmware output-device selection is logged at boot."
+    echo "log, so the Geoport and the internal IR link both show it.  It also"
+    echo "mirrors the log to the Open Firmware framebuffer when a display node"
+    echo "is present.  The Open Firmware output-device selection is logged at"
+    echo "boot."
 } >"$README"
 
 rm -f "$OUT"

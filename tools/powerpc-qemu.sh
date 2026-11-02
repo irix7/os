@@ -15,7 +15,10 @@
 # from the disk.  The module's SHA-256 is checked before the entry runs; a
 # second boot with one corrupted image byte must refuse it.  The kernel
 # initialises both ESCC channels and mirrors every byte to both, so QEMU
-# captures the same kernel log on channel A and channel B.  A second boot adds
+# captures the same kernel log on channel A and channel B.  It also maps the
+# Open Firmware display aperture cache-inhibited, mirrors the boot log into an
+# 8x16 text console, draws a block and a glyph, reads them back from the
+# framebuffer in the guest and prints GFX-OK.  A second boot adds
 # an extra `macio-oldworld` device ahead of the built-in controller in tree
 # order and requires the kernel to keep selecting the node with the ESCC and
 # the disk.  That boot has no keyboard input and must reach both bounded
@@ -259,6 +262,9 @@ markers=(
   "ppc: mmu io base=0x"
   "ppc: mmu io wimg=0x28"
   "ppc: mmu module base=0x1800000 size=2097152"
+  "ppc: mmu fb base=0x"
+  "ppc: mmu fb wimg=0x28"
+  "ppc: display path=/pci"
   "IRIX 7 PowerPC G3 bring-up"
   "ppc: booted"
   "ppc: of client=0x"
@@ -292,6 +298,8 @@ markers=(
   "ppc: ata model=QEMU HARDDISK sectors="
   "ppc: ata lba=4 sector="
   "ATA-OK"
+  "ppc: framebuffer bytes="
+  "GFX-OK"
   "ppc: module length=${MODULE_SIZE} digest=${MODULE_SHA}"
   "PPC-MODULE-RUN"
   "module info: ppc: g3beige"
@@ -458,6 +466,57 @@ case "$console_path" in
     exit 1
     ;;
 esac
+
+# The framebuffer console reads the display mode from the tree and maps the
+# aperture with its own BAT.  The gate checks that the mode is one of the
+# supported depths, that the stride matches the mode, and that the BAT covers
+# the whole visible frame.  The guest's own readback of the drawn block and
+# glyph is what proves the pixels; GFX-OK is printed only if that passed.
+display_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: display path=/[^ ]+ base=0x[0-9a-f]+ size=[0-9]+ width=[0-9]+ height=[0-9]+ depth=[0-9]+ linebytes=[0-9]+$' \
+  | tail -n 1)" || true
+if [ -z "$display_line" ]; then
+  echo "powerpc-qemu: missing framebuffer display report" >&2
+  exit 1
+fi
+display_base=$(( $(printf '%s\n' "$display_line" | sed -E 's/^.* base=(0x[0-9a-f]+) .*$/\1/') ))
+display_size=$(printf '%s\n' "$display_line" | sed -E 's/^.* size=([0-9]+) .*$/\1/')
+display_width=$(printf '%s\n' "$display_line" | sed -E 's/^.* width=([0-9]+) .*$/\1/')
+display_height=$(printf '%s\n' "$display_line" | sed -E 's/^.* height=([0-9]+) .*$/\1/')
+display_depth=$(printf '%s\n' "$display_line" | sed -E 's/^.* depth=([0-9]+) .*$/\1/')
+display_linebytes=$(printf '%s\n' "$display_line" | sed -E 's/^.* linebytes=([0-9]+)$/\1/')
+case "$display_depth" in
+  8|16|32) ;;
+  *)
+    echo "powerpc-qemu: unsupported framebuffer depth $display_depth" >&2
+    exit 1
+    ;;
+esac
+expected_linebytes=$(( display_width * display_depth / 8 ))
+if [ "$display_linebytes" -ne "$expected_linebytes" ]; then
+  echo "powerpc-qemu: framebuffer stride $display_linebytes, expected $expected_linebytes for ${display_width}x${display_height}x${display_depth}" >&2
+  exit 1
+fi
+frame_size=$(( display_linebytes * display_height ))
+if [ "$display_size" -lt "$frame_size" ]; then
+  echo "powerpc-qemu: framebuffer aperture $display_size is smaller than the ${frame_size}-byte frame" >&2
+  exit 1
+fi
+
+fb_range="$(tr -d '\r' < "$SERIAL" \
+  | sed -n 's/^ppc: mmu fb base=\(0x[0-9a-f]*\) size=\([0-9][0-9]*\)$/\1 \2/p' \
+  | tail -n 1)" || true
+if [ -z "$fb_range" ]; then
+  echo "powerpc-qemu: no framebuffer BAT range in the serial log" >&2
+  exit 1
+fi
+fb_base=$(( ${fb_range% *} ))
+fb_size=${fb_range#* }
+if [ "$fb_base" -gt "$display_base" ] \
+  || [ $((fb_base + fb_size)) -lt $((display_base + frame_size)) ]; then
+  echo "powerpc-qemu: framebuffer BAT $fb_range does not cover 0x$(printf '%x' "$display_base") + $frame_size" >&2
+  exit 1
+fi
 
 # Both channels must carry exactly the same kernel output.  OpenBIOS writes
 # its own banner to channel A only, so compare from the BAT switch onward.
@@ -963,7 +1022,7 @@ if [ "$two_path" != "$macio_path" ]; then
   echo "powerpc-qemu: selected '$two_path' with a second controller, expected '$macio_path'" >&2
   exit 1
 fi
-for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" \
+for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "GFX-OK" "MODULE-OK" \
   "ppc: monitor timeout" "ppc: keyboard timeout" "KEY-SKIP reason=no-key" \
   "ppc: halted"; do
   if ! grep -qF -- "$marker" "$TWO_SERIAL"; then
@@ -1021,5 +1080,9 @@ if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"
   echo "powerpc-qemu: the corrupted module ran" >&2
   exit 1
 fi
+if ! grep -qF "GFX-OK" "$BAD_SERIAL"; then
+  echo "powerpc-qemu: the framebuffer console did not run on the corrupted-module boot" >&2
+  exit 1
+fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase, key '$key_line')"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, display ${display_width}x${display_height}x${display_depth} linebytes=$display_linebytes base=0x$(printf '%x' "$display_base") frame=$frame_size bat=$fb_range gfx=readback, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase, key '$key_line')"

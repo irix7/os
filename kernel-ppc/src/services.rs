@@ -12,7 +12,7 @@ use module_abi::{
     Services, ABI_VERSION,
 };
 
-use crate::{serial, timer};
+use crate::{console, timer};
 
 /// Errors use the module ABI's negative convention.
 const REFUSED: isize = -1;
@@ -40,7 +40,7 @@ extern "C" fn write(ptr: *const u8, len: usize) {
     }
     // SAFETY: a module passes a buffer it owns for the duration of the call.
     let bytes = unsafe { core::slice::from_raw_parts(ptr, len) };
-    serial::write(bytes);
+    console::write(bytes);
 }
 
 /// The decrementer runs at 100 Hz, so one tick is 10 ms.

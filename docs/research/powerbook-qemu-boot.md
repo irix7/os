@@ -1,28 +1,32 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the eighth boot slice of #287, tracked as #321 and #324, adds
-serial input, a minimal boot monitor and the ADB keyboard. `kernel-ppc` is
-loaded by OpenBIOS, reads the machine description from the device tree,
-installs its own BAT entries, points SDR1 at an empty table, prints to both
-ESCC serial ports, takes ten decrementer ticks and prints `BOOT-OK`. It then
-proves the DSI, ISI, alignment, program and system-call vectors in order,
-prints `TRAPS-OK`, takes ten external interrupts from the CUDA timer through
-the Heathrow interrupt controller at the `0x500` vector, prints
-`IRQ-OK count=10`, identifies the ATA disk on the selected Mac I/O channel,
-reads the signature sector at LBA 4 with polled PIO, prints `ATA-OK`, loads and
-enters the flat module, and prints `MODULE-OK`. It then polls the selected ESCC
-channel for one second: a key enters a `ppc>` monitor with `help`, `info` and
-`halt`, and silence prints `ppc: monitor timeout`. Finally it synchronises the
-CUDA's ADB state machine, waits up to three seconds for a key at the address
-the device tree gives the keyboard, prints the scancode and US ASCII character,
-prints `KEY-OK` and halts. QEMU's g3beige has a CUDA; the gate injects `a`
-through the QEMU monitor once the kernel prints `ppc: keyboard waiting`. A boot
-with no input prints `ppc: keyboard timeout`, `KEY-SKIP reason=no-key` and
-still reaches `ppc: halted`. Observed with QEMU 11.1.2 and its OpenBIOS 1.1
-build. On a PMU machine such as the M4753 there is no `via-cuda`; the kernel
-skips the external-interrupt probe, continues on the decrementer and does not
-print `IRQ-OK`, and the keyboard path uses the PMU transport, which is written
-but pending hardware verification.
+**Status:** the eighth boot slice of #287, tracked as #321, #323 and #324, adds
+serial input, a minimal boot monitor, a framebuffer console and the ADB
+keyboard. The seventh slice (#317) selects the Mac I/O node that carries the
+ESCC console and the ATA disk. `kernel-ppc` is loaded by OpenBIOS, reads the
+machine description from the device tree, installs its own BAT entries, points
+SDR1 at an empty table, prints to both ESCC serial ports, takes ten decrementer
+ticks and prints `BOOT-OK`. It maps the display aperture cache-inhibited, draws
+an 8x16 text console, mirrors the boot log into it, reads a known block and
+glyph back from the framebuffer and prints `GFX-OK`. It then proves the DSI,
+ISI, alignment, program and system-call vectors in order, prints `TRAPS-OK`,
+takes ten external interrupts from the CUDA timer through the Heathrow
+interrupt controller at the `0x500` vector, prints `IRQ-OK count=10`,
+identifies the ATA disk on the selected Mac I/O channel, reads the signature
+sector at LBA 4 with polled PIO, prints `ATA-OK`, loads and enters the flat
+module, and prints `MODULE-OK`. It then polls the selected ESCC channel for one
+second: a key enters a `ppc>` monitor with `help`, `info` and `halt`, and
+silence prints `ppc: monitor timeout`. Finally it synchronises the CUDA's ADB
+state machine, waits up to three seconds for a key at the address the device
+tree gives the keyboard, prints the scancode and US ASCII character, prints
+`KEY-OK` and halts. QEMU's g3beige has a CUDA; the gate injects `a` through the
+QEMU monitor once the kernel prints `ppc: keyboard waiting`. A boot with no
+input prints `ppc: keyboard timeout`, `KEY-SKIP reason=no-key` and still
+reaches `ppc: halted`. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build. On
+a PMU machine such as the M4753 there is no `via-cuda`; the kernel skips the
+external-interrupt probe, continues on the decrementer and does not print
+`IRQ-OK`, and the keyboard path uses the PMU transport, which is written but
+pending hardware verification.
 
 ## The `-kernel` path
 
@@ -101,6 +105,10 @@ and disk.
 | `ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
 | `ata-3@20000:AAPL,interrupts` | the ATA channel's interrupt controller line (`0x0d`) |
 | `/cpus/PowerPC,750@0:timebase-frequency` | `16600000` Hz on g3beige |
+| `/pci@80000000/QEMU,VGA@1:device_type` | `display`; selects the framebuffer node |
+| `QEMU,VGA@1:width`, `height`, `depth`, `linebytes` | the mode Open Firmware left active (`800`, `600`, `32`, `3200` on g3beige) |
+| `QEMU,VGA@1:assigned-addresses` | the framebuffer BAR; first 32-bit memory entry `0x80000000`, size `0x01000000` |
+| `RageLT:assigned-addresses` | the Rage LT framebuffer BAR on the PowerBook, in the same 20-byte shape |
 
 The Mac I/O BAR is assigned, not fixed. With no extra PCI devices it is
 `0x81080000`; adding an `e1000` moves it to `0x81110000`. The ESCC address
@@ -218,6 +226,98 @@ The Geoport is a mini-DIN-9 serial connector, backwards-compatible with the
 8-pin Mac serial port, on SCC channel A. A modem card in the communication slot
 is a separate device on the second Heathrow controller, not the SCC console.
 
+## Framebuffer console
+
+QEMU's g3beige has a `QEMU,VGA@1` node under `/pci@80000000` with
+`device_type = "display"`. OpenBIOS's VGA FCode sets a Bochs VBE mode from the
+`FW_CFG_PPC_WIDTH`/`HEIGHT`/`DEPTH`/`LINEBYTES` values and publishes the
+result as the node's `width`, `height`, `depth` and `linebytes` properties:
+
+```
+ppc: display path=/pci@80000000/QEMU,VGA@1 base=0x80000000 size=16777216 width=800 height=600 depth=32 linebytes=3200
+```
+
+The kernel finds the node by `device_type`, not by path or name, so the same
+code accepts the PowerBook's Rage LT node. It reads the mode and then the
+aperture from `assigned-addresses`, in the PCI 20-byte
+`[phys_hi, addr_hi, addr_lo, size_hi, size_lo]` shape. Only a 32-bit memory
+BAR below 4 GiB is accepted; a 64-bit BAR is left to a later slice. `reg` in
+address/size pairs is the fallback for a non-PCI node, and the OpenBIOS VGA
+driver's `address` property is the last fallback. The aperture must be at
+least `linebytes * height`, so a node that describes a mode larger than its
+BAR is refused.
+
+The aperture is mapped by `DBAT3`, identity-mapped, with `WIMG = 0x28`:
+guarded and cache-inhibited. It is installed in the same switch as the image,
+Mac I/O and module BATs, and `mmu::activate` invalidates its pages with the
+rest. A machine with no display leaves `DBAT3` cleared and prints
+`ppc: display absent`; a display whose depth is not 8, 16 or 32 prints
+`ppc: display unsupported depth=...` and `GFX-SKIP reason=mode`.
+
+The console draws an 8x16 text cell using the classic IBM VGA font, white on
+black. It supports the three formats the firmware can publish without a driver:
+
+| Depth | Pixel format | White | Black |
+|---|---|---|---|
+| 8 | VGA palette index | `0x0f` | `0x00` |
+| 16 | little-endian 5:6:5 | `0xffff` | `0x0000` |
+| 32 | little-endian `XRGB` (`B G R X` in memory) | `0xff_ff_ff_00` as a big-endian word | `0` |
+
+A 15, 20 or 24 bpp mode is refused rather than guessed at. The 8 bpp path uses
+palette entry 15, which is the standard VGA white; the firmware's own palette
+is assumed and not reprogrammed. The 32 bpp word is byte-swapped before the
+store so a big-endian `stw` leaves `B G R X` in memory, which is what QEMU's
+VGA and the Rage LT present on the PCI bus.
+
+The text console has `width / 8` columns and `height / 16` rows, 100x37 at
+800x600. It handles carriage return, line feed and tab, wraps at the right
+edge, and scrolls by copying every visible row one text line up and clearing
+the last line. There is no shadow buffer, cursor, hardware scroll or
+acceleration. Every glyph cell is redrawn completely, so old text is erased.
+
+`console::write` sends each byte to the ESCC first and then to the framebuffer.
+The serial transcript is therefore unchanged. The display is initialised after
+the BAT switch, so bytes printed before then are held in a 4 KiB buffer and
+replayed; the LCD starts at `ppc: mmu enabled sdr1=...` rather than losing the
+mapping report. The replay also covers the display report.
+
+The self-test draws a solid 8x16 block in the second-last cell of the bottom
+row and `G` in the last cell, then reads both back through the same
+cache-inhibited mapping. The block proves the pixel format and the aperture;
+the glyph is compared with the font table, so a wrong stride or byte order
+fails. `GFX-OK` is printed only when every pixel matches. It runs after the ATA
+read, so the block and glyph are still on the final screen after the boot log
+has scrolled.
+
+### The mode assumption
+
+The kernel does not set a mode, so the mode and the aperture are exactly what
+Open Firmware left. That is the VGA FCode's `800x600x32` on g3beige and
+whatever the Rage LT's NDRV left on the PowerBook. If the firmware changes the
+mode after the kernel has read the properties, or the node's `linebytes` does
+not match the active stride, the console writes into the wrong pixels. The
+kernel checks the stride against the depth and width, but it cannot ask the
+device which mode is actually scanning out.
+
+On QEMU, `-nographic` sets `FW_CFG_NOGRAPHIC` and leaves the VGA surface at
+640x480 text mode even though the device tree still reports 800x600x32. The
+gate therefore uses the guest readback for its pixel assertion. A visual check
+needs a real display backend:
+
+```sh
+qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
+  -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
+  -vnc 127.0.0.1:1 -serial file:serial.log -monitor none -no-reboot
+```
+
+`screendump` from the monitor then writes an 800x600 PPM, and the boot log
+and the self-test cells are visible. The real-hardware check is the same
+sequence with `output-device=screen` at the Open Firmware prompt: the log must
+name the Rage LT node and the mode it left, the boot log must appear on the
+LCD from `ppc: mmu enabled` onward, and the bottom-right block and `G` must be
+legible. A depth outside 8/16/32 is expected to print `GFX-SKIP reason=mode`
+and leave the serial console working.
+
 ## Decrementer
 
 The exception vector at `0x900` branches to `decrementer_handler`. The handler
@@ -229,28 +329,32 @@ are one tenth of a second at the g3beige timebase.
 
 ## The kernel's mapping
 
-`kernel-ppc/src/mmu.rs` installs four BAT entries and owns every translation
+`kernel-ppc/src/mmu.rs` installs the BAT entries that own every translation
 the kernel uses after the switch:
 
 | Register | Range | WIMG | Purpose |
 |---|---|---|---|
 | `IBAT0`/`DBAT0` | `0x01000000` + 256 KiB | `0x0` | image, `.bss` and the 64 KiB boot stack |
 | `IBAT1` | `0x00000000` + 128 KiB | `0x0` | exception vectors |
+| `IBAT2`/`DBAT2` | `0x01800000` + 2 MiB | `0x0` | module slot |
 | `DBAT1` | Mac I/O BAR + 512 KiB | `0x28` | ESCC and the rest of the register window |
+| `DBAT3` | display aperture (`0x80000000` + 16 MiB on g3beige) | `0x28` | framebuffer console |
 
 The image block is sized from `__kernel_start` and `__kernel_end`, so a larger
 image widens the block rather than falling off it. The Mac I/O block is sized
 from the BAR and its `assigned-addresses` size, so an extra PCI device that
-moves the BAR also moves the BAT. `WIMG=0x28` sets guarded and cache-inhibited
-for the device window; the image and vector blocks stay cacheable.
+moves the BAR also moves the BAT. The framebuffer block covers both the
+display's assigned aperture and the visible frame. `WIMG=0x28` sets guarded
+and cache-inhibited for the device windows; the image, vector and module blocks
+stay cacheable. A machine without a display leaves `DBAT3` cleared.
 
 BAT block sizes on the 750 are `128 KiB << BL`, with an 11-bit BL field in
 `BATU` bits 2..12. `BEPI` and `BRPN` hold address bits 0..14, so every block is
-identity-mapped. The unused IBAT/DBAT slots are cleared rather than left to
-whatever the firmware installed.
+identity-mapped. The unused IBAT slots are cleared, and `DBAT3` is cleared when
+there is no display, rather than left to whatever the firmware installed.
 
 After the BAT entries are in place, `mmu::activate` writes a 64 KiB zeroed table to
-SDR1 and invalidates the pages in the three mapped ranges with `tlbie`, then
+SDR1 and invalidates the pages in the mapped ranges with `tlbie`, then
 executes `sync` and `isync`. With SDR1 pointing at zeros, a missing BAT cannot
 fall back to an OpenBIOS PTE: it raises a DSI.
 
@@ -383,6 +487,13 @@ IRQ-OK count=10
 
 The wait is bounded by two seconds of timebase, so a timer that never fires
 prints `ppc: irq stalled count=N` and halts instead of hanging the gate.
+
+The handler disables the line and stops the timer as soon as the count
+reaches `TARGET`. Drawing the report on the framebuffer makes the handler
+slower than the one-millisecond timer, so leaving the source running would
+latch a fresh event before the main context could observe the count and the
+probe would overshoot ten. `irq::stop` repeats the disable and acknowledge, so
+its final pending-event and IFR checks still hold.
 
 ## ADB keyboard
 
@@ -614,6 +725,12 @@ order it must appear on channel A, then parses the exception reports:
 - the ESCC report names channel B at the window base and channel A at
   `window + 0x20`, and the firmware's `output-device` names the same channel
   the kernel reports as selected;
+- the display node is a `/pci` node with `device_type = "display"`, its depth
+  is 8, 16 or 32, its `linebytes` equals `width * depth / 8`, and the
+  framebuffer BAT covers the whole `linebytes * height` frame;
+- the guest self-test read a solid block and a known glyph back from the
+  framebuffer and printed `GFX-OK`, on the main boot, the two-controller boot
+  and the corrupted-module boot;
 - channel B's kernel log is byte-for-byte identical to channel A's from
   `ppc: mmu enabled` onward, so the banner and every marker reached both
   ports;
@@ -640,6 +757,10 @@ ppc: mmu enabled sdr1=0x1010000
 ppc: mmu image base=0x1000000 size=262144
 ppc: mmu io base=0x81080000 size=524288
 ppc: mmu io wimg=0x28
+ppc: mmu module base=0x1800000 size=2097152
+ppc: mmu fb base=0x80000000 size=16777216
+ppc: mmu fb wimg=0x28
+ppc: display path=/pci@80000000/QEMU,VGA@1 base=0x80000000 size=16777216 width=800 height=600 depth=32 linebytes=3200
 IRIX 7 PowerPC G3 bring-up
 ppc: booted
 ppc: of client=0xfff025d0
@@ -682,6 +803,8 @@ ppc: ata lba=4 sector=49524958372d4154412d534947303031
 ATA-OK
 ppc: adb transport=cuda via=0x81096000 keyboard=8
 ...
+ppc: framebuffer bytes=2308
+GFX-OK
 ppc: module length=708 digest=44d8a8c78bd75eec6a05fcaab7049e83e6c371a3ab187c38fb903bd1d1a3c64e
 PPC-MODULE-RUN
 module info: ppc: g3beige
@@ -700,8 +823,9 @@ ppc: halted
 
 ## Limits
 
-- The kernel maps only its image, the vector page and the Mac I/O window. RAM
-  beyond the image is not mapped, and there is no frame allocator.
+- The kernel maps only its image, the vector page, the Mac I/O window, the
+  module slot and the display aperture. RAM beyond the image is not mapped,
+  and there is no frame allocator.
 - BAT entries only: there are no page tables, no user address space and no demand
   paging. SDR1 points at a zeroed table solely to make a missing BAT fault.
 - The exception layer is a bring-up proof, not a production fault handler. A
@@ -739,18 +863,35 @@ ppc: halted
 - The console receives on one ESCC channel at a fixed 38400 8N1. It programs
   WR11, WR12, WR13 and WR14 for the 3.6864 MHz ESCC clock and enables both
   receivers, but input is polled on the selected channel only. There is no
-  interrupt-driven input, flow control, termios or baud negotiation, and no
-  framebuffer console. An overrun drops a byte because RR1 is not read.
+  interrupt-driven input, flow control, termios or baud negotiation. An
+  overrun drops a byte because RR1 is not read.
 - The monitor is fixed at three commands with no line editor, history,
   cursor movement or argument parsing. A line longer than 32 characters is
   truncated and reported as an unknown command. There is no command to boot,
   load a module or dump memory. It reads the serial channel only; the decoded
-  ADB queue is not wired into it yet.
+  ADB queue and the framebuffer are not input consoles yet.
 - The ADB driver has no autopoll, no device enumeration or address assignment,
   no mouse or trackpad support and no keyboard LEDs. It preserves the address
   the firmware assigned instead of resetting the bus, so a keyboard that the
   firmware left at a non-standard address still works as long as the tree
   names it.
+- The framebuffer has no keyboard, cursor, mode setting, acceleration or
+  multiple-display selection.
+- The pre-display log buffer is 4 KiB. A boot that prints more than that
+  before the BAT switch keeps the full serial transcript, but the LCD replay
+  holds only the first 4 KiB and drops the rest of the mirror.
+- The framebuffer format is fixed by the Open Firmware mode. It supports 8 bpp
+  indexed, 16 bpp 5:6:5 and 32 bpp `XRGB`; a 15, 20 or 24 bpp mode is refused
+  and the serial console carries on. The 8 bpp path assumes the firmware's DAC
+  has the standard VGA white at palette entry 15; it does not program the DAC.
+  The 32 bpp path assumes the little-endian `B G R X` layout QEMU and the Rage
+  LT present on the PCI bus. A device whose framebuffer is big-endian in memory
+  would need its own format flag.
+- The gate runs `-nographic`, where QEMU leaves the VGA surface at 640x480 text
+  mode while the device tree still reports 800x600x32. The gate's pixel proof
+  is therefore the guest readback of the block and glyph, not a host
+  screenshot. The VNC run in [The mode assumption](#the-mode-assumption)
+  checks the visible 800x600 screen.
 - Mirroring proves that both ESCC register banks accept the boot log. It does
   not prove that both are electrically wired on a particular PowerBook: QEMU's
   channel B is a chardev, and the Geoport/IR wiring still needs the hardware

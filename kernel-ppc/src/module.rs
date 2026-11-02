@@ -19,7 +19,7 @@ use module_abi::{ModuleVtable, Services};
 
 use crate::ata::{self, Channel, SECTOR_SIZE};
 use crate::services::SERVICES;
-use crate::{cache, print_dec, print_hex_bytes, print_line, serial};
+use crate::{cache, console, print_dec, print_hex_bytes, print_line};
 
 /// The module slot: 2 MiB at physical `0x0180_0000`.
 ///
@@ -65,30 +65,30 @@ impl Error {
     pub fn report(&self) {
         match self {
             Error::Read(phase, error) => {
-                serial::write(b"ppc: module read phase=");
-                serial::write(phase.as_bytes());
-                serial::write_byte(b'\n');
+                console::write(b"ppc: module read phase=");
+                console::write(phase.as_bytes());
+                console::write_byte(b'\n');
                 error.report();
             }
             Error::Header => print_line(b"ppc: module header invalid"),
             Error::Length(length) => {
-                serial::write(b"ppc: module length out of range: ");
+                console::write(b"ppc: module length out of range: ");
                 print_dec(*length);
-                serial::write_byte(b'\n');
+                console::write_byte(b'\n');
             }
             Error::Digest { expected, actual } => {
-                serial::write(b"ppc: module digest expected=");
+                console::write(b"ppc: module digest expected=");
                 print_hex_bytes(expected);
-                serial::write(b" actual=");
+                console::write(b" actual=");
                 print_hex_bytes(actual);
-                serial::write_byte(b'\n');
+                console::write_byte(b'\n');
                 print_line(b"MODULE-DIGEST-BAD");
             }
             Error::Vtable => print_line(b"ppc: module vtable out of range"),
             Error::Status(status) => {
-                serial::write(b"ppc: module status=");
+                console::write(b"ppc: module status=");
                 print_dec(*status as u32);
-                serial::write_byte(b'\n');
+                console::write_byte(b'\n');
             }
         }
     }
@@ -148,11 +148,11 @@ pub fn load(channel: Channel) -> Result<Report, Error> {
 
     cache::flush_code(SLOT_BASE, length as usize);
 
-    serial::write(b"ppc: module length=");
+    console::write(b"ppc: module length=");
     print_dec(length);
-    serial::write(b" digest=");
+    console::write(b" digest=");
     print_hex_bytes(&actual);
-    serial::write_byte(b'\n');
+    console::write_byte(b'\n');
 
     // SAFETY: the image was copied into the reserved slot and its digest and
     // length were checked.  The entry reads the service table only during this
