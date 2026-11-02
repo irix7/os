@@ -45,8 +45,16 @@ pub const WASM: Image = Image {
     name: "wasm",
 };
 
-/// How long the MCP module serves before the boot ends: 60 s at 100 Hz.
-pub const SERVE_TICKS: u32 = 30_000;
+/// Serve window for a standalone boot: 60 s at 100 Hz.
+///
+/// The smoke gate runs QEMU under a 150 s cap and expects the guest to power
+/// off on its own.
+pub const SMOKE_SERVE_TICKS: u32 = 6_000;
+
+/// Serve window for a mesh run: 300 s at 100 Hz.
+///
+/// Join, homes, route, migration and the two restarts share one boot.
+pub const MESH_SERVE_TICKS: u32 = 30_000;
 
 type Entry = unsafe extern "C" fn(*const module_abi::Services) -> *const ModuleVtable;
 
@@ -85,8 +93,13 @@ pub fn load(image: &Image, bytes: &[u8]) -> *const ModuleVtable {
     vtable
 }
 
-/// Serve: poll the stack and call the module's tick for `SERVE_TICKS`.  A tick
-/// that returns non-zero unregisters it, as the Indy kernel does.
+/// Serve: poll the stack and call the module's tick for the boot's serve
+/// window.  A tick that returns non-zero unregisters it, as the Indy kernel
+/// does.
+///
+/// A peer address in the configuration means the rig is running the mesh
+/// scenario, which needs the long window; otherwise the machine powers off
+/// soon after the standalone markers.
 pub fn serve(vtable: *const ModuleVtable) {
     serial::write(b"x86: module serving\n");
     // SAFETY: the vtable points into a loaded module image.
@@ -97,9 +110,15 @@ pub fn serve(vtable: *const ModuleVtable) {
         let _ = unsafe { tick(&SERVICES) };
     }
     serial::write(b"BOOT-READY v=1 kernel=up network=up mcp=listening mesh=single\n");
+    let mut peer = [0u8; 64];
+    let serve_ticks = if crate::config::get(b"mesh.peer", &mut peer) > 0 {
+        MESH_SERVE_TICKS
+    } else {
+        SMOKE_SERVE_TICKS
+    };
     let start = timer::ticks();
     let mut ticking = tick.is_some();
-    while timer::ticks().wrapping_sub(start) < SERVE_TICKS {
+    while timer::ticks().wrapping_sub(start) < serve_ticks {
         net::poll();
         if let (true, Some(tick)) = (ticking, tick) {
             // SAFETY: the module registered this tick and receives the same table.
