@@ -115,14 +115,15 @@ the verdict is downgraded if that claim is part of the acceptance.
 | #321 | ppc: serial input and a minimal boot monitor | implemented | medium | Bounded RX queue and real Geoport test under #16/#324 |
 | #288 | userland: boot a real C probe through the IRIX PAL | implemented | high | CI probe gate (#13); process/capability gate (#326/#10) |
 | #296 | userland: broaden the fd surface and give directories a cookie | implemented | high | Per-process fd table (#326); `*at` surface |
-| #302 | userland: poll and non-blocking descriptors | partial | medium | Wait queues and scheduler (#322/#326); remove busy loop |
+| #302 | userland: poll and non-blocking descriptors | implemented | medium | Wait queue for cell-switching readiness (#343 follow-up, M9.5) |
 | #306 | userland: make the in-memory filesystem writable | implemented | medium | Block-backed FS and per-cell namespace (#10/#326) |
 | #310 | userland: cooperative user threads and per-thread TCBs | implemented | high | Preemption and blocking waits (#322/#326) |
 | #314 | userland: futex wait/wake for cooperative threads | implemented | medium | Timer-driven wakeups (#322); real wait queues |
 | #318 | userland: pthread_create/join and a mutex on the thread gate | implemented | high | Preemption, condvars and cancellation (#326/#322) |
 
-Counts: **14 implemented, 2 partial, 1 divergent, 0 contract-only, 0
-superseded**.
+Counts: **15 implemented, 1 partial, 1 divergent, 0 contract-only, 0
+superseded**.  #302 moved from partial to implemented in the remediation
+recorded in §7.1; #301 remains partial.
 
 ## 3. Per-issue evidence
 
@@ -597,8 +598,9 @@ direct blocker for `fork`.
 
 ### #302 — userland: poll and non-blocking descriptors
 
-**Verdict:** partial. **Foundation risk:** medium. **Evidence grade:** iris
-transcript (142 checks); code read.
+**Verdict:** implemented, after remediation on 2026-11-03 (§7.1). **Foundation
+risk:** medium. **Evidence grade:** iris transcript (142 checks), code read,
+and the parked-wait change reviewed against the descriptor probe.
 
 The functional surface is there. `poll` reports `POLLIN`, `POLLOUT`,
 `POLLERR`, `POLLHUP` and `POLLNVAL` per record, ignores negative descriptors,
@@ -611,20 +613,31 @@ closed descriptor, negative descriptors, per-record `revents`, zero count,
 the bounded timeout, `O_NONBLOCK` get/set across `dup`, empty-pipe `EAGAIN`
 and console `POLLOUT` (`docs/research/relibc-pal-bringup.md:35-37`).
 
-The acceptance item "`poll` returns the expected `revents` and a bounded
-timeout; no busy loop" is not met. `poll_user` spins on `core::hint::spin_loop()`
-until readiness or the timeout (`kernel/src/user.rs:672-683`), and
-`fd::wait_for` does the same for a blocking read or write (`fd.rs:736-747`).
-The wait is bounded at 100 ms, so it cannot wedge the machine, but it burns
-the CPU for the whole interval and there is no wait queue or wakeup. The PR
-describes this as a "bounded readiness recheck", not a wait-queue
-registration (`tools/relibc-pal/README.md:172-174`). A negative timeout is
-clamped to 100 ms, so POSIX's "infinite" is documented rather than
-implemented.
+At the audit this was partial: the acceptance item "`poll` returns the
+expected `revents` and a bounded timeout; no busy loop" was not met.
+`poll_user` spun on `core::hint::spin_loop()` until readiness or the timeout,
+and `fd::wait_for` did the same for a blocking read or write.  The remediation
+removes both spins:
 
-Follow-up: #322 (parking sleeps and deadlines on the cooperative scheduler)
-and #326 (scheduler and wait queues). Poll should register on a wait queue
-and be woken by the pipe/console producer, not spin.
+- `poll_user` parks the CPU on CP0 Compare for `WAIT_SLICE_MS` (1 ms) slices
+  and rechecks readiness between slices (`kernel/src/user.rs`).  A device or
+  console interrupt ends a slice early, so the console stays responsive.
+- `fd` no longer waits.  `fd::read` reports `EAGAIN` for an empty pipe or idle
+  console, and `user::read_fd` owns the blocking rule: it parks in the same
+  timer slices until `WAIT_LIMIT_MS`, returns `EAGAIN` at the bound, and
+  returns a short count once it has already copied bytes.  `O_NONBLOCK` never
+  enters the wait and reports `EAGAIN` immediately.
+- A full-pipe write still takes the bounded path, now parked on the timer
+  rather than spun (`fd::wait_for`).
+
+The wait remains **syscall-local** and bounded at 100 ms.  The flat gate has
+no continuation, so a `poll` or read cannot install another cell in the middle
+of the gate and resume its scan; that needs the M9.5 wait queue/wakeup this
+report already listed as a follow-up.  `nanosleep`, which is a complete park
+rather than a continuation, is the call that yields a cell (§8.2).  A negative
+`poll` timeout is still clamped to 100 ms, as the issue permits ("the
+single-threaded kernel must bound the wait; document the chosen behaviour").
+The probe's `O_NONBLOCK`, pipe and console readiness checks are unchanged.
 
 ### #306 — userland: make the in-memory filesystem writable
 
@@ -887,9 +900,11 @@ The specific no-op and partial calls matter more than the count:
 - `getpid` is 1 and there is no parent (`native_sys.rs:98`).
 - The ramfs is 32 inodes and 4 KiB per file (`ramfs.rs:22-24`), reset per
   image. It is a fixture, not a root filesystem.
-- `poll`, blocking read/write and futex waits are bounded at 100 ms and spin
-  or re-park (`fd.rs:45-55`; `thread.rs:456-468`). `nanosleep` is a busy
-  wait (`kernel/src/user.rs:994-1017`), which is the subject of open #322.
+- `poll`, blocking read/write and futex waits are bounded at 100 ms.  They no
+  longer spin: `poll`/read park on CP0 Compare in 1 ms slices and the futex
+  wait parks on a deadline or a cell switch (§7.1–7.2).  The descriptor calls
+  remain syscall-local because the gate has no continuation.  `nanosleep`
+  parks the thread and, with no runnable thread left, the cell.
 - There are no sockets, termios, signals, process groups, job control or
   dynamic linking. The probes do not test them.
 - The static Rust `std` shim remains the abicalls exception: it uses `$gp`
@@ -926,11 +941,14 @@ is a sequence of 100 ms parks, not a blocked wait. `pthread_cancel` with
 cancellation enabled is `ENOSYS`; a detached thread's stack is not reclaimed
 (`tools/relibc-pal/README.md:169-185`).
 
-`poll` and blocking reads are bounded busy-waits (`kernel/src/user.rs:672-683`;
-`fd.rs:736-747`), and `nanosleep` is a busy-wait (`user.rs:994-1017`).
-`#322` is the open issue for parking sleeps on the cooperative scheduler;
-`#326` is the open issue for the process model. Until those land, the
-userland is a cooperative runtime, not a POSIX process environment.
+`poll` and blocking reads are bounded, but no longer busy-waits: they park on
+CP0 Compare in 1 ms slices and recheck (§7.1).  `nanosleep` parks the calling
+thread and, when the cell has no runnable thread left, the cell itself
+(`process.rs` `Sleeping`/`sleep_deadline`; §7.2).  A sleeping parent now yields
+to a runnable child cell and resumes at its deadline.  The remaining
+scheduling limits are the cooperative model (no preemption) and the absent
+readiness wait queue.  The userland is a cooperative runtime, not a POSIX
+process environment.
 
 ### 4.5 Evidence, CI and documentation
 
@@ -1071,3 +1089,130 @@ per-machine. The x86 target must still not be described as a second POSIX/IRIX
 target. #266 should stay open for the userland half, or be split into
 "machine and shared module core" (now done) and "x86 userland and native gate"
 (blocked on #326).
+
+## 8. Follow-up remediation (2026-11-03)
+
+Two findings from this report were fixed on branch `audit-process`, based on
+`8c7a270` (tree-identical to `aaf0d4e`, the #342 process branch merged as
+\#326).  The work is kernel-side; the relibc pin and the C probes are
+unchanged apart from the new per-cell probe.  All seven userland probes were
+rebuilt at the pinned relibc `8a7e044f` and rerun on iris 0.1.13 with the
+merged kernel: the descriptor probe (226 checks), fork/exec, sleep (48),
+thread (20), futex (32), pthread (29) and the new per-cell sleep probe (11)
+all pass.
+
+### 8.1 #302 — parked poll and blocking-read waits
+
+The two busy loops are gone:
+
+- `user::poll_user` parks the CPU on CP0 Compare for `WAIT_SLICE_MS` (1 ms)
+  slices and rechecks every record between slices.  A timer or device
+  interrupt ends a slice, so console input is still observed promptly.
+- `fd::read` no longer waits.  `fd::read_pipe`/`fd::read_console` report
+  `EAGAIN` for an empty pipe or idle console, and `user::read_fd` owns the
+  blocking rule: it parks in the same 1 ms slices until `WAIT_LIMIT_MS`
+  (100 ms), returns `EAGAIN` at the bound, or returns a short count once it
+  has copied bytes.  A non-blocking descriptor reports `EAGAIN` on the first
+  check and never parks.
+- A full-pipe write still uses the bounded path, now parked on CP0 Compare
+  rather than spun (`fd::wait_for`).
+
+The wait remains **syscall-local and bounded at 100 ms**.  The flat gate has
+no continuation, so a `poll` or read cannot install another cell in the middle
+of the gate and resume its scan; that is the M9.5 readiness wait queue, still
+a follow-up.  `nanosleep` is a complete park, so it is the call that yields a
+cell (§8.2).  A negative `poll` timeout is still clamped to 100 ms, which the
+issue permits and `docs/spec/native-abi.md` §5.8 documents.
+
+### 8.2 #343 — per-cell sleep deadlines
+
+The process record now carries a sleep deadline and a `Sleeping` state:
+
+- `Sleeping` is set when the cell has no runnable thread and another local
+  cell can run.  `sleep_deadline` is the earliest deadline of the cell's
+  parked threads (the thread wait fields are `wait_start`/`wait_limit` in
+  CP0 Count ticks).
+- `process::next_runnable` runs `expire_sleepers` first and skips a sleeping
+  cell until its deadline.  `process::nearest_deadline` returns the earliest
+  cell deadline; when nothing is runnable, `next_runnable_or_expired` and the
+  thread wait paths arm CP0 Compare for it and park the CPU in `wait`.
+- `process::park_current` calls its prepare closure only after it has found a
+  runnable target, so a cell with no peer falls through to the existing timer
+  wait instead of being parked in a table nothing selects.  The closure marks
+  the calling thread `Sleeping` or `Blocked`, saves its frame with `EPC`
+  advanced and writes its result word.
+- `switch_to` applies the target's thread deadlines with
+  `thread::resume_after_wake` after its address space is active, so a cell
+  woken by a sibling thread's deadline resumes that thread, and a futex
+  waiter still re-reads its word before returning.
+- `thread::sleep_current` parks the cell when no thread peer exists;
+  `thread::bounded_wait` does the same for a futex wait with no thread peer
+  and a runnable sibling cell, preserving the word contract.
+
+Preserved unchanged: the wrap-safe Count comparison (every deadline is
+shorter than half the 32-bit range), the 60 s `SLEEP_LIMIT_MS` cap and libc
+re-arm, `sched_yield`, `waitpid` and `exit`.  A child that exits while its
+parent sleeps is retained as a zombie because `index_of_pid` now counts a
+sleeping parent as alive; the parent resumes at its deadline and reaps it.
+
+### 8.3 Per-cell sleep probe
+
+`user/relibc-sleep-cell-probe` creates a non-blocking pipe, forks, and sleeps
+20 ms.  The child increments a counter 2,000 steps, writes the final value to
+the pipe and exits 42.  The non-blocking read is deliberate: a
+blocking read would wait for the child and hide the scheduling failure.  The
+parent measures `nanosleep` alone, then checks the pipe value, the elapsed
+deadline, `waitpid(WNOHANG)` reaping an already-exited child, and status 42.
+
+```text
+fork: pid=1 child=2 actor=...
+sleep: wait tid=1 limit=20ms
+process: sleep pid=1 limit=19ms
+process: exit pid=2 status=0x0000002A
+process: sleep expiry pid=1 overrun=0ms
+sleep: expiry tid=1 limit=19ms elapsed=33ms
+SLEEP-CELL-PROBE: counter=2000 expected=2000 elapsed=63ms checks=11 failures=0
+SLEEP-CELL-OK
+process: exit pid=1 status=0x00000000
+user: exit syscall code=0x00000000
+kernel: userland returned to kernel console
+```
+
+The child's exit line appears while the parent is still asleep, which is the
+scheduling evidence.  The parent's `elapsed` is measured around `nanosleep`,
+so an early wake fails the lower bound; the 60 s upper bound is a no-hang
+check for a loaded JIT host.  The host was heavily loaded during the run, so
+the millisecond values are bounds rather than fixed numbers.
+
+### 8.4 Remaining blocking paths
+
+No user-visible call now busy-loops for the length of its wait.  (The timer
+park itself counts down the final 1,000 Count ticks, about 30 µs, because a
+Compare value already behind Count would wrap.)  The paths that remain
+bounded are:
+
+| Path | Bound | Why it cannot switch cells |
+|---|---|---|
+| `poll` | 100 ms | the gate cannot resume its record scan after a switch |
+| blocking `read` | 100 ms | partial data would be re-read if the gate restarted |
+| blocking `write` to a full pipe | 100 ms | producer/consumer wakeup needs the wait queue |
+| `futex_wait` | 100 ms | parks the cell only when another cell can run; no cross-cell wake |
+| `nanosleep` | 60 s per park | yields the cell; libc re-arms for longer intervals |
+
+None of them spins: the descriptor calls and a no-peer futex wait park the
+CPU on the timer between checks, and a futex wait with a runnable sibling cell
+parks the cell.  A readiness wait queue that wakes the reader or poller from
+the producer, and a true infinite wait, remain the M9.5 work; the cooperative
+model still has no preemption, so a thread or cell that never yields also
+never observes its own deadline.
+
+### 8.5 Test conditions
+
+- Worktree branch `audit-process`; kernel built with `tools/m2-rig/build.sh`
+  at the pinned nightly, ROM 503,712 bytes.  Probe images built with
+  `tools/relibc-pal/build.sh` at relibc `8a7e044f584945dbf5fdbad11fd76e16daa420b9`.
+- Each image was booted on iris 0.1.13 as SCSI target 2 (Indy profile
+  `indy_ip24`, 64 MiB, `IRIS_NO_IDLE=1`); the fork/exec probe also attached
+  the child image at target 3.
+- The host was shared with other emulator runs, so short sleeps show host
+  dilation.  The probes assert lower bounds and use generous upper bounds.

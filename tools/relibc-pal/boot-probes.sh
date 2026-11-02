@@ -143,7 +143,8 @@ run_probe thread "$OUT/thread-probe.raw" 'THREADS-OK' 'failures=0'
 run_probe futex "$OUT/futex-probe.raw" 'FUTEX-OK' 'failures=0'
 run_probe pthread "$OUT/pthread-probe.raw" 'PTHREADS-OK' 'failures=0'
 run_probe sleep "$OUT/sleep-probe.raw" 'SLEEP-OK' 'failures=0'
+run_probe sleep-cell "$OUT/sleep-cell-probe.raw" 'SLEEP-CELL-OK' 'failures=0'
 run_probe forkexec "$OUT/forkexec-probe.raw" 'FORK-EXEC-OK' 'CHILD-OK' \
   "$OUT/forkexec-child.raw"
 
-echo "boot-probes: all six relibc images passed"
+echo "boot-probes: all seven relibc images passed"

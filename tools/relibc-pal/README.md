@@ -11,7 +11,7 @@ and a review mirror of the change.
 | Commit | `8a7e044f584945dbf5fdbad11fd76e16daa420b9` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
 | Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep, `0009` fork/exec/wait) |
-| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c), [`user/relibc-forkexec-probe/probe.c`](../../user/relibc-forkexec-probe/probe.c) and [`user/relibc-forkexec-child/probe.c`](../../user/relibc-forkexec-child/probe.c) |
+| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c), [`user/relibc-sleep-cell-probe/probe.c`](../../user/relibc-sleep-cell-probe/probe.c), [`user/relibc-forkexec-probe/probe.c`](../../user/relibc-forkexec-probe/probe.c) and [`user/relibc-forkexec-child/probe.c`](../../user/relibc-forkexec-child/probe.c) |
 
 The mirror is generated with `git format-patch a36041ac..8a7e044f` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
@@ -112,12 +112,12 @@ so an unrelated job does not rebuild it.
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
 `libcrt0.a`, compiles the C probe, the thread probe, the futex probe, the
-pthread probe, the sleep probe and the two fork/exec images, strips each ELF
-and pads 256 KiB `probe.raw`, `thread-probe.raw`, `futex-probe.raw`,
-`pthread-probe.raw`, `sleep-probe.raw`, `forkexec-probe.raw` and
-`forkexec-child.raw` images.  It records the relibc commit in
-`BUILD-PROVENANCE.txt`.  An existing checkout needs its submodules initialised
-(`git submodule update --init --recursive`).
+pthread probe, the sleep probe, the per-cell sleep probe and the two fork/exec
+images, strips each ELF and pads 256 KiB `probe.raw`, `thread-probe.raw`,
+`futex-probe.raw`, `pthread-probe.raw`, `sleep-probe.raw`,
+`sleep-cell-probe.raw`, `forkexec-probe.raw` and `forkexec-child.raw` images.
+It records the relibc commit in `BUILD-PROVENANCE.txt`.  An existing checkout
+needs its submodules initialised (`git submodule update --init --recursive`).
 
 ## Run
 
@@ -220,6 +220,29 @@ kernel: userland returned to kernel console
 Timer and scheduling jitter on the emulator host changes the millisecond
 values; the checks are bounds, not fixed numbers.
 
+The per-cell sleep probe (`sleep-cell-probe.raw`) attaches to target 2 alone;
+its child is a `fork` of the parent, not a second image.  The parent sleeps 20
+ms while the child increments a counter and exits 42; the child reports through
+a non-blocking pipe so a missed switch cannot be hidden by a blocking read.
+
+```text
+fork: pid=1 child=2 actor=...
+sleep: wait tid=1 limit=20ms
+process: sleep pid=1 limit=19ms
+process: exit pid=2 status=0x0000002A
+process: sleep expiry pid=1 overrun=0ms
+sleep: expiry tid=1 limit=19ms elapsed=33ms
+SLEEP-CELL-PROBE: counter=2000 expected=2000 elapsed=63ms checks=11 failures=0
+SLEEP-CELL-OK
+process: exit pid=1 status=0x00000000
+user: exit syscall code=0x00000000
+kernel: userland returned to kernel console
+```
+
+The child's `process: exit` line appears while the parent is still asleep,
+which is the scheduling evidence; `elapsed` is measured around `nanosleep`
+alone, so an early wake would fail the lower bound.
+
 The probe keeps the startup checks (marker, `argc`/`argv`, `getpid`,
 `AT_PAGESZ`/`AT_ENTRY`/`AT_CLKTCK`, `$28`, `__errno_location`, `stat`,
 `fstat(999)` with `EBADF`, `stat("/missing")` with `ENOENT`) and the file
@@ -244,13 +267,17 @@ unlinked inode still readable through its descriptor, and `EEXIST`,
   resumed at the next scheduling point after its timer deadline, so a peer
   that never yields also never sees the switch.
 - `poll`, a blocking read or write and a futex wait are bounded by the
-  kernel's 100 ms poll limit; the libc re-parks a futex wait whose bounded
-  expiry precedes its deadline.
-- `nanosleep` parks the calling thread on a CP0 Count deadline, so a
-  cooperative peer runs while one thread sleeps.  One park lasts at most 60 s
-  and the libc re-arms with the remainder.  With no runnable peer the kernel
-  arms Compare for the deadline and executes `wait`, so a solo sleep idles the
-  CPU instead of spinning.
+  kernel's 100 ms poll limit.  They park the CPU on the timer between
+  readiness checks instead of spinning, but they are syscall-local: the gate
+  has no continuation, so they cannot hand the CPU to another cell and resume
+  the call.  The libc re-parks a futex wait whose bounded expiry precedes its
+  deadline.  A wait queue is the M9.5 readiness model.
+- `nanosleep` parks the calling thread on a CP0 Count deadline, and with no
+  runnable thread left in the cell it parks the cell itself, so a runnable
+  child cell runs while the parent sleeps and the parent resumes at its
+  deadline.  One park lasts at most 60 s and the libc re-arms with the
+  remainder.  With no runnable cell the kernel arms Compare for the deadline
+  and executes `wait`, so a solo sleep idles the CPU instead of spinning.
 - `pthread_cancel` cannot deliver a signal, so cancellation with the target
   enabled returns `ENOSYS`.  `pthread_key_delete` removes the key from the
   calling thread's map only.  A detached thread's TCB and stack are not

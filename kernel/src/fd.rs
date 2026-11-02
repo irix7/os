@@ -42,16 +42,21 @@ const SEEK_HOLE: u32 = 4;
 const MAX_PIPES: usize = 8;
 const PIPE_CAPACITY: usize = 4096;
 
-/// The longest a "blocking" read or write waits before returning `EAGAIN`.
+/// The longest a "blocking" descriptor wait lasts before returning `EAGAIN`.
 ///
-/// The kernel is single-threaded: no other thread can run while a descriptor
-/// wait is in progress, so an unbounded wait would hang the machine rather
-/// than make progress.  The wait is a real readiness poll (console input and
-/// pipe state are rechecked) with a fixed upper bound.  `poll` uses the same
-/// bound for a negative timeout.
+/// The v0 wait is syscall-local: `poll` and a blocking read cannot hand the
+/// CPU to another cell in the middle of the gate because the gate has no
+/// continuation.  They therefore recheck readiness and park the CPU on the
+/// timer between checks, bounded by this limit rather than hanging the
+/// machine.  `nanosleep` is the call that yields the cell.  A wait queue that
+/// wakes a reader when its producer writes is the M9.5 readiness model.
 pub const WAIT_LIMIT_MS: u32 = 100;
 /// CP0 Count ticks per millisecond at the Indy's 33 MHz rate.
 pub const TICKS_PER_MS: u32 = 33_000;
+/// One readiness recheck interval.  The CPU is parked on the timer rather
+/// than spun between checks; 1 ms keeps the console responsive.
+pub const WAIT_SLICE_MS: u32 = 1;
+pub const WAIT_SLICE_TICKS: u32 = WAIT_SLICE_MS * TICKS_PER_MS;
 const WAIT_LIMIT_TICKS: u32 = WAIT_LIMIT_MS * TICKS_PER_MS;
 
 static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MAX_PIPES];
@@ -822,47 +827,37 @@ fn write_at(kind: Kind, start: usize, buffer: &[u8]) -> SysResult<usize> {
 
 /// Wait for `ready` until the fixed kernel bound.  Returns the final state.
 ///
-/// The kernel has no scheduler, so this is the longest wait any descriptor
-/// operation performs.  Interrupts are masked by EXL for the whole syscall,
-/// but CP0 Count still advances.
+/// The CPU is parked on CP0 Compare for each slice instead of spinning; a
+/// device interrupt ends a slice early so the condition is rechecked promptly.
+/// This remains a syscall-local wait: it cannot run another cell.
 fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
     let start = crate::traps::count_read();
     loop {
         if ready() {
             return true;
         }
-        if crate::traps::count_read().wrapping_sub(start) >= WAIT_LIMIT_TICKS {
+        let elapsed = crate::traps::count_read().wrapping_sub(start);
+        if elapsed >= WAIT_LIMIT_TICKS {
             return ready();
         }
-        core::hint::spin_loop();
+        let slice = WAIT_SLICE_TICKS.min(WAIT_LIMIT_TICKS - elapsed);
+        crate::traps::wait_until(crate::traps::count_read().wrapping_add(slice));
     }
 }
 
-fn read_pipe(index: usize, buffer: &mut [u8], nonblocking: bool) -> SysResult<usize> {
+fn read_pipe(index: usize, buffer: &mut [u8]) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
-    let mut len = unsafe { PIPE_LEN[index] };
+    let len = unsafe { PIPE_LEN[index] };
     if len == 0 {
-        // With no writer left the pipe is at end-of-file.  Otherwise a
-        // non-blocking read returns EAGAIN and a blocking one waits for the
-        // bounded kernel interval before doing the same.
-        if !pipe_has_writer(index) {
-            return Ok(0);
-        }
-        if !nonblocking
-            && !wait_for(|| (unsafe { PIPE_LEN[index] != 0 }) || !pipe_has_writer(index))
-        {
-            return Err(CELL_E_AGAIN);
-        }
-        len = unsafe { PIPE_LEN[index] };
-        if len == 0 {
-            return if pipe_has_writer(index) {
-                Err(CELL_E_AGAIN)
-            } else {
-                Ok(0)
-            };
-        }
+        // With no writer left the pipe is at end-of-file.  Otherwise the data
+        // is not ready: the syscall layer owns the blocking wait.
+        return if pipe_has_writer(index) {
+            Err(CELL_E_AGAIN)
+        } else {
+            Ok(0)
+        };
     }
     let count = buffer.len().min(len);
     let head = unsafe { PIPE_HEAD[index] };
@@ -913,20 +908,14 @@ fn write_pipe(index: usize, buffer: &[u8], nonblocking: bool) -> SysResult<usize
     Ok(count)
 }
 
-/// Read the console as a byte stream, honouring `O_NONBLOCK`.
-fn read_console(buffer: &mut [u8], nonblocking: bool) -> SysResult<usize> {
+/// Read the console as a byte stream.
+///
+/// An idle console is `EAGAIN`; the syscall layer decides how long a blocking
+/// descriptor rechecks it.  Keeping the wait out of this layer lets a probe
+/// see the raw readiness state and keeps `poll` and `read` on one rule.
+fn read_console(buffer: &mut [u8]) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
-    }
-    let count = crate::kbd::read_input(buffer);
-    if count != 0 {
-        return Ok(count);
-    }
-    if nonblocking {
-        return Err(CELL_E_AGAIN);
-    }
-    if !wait_for(crate::kbd::input_ready) {
-        return Err(CELL_E_AGAIN);
     }
     let count = crate::kbd::read_input(buffer);
     if count == 0 {
@@ -997,6 +986,10 @@ fn writable(fd: i32) -> bool {
     status_flags(fd) & O_ACCMODE != O_RDONLY
 }
 
+/// Read without waiting.
+///
+/// An empty pipe with a live writer and an idle console are `CELL_E_AGAIN`;
+/// [`crate::user::read_fd`] owns the blocking rule so this layer never parks.
 pub fn read(fd: i32, buffer: &mut [u8]) -> SysResult<usize> {
     let file = kind(fd);
     if file == Kind::Closed {
@@ -1005,10 +998,9 @@ pub fn read(fd: i32, buffer: &mut [u8]) -> SysResult<usize> {
     if !readable(fd) {
         return Err(CELL_E_BADF);
     }
-    let nonblocking = nonblocking(fd);
     match file {
-        Kind::PipeRead(index) => return read_pipe(index as usize, buffer, nonblocking),
-        Kind::Console => return read_console(buffer, nonblocking),
+        Kind::PipeRead(index) => return read_pipe(index as usize, buffer),
+        Kind::Console => return read_console(buffer),
         _ => {}
     }
     let start = offset(fd);

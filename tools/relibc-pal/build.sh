@@ -37,6 +37,7 @@ THREAD_PROBE="$REPO/user/relibc-thread-probe"
 FUTEX_PROBE="$REPO/user/relibc-futex-probe"
 PTHREAD_PROBE="$REPO/user/relibc-pthread-probe"
 SLEEP_PROBE="$REPO/user/relibc-sleep-probe"
+SLEEP_CELL_PROBE="$REPO/user/relibc-sleep-cell-probe"
 FORKEXEC_PROBE="$REPO/user/relibc-forkexec-probe"
 FORKEXEC_CHILD="$REPO/user/relibc-forkexec-child"
 LINKER="$PROBE/linker.ld"
@@ -158,6 +159,14 @@ LDFLAGS="-mabi=n32 -march=mips3 -msoft-float -mno-abicalls -fno-pic \
     -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
     -Wl,--end-group
 
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$SLEEP_CELL_PROBE/probe.c" -o "$OUT/sleep-cell-probe.o"
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/sleep-cell-probe.elf" \
+    "$OUT/sleep-cell-probe.o" \
+    -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+
 # The fork/exec probe is two images: the parent at target 2 and the child at
 # target 3.  Both use the same relibc and linker script.
 # shellcheck disable=SC2086
@@ -205,6 +214,7 @@ thread_size=$(finish_image "$OUT/thread-probe.elf" "$OUT/thread-probe.raw")
 futex_size=$(finish_image "$OUT/futex-probe.elf" "$OUT/futex-probe.raw")
 pthread_size=$(finish_image "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw")
 sleep_size=$(finish_image "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw")
+sleep_cell_size=$(finish_image "$OUT/sleep-cell-probe.elf" "$OUT/sleep-cell-probe.raw")
 forkexec_size=$(finish_image "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw")
 forkexec_child_size=$(finish_image "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw")
 
@@ -217,6 +227,7 @@ forkexec_child_size=$(finish_image "$OUT/forkexec-child.elf" "$OUT/forkexec-chil
     echo "futex_probe_elf=$futex_size bytes"
     echo "pthread_probe_elf=$pthread_size bytes"
     echo "sleep_probe_elf=$sleep_size bytes"
+    echo "sleep_cell_probe_elf=$sleep_cell_size bytes"
     echo "forkexec_probe_elf=$forkexec_size bytes"
     echo "forkexec_child_elf=$forkexec_child_size bytes"
 } >"$OUT/BUILD-PROVENANCE.txt"
@@ -225,6 +236,7 @@ sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
     "$OUT/futex-probe.elf" "$OUT/futex-probe.raw" \
     "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw" \
     "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw" \
+    "$OUT/sleep-cell-probe.elf" "$OUT/sleep-cell-probe.raw" \
     "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw" \
     "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw" >"$OUT/SHA256SUMS"
 
@@ -238,6 +250,8 @@ echo "build-relibc-probe: pthread ELF $OUT/pthread-probe.elf"
 echo "build-relibc-probe: pthread raw $OUT/pthread-probe.raw"
 echo "build-relibc-probe: sleep ELF $OUT/sleep-probe.elf"
 echo "build-relibc-probe: sleep raw $OUT/sleep-probe.raw"
+echo "build-relibc-probe: sleep-cell ELF $OUT/sleep-cell-probe.elf"
+echo "build-relibc-probe: sleep-cell raw $OUT/sleep-cell-probe.raw"
 echo "build-relibc-probe: forkexec ELF $OUT/forkexec-probe.elf"
 echo "build-relibc-probe: forkexec raw $OUT/forkexec-probe.raw"
 echo "build-relibc-probe: forkexec child ELF $OUT/forkexec-child.elf"
