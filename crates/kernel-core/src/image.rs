@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(digest(b"abc"), expected.0);
         assert!(verify_digest(&expected.0, &digest(b"abc")).is_ok());
         assert!(matches!(
-            verify_digest(&expected.0, &digest(b"abd")),
+            verify_digest(&expected.0, &digest(b"different")),
             Err(Error::Digest { .. })
         ));
     }

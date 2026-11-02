@@ -72,7 +72,7 @@ adapter remains, because it is the stack accessor, not duplicated policy.
   the x86 serial port stay in `kernel-x86`. That is the machine layer the issue
   asked to keep.
 - MIPS boot, traps, TLB, cache maintenance, SCE/SEEQ, SCSI, REX3, DS1386 and
-  the Indy heap stay in `kernel`. PowerPC Open Firmware, BATs, traps, ESCC,
+  the Indy heap stay in `kernel`. PowerPC Open Firmware, BAT entries, traps, ESCC,
   Heathrow ATA and the CUDA VIA stay in `kernel-ppc`.
 - Module fetch transports and slot layouts remain per machine. `image::Host`
   separates the copy and cache flush from the transport; the MIPS TLS/SCSI
