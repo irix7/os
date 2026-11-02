@@ -102,9 +102,9 @@ A slot-A module is linked at `0x8840_0000`; a slot-B module at `0x8848_0000` by 
 | Indy | B | `0x8848_0000` | 1.5 MiB | `modules/wasm/linker.ld` |
 | x86_64 | MCP | `0x0200_0000` | 2 MiB | `modules/mcp/linker-x86.ld` |
 | x86_64 | wasm | `0x0400_0000` | 2 MiB | `modules/wasm/linker-x86.ld` |
-| PowerPC G3 | module | `0x0300_0000` | 2 MiB | `modules/hello/linker-ppc.ld` |
+| PowerPC G3 | module | `0x0180_0000` | 2 MiB | `modules/hello/linker-ppc.ld` |
 
-The PowerPC slot is physical `0x0300_0000`, which needs at least 50 MiB of RAM; the
+The PowerPC slot is physical `0x0180_0000`, which needs at least 26 MiB of RAM; the
 g3beige gate runs with 64 MiB. IBAT2/DBAT2 cover the slot as cacheable memory. The
 loader reads a big-endian header at disk LBA 6 (`IRIX7MOD`, a `u32` image length and
 the 32-byte SHA-256) and copies the image from LBA 16. It zeroes the whole slot,
@@ -275,7 +275,7 @@ $(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
   -O binary target/mips3-sgi-irix7-n32/release/hello-module hello.module
 ```
 
-For the G3, link the same package at `0x0300_0000`:
+For the G3, link the same package at `0x0180_0000`:
 
 ```bash
 export CARGO_TARGET_POWERPC_UNKNOWN_IRIX7_PPC_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker-ppc.ld -Crelocation-model=static"

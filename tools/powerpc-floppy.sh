@@ -62,11 +62,11 @@ else
     fi
 
     # The kernel entry is 0x01000000.  XCOFF o_entry is a function-descriptor
-    # address, so put the descriptor in .data at 0x02000000; Open Firmware
+    # address, so put the descriptor in .data at 0x01F00000; Open Firmware
     # reads the word there and jumps to it.
     XCOFF="$WORK/IRIX7.XCF"
     "$CARGO" run --quiet --manifest-path "$REPO/tools/ppc-xcoff/Cargo.toml" -- \
-        "$RAW" 0x01000000 0x02000000 "$XCOFF"
+        "$RAW" 0x01000000 0x01F00000 "$XCOFF"
 fi
 
 [ -f "$XCOFF" ] || {

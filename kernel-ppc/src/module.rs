@@ -21,11 +21,11 @@ use crate::ata::{self, Channel, SECTOR_SIZE};
 use crate::services::SERVICES;
 use crate::{cache, print_dec, print_hex_bytes, print_line, serial};
 
-/// The module slot: 2 MiB at physical `0x0300_0000`.
+/// The module slot: 2 MiB at physical `0x0180_0000`.
 ///
 /// It sits above the kernel image, which ends below `0x0200_0000`.  The whole
 /// slot gets one IBAT2/DBAT2 pair.
-pub const SLOT_BASE: u32 = 0x0300_0000;
+pub const SLOT_BASE: u32 = 0x0180_0000;
 /// Capacity of the module slot in bytes.
 pub const SLOT_SIZE: usize = 0x0020_0000;
 /// Disk sector holding the header.

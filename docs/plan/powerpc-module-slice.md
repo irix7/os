@@ -6,20 +6,21 @@ Part of [`powerbook-devshell.md`](powerbook-devshell.md) and issue
 ## What runs
 
 The G3 Beige machine reads a flat module from the ATA disk, verifies its
-SHA-256, copies it into a reserved 2 MiB slot at `0x0300_0000`, and calls its
+SHA-256, copies it into a reserved 2 MiB slot at `0x0180_0000`, and calls its
 entry with the shared `module_abi::Services` table. The module writes
 `PPC-MODULE-RUN`, reads `info(0)`, returns a tick callback, and the kernel runs
 that tick once before reporting `MODULE-OK`.
 
 - IBAT2/DBAT2 cover the slot as cacheable memory, so the loader reads and
   hashes the image in place. The boot log prints the BAT range as
-  `ppc: mmu module base=0x3000000 size=2097152`.
-- The slot needs at least 50 MiB of RAM. The gate uses 64 MiB; 32 MiB leaves
-  `0x0300_0000` outside DRAM and the boot stops with
+  `ppc: mmu module base=0x1800000 size=2097152`.
+- The slot needs at least 26 MiB of RAM, inside the PowerBook's 32 MiB. The
+  gate still checks a 32 MiB guest; a 24 MiB guest leaves `0x0180_0000`
+  outside DRAM and the boot stops with
   `ppc: memory does not cover the module slot`.
 - The module is `modules/hello` built for
   `targets/powerpc-unknown-irix7-ppc.json` with
-  `modules/hello/linker-ppc.ld`. It links at `0x0300_0000` and is 708 bytes.
+  `modules/hello/linker-ppc.ld`. It links at `0x0180_0000` and is 708 bytes.
 
 ## Disk layout
 
@@ -71,7 +72,7 @@ image and boots again. The second boot must print `MODULE-DIGEST-BAD` and
 
 The kernel and module ELF files are both checked for FP instructions.
 `tools/module-layout-check.sh` also builds the shared hello source for the G3
-and asserts that its ELF entry is `0x0300_0000` and its flat image fits the
+and asserts that its ELF entry is `0x0180_0000` and its flat image fits the
 slot. The 1.44 MB HFS floppy image build is unchanged and still runs in the CI
 job.
 

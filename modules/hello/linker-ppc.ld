@@ -1,6 +1,6 @@
 /*
  * Flat loadable-module image for the PowerPC G3 machine, linked at the
- * physical module slot 0x03000000.  The kernel copies the body there and calls
+ * physical module slot 0x01800000.  The kernel copies the body there and calls
  * offset 0, so the entry must stay at the start of the image.
  */
 
@@ -10,7 +10,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-  . = 0x03000000;
+  . = 0x01800000;
 
   .text : ALIGN(16) {
     KEEP(*(.text._start))

@@ -6,7 +6,7 @@
 # Each module image is linked at its slot base and loaded there by the kernel.
 # This script builds the MCP module for the Indy (MIPS n32, slot A at
 # 0x88400000, 512 KiB) and for x86_64 (window at 0x02000000, 2 MiB), and the
-# hello module for the PowerPC G3 (slot at 0x03000000, 2 MiB).  It asserts that
+# hello module for the PowerPC G3 (slot at 0x01800000, 2 MiB).  It asserts that
 # the ELF entry is the slot base and that the flat image plus .bss fits the
 # slot.  A module that links somewhere else, or grows past its slot, would be
 # copied over kernel memory or another module at load time.
@@ -81,6 +81,6 @@ CARGO_TARGET_POWERPC_UNKNOWN_IRIX7_PPC_RUSTFLAGS="-Clink-arg=-Tmodules/hello/lin
     "$CARGO" build --release -Z build-std=core \
         -Z build-std-features=compiler-builtins-mem -Z json-target-spec \
         --target "$REPO/targets/powerpc-unknown-irix7-ppc.json" -p hello-module
-check powerpc "$WORK/powerpc/powerpc-unknown-irix7-ppc/release/hello-module" $((0x03000000)) $((2 * 1024 * 1024))
+check powerpc "$WORK/powerpc/powerpc-unknown-irix7-ppc/release/hello-module" $((0x01800000)) $((2 * 1024 * 1024))
 
 echo "module-layout-check: ok"

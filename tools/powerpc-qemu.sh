@@ -172,7 +172,7 @@ markers=(
   "ppc: mmu image base=0x"
   "ppc: mmu io base=0x"
   "ppc: mmu io wimg=0x28"
-  "ppc: mmu module base=0x3000000 size=2097152"
+  "ppc: mmu module base=0x1800000 size=2097152"
   "IRIX 7 PowerPC G3 bring-up"
   "ppc: booted"
   "ppc: of client=0x"
