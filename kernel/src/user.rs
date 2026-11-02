@@ -301,6 +301,11 @@ impl Space {
             cache::invalidate_l2(pair.odd as u64, 4096);
         }
         cache::dcache_invalidate_all();
+        // Zero every page the plan will touch before copying any file data.
+        // Two `PT_LOAD` segments can share a page (the std image's `.text`
+        // ends at `0x1001d4d8` and `.rodata` starts there), and zeroing a
+        // page for the second segment after the first segment has been
+        // written would erase the first segment's tail.
         for segment in plan.segments() {
             let start = Self::page_of(segment.load_address());
             let end = Self::page_of(
@@ -312,12 +317,14 @@ impl Space {
             for address in (start..end).step_by(4096) {
                 zero_user_page(address);
             }
-            if !self.write_bytes(segment.load_address(), segment.file_data()) {
-                return false;
-            }
         }
         for address in (STACK_BASE..STACK_TOP).step_by(4096) {
             zero_user_page(address);
+        }
+        for segment in plan.segments() {
+            if !self.write_bytes(segment.load_address(), segment.file_data()) {
+                return false;
+            }
         }
         true
     }
