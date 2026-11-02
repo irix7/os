@@ -38,15 +38,14 @@ DATA = ROOT / "roadmap.json"
 DEFAULT_PROJECT_URL = "https://github.com/orgs/irix7/projects/2"
 DEFAULT_REPOSITORY = "irix7/os"
 
-# A release tag is the strongest possible evidence that a milestone shipped.
+# A release tag is the strongest possible evidence that a release shipped.
+# v0.1.0 ... v0.1.3 are the Indy baseline series; v1.0 is the logical computer.
 TAG_TO_RELEASE = {
-    "v0.1": ("v0.1", "m3"),
-    "v0.2": ("v0.2", "m5"),
-    "v0.3": ("v0.3", "m6"),
-    "v0.4": ("v0.4", "m7"),
-    "v0.5": ("v0.5", "m8"),
-    "v0.6": ("v0.6", "m9"),
-    "v1.0": ("v1.0", "m10"),
+    "v0.1.0": "v0.1.3",
+    "v0.1.1": "v0.1.3",
+    "v0.1.2": "v0.1.3",
+    "v0.1.3": "v0.1.3",
+    "v1.0": "v1.0",
 }
 
 # planned and exploring are peer states: both mean "not started". Only promote.
@@ -352,11 +351,12 @@ def git_tags() -> set[str]:
 def tag_proposals(tags: set[str]) -> tuple[dict[str, dict[str, str]], list[str]]:
     proposals: dict[str, dict[str, str]] = {}
     warnings: list[str] = []
-    for tag, (release, milestone) in TAG_TO_RELEASE.items():
+    for tag, release in TAG_TO_RELEASE.items():
         if tag in tags:
-            reason = f"release tag {tag} exists"
-            proposals[release] = {"status": "done", "reason": reason}
-            proposals[milestone] = {"status": "done", "reason": reason}
+            proposals[release] = {
+                "status": "done",
+                "reason": f"release tag {tag} exists",
+            }
     return proposals, warnings
 
 

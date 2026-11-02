@@ -371,15 +371,15 @@ def icon(name: str) -> str:
 
 MILESTONE_ICONS = {
     "m0": "wrench",
-    "m1": "bolt",
-    "m2": "cpu",
-    "m3": "terminal",
-    "m4": "disk",
+    "m1": "chip",
+    "m2": "network",
+    "m3": "layers",
+    "m4": "cube",
     "m5": "file",
     "m6": "monitor",
     "m7": "x11",
-    "m8": "layers",
-    "m9": "cube",
+    "m8": "disk",
+    "m9": "shield",
     "m10": "flag",
 }
 
@@ -574,12 +574,12 @@ def draw_milestone(node: dict) -> str:
         out.append(f'<text class="m-title-sm" y="{r + 38}">{esc(node["title"])}</text>')
         out.append(f'<text class="m-status" y="{r + 52}">{esc(node["_status_label"])}</text>')
     elif node["id"] == "m3":
-        out.append(f'<text class="m-code" x="-48" y="-7" text-anchor="end">{esc(node["code"])}</text>')
+        out.append(f'<text class="m-code" x="-48" y="-7" style="text-anchor:end">{esc(node["code"])}</text>')
         out.append(
-            f'<text class="m-title" x="-48" y="15" text-anchor="end">{esc(node["title"])}</text>'
+            f'<text class="m-title" x="-48" y="15" style="text-anchor:end">{esc(node["title"])}</text>'
         )
         out.append(
-            f'<text class="m-status" x="-48" y="31" text-anchor="end">{esc(node["_status_label"])}</text>'
+            f'<text class="m-status" x="-48" y="31" style="text-anchor:end">{esc(node["_status_label"])}</text>'
         )
     else:
         out.append(f'<text class="m-code" y="{r + 20}">{esc(node["code"])}</text>')
@@ -627,7 +627,7 @@ def draw_release(node: dict) -> str:
     node["_x"], node["_y"] = x, y
     parent = node["parent"]
     out = [node_base(node)]
-    if parent in ("m3", "m5", "m6", "m7", "m8", "m9", "m10"):
+    if parent in ("m1", "m3", "m5", "m6", "m7", "m8", "m9", "m10"):
         # a fine stem back to the branch, in the group's local coordinates
         parent_node = node["_parent_pos"]
         px, py = parent_node
@@ -778,7 +778,7 @@ def svg_page(roadmap: Roadmap) -> str:
 <svg id="tree" viewBox="0 0 {W} {H}" preserveAspectRatio="xMidYMid meet"
      role="group" aria-labelledby="tree-title" aria-describedby="tree-desc">
   <title id="tree-title">The Tree of IRIX 7</title>
-  <desc id="tree-desc">An upward-growing technology tree of the IRIX 7 roadmap. Milestones M0 to M10 grow from the roots through the control plane, storage, compatibility, graphics and native ABI branches to the v1.0 release in the canopy.</desc>
+  <desc id="tree-desc">An upward-growing technology tree of the IRIX 7 roadmap. The Indy baseline and the first single-node and two-node gates are the roots; the eight-node and 128-node mesh gates rise through the trunk; the native compatibility, display, runtime and scale-out branches reach the v1.0 release in the canopy.</desc>
   <defs>
     <radialGradient id="sky" gradientUnits="userSpaceOnUse" cx="1500" cy="620" r="2500">
       <stop offset="0" stop-color="#141d3a"/>
@@ -832,7 +832,7 @@ def build_page(roadmap: Roadmap) -> str:
     data = roadmap.data
     counts = roadmap.counts()
     active = [m for m in roadmap.milestones() if m["status"] == "active"]
-    now = active[-1] if active else roadmap.milestones()[0]
+    now = next((m for m in active if m.get("focus")), active[-1] if active else roadmap.milestones()[0])
     total_milestones = len(roadmap.milestones())
     releases = len([n for n in roadmap.nodes if n["kind"] == "release"])
 
@@ -898,7 +898,7 @@ def build_page(roadmap: Roadmap) -> str:
   </style>
 </noscript>
 <a class="skip" href="#node-list">Skip to the roadmap list</a>
-<div id="app">
+<div id="app" data-focus="{now["id"]}">
   <div id="stage" aria-label="Interactive roadmap tree. Drag to pan, scroll to zoom." tabindex="-1">
     {svg_page(roadmap)}
   </div>
@@ -1046,7 +1046,7 @@ def build_page(roadmap: Roadmap) -> str:
     <div class="about-grid">
       <div>
         <h3>Branches</h3>
-        <p>Solid boughs are the plan's structure. Dotted arcs are cross-links — compatibility needs storage, X11 needs a display, every branch meets at v1.0.</p>
+        <p>Solid boughs are the plan's structure. Dotted arcs are cross-links — X11 needs a display, the 128-node gate needs the runtime, every branch meets at v1.0.</p>
       </div>
       <div>
         <h3>Status</h3>
@@ -1054,7 +1054,7 @@ def build_page(roadmap: Roadmap) -> str:
       </div>
       <div>
         <h3>The roots</h3>
-        <p>M0–M2 are the foundations: toolchain, ROM and kernel. Without them nothing above can be true, which is why they are underground.</p>
+        <p>M0–M2 are the foundations: the toolchain, the single-node gate and the two-node gate. Without them nothing above can be true, which is why they are underground.</p>
       </div>
       <div>
         <h3>The source</h3>

@@ -13,7 +13,8 @@ The current bring-up is smaller: the native Indy ROM/kernel and a static Rust
 not yet joined a mesh. See [Current status](#current-status).
 
 > **Explore the roadmap:** [The Tree of IRIX 7](roadmap-tree.md) is an
-> interactive view of the native track. The active sequencing is in
+> interactive view of the Indy baseline, the 1/2/8/128 mesh gates and the
+> native compatibility tracks. The active sequencing is in
 > [`plan/milestones.md`](plan/milestones.md).
 
 Start here:
