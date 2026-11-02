@@ -528,10 +528,45 @@ fn read_path(address: u32) -> SysResult<([u8; 64], usize)> {
     Err(CELL_E_NAMETOOLONG)
 }
 
-/// Open a path in the tiny bring-up namespace.
-pub fn open_path(address: u32, flags: u32) -> SysResult<i32> {
+/// Open a path in the ramfs namespace.  `mode` applies only to `O_CREAT`.
+pub fn open_path(address: u32, flags: u32, mode: u32) -> SysResult<i32> {
     let (path, length) = read_path(address)?;
-    crate::fd::open_path(&path[..length], flags)
+    crate::fd::open_path(&path[..length], flags, mode)
+}
+
+/// Remove a name; `remove_dir` selects `rmdir` semantics.
+pub fn unlink_user(address: u32, remove_dir: bool) -> SysResult<()> {
+    let (path, length) = read_path(address)?;
+    crate::fd::unlink(&path[..length], remove_dir)
+}
+
+/// Rename `old` to `new`.
+pub fn rename_user(old_address: u32, new_address: u32) -> SysResult<()> {
+    let (old, old_length) = read_path(old_address)?;
+    let (new, new_length) = read_path(new_address)?;
+    crate::fd::rename(&old[..old_length], &new[..new_length])
+}
+
+/// Create a directory.
+pub fn mkdir_user(address: u32, mode: u32) -> SysResult<()> {
+    let (path, length) = read_path(address)?;
+    crate::fd::mkdir(&path[..length], mode)
+}
+
+/// Assemble the 64-bit offset split across two argument registers.
+fn split_offset(low: u32, high: u32) -> i64 {
+    (((high as u64) << 32) | low as u64) as i64
+}
+
+/// Set the length of an open regular file.
+pub fn ftruncate_user(fd: u32, low: u32, high: u32) -> SysResult<()> {
+    crate::fd::ftruncate(fd as i32, split_offset(low, high))
+}
+
+/// Set the length of a regular file by path.
+pub fn truncate_user(address: u32, low: u32, high: u32) -> SysResult<()> {
+    let (path, length) = read_path(address)?;
+    crate::fd::truncate(&path[..length], split_offset(low, high))
 }
 
 /// Copy up to `limit` bytes from a validated user range.
@@ -593,7 +628,7 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
             Ok(done as u32)
         }
         crate::fd::Kind::Dir(_) => Err(crate::syserr::CELL_E_ISDIR),
-        crate::fd::Kind::Logical => Err(crate::syserr::CELL_E_BADF),
+        crate::fd::Kind::Logical(_) => Err(crate::syserr::CELL_E_ROFS),
         crate::fd::Kind::PipeRead(_) => Err(crate::syserr::CELL_E_BADF),
         crate::fd::Kind::Closed => Err(crate::syserr::CELL_E_BADF),
     }
@@ -754,8 +789,7 @@ pub fn fcntl_user(fd: u32, cmd: u32, arg: u32) -> SysResult<i32> {
 
 /// `lseek(fd, offset, whence)` with the 64-bit offset split across `$a1`/`$a2`.
 pub fn lseek_user(fd: u32, low: u32, high: u32, whence: u32) -> SysResult<i64> {
-    let offset = (((high as u64) << 32) | low as u64) as i64;
-    crate::fd::lseek(fd as i32, offset, whence)
+    crate::fd::lseek(fd as i32, split_offset(low, high), whence)
 }
 
 /// Read the 16-byte `io_at` block `pread`/`pwrite` take in `$a1`.
@@ -849,7 +883,9 @@ pub fn getdents_user(fd: u32, address: u32, length: u32) -> SysResult<u32> {
             }
         }
         total += count;
-        if count < chunk {
+        // A short chunk is not end-of-directory: the scratch buffer simply
+        // filled with whole records.  Only a zero-length read ends the walk.
+        if total >= length as usize {
             break;
         }
     }
@@ -883,7 +919,7 @@ pub fn read_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
 }
 
 /// Native n32 `struct stat`, shared with relibc through `native-abi`.
-fn fill_stat(address: u32, mode: u32, size: i64) -> SysResult<()> {
+fn fill_stat(address: u32, mode: u32, size: i64, ino: u64) -> SysResult<()> {
     if !range_ok(address, core::mem::size_of::<native_abi::stat>() as u32) {
         return Err(CELL_E_FAULT);
     }
@@ -893,8 +929,8 @@ fn fill_stat(address: u32, mode: u32, size: i64) -> SysResult<()> {
         _pad: 0,
     };
     let stat = native_abi::stat {
-        st_dev: 0,
-        st_ino: 1,
+        st_dev: 1,
+        st_ino: ino,
         st_nlink: 1,
         st_mode: mode,
         st_uid: 0,
@@ -922,14 +958,14 @@ fn fill_stat(address: u32, mode: u32, size: i64) -> SysResult<()> {
 }
 
 pub fn fstat_user(fd: u32, address: u32) -> SysResult<()> {
-    let (mode, size) = crate::fd::metadata(fd as i32)?;
-    fill_stat(address, mode, size)
+    let (mode, size, ino) = crate::fd::metadata(fd as i32)?;
+    fill_stat(address, mode, size, ino)
 }
 
 pub fn stat_user(path_address: u32, stat_address: u32) -> SysResult<()> {
     let (path, length) = read_path(path_address)?;
-    let (mode, size) = crate::fd::metadata_path(&path[..length])?;
-    fill_stat(stat_address, mode, size)
+    let (mode, size, ino) = crate::fd::metadata_path(&path[..length])?;
+    fill_stat(stat_address, mode, size, ino)
 }
 
 /// Copy one static directory entry into a user buffer.  Returns the dirent
@@ -986,7 +1022,7 @@ pub fn chdir_user(address: u32) -> SysResult<()> {
 
 pub fn getcwd_text(address: u32, size: u32) -> SysResult<()> {
     let mut path = [0u8; 64];
-    let length = crate::fd::copy_cwd(&mut path);
+    let length = crate::fd::copy_cwd(&mut path).ok_or(CELL_E_NAMETOOLONG)?;
     if size as usize <= length || !range_ok(address, (length + 1) as u32) {
         return Err(CELL_E_INVAL);
     }

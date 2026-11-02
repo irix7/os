@@ -4,13 +4,14 @@
 (`librelibc.a`) rather than the freestanding oracle in [`../c-probe`](../c-probe).
 It uses relibc's `write`, `stat`, `fstat`, `getpid`, `getauxval`,
 `__errno_location`, `open`, `lseek`, `pread`, `pwrite`, `dup`, `dup2`,
-`fcntl`, `pipe`, `pipe2`, `poll`, `opendir`, `readdir`, `seekdir`, `telldir`
-and `posix_getdents`, and relibc's MIPS n32 `crt0` `_start`.
+`fcntl`, `pipe`, `pipe2`, `poll`, `opendir`, `readdir`, `seekdir`, `telldir`,
+`posix_getdents`, `unlink`, `rmdir`, `mkdir`, `rename`, `ftruncate`,
+`truncate`, `chdir` and `getcwd`, and relibc's MIPS n32 `crt0` `_start`.
 
 Build and run it with [`../../tools/relibc-pal/build.sh`](../../tools/relibc-pal/build.sh)
 and [`../../tools/relibc-pal/README.md`](../../tools/relibc-pal/README.md).
 
-The fixed marker is `IRIX7-RELIB-PROBE-3`.  The program exits 0 only if every
+The fixed marker is `IRIX7-RELIB-PROBE-4`.  The program exits 0 only if every
 check passes:
 
 - `write` returns the marker length;
@@ -51,4 +52,20 @@ check passes:
   cookie 1 after `lseek`, and rejects a buffer smaller than one record with
   `EINVAL`;
 - `opendir`/`readdir` return the five entries, `seekdir(0)` rewinds and
-  `telldir` reports cookie 1.
+  `telldir` reports cookie 1;
+- the ramfs is writable: `open(O_CREAT|O_TRUNC)` creates a file, writes update
+  its size, `ftruncate` shrinks and empties it, `O_TRUNC` clears an existing
+  file, `O_APPEND` writes at end-of-file, `truncate` takes a path, `rename`
+  moves the name, and `unlink` removes it;
+- `O_CREAT|O_EXCL` on an existing name is `EEXIST`; a second `mkdir` is
+  `EEXIST`; `rmdir` of a non-empty directory is `ENOTEMPTY`; `rmdir` of a
+  file is `ENOTDIR`; `unlink` of a directory and a write-open of a directory
+  are `EISDIR`; a file used as a directory component is `ENOTDIR`; a missing
+  name is `ENOENT`; a write or `ftruncate` past the 4096-byte capacity is
+  `ENOSPC`;
+- a `getdents` walk over `/` sees the entries created in this run, with
+  distinct inodes and `d_type` values, and returns to the five fixture entries
+  after they are removed;
+- `chdir` into a created directory, `getcwd` reports `/work`, a relative
+  `open`/`stat` and a `..` walk work, and `chdir("/")` returns;
+- an unlinked inode stays readable through the descriptor that had it open.

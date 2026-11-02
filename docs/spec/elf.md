@@ -257,8 +257,9 @@ syscall set is
 `write`, `read`, `exit`, `mmap`/`munmap`/`mprotect`, `open`/`close`/`fcntl`/`dup`,
 `getcwd`/`chdir`, `poll`, `signal`, `getentropy`, `clock_gettime`, `getpid`,
 `fstat`/`stat`, `readdir`, `pipe`, `tcgetwinsize`/`tcsetwinsize` and
-`nanosleep`.  The kernel has a small fd table with
-console, `/dev/null` and a two-file read/write ramfs; `stat`/`fstat` and directory
+`nanosleep`, plus the writable-ramfs calls `unlink`, `rename`, `mkdir`,
+`rmdir`, `ftruncate` and `truncate`.  The kernel has a small fd table with
+console, `/dev/null` and a mutable ramfs; `stat`/`fstat` and directory
 iteration work.  Threads/TLS, `posix_spawn`, real signals and termios are still
 absent.  The 42-symbol C shim in `crates/irix7-libc` is the bring-up libc; the
 production layer is the relibc fork.

@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `acd6c4966c249510154158e05c19b8f846a70bb5` |
+| Commit | `2a345f7802615633115ea55b8c7f010d2b13dfb6` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs) |
 | Probe source | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..acd6c496` and applies
+The mirror is generated with `git format-patch a36041ac..2a345f78` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -43,6 +43,11 @@ the branch commit, not the patch.
    `fcntl F_GETFL`/`F_SETFL` carry the access mode and `O_NONBLOCK` per open
    file description; `dup` shares them, and a non-blocking read of an empty
    pipe or an idle console is `EAGAIN`.
+8. The writable ramfs: `openat` passes the creation mode and applies the
+   process umask, `unlinkat` maps to `unlink` or `rmdir` (`AT_REMOVEDIR`),
+   `mkdirat` maps to `mkdir`, `renameat2` maps to `rename`, and `ftruncate`
+   splits the 64-bit length across two argument registers.  `umask` keeps
+   process state.
 
 `futex_wait` and `futex_wake` are no-ops: the kernel has no futex and there is
 one thread, so returning `ENOSYS` makes every mutex unlock panic.  `printf`
@@ -101,10 +106,10 @@ iris-ci --socket /tmp/opencode/relibc-pal-work/probe.sock start
 The expected tail is:
 
 ```text
-IRIX7-RELIB-PROBE-3
-IRIX7-RELIB-PROBE-3: stat size=28 mode=100644 blksize=4096 blocks=1
-IRIX7-RELIB-PROBE-3: tp=0x1002c7e0 auxv pagesz=4096
-IRIX7-RELIB-PROBE-3: checks=142 failures=0
+IRIX7-RELIB-PROBE-4
+IRIX7-RELIB-PROBE-4: stat size=28 mode=100644 blksize=4096 blocks=1
+IRIX7-RELIB-PROBE-4: tp=0x1002f3b0 auxv pagesz=4096
+IRIX7-RELIB-PROBE-4: checks=226 failures=0
 user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 ```
@@ -118,7 +123,12 @@ and a directory read in whole records with `d_off` cookies, then resumed with
 `lseek` and walked through `readdir`/`seekdir`/`telldir`.  It adds descriptor
 readiness: `F_GETFL`/`F_SETFL` with `O_NONBLOCK` shared across `dup`, `poll`
 with a zero and a negative timeout, `POLLIN`, `POLLOUT`, `POLLHUP`, `POLLERR`
-and `POLLNVAL`, and a console that is always `POLLOUT`.
+and `POLLNVAL`, and a console that is always `POLLOUT`.  It adds the writable
+ramfs: `O_CREAT`/`O_TRUNC`/`O_EXCL`/`O_APPEND`, write and read back,
+`ftruncate` and `truncate`, `rename`, `unlink`, `mkdir`/`rmdir` with
+`ENOTEMPTY`, a live `getdents` walk, `chdir` into a created directory, an
+unlinked inode still readable through its descriptor, and `EEXIST`,
+`ENOTDIR`, `EISDIR`, `ENOENT` and `ENOSPC`.
 
 ## Limits
 
@@ -129,4 +139,6 @@ and `POLLNVAL`, and a console that is always `POLLOUT`.
 - `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.
-- The kernel's console/ramfs fd table is the only filesystem.
+- The kernel's mutable ramfs is the only filesystem: 32 inodes, 4096 bytes
+  per file and 63-byte names.  There are no links, symbolic links,
+  permissions, ownership or timestamps beyond the fixture metadata.

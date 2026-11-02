@@ -1,31 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Minimal per-process descriptor table for the bring-up userland.
 //!
-//! Console, `/dev/null`, two small mutable ramfs files, a directory table and
-//! a small pipe ring. This is a bring-up namespace, not the capability-backed
-//! VFS.
+//! Console, `/dev/null`, the mutable [`crate::ramfs`] tree and a small pipe
+//! ring.  This is a bring-up namespace, not the capability-backed VFS.
 //!
 //! A descriptor is a table slot that names an open file description.  `dup`
 //! and `dup2` share that description, so a seek or read through one descriptor
 //! moves the offset seen by the other, as POSIX requires.  Close-on-exec is
 //! per descriptor, not per description.
 
+use crate::ramfs::{self, NodeType, Resolved};
 use crate::syserr::{
-    SysResult, CELL_E_AGAIN, CELL_E_BADF, CELL_E_INVAL, CELL_E_ISDIR, CELL_E_MFILE,
-    CELL_E_NAMETOOLONG, CELL_E_NODEV, CELL_E_NOENT, CELL_E_NOSPC, CELL_E_NOTDIR, CELL_E_NOTTY,
-    CELL_E_NXIO, CELL_E_OVERFLOW, CELL_E_PIPE, CELL_E_SPIPE,
+    SysResult, CELL_E_AGAIN, CELL_E_BADF, CELL_E_BUSY, CELL_E_INVAL, CELL_E_ISDIR, CELL_E_MFILE,
+    CELL_E_NAMETOOLONG, CELL_E_NOENT, CELL_E_NOTDIR, CELL_E_NOTEMPTY, CELL_E_NOTTY, CELL_E_NXIO,
+    CELL_E_OVERFLOW, CELL_E_PIPE, CELL_E_ROFS, CELL_E_SPIPE,
 };
 
 pub const MAX_FDS: usize = 16;
 const MAX_OPEN_FILES: usize = 16;
-const FILE_CAPACITY: usize = 512;
-const O_RDONLY: u32 = 0;
-const O_WRONLY: u32 = 1;
-const O_RDWR: u32 = 2;
-const O_ACCMODE: u32 = 3;
-const O_TRUNC: u32 = 0o1000;
-const O_NONBLOCK: u32 = 0o4000;
-const O_CLOEXEC: u32 = 0o2000000;
+const O_RDONLY: u32 = native_abi::O_RDONLY as u32;
+const O_WRONLY: u32 = native_abi::O_WRONLY as u32;
+const O_RDWR: u32 = native_abi::O_RDWR as u32;
+const O_ACCMODE: u32 = native_abi::O_ACCMODE as u32;
+const O_CREAT: u32 = native_abi::O_CREAT as u32;
+const O_EXCL: u32 = native_abi::O_EXCL as u32;
+const O_TRUNC: u32 = native_abi::O_TRUNC as u32;
+const O_APPEND: u32 = native_abi::O_APPEND as u32;
+const O_NONBLOCK: u32 = native_abi::O_NONBLOCK as u32;
+const O_DIRECTORY: u32 = native_abi::O_DIRECTORY as u32;
+const O_CLOEXEC: u32 = native_abi::O_CLOEXEC as u32;
 const FD_CLOEXEC: u32 = 1;
 const F_GETFD: u32 = 1;
 const F_SETFD: u32 = 2;
@@ -51,91 +54,20 @@ pub const WAIT_LIMIT_MS: u32 = 100;
 pub const TICKS_PER_MS: u32 = 33_000;
 const WAIT_LIMIT_TICKS: u32 = WAIT_LIMIT_MS * TICKS_PER_MS;
 
-pub struct FileEntry {
-    pub path: &'static [u8],
-}
-
-static FILES: [FileEntry; 1] = [FileEntry {
-    path: b"/hello.txt",
-}];
-const INITIAL: [&[u8]; 1] = [b"hello from the IRIX 7 ramfs\n"];
-static mut FILE_DATA: [[u8; FILE_CAPACITY]; 1] = [[0; FILE_CAPACITY]; 1];
-static mut FILE_LEN: [usize; 1] = [0; 1];
 static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MAX_PIPES];
 static mut PIPE_HEAD: [usize; MAX_PIPES] = [0; MAX_PIPES];
 static mut PIPE_LEN: [usize; MAX_PIPES] = [0; MAX_PIPES];
 static mut PIPE_USED: [bool; MAX_PIPES] = [false; MAX_PIPES];
 static mut CONSOLE_WINSIZE: [u16; 4] = [24, 80, 0, 0];
 
-struct DirEntry {
-    name: &'static [u8],
-    kind: u8, // 4 = directory, 8 = regular file
-}
-
-static ROOT_ENTRIES: [DirEntry; 5] = [
-    DirEntry {
-        name: b".",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"..",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"hello.txt",
-        kind: 8,
-    },
-    DirEntry {
-        name: b"etc",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"dev",
-        kind: 4,
-    },
-];
-static ETC_ENTRIES: [DirEntry; 3] = [
-    DirEntry {
-        name: b".",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"..",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"motd",
-        kind: 8,
-    },
-];
-static DEV_ENTRIES: [DirEntry; 4] = [
-    DirEntry {
-        name: b".",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"..",
-        kind: 4,
-    },
-    DirEntry {
-        name: b"null",
-        kind: 2,
-    },
-    DirEntry {
-        name: b"tty",
-        kind: 2,
-    },
-];
-static DIRECTORIES: [&[DirEntry]; 3] = [&ROOT_ENTRIES, &ETC_ENTRIES, &DEV_ENTRIES];
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Closed,
     Console,
     Null,
-    File(u32),
-    Logical,
-    Dir(u32),
+    File(u16),
+    Logical(u16),
+    Dir(u16),
     PipeRead(u32),
     PipeWrite(u32),
 }
@@ -151,10 +83,11 @@ static mut OPEN_STATUS: [u32; MAX_OPEN_FILES] = [0; MAX_OPEN_FILES];
 /// Descriptor slots: the description index, or -1 when the slot is free.
 static mut FD_OPEN: [i32; MAX_FDS] = [-1; MAX_FDS];
 static mut FD_FLAGS: [u32; MAX_FDS] = [0; MAX_FDS];
-static mut CWD: [u8; 64] = [0; 64];
-static mut CWD_LEN: usize = 1;
+/// The current working directory as an inode in the ramfs tree.
+static mut CWD_NODE: u16 = ramfs::ROOT;
 
 pub fn reset() {
+    ramfs::reset();
     unsafe {
         FD_OPEN = [-1; MAX_FDS];
         FD_FLAGS = [0; MAX_FDS];
@@ -168,13 +101,7 @@ pub fn reset() {
             }
             FD_FLAGS[fd] = 0;
         }
-        for (index, data) in INITIAL.iter().enumerate() {
-            FILE_DATA[index].fill(0);
-            FILE_DATA[index][..data.len()].copy_from_slice(data);
-            FILE_LEN[index] = data.len();
-        }
-        CWD[0] = b'/';
-        CWD_LEN = 1;
+        CWD_NODE = ramfs::ROOT;
         PIPE_HEAD = [0; MAX_PIPES];
         PIPE_LEN = [0; MAX_PIPES];
         PIPE_USED = [false; MAX_PIPES];
@@ -213,7 +140,27 @@ fn release_description(index: usize) {
             if let Kind::PipeRead(pipe) | Kind::PipeWrite(pipe) = kind {
                 release_pipe(pipe as usize);
             }
+            if let Kind::File(node) | Kind::Dir(node) = kind {
+                // POSIX keeps an unlinked inode alive until the last
+                // descriptor to it closes.
+                if !node_referenced(node) {
+                    ramfs::release(node);
+                }
+            }
         }
+    }
+}
+
+/// Whether any open file description still names this ramfs inode.
+fn node_referenced(node: u16) -> bool {
+    unsafe {
+        (0..MAX_OPEN_FILES).any(|index| {
+            OPEN_REFS[index] > 0
+                && matches!(
+                    OPEN_KIND[index],
+                    Kind::File(other) | Kind::Dir(other) if other == node
+                )
+        })
     }
 }
 
@@ -392,128 +339,215 @@ fn release_pipe(index: usize) {
     }
 }
 
-/// Resolve a path against the current working directory.
-fn resolve(path: &[u8], out: &mut [u8; 64]) -> Option<usize> {
-    let mut cursor = 0usize;
-    if path.first() != Some(&b'/') {
-        let cwd = unsafe { &CWD[..CWD_LEN] };
-        for &byte in cwd {
-            if cursor == out.len() {
-                return None;
-            }
-            out[cursor] = byte;
-            cursor += 1;
-        }
-        if cursor == 0 || out[cursor - 1] != b'/' {
-            if cursor == out.len() {
-                return None;
-            }
-            out[cursor] = b'/';
-            cursor += 1;
-        }
+fn cwd() -> u16 {
+    unsafe { CWD_NODE }
+}
+
+fn is_directory(node: u16) -> bool {
+    ramfs::is_dir(node)
+}
+
+fn file_mode(mode: u32) -> u32 {
+    let permission = mode & 0o777;
+    0o100000 | if permission == 0 { 0o644 } else { permission }
+}
+
+fn directory_mode(mode: u32) -> u32 {
+    let permission = mode & 0o777;
+    0o040000 | if permission == 0 { 0o755 } else { permission }
+}
+
+/// The `Kind` an inode opens as.
+/// `/etc/motd` exists only while the live policy exposes the file.
+fn logical_available() -> bool {
+    crate::logical::open_file(b"/etc/motd")
+}
+
+fn kind_for(node: u16) -> Kind {
+    match ramfs::node_type(node) {
+        NodeType::File => Kind::File(node),
+        NodeType::Dir => Kind::Dir(node),
+        NodeType::Logical => Kind::Logical(node),
+        NodeType::Null => Kind::Null,
+        NodeType::Console => Kind::Console,
     }
-    for &byte in path {
-        if cursor == out.len() {
-            return None;
-        }
-        out[cursor] = byte;
-        cursor += 1;
-    }
-    let mut start = 0;
-    let mut end = cursor;
-    while start < end && out[start] == b'/' {
-        start += 1;
-    }
-    while end > start && out[end - 1] == b'/' {
-        end -= 1;
-    }
-    if start == end {
-        out[0] = b'/';
-        return Some(1);
-    }
-    let length = end - start;
-    out.copy_within(start..end, 1);
-    out[0] = b'/';
-    Some(length + 1)
 }
 
 pub fn set_cwd(path: &[u8]) -> SysResult<()> {
-    let mut resolved = [0u8; 64];
-    let Some(len) = resolve(path, &mut resolved) else {
-        return Err(CELL_E_NAMETOOLONG);
+    let node = match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(node) => node,
+        Resolved::Missing { .. } => return Err(CELL_E_NOENT),
     };
-    let path = &resolved[..len];
-    if path != b"/" && path != b"/etc" && path != b"/dev" {
-        return Err(CELL_E_NOENT);
+    if !is_directory(node) {
+        return Err(CELL_E_NOTDIR);
     }
     unsafe {
-        CWD.fill(0);
-        CWD[..len].copy_from_slice(path);
-        CWD_LEN = len;
+        CWD_NODE = node;
     }
     Ok(())
 }
 
-pub fn copy_cwd(out: &mut [u8; 64]) -> usize {
-    unsafe {
-        out[..CWD_LEN].copy_from_slice(&CWD[..CWD_LEN]);
-        CWD_LEN
-    }
+/// The absolute path of the current directory, or `None` when it does not
+/// fit the caller's buffer.
+pub fn copy_cwd(out: &mut [u8; 64]) -> Option<usize> {
+    ramfs::path_of(cwd(), out)
 }
 
-pub fn open_path(path: &[u8], flags: u32) -> SysResult<i32> {
-    let mut resolved = [0u8; 64];
-    let Some(len) = resolve(path, &mut resolved) else {
-        return Err(CELL_E_NAMETOOLONG);
-    };
-    let path = &resolved[..len];
+/// `open`/`openat` after the libc resolved `dirfd`.  `mode` is used only when
+/// `O_CREAT` creates a regular file.
+pub fn open_path(path: &[u8], flags: u32, mode: u32) -> SysResult<i32> {
     let access = flags & O_ACCMODE;
     if access == O_ACCMODE {
         return Err(CELL_E_INVAL);
+    }
+    let node = match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(node) => {
+            if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
+                return Err(crate::syserr::CELL_E_EXIST);
+            }
+            node
+        }
+        Resolved::Missing { parent, name } => {
+            if flags & O_CREAT == 0 {
+                return Err(CELL_E_NOENT);
+            }
+            ramfs::create(parent, name, false, file_mode(mode))?
+        }
+    };
+    if ramfs::node_type(node) == NodeType::Logical && !logical_available() {
+        return Err(CELL_E_NOENT);
+    }
+    if flags & O_DIRECTORY != 0 && !is_directory(node) {
+        return Err(CELL_E_NOTDIR);
+    }
+    if is_directory(node) {
+        if access != O_RDONLY {
+            return Err(CELL_E_ISDIR);
+        }
+        if flags & O_TRUNC != 0 {
+            return Err(CELL_E_ISDIR);
+        }
+    } else if flags & O_TRUNC != 0 {
+        // POSIX truncates regular files only; O_TRUNC on a device is a no-op.
+        match ramfs::node_type(node) {
+            NodeType::File => ramfs::truncate(node, 0)?,
+            NodeType::Logical => return Err(CELL_E_ROFS),
+            NodeType::Null | NodeType::Console => {}
+            NodeType::Dir => return Err(CELL_E_ISDIR),
+        }
     }
     let close_on_exec = if flags & O_CLOEXEC != 0 {
         FD_CLOEXEC
     } else {
         0
     };
-    let status = access | (flags & O_NONBLOCK);
-    if path == b"/dev/null" {
-        return if crate::logical::device(path) {
-            install_flags(Kind::Null, close_on_exec, status)
-        } else {
-            Err(CELL_E_NODEV)
-        };
+    let status = access | (flags & (O_NONBLOCK | O_APPEND));
+    install_flags(kind_for(node), close_on_exec, status)
+}
+
+/// `unlink` (or `rmdir` when `remove_dir` is set).  The inode is reclaimed
+/// immediately unless an open descriptor still refers to it.
+pub fn unlink(path: &[u8], remove_dir: bool) -> SysResult<()> {
+    let node = match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(node) => node,
+        Resolved::Missing { .. } => return Err(CELL_E_NOENT),
+    };
+    if node == ramfs::ROOT {
+        return Err(CELL_E_BUSY);
     }
-    if path == b"/dev/tty" || path == b"/dev/console" {
-        return Ok(0);
+    let directory = is_directory(node);
+    if remove_dir {
+        if !directory {
+            return Err(CELL_E_NOTDIR);
+        }
+        if node == cwd() {
+            // Removing the working directory would leave getcwd with no path
+            // to report.  POSIX allows EBUSY here.
+            return Err(CELL_E_BUSY);
+        }
+        if !ramfs::is_empty_dir(node) {
+            return Err(CELL_E_NOTEMPTY);
+        }
+    } else if directory {
+        return Err(CELL_E_ISDIR);
     }
-    if path == b"/" || path == b"/." {
-        return install_flags(Kind::Dir(0), close_on_exec, status);
+    let removed = ramfs::unlink(node);
+    if !node_referenced(removed) {
+        ramfs::release(removed);
     }
-    if path == b"/etc" {
-        return install_flags(Kind::Dir(1), close_on_exec, status);
-    }
-    if path == b"/etc/motd" {
-        return if crate::logical::open_file(path) {
-            install_flags(Kind::Logical, close_on_exec, status)
-        } else {
-            Err(CELL_E_NOENT)
-        };
-    }
-    if path == b"/dev" {
-        return install_flags(Kind::Dir(2), close_on_exec, status);
-    }
-    for (index, file) in FILES.iter().enumerate() {
-        if file.path == path {
-            if flags & O_TRUNC != 0 {
-                unsafe {
-                    FILE_LEN[index] = 0;
-                }
-            }
-            return install_flags(Kind::File(index as u32), close_on_exec, status);
+    Ok(())
+}
+
+/// `mkdir`.  The name must be new; the parent must be a directory.
+pub fn mkdir(path: &[u8], mode: u32) -> SysResult<()> {
+    match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(_) => Err(crate::syserr::CELL_E_EXIST),
+        Resolved::Missing { parent, name } => {
+            ramfs::create(parent, name, true, directory_mode(mode)).map(|_| ())
         }
     }
-    Err(CELL_E_NOENT)
+}
+
+/// `rename`.  An existing destination is replaced when the types agree.
+pub fn rename(old_path: &[u8], new_path: &[u8]) -> SysResult<()> {
+    let old = match ramfs::resolve(cwd(), old_path)? {
+        Resolved::Node(node) => node,
+        Resolved::Missing { .. } => return Err(CELL_E_NOENT),
+    };
+    let mut name = [0u8; ramfs::NAME_MAX];
+    let (parent, length) = match ramfs::resolve(cwd(), new_path)? {
+        Resolved::Node(node) => {
+            if node == ramfs::ROOT {
+                return Err(CELL_E_INVAL);
+            }
+            (ramfs::parent(node), ramfs::name(node, &mut name))
+        }
+        Resolved::Missing {
+            parent,
+            name: component,
+        } => {
+            if component.len() > name.len() {
+                return Err(CELL_E_NAMETOOLONG);
+            }
+            name[..component.len()].copy_from_slice(component);
+            (parent, component.len())
+        }
+    };
+    if length == 0 {
+        return Err(CELL_E_INVAL);
+    }
+    if let Some(replaced) = ramfs::rename(old, parent, &name[..length])? {
+        if !node_referenced(replaced) {
+            ramfs::release(replaced);
+        }
+    }
+    Ok(())
+}
+
+/// `truncate` on a descriptor.
+pub fn ftruncate(fd: i32, length: i64) -> SysResult<()> {
+    if length < 0 {
+        return Err(CELL_E_INVAL);
+    }
+    match kind(fd) {
+        Kind::Closed => Err(CELL_E_BADF),
+        Kind::File(node) => ramfs::truncate(node, length as usize),
+        Kind::Dir(_) => Err(CELL_E_ISDIR),
+        Kind::Logical(_) => Err(CELL_E_ROFS),
+        Kind::PipeRead(_) | Kind::PipeWrite(_) | Kind::Null | Kind::Console => Err(CELL_E_INVAL),
+    }
+}
+
+/// `truncate` on a path.
+pub fn truncate(path: &[u8], length: i64) -> SysResult<()> {
+    if length < 0 {
+        return Err(CELL_E_INVAL);
+    }
+    let node = match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(node) => node,
+        Resolved::Missing { .. } => return Err(CELL_E_NOENT),
+    };
+    ramfs::truncate(node, length as usize)
 }
 
 pub fn close(fd: i32) -> SysResult<()> {
@@ -584,7 +618,7 @@ pub fn fcntl(fd: i32, cmd: u32, arg: u32) -> SysResult<i32> {
         F_SETFL => {
             let access = unsafe { OPEN_STATUS[description] } & O_ACCMODE;
             unsafe {
-                OPEN_STATUS[description] = access | (arg & O_NONBLOCK);
+                OPEN_STATUS[description] = access | (arg & (O_NONBLOCK | O_APPEND));
             }
             Ok(0)
         }
@@ -605,12 +639,13 @@ pub fn nonblocking(fd: i32) -> bool {
     status_flags(fd) & O_NONBLOCK != 0
 }
 
-/// The size `SEEK_END`, `SEEK_DATA` and `SEEK_HOLE` measure against.
+/// The size `SEEK_END`, `SEEK_DATA` and `SEEK_HOLE` measure against.  A
+/// directory reports its `.` and `..` records plus its children.
 fn length_of(kind: Kind) -> Option<usize> {
     match kind {
-        Kind::File(index) => Some(unsafe { FILE_LEN[index as usize] }),
-        Kind::Logical => Some(crate::logical::file_size(b"/etc/motd").unwrap_or(0)),
-        Kind::Dir(dir) => Some(DIRECTORIES[dir as usize].len()),
+        Kind::File(node) => Some(ramfs::size(node)),
+        Kind::Logical(_) => Some(crate::logical::file_size(b"/etc/motd").unwrap_or(0)),
+        Kind::Dir(node) => Some(2 + ramfs::children(node)),
         Kind::Null => Some(0),
         _ => None,
     }
@@ -628,7 +663,7 @@ pub fn lseek(fd: i32, offset_value: i64, whence: u32) -> SysResult<i64> {
     let current = offset(fd) as i64;
 
     if whence == SEEK_DATA || whence == SEEK_HOLE {
-        if !matches!(file, Kind::File(_) | Kind::Logical) {
+        if !matches!(file, Kind::File(_) | Kind::Logical(_)) {
             return Err(CELL_E_INVAL);
         }
         if offset_value < 0 {
@@ -673,19 +708,8 @@ pub fn lseek(fd: i32, offset_value: i64, whence: u32) -> SysResult<i64> {
 
 fn read_at(kind: Kind, start: usize, buffer: &mut [u8]) -> SysResult<usize> {
     match kind {
-        Kind::Logical => Ok(crate::logical::read_file(b"/etc/motd", start, buffer).unwrap_or(0)),
-        Kind::File(index) => {
-            let index = index as usize;
-            let len = unsafe { FILE_LEN[index] };
-            if start >= len {
-                return Ok(0);
-            }
-            let count = buffer.len().min(len - start);
-            unsafe {
-                buffer[..count].copy_from_slice(&FILE_DATA[index][start..start + count]);
-            }
-            Ok(count)
-        }
+        Kind::Logical(_) => Ok(crate::logical::read_file(b"/etc/motd", start, buffer).unwrap_or(0)),
+        Kind::File(node) => ramfs::read(node, start, buffer),
         Kind::Console | Kind::Null => Ok(0),
         Kind::Dir(_) => Err(CELL_E_ISDIR),
         Kind::PipeRead(_) | Kind::PipeWrite(_) => Err(CELL_E_SPIPE),
@@ -695,24 +719,11 @@ fn read_at(kind: Kind, start: usize, buffer: &mut [u8]) -> SysResult<usize> {
 
 fn write_at(kind: Kind, start: usize, buffer: &[u8]) -> SysResult<usize> {
     match kind {
-        Kind::File(index) => {
-            let index = index as usize;
-            if buffer.is_empty() {
-                return Ok(0);
-            }
-            if start >= FILE_CAPACITY {
-                return Err(CELL_E_NOSPC);
-            }
-            let count = buffer.len().min(FILE_CAPACITY - start);
-            unsafe {
-                FILE_DATA[index][start..start + count].copy_from_slice(&buffer[..count]);
-                FILE_LEN[index] = FILE_LEN[index].max(start + count);
-            }
-            Ok(count)
-        }
+        Kind::File(node) => ramfs::write(node, start, buffer),
         Kind::Null | Kind::Console => Ok(buffer.len()),
         Kind::Dir(_) => Err(CELL_E_ISDIR),
-        Kind::PipeRead(_) | Kind::PipeWrite(_) | Kind::Logical => Err(CELL_E_SPIPE),
+        Kind::Logical(_) => Err(CELL_E_ROFS),
+        Kind::PipeRead(_) | Kind::PipeWrite(_) => Err(CELL_E_SPIPE),
         Kind::Closed => Err(CELL_E_BADF),
     }
 }
@@ -876,7 +887,7 @@ pub fn poll_events(fd: i32, events: i16) -> i16 {
         }
         // /dev/null and regular files are always ready: a read either returns
         // data or end-of-file without blocking.
-        Kind::Null | Kind::File(_) | Kind::Logical => {
+        Kind::Null | Kind::File(_) | Kind::Logical(_) => {
             revents |= events & (POLLIN | POLLOUT);
         }
         Kind::Dir(_) => {
@@ -886,9 +897,20 @@ pub fn poll_events(fd: i32, events: i16) -> i16 {
     revents
 }
 
+fn readable(fd: i32) -> bool {
+    status_flags(fd) & O_ACCMODE != O_WRONLY
+}
+
+fn writable(fd: i32) -> bool {
+    status_flags(fd) & O_ACCMODE != O_RDONLY
+}
+
 pub fn read(fd: i32, buffer: &mut [u8]) -> SysResult<usize> {
     let file = kind(fd);
     if file == Kind::Closed {
+        return Err(CELL_E_BADF);
+    }
+    if !readable(fd) {
         return Err(CELL_E_BADF);
     }
     let nonblocking = nonblocking(fd);
@@ -908,10 +930,18 @@ pub fn write(fd: i32, buffer: &[u8]) -> SysResult<usize> {
     if file == Kind::Closed {
         return Err(CELL_E_BADF);
     }
+    if !writable(fd) {
+        return Err(CELL_E_BADF);
+    }
     if let Kind::PipeWrite(index) = file {
         return write_pipe(index as usize, buffer, nonblocking(fd));
     }
-    let start = offset(fd);
+    // O_APPEND writes at the current end of file, not at the saved offset.
+    let start = if status_flags(fd) & O_APPEND != 0 {
+        length_of(file).unwrap_or(0)
+    } else {
+        offset(fd)
+    };
     let count = write_at(file, start, buffer)?;
     set_offset(fd, start + count);
     Ok(count)
@@ -924,10 +954,13 @@ pub fn pread(fd: i32, position: i64, buffer: &mut [u8]) -> SysResult<usize> {
     }
     let file = kind(fd);
     match file {
-        Kind::File(_) | Kind::Logical | Kind::Console | Kind::Null => {}
+        Kind::File(_) | Kind::Logical(_) | Kind::Console | Kind::Null => {}
         Kind::Closed => return Err(CELL_E_BADF),
         Kind::Dir(_) => return Err(CELL_E_ISDIR),
         Kind::PipeRead(_) | Kind::PipeWrite(_) => return Err(CELL_E_SPIPE),
+    }
+    if !readable(fd) {
+        return Err(CELL_E_BADF);
     }
     if position > u32::MAX as i64 {
         return Err(CELL_E_OVERFLOW);
@@ -942,10 +975,13 @@ pub fn pwrite(fd: i32, position: i64, buffer: &[u8]) -> SysResult<usize> {
     }
     let file = kind(fd);
     match file {
-        Kind::File(_) | Kind::Logical | Kind::Console | Kind::Null => {}
+        Kind::File(_) | Kind::Logical(_) | Kind::Console | Kind::Null => {}
         Kind::Closed => return Err(CELL_E_BADF),
         Kind::Dir(_) => return Err(CELL_E_ISDIR),
         Kind::PipeRead(_) | Kind::PipeWrite(_) => return Err(CELL_E_SPIPE),
+    }
+    if !writable(fd) {
+        return Err(CELL_E_BADF);
     }
     if position > u32::MAX as i64 {
         return Err(CELL_E_OVERFLOW);
@@ -983,43 +1019,69 @@ pub fn set_winsize(fd: i32, value: &[u16; 4]) -> SysResult<()> {
     }
 }
 
-pub fn metadata(fd: i32) -> SysResult<(u32, i64)> {
+/// `(mode, size, inode)` for a descriptor.
+pub fn metadata(fd: i32) -> SysResult<(u32, i64, u64)> {
     match kind(fd) {
-        Kind::File(index) => Ok((0o100644, unsafe { FILE_LEN[index as usize] } as i64)),
-        Kind::Logical => Ok((
+        Kind::File(node) => Ok((
+            ramfs::mode(node),
+            ramfs::size(node) as i64,
+            ramfs::inode(node),
+        )),
+        Kind::Logical(node) => Ok((
             0o100644,
             crate::logical::file_size(b"/etc/motd").unwrap_or(0) as i64,
+            ramfs::inode(node),
         )),
-        Kind::Console | Kind::Null => Ok((0o020666, 0)),
-        Kind::Dir(_) => Ok((0o040755, 0)),
-        Kind::PipeRead(_) | Kind::PipeWrite(_) => Ok((0o010600, 0)),
+        Kind::Console | Kind::Null => Ok((0o020666, 0, 0)),
+        Kind::Dir(node) => Ok((ramfs::mode(node), 0, ramfs::inode(node))),
+        Kind::PipeRead(_) | Kind::PipeWrite(_) => Ok((0o010600, 0, 0)),
         Kind::Closed => Err(CELL_E_BADF),
     }
 }
 
-pub fn metadata_path(path: &[u8]) -> SysResult<(u32, i64)> {
-    let mut resolved = [0u8; 64];
-    let Some(len) = resolve(path, &mut resolved) else {
-        return Err(CELL_E_NAMETOOLONG);
+pub fn metadata_path(path: &[u8]) -> SysResult<(u32, i64, u64)> {
+    let node = match ramfs::resolve(cwd(), path)? {
+        Resolved::Node(node) => node,
+        Resolved::Missing { .. } => return Err(CELL_E_NOENT),
     };
-    let path = &resolved[..len];
-    if path == b"/dev/null" || path == b"/dev/tty" || path == b"/dev/console" {
-        return Ok((0o020666, 0));
+    if ramfs::node_type(node) == NodeType::Logical && !logical_available() {
+        return Err(CELL_E_NOENT);
     }
-    if path == b"/" || path == b"/etc" || path == b"/dev" {
-        return Ok((0o040755, 0));
+    Ok((
+        ramfs::mode(node),
+        ramfs::size(node) as i64,
+        ramfs::inode(node),
+    ))
+}
+
+/// Fill `ordinal` of a directory into `out`, without a terminator.  Returns
+/// `(inode, d_type, name length)`; ordinal 0 is `.` and 1 is `..`.
+fn dir_entry(dir: u16, ordinal: usize, out: &mut [u8]) -> Option<(u64, u8, usize)> {
+    match ordinal {
+        0 => {
+            if out.is_empty() {
+                return None;
+            }
+            out[0] = b'.';
+            Some((ramfs::inode(dir), ramfs::TYPE_DIR, 1))
+        }
+        1 => {
+            if out.len() < 2 {
+                return None;
+            }
+            out[0] = b'.';
+            out[1] = b'.';
+            Some((ramfs::inode(ramfs::parent(dir)), ramfs::TYPE_DIR, 2))
+        }
+        _ => {
+            let node = ramfs::child_at(dir, ordinal - 2)?;
+            Some((
+                ramfs::inode(node),
+                ramfs::type_of(node),
+                ramfs::name(node, out),
+            ))
+        }
     }
-    if path == b"/etc/motd" {
-        return crate::logical::file_size(path)
-            .map(|size| (0o100644, size as i64))
-            .ok_or(CELL_E_NOENT);
-    }
-    FILES
-        .iter()
-        .enumerate()
-        .find(|(_, file)| file.path == path)
-        .map(|(index, _)| (0o100644, unsafe { FILE_LEN[index] } as i64))
-        .ok_or(CELL_E_NOENT)
 }
 
 pub fn readdir(fd: i32, index: usize, out: &mut [u8]) -> SysResult<Option<(u8, usize)>> {
@@ -1028,34 +1090,28 @@ pub fn readdir(fd: i32, index: usize, out: &mut [u8]) -> SysResult<Option<(u8, u
         Kind::Closed => return Err(CELL_E_BADF),
         _ => return Err(CELL_E_NOTDIR),
     };
-    let Some(entry) = DIRECTORIES[dir as usize].get(index) else {
+    if out.is_empty() {
+        return Err(CELL_E_INVAL);
+    }
+    let Some((_, kind, len)) = dir_entry(dir, index, out) else {
         return Ok(None);
     };
-    let len = entry.name.len().min(out.len().saturating_sub(1));
-    out[..len].copy_from_slice(&entry.name[..len]);
+    let len = len.min(out.len() - 1);
     out[len] = 0;
-    Ok(Some((entry.kind, len)))
-}
-
-/// The inode number reported for directory entry `index` of directory `dir`.
-///
-/// The bring-up namespace has no on-disk inodes; this is a stable identity per
-/// directory and slot so `d_ino` does not change between calls.
-fn dir_ino(dir: u32, index: usize) -> u64 {
-    dir as u64 * 64 + index as u64 + 1
+    Ok(Some((kind, len)))
 }
 
 /// Fill one native `dirent` record.  Returns the record length in bytes.
-fn fill_dirent(dir: u32, index: usize, entry: &DirEntry, out: &mut [u8]) -> usize {
+fn fill_dirent(ino: u64, index: usize, kind: u8, name: &[u8], out: &mut [u8]) -> usize {
     let mut record = native_abi::dirent {
-        d_ino: dir_ino(dir, index),
+        d_ino: ino,
         d_off: index as i64 + 1,
         d_reclen: core::mem::size_of::<native_abi::dirent>() as u16,
-        d_type: entry.kind,
+        d_type: kind,
         d_name: [0; 256],
     };
-    let len = entry.name.len().min(record.d_name.len() - 1);
-    record.d_name[..len].copy_from_slice(&entry.name[..len]);
+    let len = name.len().min(record.d_name.len() - 1);
+    record.d_name[..len].copy_from_slice(&name[..len]);
     let size = core::mem::size_of::<native_abi::dirent>();
     let source = &record as *const native_abi::dirent as *const u8;
     for (position, slot) in out[..size].iter_mut().enumerate() {
@@ -1070,21 +1126,27 @@ fn fill_dirent(dir: u32, index: usize, entry: &DirEntry, out: &mut [u8]) -> usiz
 /// leaves the descriptor at end-of-directory.  `lseek` writes the same value
 /// back, which is what makes `telldir`/`seekdir` work.  A buffer too small for
 /// one record is `EINVAL`, which is the signal relibc's `DIR` uses to grow.
+/// The walk sees the live tree: entries created or removed between calls are
+/// reflected in the scan order.
 pub fn getdents(fd: i32, out: &mut [u8]) -> SysResult<usize> {
     let dir = match kind(fd) {
         Kind::Dir(dir) => dir,
         Kind::Closed => return Err(CELL_E_BADF),
         _ => return Err(CELL_E_NOTDIR),
     };
-    let entries = DIRECTORIES[dir as usize];
+    let total = 2 + ramfs::children(dir);
     let record = core::mem::size_of::<native_abi::dirent>();
     let mut index = offset(fd);
     let mut written = 0usize;
-    while index < entries.len() && written + record <= out.len() {
-        written += fill_dirent(dir, index, &entries[index], &mut out[written..]);
+    let mut name = [0u8; ramfs::NAME_MAX];
+    while index < total && written + record <= out.len() {
+        let Some((ino, kind, len)) = dir_entry(dir, index, &mut name) else {
+            break;
+        };
+        written += fill_dirent(ino, index, kind, &name[..len], &mut out[written..]);
         index += 1;
     }
-    if written == 0 && index < entries.len() {
+    if written == 0 && index < total {
         return Err(CELL_E_INVAL);
     }
     set_offset(fd, index);

@@ -49,6 +49,7 @@ pub mod ntp;
 pub mod nvram;
 pub mod ping;
 pub mod platform;
+pub mod ramfs;
 pub mod range;
 pub mod readahead;
 pub mod rtc;

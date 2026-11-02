@@ -202,6 +202,12 @@ fn v0_syscall_table_is_pinned_and_distinct() {
         SYS_DUP2,
         SYS_PIPE2,
         SYS_GETDENTS,
+        SYS_UNLINK,
+        SYS_RENAME,
+        SYS_MKDIR,
+        SYS_RMDIR,
+        SYS_FTRUNCATE,
+        SYS_TRUNCATE,
     ];
     for (index, number) in table.iter().enumerate() {
         assert_eq!(
@@ -213,6 +219,12 @@ fn v0_syscall_table_is_pinned_and_distinct() {
     }
     assert_eq!(SYS_GETDENTS, 30);
     assert_eq!(SYS_LSEEK, 25);
+    assert_eq!(SYS_UNLINK, 31);
+    assert_eq!(SYS_RENAME, 32);
+    assert_eq!(SYS_MKDIR, 33);
+    assert_eq!(SYS_RMDIR, 34);
+    assert_eq!(SYS_FTRUNCATE, 35);
+    assert_eq!(SYS_TRUNCATE, 36);
 }
 
 #[test]

@@ -117,8 +117,10 @@ pub fn execute(line: &[u8], out: &mut dyn Sink) -> Outcome {
         }
         b"pwd" => {
             let mut path = [0u8; 64];
-            let len = fd::copy_cwd(&mut path);
-            out.write(&path[..len]);
+            match fd::copy_cwd(&mut path) {
+                Some(len) => out.write(&path[..len]),
+                None => out.write(b"?"),
+            }
             out.write(b"\r\n");
             Outcome::Handled
         }
@@ -520,7 +522,7 @@ fn list(out: &mut dyn Sink, path: &[u8]) {
     } else {
         path
     };
-    let fd = match fd::open_path(path, 0) {
+    let fd = match fd::open_path(path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
             out.write(b"ls: no such file or directory\r\n");
@@ -547,7 +549,7 @@ fn list(out: &mut dyn Sink, path: &[u8]) {
             }
             index += 1;
         }
-    } else if let Ok((mode, size)) = fd::metadata(fd) {
+    } else if let Ok((mode, size, _)) = fd::metadata(fd) {
         let _ = writer.write_str("file mode=0o");
         let _ = write!(writer, "{:o} size={}\r\n", mode, size);
     }
@@ -559,7 +561,7 @@ fn cat(out: &mut dyn Sink, path: &[u8]) {
         out.write(b"cat: missing file\r\n");
         return;
     }
-    let fd = match fd::open_path(path, 0) {
+    let fd = match fd::open_path(path, 0, 0) {
         Ok(fd) => fd,
         Err(_) => {
             out.write(b"cat: no such file\r\n");

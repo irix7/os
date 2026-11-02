@@ -53,3 +53,15 @@ pub const SYS_PIPE2: u32 = 29;
 /// `getdents(fd, buf, len)`; fills whole `dirent` records and advances the
 /// descriptor's directory cookie.
 pub const SYS_GETDENTS: u32 = 30;
+/// `unlink(path)`; removes a regular file.
+pub const SYS_UNLINK: u32 = 31;
+/// `rename(old, new)`; replaces an existing destination of the same type.
+pub const SYS_RENAME: u32 = 32;
+/// `mkdir(path, mode)`; creates a directory.
+pub const SYS_MKDIR: u32 = 33;
+/// `rmdir(path)`; removes an empty directory.
+pub const SYS_RMDIR: u32 = 34;
+/// `ftruncate(fd, length_lo, length_hi)`; sets a regular file's length.
+pub const SYS_FTRUNCATE: u32 = 35;
+/// `truncate(path, length_lo, length_hi)`; the path form of `ftruncate`.
+pub const SYS_TRUNCATE: u32 = 36;

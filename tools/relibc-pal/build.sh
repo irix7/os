@@ -28,7 +28,7 @@ set -eu
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT=${1:-$REPO/target/relibc-pal}
 SRC=${RELIBC_SRC:-/tmp/opencode/relibc-pal-src}
-PINNED=acd6c4966c249510154158e05c19b8f846a70bb5
+PINNED=2a345f7802615633115ea55b8c7f010d2b13dfb6
 WANT=${RELIBC_COMMIT:-$PINNED}
 REMOTE=${RELIBC_REMOTE:-https://github.com/irix7/relibc}
 TARGET="$REPO/targets/mips3-sgi-irix7-native-n32.json"

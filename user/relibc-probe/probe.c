@@ -1,18 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
-// Third C program linked against the relibc IRIX 7 PAL.
+// Fourth C program linked against the relibc IRIX 7 PAL.
 //
 // The first probe proved that a normal C `main` starts on the native n32
 // kernel through the System V stack, uses `$28` as the TCB pointer, and gets a
 // real negative errno channel from the `CELL_E_*` status returned by the native
 // gate.  The second added the file surface: seek, read and write at an offset,
 // a duplicated descriptor, a bounded pipe with EAGAIN and EPIPE, close-on-exec,
-// and a directory iterated to the end with cookies.  This one keeps those
-// checks and adds descriptor readiness: `poll` over pipes and the console with
-// zero and negative timeouts, real `O_NONBLOCK` state through
-// `F_GETFL`/`F_SETFL`, `POLLHUP` at end-of-file and `POLLERR` with no reader.
+// and a directory iterated to the end with cookies.  The third added
+// descriptor readiness: `poll` over pipes and the console with zero and
+// negative timeouts, real `O_NONBLOCK` state through `F_GETFL`/`F_SETFL`,
+// `POLLHUP` at end-of-file and `POLLERR` with no reader.
 //
-// It prints the fixed marker `IRIX7-RELIB-PROBE-3` and exits 0 only if every
+// This one keeps those checks and adds the writable ramfs: create with
+// `O_CREAT`/`O_TRUNC`/`O_EXCL`, append, read back, `ftruncate` and `truncate`,
+// `rename`, `unlink`, `mkdir`/`rmdir` with `ENOTEMPTY`, a live `getdents`
+// walk, `chdir` into a created directory, and the `EEXIST`, `ENOTEMPTY`,
+// `EISDIR`, `ENOTDIR`, `ENOENT` and `ENOSPC` error cases.
+//
+// It prints the fixed marker `IRIX7-RELIB-PROBE-4` and exits 0 only if every
 // check passes.
 
 typedef unsigned int size_t;
@@ -99,13 +105,23 @@ _Static_assert(__builtin_offsetof(struct pollfd, revents) == 6, "pollfd revents 
 #define ESPIPE 29
 #define EPIPE 32
 #define ENOENT 2
+#define EEXIST 17
+#define ENOTDIR 20
+#define EISDIR 21
+#define ENOSPC 28
+#define ENOTEMPTY 39
 
 #define AT_PAGESZ 1
 #define AT_ENTRY 2
 #define AT_CLKTCK 13
 
 #define O_RDONLY 0
+#define O_WRONLY 1
 #define O_RDWR 2
+#define O_CREAT 0x40
+#define O_EXCL 0x80
+#define O_TRUNC 0x200
+#define O_APPEND 0x400
 #define O_NONBLOCK 0x800
 #define O_DIRECTORY 0x10000
 #define O_CLOEXEC 0x80000
@@ -143,6 +159,14 @@ extern int fcntl(int, int, ...);
 extern int poll(struct pollfd *, unsigned long, int);
 extern int stat(const char *, struct stat *);
 extern int fstat(int, struct stat *);
+extern int unlink(const char *);
+extern int rmdir(const char *);
+extern int mkdir(const char *, mode_t);
+extern int rename(const char *, const char *);
+extern int ftruncate(int, off_t);
+extern int truncate(const char *, off_t);
+extern int chdir(const char *);
+extern char *getcwd(char *, size_t);
 extern int getpid(void);
 extern int *__errno_location(void);
 extern unsigned long getauxval(unsigned long);
@@ -163,7 +187,7 @@ static int checks;
 static void check(int condition, const char *name) {
     checks++;
     if (!condition) {
-        printf("IRIX7-RELIB-PROBE-3: check=FAIL %s\n", name);
+        printf("IRIX7-RELIB-PROBE-4: check=FAIL %s\n", name);
         failures++;
     }
 }
@@ -195,9 +219,10 @@ static unsigned long read_tp(void) {
 }
 
 static _Alignas(8) unsigned char dent_buffer[1024];
+static _Alignas(8) unsigned char live_buffer[2048];
 
 int main(int argc, char **argv) {
-    static const char marker[] = "IRIX7-RELIB-PROBE-3\n";
+    static const char marker[] = "IRIX7-RELIB-PROBE-4\n";
     struct stat st;
     int status;
     int err;
@@ -205,6 +230,8 @@ int main(int argc, char **argv) {
     int fd, other, pipefd[2];
     struct pollfd pfd[2];
     char buffer[64];
+    char cwd[64];
+    static unsigned char page[4096];
     long cookie;
 
     status = (int)write(1, marker, sizeof(marker) - 1);
@@ -499,11 +526,167 @@ int main(int argc, char **argv) {
         }
     }
 
-    printf("IRIX7-RELIB-PROBE-3: stat size=%lld mode=%o blksize=%d blocks=%lld\n",
+    /* The ramfs is writable: create, write, read, truncate, rename, unlink. */
+    errno = 0;
+    check(unlink("/missing") == -1 && errno == ENOENT, "unlink(/missing) is ENOENT");
+    errno = 0;
+    check(rmdir("/missing") == -1 && errno == ENOENT, "rmdir(/missing) is ENOENT");
+
+    fd = open("/probe.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "open(O_CREAT) creates a file");
+    check(write(fd, "hello ramfs", 11) == 11, "write to the new file");
+    check(lseek(fd, 0, SEEK_SET) == 0, "rewind the new file");
+    check(read(fd, buffer, 11) == 11 && bytes_are(buffer, "hello ramfs", 11),
+          "read back the new file");
+    check(fstat(fd, &st) == 0 && st.st_size == 11 && (st.st_mode & S_IFMT) == S_IFREG,
+          "fstat reports the new size");
+    check(ftruncate(fd, 5) == 0, "ftruncate shrinks the file");
+    check(fstat(fd, &st) == 0 && st.st_size == 5, "fstat sees the truncated size");
+    check(lseek(fd, 0, SEEK_SET) == 0, "rewind after truncate");
+    check(read(fd, buffer, 8) == 5 && bytes_are(buffer, "hello", 5),
+          "read stops at the truncated size");
+    check(ftruncate(fd, 0) == 0, "ftruncate empties the file");
+    check(fstat(fd, &st) == 0 && st.st_size == 0, "fstat sees the empty file");
+    check(close(fd) == 0, "close the new file");
+
+    errno = 0;
+    check(open("/probe.txt", O_RDWR | O_CREAT | O_EXCL, 0644) == -1 && errno == EEXIST,
+          "O_CREAT|O_EXCL on an existing file is EEXIST");
+
+    fd = open("/probe.txt", O_WRONLY | O_TRUNC);
+    check(fd >= 0, "O_TRUNC opens an existing file");
+    check(write(fd, "renamed", 7) == 7, "write after O_TRUNC");
+    check(close(fd) == 0, "close after O_TRUNC");
+
+    fd = open("/probe.txt", O_WRONLY | O_APPEND);
+    check(fd >= 0, "open with O_APPEND");
+    check(write(fd, "!", 1) == 1, "append a byte");
+    check(close(fd) == 0, "close the append descriptor");
+    fd = open("/probe.txt", O_RDONLY);
+    check(fd >= 0, "open the appended file for reading");
+    check(read(fd, buffer, 16) == 8 && bytes_are(buffer, "renamed!", 8),
+          "append landed at end-of-file");
+    check(close(fd) == 0, "close the appended file");
+
+    check(truncate("/probe.txt", 4) == 0, "truncate(path) shrinks");
+    check(stat("/probe.txt", &st) == 0 && st.st_size == 4, "truncate(path) size");
+
+    check(rename("/probe.txt", "/moved.txt") == 0, "rename moves the file");
+    errno = 0;
+    check(stat("/probe.txt", &st) == -1 && errno == ENOENT, "the old name is gone");
+    check(stat("/moved.txt", &st) == 0 && st.st_size == 4 && (st.st_mode & S_IFMT) == S_IFREG,
+          "the new name has the content");
+    errno = 0;
+    check(rename("/missing.txt", "/other.txt") == -1 && errno == ENOENT,
+          "rename of a missing file is ENOENT");
+
+    check(mkdir("/probe-dir", 0755) == 0, "mkdir creates a directory");
+    errno = 0;
+    check(mkdir("/probe-dir", 0755) == -1 && errno == EEXIST, "mkdir twice is EEXIST");
+    check(mkdir("/probe-dir/sub", 0755) == 0, "mkdir creates a nested directory");
+    errno = 0;
+    check(rmdir("/probe-dir") == -1 && errno == ENOTEMPTY,
+          "rmdir of a full directory is ENOTEMPTY");
+    check(rmdir("/probe-dir/sub") == 0, "rmdir removes the nested directory");
+    errno = 0;
+    check(rmdir("/probe-dir/sub") == -1 && errno == ENOENT, "rmdir twice is ENOENT");
+    errno = 0;
+    check(rmdir("/moved.txt") == -1 && errno == ENOTDIR, "rmdir of a file is ENOTDIR");
+    errno = 0;
+    check(unlink("/probe-dir") == -1 && errno == EISDIR, "unlink of a directory is EISDIR");
+
+    /* The live tree: entries created above appear in a fresh getdents walk. */
+    fd = open("/", O_RDONLY | O_DIRECTORY);
+    check(fd >= 0, "reopen / for the live walk");
+    status = (int)posix_getdents(fd, live_buffer, sizeof(live_buffer), 0);
+    check(status == 7 * 280, "getdents sees the created entries");
+    if (status == 7 * 280) {
+        struct posix_dent *dent = (struct posix_dent *)live_buffer;
+        check(name_is(dent[2].d_name, "hello.txt"), "live walk keeps hello.txt third");
+        check(name_is(dent[3].d_name, "etc") && name_is(dent[4].d_name, "dev"),
+              "live walk keeps etc and dev");
+        check(name_is(dent[5].d_name, "moved.txt") && dent[5].d_type == 8,
+              "the renamed file is in the live walk");
+        check(name_is(dent[6].d_name, "probe-dir") && dent[6].d_type == 4,
+              "the new directory is in the live walk");
+        check(dent[6].d_off == 7, "the live walk has seven cookies");
+        check(dent[2].d_ino != dent[5].d_ino && dent[2].d_ino != dent[6].d_ino,
+              "the created entries have distinct inodes");
+    }
+    check(close(fd) == 0, "close the live walk");
+
+    /* A created directory is a working directory and a parent. */
+    check(mkdir("/work", 0755) == 0, "mkdir the working directory");
+    check(chdir("/work") == 0, "chdir into the created directory");
+    check(getcwd(cwd, sizeof(cwd)) != 0 && name_is(cwd, "/work"), "getcwd reports /work");
+    fd = open("item", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create a relative file");
+    check(write(fd, "rel", 3) == 3, "write the relative file");
+    check(close(fd) == 0, "close the relative file");
+    check(stat("item", &st) == 0 && st.st_size == 3, "stat the relative file");
+    check(stat("../moved.txt", &st) == 0 && st.st_size == 4, "a relative parent walk");
+    check(chdir("/") == 0, "chdir back to /");
+    check(getcwd(cwd, sizeof(cwd)) != 0 && name_is(cwd, "/"), "getcwd reports /");
+    check(unlink("/work/item") == 0, "unlink the relative file by path");
+    check(rmdir("/work") == 0, "rmdir the working directory");
+
+    /* Type errors. */
+    errno = 0;
+    check(open("/probe-dir", O_WRONLY) == -1 && errno == EISDIR,
+          "open(O_WRONLY) on a directory is EISDIR");
+    fd = open("/probe-dir", O_RDONLY | O_DIRECTORY);
+    check(fd >= 0, "open a directory for reading");
+    errno = 0;
+    check(read(fd, buffer, 4) == -1 && errno == EISDIR, "read on a directory is EISDIR");
+    check(close(fd) == 0, "close the directory descriptor");
+    errno = 0;
+    check(open("/hello.txt", O_RDONLY | O_DIRECTORY) == -1 && errno == ENOTDIR,
+          "O_DIRECTORY on a file is ENOTDIR");
+    errno = 0;
+    check(open("/hello.txt/child", O_RDONLY) == -1 && errno == ENOTDIR,
+          "a file used as a directory is ENOTDIR");
+
+    /* A full file: 4096 bytes, then ENOSPC. */
+    fd = open("/full", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create the full file");
+    check(write(fd, page, sizeof(page)) == (ssize_t)sizeof(page),
+          "fill the file to capacity");
+    errno = 0;
+    check(write(fd, "x", 1) == -1 && errno == ENOSPC, "a write past capacity is ENOSPC");
+    check(fstat(fd, &st) == 0 && st.st_size == 4096, "the file kept its capacity");
+    errno = 0;
+    check(ftruncate(fd, 4097) == -1 && errno == ENOSPC,
+          "ftruncate past capacity is ENOSPC");
+    check(close(fd) == 0, "close the full file");
+    check(unlink("/full") == 0, "unlink the full file");
+
+    /* An unlinked inode stays readable through its open descriptor. */
+    fd = open("/probe.txt", O_RDWR | O_CREAT | O_TRUNC, 0644);
+    check(fd >= 0, "create the unlinked file");
+    check(write(fd, "kept", 4) == 4, "write before unlink");
+    check(unlink("/probe.txt") == 0, "unlink an open file");
+    errno = 0;
+    check(stat("/probe.txt", &st) == -1 && errno == ENOENT, "the unlinked name is gone");
+    check(lseek(fd, 0, SEEK_SET) == 0, "rewind the unlinked descriptor");
+    check(read(fd, buffer, 4) == 4 && bytes_are(buffer, "kept", 4),
+          "the open descriptor still reads the inode");
+    check(close(fd) == 0, "close the unlinked file");
+
+    /* Removing the entries restores the fixture tree. */
+    check(unlink("/moved.txt") == 0, "unlink the renamed file");
+    check(rmdir("/probe-dir") == 0, "rmdir the now-empty directory");
+    fd = open("/", O_RDONLY | O_DIRECTORY);
+    check(fd >= 0, "reopen / after the cleanup");
+    status = (int)posix_getdents(fd, live_buffer, sizeof(live_buffer), 0);
+    check(status == 5 * 280, "the fixture directory is restored");
+    check(close(fd) == 0, "close the restored directory");
+
+    stat("/hello.txt", &st);
+    printf("IRIX7-RELIB-PROBE-4: stat size=%lld mode=%o blksize=%d blocks=%lld\n",
            st.st_size, (unsigned)st.st_mode, st.st_blksize, st.st_blocks);
-    printf("IRIX7-RELIB-PROBE-3: tp=%p auxv pagesz=%lu\n",
+    printf("IRIX7-RELIB-PROBE-4: tp=%p auxv pagesz=%lu\n",
            (void *)tp, getauxval(AT_PAGESZ));
-    printf("IRIX7-RELIB-PROBE-3: checks=%d failures=%d\n", checks, failures);
+    printf("IRIX7-RELIB-PROBE-4: checks=%d failures=%d\n", checks, failures);
 
     return failures == 0 ? 0 : 1;
 }

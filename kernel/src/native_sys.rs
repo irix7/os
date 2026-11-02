@@ -9,9 +9,10 @@
 
 use native_abi::syscall::{
     SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXIT, SYS_FCNTL, SYS_FSTAT,
-    SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_LSEEK, SYS_MMAP, SYS_MPROTECT,
-    SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL, SYS_PREAD, SYS_PWRITE,
-    SYS_READ, SYS_READDIR, SYS_SIGNAL, SYS_STAT, SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_WRITE,
+    SYS_FTRUNCATE, SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_LSEEK, SYS_MKDIR,
+    SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL,
+    SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SIGNAL, SYS_STAT,
+    SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_TRUNCATE, SYS_UNLINK, SYS_WRITE,
 };
 
 use crate::syserr::{SysResult, CELL_E_NOSYS};
@@ -39,7 +40,13 @@ pub fn dispatch(tf: &mut TrapFrame) -> bool {
         SYS_READ => crate::user::read_fd(a0, a1, a2).map(|count| count as u64),
         SYS_MMAP => crate::user::mmap(a1).map(|address| address as u64),
         SYS_MUNMAP | SYS_MPROTECT => Ok(0),
-        SYS_OPEN => crate::user::open_path(a0, a1).map(|fd| fd as u64),
+        SYS_OPEN => crate::user::open_path(a0, a1, a2).map(|fd| fd as u64),
+        SYS_UNLINK => crate::user::unlink_user(a0, false).map(|()| 0),
+        SYS_RENAME => crate::user::rename_user(a0, a1).map(|()| 0),
+        SYS_MKDIR => crate::user::mkdir_user(a0, a1).map(|()| 0),
+        SYS_RMDIR => crate::user::unlink_user(a0, true).map(|()| 0),
+        SYS_FTRUNCATE => crate::user::ftruncate_user(a0, a1, a2).map(|()| 0),
+        SYS_TRUNCATE => crate::user::truncate_user(a0, a1, a2).map(|()| 0),
         SYS_CLOSE => crate::fd::close(a0 as i32).map(|()| 0),
         SYS_DUP => crate::fd::dup(a0 as i32).map(|fd| fd as u64),
         SYS_GETCWD => crate::user::getcwd_text(a0, a1).map(|()| 0),
