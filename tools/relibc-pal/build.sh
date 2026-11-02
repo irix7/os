@@ -28,7 +28,7 @@ set -eu
 REPO=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 OUT=${1:-$REPO/target/relibc-pal}
 SRC=${RELIBC_SRC:-/tmp/opencode/relibc-pal-src}
-PINNED=729bdc3bbbc9c4cb1fc2ca1ffeac92ea7d551383
+PINNED=bf5fee5e29a7a5054fa3cf82f6c5916de4b45b19
 WANT=${RELIBC_COMMIT:-$PINNED}
 REMOTE=${RELIBC_REMOTE:-https://github.com/irix7/relibc}
 TARGET="$REPO/targets/mips3-sgi-irix7-native-n32.json"
@@ -36,6 +36,7 @@ PROBE="$REPO/user/relibc-probe"
 THREAD_PROBE="$REPO/user/relibc-thread-probe"
 FUTEX_PROBE="$REPO/user/relibc-futex-probe"
 PTHREAD_PROBE="$REPO/user/relibc-pthread-probe"
+SLEEP_PROBE="$REPO/user/relibc-sleep-probe"
 LINKER="$PROBE/linker.ld"
 CARGO=${CARGO:-cargo}
 TARGET_DIR=${CARGO_TARGET_DIR:-$OUT/target}
@@ -147,6 +148,14 @@ LDFLAGS="-mabi=n32 -march=mips3 -msoft-float -mno-abicalls -fno-pic \
     -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
     -Wl,--end-group
 
+# shellcheck disable=SC2086
+"$CC" $CFLAGS -c "$SLEEP_PROBE/probe.c" -o "$OUT/sleep-probe.o"
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/sleep-probe.elf" \
+    "$OUT/sleep-probe.o" \
+    -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+
 # The kernel's ELF loader reads a 256 KiB raw target-2 image.  The linked
 # segment ends well inside the slot, but the unstripped symbol table pushes the
 # file over it; strip before padding.
@@ -176,6 +185,7 @@ probe_size=$(finish_image "$OUT/probe.elf" "$OUT/probe.raw")
 thread_size=$(finish_image "$OUT/thread-probe.elf" "$OUT/thread-probe.raw")
 futex_size=$(finish_image "$OUT/futex-probe.elf" "$OUT/futex-probe.raw")
 pthread_size=$(finish_image "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw")
+sleep_size=$(finish_image "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw")
 
 {
     echo "relibc=$have"
@@ -185,11 +195,13 @@ pthread_size=$(finish_image "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw")
     echo "thread_probe_elf=$thread_size bytes"
     echo "futex_probe_elf=$futex_size bytes"
     echo "pthread_probe_elf=$pthread_size bytes"
+    echo "sleep_probe_elf=$sleep_size bytes"
 } >"$OUT/BUILD-PROVENANCE.txt"
 sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
     "$OUT/thread-probe.elf" "$OUT/thread-probe.raw" \
     "$OUT/futex-probe.elf" "$OUT/futex-probe.raw" \
-    "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw" >"$OUT/SHA256SUMS"
+    "$OUT/pthread-probe.elf" "$OUT/pthread-probe.raw" \
+    "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw" >"$OUT/SHA256SUMS"
 
 echo "build-relibc-probe: ELF $OUT/probe.elf"
 echo "build-relibc-probe: raw $OUT/probe.raw"
@@ -199,4 +211,6 @@ echo "build-relibc-probe: futex ELF $OUT/futex-probe.elf"
 echo "build-relibc-probe: futex raw $OUT/futex-probe.raw"
 echo "build-relibc-probe: pthread ELF $OUT/pthread-probe.elf"
 echo "build-relibc-probe: pthread raw $OUT/pthread-probe.raw"
+echo "build-relibc-probe: sleep ELF $OUT/sleep-probe.elf"
+echo "build-relibc-probe: sleep raw $OUT/sleep-probe.raw"
 cat "$OUT/BUILD-PROVENANCE.txt"

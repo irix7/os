@@ -991,10 +991,19 @@ pub fn readdir_user(fd: u32, index: u32, address: u32, length: u32) -> SysResult
     Ok(Some(kind as u32))
 }
 
-/// Busy-wait for a user `timespec`.  The syscall path runs with interrupts
-/// masked by EXL, so CP0 Count keeps advancing while no timer interrupt can
-/// preempt the wait.  This is a bring-up sleep, not the scheduler.
-pub fn sleep_user(address: u32) -> SysResult<()> {
+/// Longest a single parked sleep lasts, in milliseconds.
+///
+/// A caller that asks for longer re-arms with the remainder, which the PAL
+/// does so `nanosleep` still honours the full interval.  The bound keeps every
+/// interval shorter than half the 32-bit Count range, so the wrap-safe
+/// deadline comparison stays unambiguous.
+pub const SLEEP_LIMIT_MS: u32 = 60_000;
+
+/// Parse a user `timespec` as a sleep interval in CP0 Count ticks.
+///
+/// The interval is relative, so a negative field is `CELL_E_INVAL` and an
+/// absurd one is capped at [`SLEEP_LIMIT_MS`] rather than overflowing.
+pub fn sleep_ticks(address: u32) -> SysResult<u32> {
     if !range_ok(address, 16) {
         return Err(CELL_E_FAULT);
     }
@@ -1006,13 +1015,17 @@ pub fn sleep_user(address: u32) -> SysResult<()> {
     let ticks = (seconds as u64)
         .saturating_mul(33_000_000)
         .saturating_add((nanos as u64).saturating_mul(33) / 1_000);
-    let start = crate::traps::count_read();
-    let mut elapsed = 0u64;
-    while elapsed < ticks {
-        let now = crate::traps::count_read();
-        elapsed = now.wrapping_sub(start) as u64;
-        core::hint::spin_loop();
-    }
+    let cap = u64::from(SLEEP_LIMIT_MS) * u64::from(crate::fd::TICKS_PER_MS);
+    Ok(ticks.min(cap) as u32)
+}
+
+/// Legacy `nanosleep`: wait the interval in the kernel without a thread
+/// switch.  The legacy gate has no scheduler, so there is no peer to park
+/// for; the timer still drives the wait and the CPU is idle rather than
+/// spinning.
+pub fn sleep_user(address: u32) -> SysResult<()> {
+    let limit = sleep_ticks(address)?;
+    crate::traps::wait_ticks(limit);
     Ok(())
 }
 

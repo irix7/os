@@ -77,6 +77,25 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         };
     }
 
+    if number == SYS_NANOSLEEP {
+        // A sleep parks this thread on a Count deadline and lets a peer run;
+        // with no peer the kernel parks the CPU until the timer.  Either way
+        // the saved frame carries `CELL_OK`, so a switch must not advance EPC
+        // again.
+        let limit = match crate::user::sleep_ticks(a0) {
+            Ok(limit) => limit,
+            Err(status) => {
+                tf.regs[2] = status as u64;
+                tf.regs[3] = 0;
+                return Gate::Continue;
+            }
+        };
+        return match crate::thread::sleep_current(tf, limit) {
+            Wait::Switched => Gate::Resume,
+            Wait::Continue => Gate::Continue,
+        };
+    }
+
     let result: SysResult<u64> = match number {
         SYS_WRITE => crate::user::write_fd(a0, a1, a2).map(|count| count as u64),
         SYS_READ => crate::user::read_fd(a0, a1, a2).map(|count| count as u64),
@@ -107,7 +126,6 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         SYS_PWRITE => crate::user::pwrite_user(a0, a1).map(|count| count as u64),
         SYS_DUP2 => crate::user::dup2_user(a0, a1).map(|fd| fd as u64),
         SYS_PIPE2 => crate::user::pipe2_user(a0, a1).map(|()| 0),
-        SYS_NANOSLEEP => crate::user::sleep_user(a0).map(|()| 0),
         SYS_CHDIR => crate::user::chdir_user(a0).map(|()| 0),
         SYS_PIPE => crate::user::pipe_user(a0).map(|()| 0),
         SYS_TCGETWINSIZE => crate::user::tcgetwinsize_user(a0, a1).map(|()| 0),
