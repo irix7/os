@@ -13,9 +13,11 @@
 # vector, then identifies the ATA disk on the first Mac I/O channel, reads the
 # signature sector at LBA 4 with polled PIO, and loads the flat PowerPC module
 # from the disk.  The module's SHA-256 is checked before the entry runs; a
-# second boot with one corrupted image byte must refuse it.  QEMU's g3beige
+# second boot with one corrupted image byte must refuse it.  The kernel
+# initialises both ESCC channels and mirrors every byte to both, so QEMU
+# captures the same kernel log on channel A and channel B.  QEMU's g3beige
 # machine has no debug-exit device, so the gate stops QEMU once the final
-# `ppc: halted` reaches the serial file.
+# `ppc: halted` reaches both serial files.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -108,7 +110,8 @@ if "$OBJDUMP" -d "$MODULE_ELF" \
 fi
 
 SERIAL="$WORK/serial.log"
-rm -f "$SERIAL"
+SERIAL_B="$WORK/serial-b.log"
+rm -f "$SERIAL" "$SERIAL_B"
 
 DISK="${PPC_DISK:-$WORK/ata.img}"
 if [ -z "${PPC_DISK:-}" ]; then
@@ -143,15 +146,17 @@ set +e
   -m "$MEMORY" \
   -kernel "$IMAGE" \
   -drive "file=$DISK,format=raw,if=ide,index=0,media=disk" \
-  -display none \
+  -nographic \
   -serial "file:$SERIAL" \
+  -serial "file:$SERIAL_B" \
   -monitor none \
   -no-reboot &
 QEMU_PID=$!
 
 deadline=$((SECONDS + 60))
 while kill -0 "$QEMU_PID" 2>/dev/null; do
-  if grep -qF "ppc: halted" "$SERIAL" 2>/dev/null; then
+  if grep -qF "ppc: halted" "$SERIAL" 2>/dev/null \
+    && grep -qF "ppc: halted" "$SERIAL_B" 2>/dev/null; then
     break
   fi
   if [ "$SECONDS" -ge "$deadline" ]; then
@@ -163,9 +168,11 @@ kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 set -e
 
-echo "--- serial ---"
+echo "--- serial (channel A) ---"
 cat "$SERIAL" 2>/dev/null || true
-echo "--------------"
+echo "--- serial (channel B) ---"
+cat "$SERIAL_B" 2>/dev/null || true
+echo "--------------------------"
 
 markers=(
   "ppc: mmu enabled sdr1=0x"
@@ -177,6 +184,7 @@ markers=(
   "ppc: booted"
   "ppc: of client=0x"
   "ppc: escc=0x"
+  "ppc: console output-device="
   "ppc: memory base=0x"
   "ppc: timebase="
   "ppc: ata reg base=0x"
@@ -223,6 +231,71 @@ for marker in "${markers[@]}"; do
   fi
   previous="$line"
 done
+
+# The ESCC line names the register window and both channel control ports.
+# Channel B's control port is the window base; channel A's is 0x20 above it.
+escc_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: escc=0x[0-9a-f]+ ch-a=0x[0-9a-f]+ ch-b=0x[0-9a-f]+$' \
+  | tail -n 1)" || true
+if [ -z "$escc_line" ]; then
+  echo "powerpc-qemu: missing or malformed ESCC channel report" >&2
+  exit 1
+fi
+escc_base=$(( $(printf '%s\n' "$escc_line" | sed -E 's/^ppc: escc=(0x[0-9a-f]+) .*$/\1/') ))
+escc_a=$(( $(printf '%s\n' "$escc_line" | sed -E 's/^.* ch-a=(0x[0-9a-f]+) .*$/\1/') ))
+escc_b=$(( $(printf '%s\n' "$escc_line" | sed -E 's/^.* ch-b=(0x[0-9a-f]+)$/\1/') ))
+if [ "$escc_b" -ne "$escc_base" ]; then
+  echo "powerpc-qemu: channel B control 0x$(printf '%x' "$escc_b") is not the ESCC window" >&2
+  exit 1
+fi
+if [ "$escc_a" -ne $((escc_base + 0x20)) ]; then
+  echo "powerpc-qemu: channel A control 0x$(printf '%x' "$escc_a") is not window+0x20" >&2
+  exit 1
+fi
+
+# The firmware console property must name one of the two channels, and the
+# kernel's selection must agree with it.  -nographic makes OpenBIOS publish
+# the serial path instead of the screen.
+console_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: console output-device=.* stdout-path=.* selected=(a|b) mirror=a\+b$' \
+  | tail -n 1)" || true
+if [ -z "$console_line" ]; then
+  echo "powerpc-qemu: the firmware console property did not select an ESCC channel" >&2
+  exit 1
+fi
+console_path="$(printf '%s\n' "$console_line" | sed -E 's/^ppc: console output-device=([^ ]*) .*$/\1/')"
+selected="$(printf '%s\n' "$console_line" | sed -E 's/^.* selected=([ab]) mirror=a\+b$/\1/')"
+case "$console_path" in
+  *ch-a*|scca|scca:*|ttya|ttya:*) expected=a ;;
+  *ch-b*|sccb|sccb:*|ttyb|ttyb:*) expected=b ;;
+  *)
+    echo "powerpc-qemu: output-device '$console_path' names no ESCC channel" >&2
+    exit 1
+    ;;
+esac
+if [ "$selected" != "$expected" ]; then
+  echo "powerpc-qemu: selected channel $selected does not match output-device '$console_path'" >&2
+  exit 1
+fi
+
+# Both channels must carry exactly the same kernel output.  OpenBIOS writes
+# its own banner to channel A only, so compare from the BAT switch onward.
+kernel_a="$WORK/kernel-a.log"
+kernel_b="$WORK/kernel-b.log"
+sed -n '/^ppc: mmu enabled sdr1=0x/,$p' "$SERIAL" | tr -d '\r' > "$kernel_a"
+tr -d '\r' < "$SERIAL_B" > "$kernel_b"
+case "$(head -n 1 "$kernel_b")" in
+  "ppc: mmu enabled sdr1=0x"*) ;;
+  *)
+    echo "powerpc-qemu: channel B did not start with the kernel banner" >&2
+    exit 1
+    ;;
+esac
+if ! cmp -s "$kernel_a" "$kernel_b"; then
+  echo "powerpc-qemu: channel B is not a mirror of channel A" >&2
+  diff -u "$kernel_a" "$kernel_b" 2>/dev/null | head -n 20 >&2 || true
+  exit 1
+fi
 
 line_of() {
   grep -nF -- "$1" "$SERIAL" | head -n 1 | cut -d: -f1
@@ -480,10 +553,11 @@ fi
 # and no MODULE-OK.
 BAD_DISK="$WORK/ata-bad.img"
 BAD_SERIAL="$WORK/serial-bad.log"
+BAD_SERIAL_B="$WORK/serial-bad-b.log"
 cp "$DISK" "$BAD_DISK"
 printf '\377' | dd of="$BAD_DISK" bs=1 \
   seek=$((MODULE_IMAGE_LBA * 512 + 32)) conv=notrunc status=none
-rm -f "$BAD_SERIAL"
+rm -f "$BAD_SERIAL" "$BAD_SERIAL_B"
 set +e
 "$QEMU" \
   -M g3beige \
@@ -492,6 +566,7 @@ set +e
   -drive "file=$BAD_DISK,format=raw,if=ide,index=0,media=disk" \
   -display none \
   -serial "file:$BAD_SERIAL" \
+  -serial "file:$BAD_SERIAL_B" \
   -monitor none \
   -no-reboot &
 BAD_PID=$!
@@ -518,4 +593,4 @@ if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA})"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both)"

@@ -1,9 +1,9 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the fifth boot slice of #287, tracked as #305, exposes the Mac I/O
-ATA disk read to the kernel. `kernel-ppc` is loaded by OpenBIOS, reads the
+**Status:** the sixth boot slice of #287, tracked as #313, makes the console
+work on both ESCC channels. `kernel-ppc` is loaded by OpenBIOS, reads the
 machine description from the device tree, installs its own BAT entries, points
-SDR1 at an empty table, prints to the ESCC serial port, takes ten decrementer
+SDR1 at an empty table, prints to both ESCC serial ports, takes ten decrementer
 ticks and prints `BOOT-OK`. It then proves the DSI, ISI, alignment, program and
 system-call vectors in order, prints `TRAPS-OK`, takes ten external interrupts
 from the CUDA timer through the Heathrow interrupt controller at the `0x500`
@@ -70,7 +70,12 @@ mapping; see [The kernel's mapping](#the-kernels-mapping).
 | `/memory:reg` | `[address, size]`; the RAM QEMU handed over |
 | `/pci/mac-io:assigned-addresses` | the Mac I/O PCI BAR assigned by OpenBIOS |
 | `/pci/mac-io:compatible` | `"heathrow"`; selects the interrupt controller |
-| `/pci/mac-io/escc:reg` | the ESCC offset inside the Mac I/O BAR (`0x13000`) |
+| `/pci/mac-io/escc:reg` | the ESCC window (`0x13000`, size `0x1000`) |
+| `/pci/mac-io/escc/ch-a:reg` | channel A's control offset (`0x13020`) |
+| `/pci/mac-io/escc/ch-b:reg` | channel B's control offset (`0x13000`) |
+| `/pci/mac-io/escc/ch-a:AAPL,address` | the absolute channel A address, when the firmware publishes it |
+| `/options:output-device` | the firmware's console selection (`screen`, `scca`, ...) |
+| `/chosen:stdout-path` | the standard console path, when present |
 | `/pci/mac-io/via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
 | `/pci/mac-io/via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
 | `/pci/mac-io/ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
@@ -82,9 +87,57 @@ The Mac I/O BAR is assigned, not fixed. With no extra PCI devices it is
 must be derived from the tree, not compiled in.
 
 Channel A of the ESCC occupies control `+0x20` and data `+0x30` at `it_shift =
-4`. QEMU connects `-serial` to channel A (`chrA`). The driver resets the
-channel, selects 8 bits with one stop bit and transmit enable, then polls the
-status register's `TXEMPTY` bit before each byte.
+4`. QEMU connects the first `-serial` to channel A (`chrA`) and the second to
+channel B (`chrB`). Both channels are independent register banks in the same
+Mac I/O window.
+
+## Console channels
+
+The ESCC has two independent channels. In the Mac I/O window, channel A's
+control port is at `+0x20` and channel B's at `+0x00`; each data port is 16
+bytes above its control port. The kernel resets and initialises both, clocks
+the baud-rate generator from RTxC, routes both transmit and receive clocks
+through it (WR11 = `0x50`), programs 38400 8N1 from the 3.6864 MHz input clock
+(WR12 = 1, WR13 = 0) and mirrors every byte to both. It polls each channel's
+`TXEMPTY` status before writing, exactly as the single-channel driver did.
+
+The device tree describes the channels as children of the ESCC node:
+
+| Node and property | Use |
+|---|---|
+| `ch-a:reg` | channel A's control offset (`0x13020`) |
+| `ch-b:reg` | channel B's control offset (`0x13000`) |
+| `ch-a:AAPL,address` | the absolute channel address, when present |
+| `ch-a:compatible` | `ch-a`, `CHRP,es2` |
+
+The child `reg` offsets are offsets in the Mac I/O window, not from the parent
+ESCC node; the kernel also accepts a relative value. OpenBIOS publishes the
+same children and adds the `scca`/`sccb` and `ttya`/`ttyb` aliases. Apple's Old
+World firmware uses the same CHRP shape, so the lookup is not QEMU-specific.
+
+The firmware's console choice is read from `/options:output-device`, with
+`/chosen:stdout-path` as the standard fallback. A value that names `ch-a`,
+`scca` or `ttya` selects channel A; `ch-b`, `sccb` or `ttyb` selects channel B.
+Anything else, such as `screen`, selects neither. The kernel logs both
+properties and the resolved channel:
+
+```
+ppc: escc=0x81093000 ch-a=0x81093020 ch-b=0x81093000
+ppc: console output-device=/pci@80000000/mac-io@10/escc/ch-a stdout-path=none selected=a mirror=a+b
+```
+
+The selection is informational: output is always mirrored to both channels.
+The PowerBook G3 M4753 developer note wires the internal infrared link to
+serial port B; the external GeoPort is the channel A port. The boot firmware
+and the cable can still disagree with that expectation, and QEMU's `-serial`
+mapping is its own. Mirroring makes the boot visible on either wiring without a
+machine-specific default. On QEMU, `-nographic` makes OpenBIOS name the serial
+path; `-display none` leaves `output-device=screen`, in which case the kernel
+reports `selected=none` and still mirrors.
+
+The Geoport is a mini-DIN-9 serial connector, backwards-compatible with the
+8-pin Mac serial port, on SCC channel A. A modem card in the communication slot
+is a separate device on the second Heathrow controller, not the SCC console.
 
 ## Decrementer
 
@@ -221,7 +274,12 @@ VIA registers are 0x200 bytes apart inside that window. Timer 1 runs in
 continuous mode at 4.7 MHz / 6: a latch of 781 gives one interrupt about every
 millisecond. The handler clears the VIA's T1 flag, writes the event bit to the
 controller's acknowledge port, and checks that the next event read has the
-bit clear. That write is both the acknowledge and the end of interrupt.
+bit clear. That write is both the acknowledge and the end of interrupt. A
+timer underflow can set the flag again between clearing it and acknowledging
+the controller, so the handler repeats the clear/acknowledge pair a bounded
+number of times instead of reporting a false failure. The stop path disables
+the interrupt, switches T1 to one-shot mode, loads the longest count and then
+clears the flag, so its final IFR read cannot race the next underflow.
 
 The `0x500` stub shares `trap_entry` with the fault vectors. An external
 interrupt is taken at an instruction boundary, so SRR0 already holds the
@@ -291,7 +349,8 @@ The image is built with `-Zbuild-std=core`, the raw binary is extracted with
 ```sh
 qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
   -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
-  -display none -serial file:serial.log -monitor none -no-reboot
+  -nographic -serial file:serial.log -serial file:serial-b.log \
+  -monitor none -no-reboot
 ```
 
 The gate creates `ata.img` as 2048 zero sectors and writes
@@ -300,8 +359,8 @@ channel, so the device tree's `ata-3@20000` node has a `disk` child.
 
 The g3beige machine has no `isa-debug-exit` device and no RTAS shutdown call,
 so the kernel halts in a spin loop after `ppc: halted` and the gate stops QEMU
-once that marker reaches the serial file. The gate checks every marker in the
-order it must appear, then parses the exception reports:
+once that marker reaches both serial files. The gate checks every marker in the
+order it must appear on channel A, then parses the exception reports:
 
 - the banner, memory map, tick count and `BOOT-OK` appear after
   `ppc: mmu enabled`;
@@ -321,6 +380,12 @@ order it must appear, then parses the exception reports:
 - at least four external interrupts were counted, `IRQ-OK` repeats the same
   count, and the controller's pending-event and the timer's flag register are
   both zero after the last acknowledge;
+- the ESCC report names channel B at the window base and channel A at
+  `window + 0x20`, and the firmware's `output-device` names the same channel
+  the kernel reports as selected;
+- channel B's kernel log is byte-for-byte identical to channel A's from
+  `ppc: mmu enabled` onward, so the banner and every marker reached both
+  ports;
 - the ATA window from the `ata-3` node lies inside the Mac I/O BAT, the identify
   model is `QEMU HARDDISK`, the sector count equals the attached image's size in
   512-byte sectors, and the bytes read from LBA 4 match the image;
@@ -330,7 +395,7 @@ Observed serial output:
 
 ```
 
->> [ppc] Kernel already loaded (0x01000000 + 0x000205f5) (initrd 0x00000000 + 0x00000000)
+>> [ppc] Kernel already loaded (0x01000000 + 0x00020792) (initrd 0x00000000 + 0x00000000)
 >> [ppc] Kernel command line:
 >> switching to new context:
 ppc: mmu enabled sdr1=0x1010000
@@ -340,7 +405,8 @@ ppc: mmu io wimg=0x28
 IRIX 7 PowerPC G3 bring-up
 ppc: booted
 ppc: of client=0xfff025d0
-ppc: escc=0x81093000
+ppc: escc=0x81093000 ch-a=0x81093020 ch-b=0x81093000
+ppc: console output-device=/pci@80000000/mac-io@10/escc/ch-a stdout-path=none selected=a mirror=a+b
 ppc: memory base=0x0 size=64 MiB
 ppc: timebase=16600000 Hz
 ppc: ata reg base=0x810a0000 size=4096
@@ -349,25 +415,25 @@ ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
 ppc: decrementer ticks=10
 BOOT-OK
 ppc: deliberate unmapped load
-ppc: trap vector=0x300 srr0=0x1001d08 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
+ppc: trap vector=0x300 srr0=0x1002be4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
 FAULT-OK
 ppc: deliberate unmapped fetch
 ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
 ISI-OK
 ppc: deliberate misaligned load
-ppc: trap vector=0x600 srr0=0x1001d4c srr1=0xa030 dsisr=0x40000060 dar=0x1020121
+ppc: trap vector=0x600 srr0=0x1002c28 srr1=0xa030 dsisr=0x40000060 dar=0x1020261
 ALIGN-OK
 ppc: deliberate illegal instruction
-ppc: trap vector=0x700 srr0=0x1001d70 srr1=0x8a030
+ppc: trap vector=0x700 srr0=0x1002c4c srr1=0x8a030
 PROGRAM-OK
-ppc: trap vector=0xc00 srr0=0x1001d80 srr1=0xa030
+ppc: trap vector=0xc00 srr0=0x1002c5c srr1=0xa030
 ppc: syscall call=0x2a result=0x2b
 SYSCALL-OK
 TRAPS-OK
-ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1002b20 srr1=0xa030
-ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1002b20 srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=1 srr0=0x1004abc srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=2 srr0=0x1004abc srr1=0xa030
 ...
-ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1002b20 srr1=0xa030
+ppc: irq vector=0x500 line=0x12 count=10 srr0=0x1004abc srr1=0xa030
 ppc: irq pending=0x0 ifr=0x0
 IRQ-OK count=10
 ppc: ata model=QEMU HARDDISK sectors=2048 lba48=1
@@ -398,8 +464,17 @@ ppc: halted
   come with the disk service slice.
 - The PowerBook G3 M4753 has no OpenPIC; a New World machine with the KeyLargo
   OpenPIC needs a separate controller driver and a different machine tree.
-- The ESCC baud generator is not programmed; QEMU's model ignores it. Real
-  hardware needs WR12/WR13/WR14 and the correct clock source.
+- The console is transmit-only at a fixed 38400 8N1. It programs WR11, WR12,
+  WR13 and WR14 for the 3.6864 MHz ESCC clock, but there is no receive path,
+  flow control, termios, or baud negotiation, and no keyboard or framebuffer
+  console.
+- Mirroring proves that both ESCC register banks accept the boot log. It does
+  not prove that both are electrically wired on a particular PowerBook: QEMU's
+  channel B is a chardev, and the Geoport/IR wiring still needs the hardware
+  test described in [powerbook-g3.md](powerbook-g3.md). The hardware check is
+  the Geoport at 38400 8N1 on channel A; channel B is the internal IR link, so
+  proving it needs the IR transceiver or a logic probe rather than a serial
+  cable.
 - The target is the 750 with the hard-float ABI. Kernel code avoids `f32` and
   `f64`; the gate disassembles the image and fails if it contains an FP
   instruction.

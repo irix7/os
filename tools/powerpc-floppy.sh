@@ -93,9 +93,9 @@ README="$WORK/README.TXT"
     echo "Kernel: $(git -C "$REPO" describe --always --dirty --tags 2>/dev/null || echo unknown)"
     echo "Commit: $(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo
-    echo "Console: the kernel uses the ESCC channel the device tree names."
-    echo "If the serial console is silent, the Geoport channel may need to be"
-    echo "selected; record the Open Firmware console output before changing it."
+    echo "Console: the kernel drives both ESCC channels and mirrors the boot"
+    echo "log, so the Geoport and the internal IR link both show it.  The"
+    echo "Open Firmware output-device selection is logged at boot."
 } >"$README"
 
 rm -f "$OUT"

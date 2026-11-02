@@ -6,12 +6,13 @@
 //! Open Firmware client interface in r5.  The kernel reads the machine
 //! description from the device tree, installs its own BAT entries, points
 //! SDR1 at an empty table, and from then on runs on translations it owns.  It
-//! takes decrementer ticks through the 0x900 vector, then proves every
-//! exception path it owns: a DSI, an ISI, an alignment fault, an illegal
-//! instruction and one system call round-trip.  Finally it programs the CUDA
-//! timer, takes external interrupts through the Heathrow controller at the
-//! 0x500 vector, acknowledges each one and reports the count, then identifies
-//! the ATA disk named by the Mac I/O device tree and reads one PIO sector.
+//! initialises both ESCC channels, mirrors the boot log to both, takes
+//! decrementer ticks through the 0x900 vector, then proves every exception
+//! path it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
+//! one system call round-trip.  Finally it programs the CUDA timer, takes
+//! external interrupts through the Heathrow controller at the 0x500 vector,
+//! acknowledges each one and reports the count, then identifies the ATA disk
+//! named by the Mac I/O device tree and reads one PIO sector.
 
 #![no_std]
 #![no_main]
@@ -85,6 +86,24 @@ fn print_model(model: &[u8; 40]) {
     serial::write(&model[..end]);
 }
 
+fn print_channel(channel: Option<u32>) {
+    match channel {
+        Some(address) => print_hex(address),
+        None => serial::write(b"none"),
+    }
+}
+
+fn print_property(property: &platform::Property) {
+    if !property.present() {
+        serial::write(b"none");
+        return;
+    }
+    for byte in property.bytes() {
+        let printable = (0x20..=0x7e).contains(byte);
+        serial::write_byte(if printable { *byte } else { b'?' });
+    }
+}
+
 pub(crate) fn halt() -> ! {
     loop {
         core::hint::spin_loop();
@@ -101,11 +120,11 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         None => halt(),
     };
     let escc = match platform::escc(&client, &macio) {
-        Some(base) => base,
+        Some(escc) => escc,
         // Without the console there is nowhere to report the failure.
         None => halt(),
     };
-    serial::init(escc);
+    serial::init(escc.channels);
 
     let memory = match platform::memory(&client) {
         Some(memory) => memory,
@@ -189,8 +208,22 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_hex(of_client);
     serial::write_byte(b'\n');
     serial::write(b"ppc: escc=");
-    print_hex(escc);
+    print_hex(escc.base);
+    serial::write(b" ch-a=");
+    print_channel(escc.channels[0]);
+    serial::write(b" ch-b=");
+    print_channel(escc.channels[1]);
     serial::write_byte(b'\n');
+    serial::write(b"ppc: console output-device=");
+    print_property(&escc.output_device);
+    serial::write(b" stdout-path=");
+    print_property(&escc.stdout_path);
+    serial::write(b" selected=");
+    match escc.selected {
+        Some(channel) => serial::write_byte(channel.letter()),
+        None => serial::write(b"none"),
+    }
+    print_line(b" mirror=a+b");
 
     serial::write(b"ppc: memory base=");
     print_hex(memory.base);

@@ -77,8 +77,18 @@ impl Timer {
     }
 
     /// Stop the timer and clear every flag it raised.
+    ///
+    /// Disabling the interrupt stops the controller line but not the
+    /// counter; a 6522 sets the T1 flag on every underflow whether or not
+    /// the interrupt is enabled.  Put T1 into one-shot mode and load the
+    /// longest count before clearing the flag, so the caller's read of IFR
+    /// cannot race the next underflow.  `program` restores continuous mode.
     pub fn stop(self) {
         self.disable();
+        self.write(ACR, 0);
+        self.write(T1LL, 0xff);
+        self.write(T1LH, 0xff);
+        self.write(T1CH, 0xff);
         self.write(IFR, 0x7f);
     }
 
