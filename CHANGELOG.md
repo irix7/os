@@ -39,6 +39,15 @@ All notable changes to IRIX 7 are recorded here. The format follows
   back from the framebuffer and prints `GFX-OK`; the QEMU gate checks the
   display mode, stride, BAT coverage and marker, and the module, ATA and IRQ
   markers and the floppy path are unchanged. See #323.
+- One-computer M2 transcript.  `m2-rig demo` starts two real iris 0.1.13 kernels with the
+  real MCP module and prints one prompt.  Plain `nodes`, `homes`, `stat <object>`,
+  `move <object>`, `actor`, `move actor`, `fail` and `recover` commands exercise the
+  named-object route, the L0 actor migration, the SIGKILL failure fence and the epoch-4
+  rejoin without naming a node, route or transport in the command text.  The named route
+  operations are `GET /mesh/route?op=stat|move&object=<hex>`; the MCP module keeps its
+  512 KiB slot by using a 14 KiB generic response buffer.  The transcript and its checks
+  are written under `<work>/demo/`.  This is the M2 object/actor proof, not fork/exec over
+  cells.  See #329 and M2-ADR-0011.
 
 - PowerPC G3 Mac I/O selection and the PMU fallback.  The kernel walks
   `/pci`, scores the Mac I/O nodes by their ESCC and disk children, and uses

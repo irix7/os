@@ -34,6 +34,7 @@
 - [M3-ADR-0001 — first shard slice](adr/m3-0001-shard-slice.md)
 - [M3-ADR-0002 — multi-member hub](adr/m3-0002-multi-node-hub.md)
 - [M2-ADR-0010 — direct peer transport](adr/m2-0010-direct-peer-transport.md)
+- [M2-ADR-0011 — one prompt over the M2 object/actor surfaces](adr/m2-0011-one-computer-console.md)
 - [M3-ADR-0003 — bounded mesh streams](adr/m3-0003-multiplexed-streams.md)
 - [M3-ADR-0004 — readiness-driven module I/O](adr/m3-0004-event-driven-io.md)
 - [M3-ADR-0005 — eight module TCP slots](adr/m3-0005-multi-connection-transport.md)

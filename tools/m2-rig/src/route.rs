@@ -359,6 +359,27 @@ pub fn command(node: &Node, step: u8, timeout: Duration) -> Result<(u16, String)
     Ok((response.status, response.body))
 }
 
+/// Drive a named-object operation through the route surface.
+///
+/// `operation` is `stat` or `move`; `move` always moves the object to the node
+/// that answers the request.
+pub fn object_command(
+    node: &Node,
+    operation: &str,
+    object: &str,
+    timeout: Duration,
+) -> Result<(u16, String), String> {
+    if operation != "stat" && operation != "move" {
+        return Err(format!("unknown route operation {operation:?}"));
+    }
+    if object.len() != 64 || !object.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return Err(format!("{object:?} is not a 32-byte object ID"));
+    }
+    let path = format!("/mesh/route?op={operation}&object={object}");
+    let response = homes::fetch(node, &path, timeout)?;
+    Ok((response.status, response.body))
+}
+
 /// One node's report in the evidence bundle.
 #[derive(Clone, Debug)]
 pub struct NodeRoute {

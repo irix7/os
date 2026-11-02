@@ -246,6 +246,22 @@ migration (M2-5) is implemented above; the signed epoch store now survives membe
 restarts on a provisioned scratch target; gossip/epoch push, a *replicated* epoch log, a
 general actor scheduler and linearisable write handover remain open.
 
+**M2 demonstration status (2026-11-03, #329):** `m2-rig demo` runs the M2 object and
+actor proof as one prompt over two real iris 0.1.13 kernels.  The operator types only
+`nodes`, `homes`, `stat <object>`, `move <object>`, `actor`, `move actor`, `fail` and
+`recover`; no command text names a node, a route, a port or an HTTP path.  The transcript
+shows the named object read at its peer home, moved to the console node through the
+root-signed lease surface with one `MOVED`, the L0 actor moved to the member and back at a
+message boundary, the member killed with `SIGKILL`, the peer-homed object failing closed
+as unavailable, the survivor removing the member at one epoch advance and fencing six
+cached routes, and the restarted member rejoining at epoch 4 with the same two-member
+table, digest and actor state hash.  The same prompt is present before and after the
+failure.  The new route operations are `GET /mesh/route?op=stat|move&object=<hex>`; the
+fixed `?step=N` lab surface is unchanged.  The MCP module stays inside slot A by using a
+14 KiB generic response buffer.  This is the demonstration slice, not fork/exec over
+cells, process migration or a POSIX session; that path lands after #326/#327.  See
+M2-ADR-0011.
+
 **Exit:** M2 routing; cancellation races, 10k tags, flow-control exhaustion,
 trace propagation, v9fs/Plan 9 gateway; MCP works through both paths.
 
