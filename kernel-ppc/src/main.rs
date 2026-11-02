@@ -14,22 +14,29 @@
 //! acknowledges each one and reports the count, then identifies the ATA disk
 //! named by the Mac I/O device tree and reads one PIO sector.  After the
 //! module check it waits one second for a key on the selected ESCC channel;
-//! a key enters a small `ppc>` monitor, silence halts the machine.
+//! a key enters a small `ppc>` monitor, silence prints a timeout.  It then
+//! synchronises the ADB controller, waits for one key on the keyboard the
+//! device tree names, and prints the scancode, the US ASCII character and
+//! `KEY-OK`.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
+mod adb;
 mod ata;
 mod cache;
+mod cuda;
 mod irq;
+mod keyboard;
 mod mmu;
 mod module;
 mod monitor;
 mod of;
 mod pic;
 mod platform;
+mod pmu;
 mod probe;
 mod serial;
 mod services;
@@ -107,6 +114,44 @@ fn print_property(property: &platform::Property) {
     }
 }
 
+/// Prove the ADB keyboard once, after the other boot probes.
+///
+/// The wait is bounded so a machine without a working keyboard still reaches
+/// `ppc: halted`; the queue keeps whatever follows the first printable press
+/// for the input consumer.
+fn keyboard_probe(adb: Option<platform::AdbHost>) {
+    let Some(host) = adb else {
+        print_line(b"ppc: keyboard absent");
+        print_line(b"KEY-SKIP reason=no-adb");
+        return;
+    };
+    keyboard::init(host);
+    if !keyboard::start() {
+        print_line(b"KEY-SKIP reason=reset");
+        return;
+    }
+    print_line(b"ppc: keyboard waiting");
+    match keyboard::wait_for_key(3000) {
+        Some(key) => {
+            serial::write(b"ppc: adb key code=0x");
+            print_hex_bytes(&[key.code]);
+            serial::write(b" down=");
+            print_dec(u32::from(key.down as u8));
+            serial::write(b" ascii=0x");
+            print_hex_bytes(&[key.ascii]);
+            serial::write(b" char=");
+            let printable = key.ascii.is_ascii_graphic() || key.ascii == b' ';
+            serial::write_byte(if printable { key.ascii } else { b'?' });
+            serial::write_byte(b'\n');
+            print_line(b"KEY-OK");
+        }
+        None => {
+            print_line(b"ppc: keyboard timeout");
+            print_line(b"KEY-SKIP reason=no-key");
+        }
+    }
+}
+
 pub(crate) fn halt() -> ! {
     loop {
         core::hint::spin_loop();
@@ -159,6 +204,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     let controller = platform::pic(&client, &macio);
     let cuda = platform::cuda(&client, &macio);
     let disk = platform::ata(&client, &macio);
+    let adb = platform::adb(&client, &macio);
 
     let io_end = match macio.base.checked_add(macio.size) {
         Some(end) => end,
@@ -261,6 +307,24 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     serial::write(b"ppc: ata irq=");
     print_hex(disk.line);
     serial::write_byte(b'\n');
+
+    match &adb {
+        Some(platform::AdbHost::Cuda { base, keyboard }) => {
+            serial::write(b"ppc: adb transport=cuda via=");
+            print_hex(*base);
+            serial::write(b" keyboard=");
+            print_dec(u32::from(*keyboard));
+            serial::write_byte(b'\n');
+        }
+        Some(platform::AdbHost::Pmu { base, keyboard }) => {
+            serial::write(b"ppc: adb transport=pmu via=");
+            print_hex(*base);
+            serial::write(b" keyboard=");
+            print_dec(u32::from(*keyboard));
+            serial::write_byte(b'\n');
+        }
+        None => print_line(b"ppc: adb absent"),
+    }
 
     if let Some(cuda) = &cuda {
         irq::prepare(controller.base, cuda.base, cuda.line);
@@ -396,6 +460,8 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             }
         }
     }
+
+    keyboard_probe(adb);
 
     print_line(b"ppc: halted");
     halt()

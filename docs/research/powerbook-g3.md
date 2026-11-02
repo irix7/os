@@ -44,7 +44,10 @@ The interrupt controller in both nodes is the Heathrow register block, so the
 driver accepts `compatible = "heathrow"` and `"gatwick"`. The M4753's VIA is
 the PMU (`via-pmu`), not a CUDA. The kernel logs `ppc: timer via=absent
 external-irq=skipped`, uses the decrementer for its clock and skips the CUDA
-external-interrupt proof; the PMU command protocol is a later slice.
+external-interrupt proof. The keyboard lookup falls back to the PMU and sends
+ADB commands with `PMU_ADB_CMD`; that path is written from the Linux `via-pmu`
+sequence but has not run on hardware. PMU housekeeping (RTC, NVRAM, power) is
+a later slice.
 
 ## What this changes
 
@@ -100,9 +103,9 @@ A new machine layer, in the same shape as the x86 one:
 - **The timer is in the PMU.** The M4753 exposes `via-pmu`, not `via-cuda`.
   The external-interrupt proof programs the CUDA's 6522 timer, so on this
   machine the kernel logs `ppc: timer via=absent external-irq=skipped`, skips
-  `IRQ-OK` and continues on the decrementer. The PMU command protocol is a
-  separate slice; the decrementer still ticks and the console, ATA and module
-  paths run.
+  `IRQ-OK` and continues on the decrementer. The keyboard uses the same 6522
+  through the PMU's command protocol, which is written but has not been run on
+  hardware; QEMU cannot model it. PMU housekeeping is a separate slice.
 
 ## Netboot and the floppy
 
@@ -195,6 +198,14 @@ nodes and the firmware console property, programs both channels for 38400 8N1
 and mirrors the boot log to both. #317 makes the ESCC lookup relative to the
 selected Mac I/O node, so the communication-slot controller's ESCC cannot
 displace the boot console. The framebuffer console remains.
+
+Slice 5's input half is in place: #324 reads the ADB `keyboard` child of the
+VIA node, drives the CUDA's 6522 shift register on QEMU's g3beige and the
+PMU's command channel on the M4753, decodes the standard ADB scancodes to US
+ASCII, and exposes a 32-event `keyboard::poll`/`keyboard::pop` queue. The QEMU
+gate injects `a` through the monitor and requires `KEY-OK`; the PMU path is
+written from the Linux `via-pmu` sequence and awaits hardware verification.
+The keyboard is not yet connected to a monitor or shell.
 
 ## Repository layout
 

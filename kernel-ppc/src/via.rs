@@ -1,24 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The CUDA's MOS 6522 VIA, used as the external timer.
+//! The VIA used by the CUDA and the PMU.
 //!
-//! The CUDA node names its window inside Mac I/O and the interrupt line it
-//! asserts.  Timer 1 counts down at the 6522's PHI2 rate; in continuous mode
-//! it reloads from the latch on every underflow, sets the T1 flag in the
-//! interrupt flag register and raises the CUDA's interrupt line.  Writing the
-//! T1 bit back to the flag register clears it and drops the line.
+//! The CUDA's MOS 6522 is the external timer and the ADB host; the PMU in a
+//! PowerBook is a 6522-compatible interface to the PMU microcontroller, and
+//! its ADB transactions use the same shift register and handshake pins.  Both
+//! nodes name a window inside Mac I/O, so the register address is the base plus
+//! the register number shifted by nine.
 //!
-//! The CUDA window is at an offset inside the Mac I/O window the firmware
-//! assigns; that offset comes from the device tree, not from a constant.
+//! Timer 1 counts down at the 6522's PHI2 rate; in continuous mode it reloads
+//! from the latch on every underflow, sets the T1 flag in the interrupt flag
+//! register and raises the VIA's interrupt line.  Writing the T1 bit back to
+//! the flag register clears it and drops the line.
 
 use core::ptr::{read_volatile, write_volatile};
 
 /// VIA register numbers.  Each register is 0x200 bytes apart.
+pub const B: u32 = 0;
+pub const DIRB: u32 = 2;
+pub const SR: u32 = 10;
+pub const ACR: u32 = 11;
+pub const IFR: u32 = 13;
+pub const IER: u32 = 14;
 const T1CH: u32 = 5;
 const T1LL: u32 = 6;
 const T1LH: u32 = 7;
-const ACR: u32 = 11;
-const IFR: u32 = 13;
-const IER: u32 = 14;
 
 const REGISTER_SHIFT: u32 = 9;
 
@@ -29,16 +34,23 @@ const IFR_T1: u8 = 0x40;
 /// The set/clear selector in an interrupt-enable write.
 const IER_SET: u8 = 0x80;
 
+/// The shift-register interrupt flag, set when a byte has moved.
+pub const IFR_SR: u8 = 0x04;
+/// Shift register on the external clock, shift out when `SR_OUT` is set.
+pub const ACR_SR_EXT: u8 = 0x0c;
+pub const ACR_SR_OUT: u8 = 0x10;
+
 /// Timer 1 counts at the CUDA clock, 4.7 MHz divided by six.
 pub const T1_HZ: u32 = 4_700_000 / 6;
 
+/// A 6522 register window.  The base comes from the device tree.
 #[derive(Clone, Copy)]
-pub struct Timer {
+pub struct Via {
     base: u32,
 }
 
-impl Timer {
-    pub fn new(base: u32) -> Self {
+impl Via {
+    pub const fn new(base: u32) -> Self {
         Self { base }
     }
 
@@ -46,19 +58,40 @@ impl Timer {
         self.base + (register << REGISTER_SHIFT)
     }
 
-    fn read(self, register: u32) -> u8 {
+    pub fn read(self, register: u32) -> u8 {
         let address = self.address(register);
-        // SAFETY: the base comes from the CUDA node and the register number
-        // selects one of the VIA's byte-wide registers.
+        // SAFETY: the base comes from the VIA's device-tree node and the
+        // register number selects one of the chip's byte-wide registers.
         unsafe { read_volatile(address as *const u8) }
     }
 
-    fn write(self, register: u32, value: u8) {
+    pub fn write(self, register: u32, value: u8) {
         let address = self.address(register);
         // SAFETY: as for `read`.
         unsafe {
             write_volatile(address as *mut u8, value);
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct Timer {
+    via: Via,
+}
+
+impl Timer {
+    pub fn new(base: u32) -> Self {
+        Self {
+            via: Via::new(base),
+        }
+    }
+
+    fn read(self, register: u32) -> u8 {
+        self.via.read(register)
+    }
+
+    fn write(self, register: u32, value: u8) {
+        self.via.write(register, value);
     }
 
     /// Load the latch and select continuous mode.  The interrupt stays off.

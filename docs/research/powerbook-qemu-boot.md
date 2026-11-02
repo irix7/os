@@ -1,21 +1,28 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the eighth boot slice of #287, tracked as #321, adds serial input
-and a minimal boot monitor. `kernel-ppc` is loaded by OpenBIOS, reads the
-machine description from the device tree, installs its own BAT entries, points
-SDR1 at an empty table, prints to both ESCC serial ports, takes ten
-decrementer ticks and prints `BOOT-OK`. It then proves the DSI, ISI,
-alignment, program and system-call vectors in order, prints `TRAPS-OK`, takes
-ten external interrupts from the CUDA timer through the Heathrow interrupt
-controller at the `0x500` vector, prints `IRQ-OK count=10`, identifies the ATA
-disk on the selected Mac I/O channel, reads the signature sector at LBA 4 with
-polled PIO, prints `ATA-OK`, loads and enters the flat module, and prints
-`MODULE-OK`. It then polls the selected ESCC channel for one second: a key
-enters a `ppc>` monitor with `help`, `info` and `halt`, and silence prints
-`ppc: monitor timeout` and halts. Observed with QEMU 11.1.2 and its OpenBIOS
-1.1 build. On a PMU machine such as the M4753 there is no `via-cuda`; the
-kernel skips the external-interrupt probe, continues on the decrementer and
-does not print `IRQ-OK`.
+**Status:** the eighth boot slice of #287, tracked as #321 and #324, adds
+serial input, a minimal boot monitor and the ADB keyboard. `kernel-ppc` is
+loaded by OpenBIOS, reads the machine description from the device tree,
+installs its own BAT entries, points SDR1 at an empty table, prints to both
+ESCC serial ports, takes ten decrementer ticks and prints `BOOT-OK`. It then
+proves the DSI, ISI, alignment, program and system-call vectors in order,
+prints `TRAPS-OK`, takes ten external interrupts from the CUDA timer through
+the Heathrow interrupt controller at the `0x500` vector, prints
+`IRQ-OK count=10`, identifies the ATA disk on the selected Mac I/O channel,
+reads the signature sector at LBA 4 with polled PIO, prints `ATA-OK`, loads and
+enters the flat module, and prints `MODULE-OK`. It then polls the selected ESCC
+channel for one second: a key enters a `ppc>` monitor with `help`, `info` and
+`halt`, and silence prints `ppc: monitor timeout`. Finally it synchronises the
+CUDA's ADB state machine, waits up to three seconds for a key at the address
+the device tree gives the keyboard, prints the scancode and US ASCII character,
+prints `KEY-OK` and halts. QEMU's g3beige has a CUDA; the gate injects `a`
+through the QEMU monitor once the kernel prints `ppc: keyboard waiting`. A boot
+with no input prints `ppc: keyboard timeout`, `KEY-SKIP reason=no-key` and
+still reaches `ppc: halted`. Observed with QEMU 11.1.2 and its OpenBIOS 1.1
+build. On a PMU machine such as the M4753 there is no `via-cuda`; the kernel
+skips the external-interrupt probe, continues on the decrementer and does not
+print `IRQ-OK`, and the keyboard path uses the PMU transport, which is written
+but pending hardware verification.
 
 ## The `-kernel` path
 
@@ -89,6 +96,8 @@ and disk.
 | `/chosen:stdout-path` | the standard console path, when present |
 | `via-cuda:reg` | the CUDA window offset inside the Mac I/O BAR (`0x16000`) |
 | `via-cuda:AAPL,interrupts` | the CUDA's interrupt controller line (`0x12`) |
+| `via-cuda/adb/keyboard:reg` | the keyboard's ADB address (`8` on QEMU; the firmware assigns it) |
+| `via-pmu:reg` | the PMU's 6522 window on a machine with no CUDA (`0x16000` on the M4753) |
 | `ata-3@20000:reg` | the ATA task-file window (`0x20000`, size `0x1000`) and the DBDMA window (`0x8b00`, size `0x200`) |
 | `ata-3@20000:AAPL,interrupts` | the ATA channel's interrupt controller line (`0x0d`) |
 | `/cpus/PowerPC,750@0:timebase-frequency` | `16600000` Hz on g3beige |
@@ -375,6 +384,71 @@ IRQ-OK count=10
 The wait is bounded by two seconds of timebase, so a timer that never fires
 prints `ppc: irq stalled count=N` and halts instead of hanging the gate.
 
+## ADB keyboard
+
+The keyboard is the `adb` child of the VIA node. QEMU's tree is
+`/pci@80000000/mac-io@10/via-cuda@16000/adb/keyboard@8`; the M4753 tree has
+`via-pmu/adb` instead. `platform::adb` looks for `via-cuda`, then `via-pmu`,
+reads the VIA window from `reg`, walks the `adb` children for a `keyboard`
+node and takes the address from that node's `reg`. The ADB command encoding
+and the scancode map are shared; only the outer framing differs.
+
+The CUDA path drives the 6522 shift register and port B. TREQ (PB3, input,
+active low), TACK (PB4, output, active low) and TIP (PB5, output, active low)
+are the handshake; the shift register is clocked externally (`ACR = 0x0c`)
+and shifted out by setting `SR_OUT` (`ACR = 0x10`). `CudaAdb::reset` performs
+the Linux `via-cuda` sync: negate TIP/TACK, drain any byte in flight, assert
+TACK without TIP, wait for TREQ and the shift-register flag, release TACK and
+wait for TREQ to drop. A packet is `[ADB_PACKET, command]`: the first byte is
+shifted in, each following byte is written to SR and TACK is toggled, and
+negating TIP/TACK closes the packet. The reply is
+`[ADB_PACKET, status, data..]`; status zero carries the device data, and a
+nonzero status is the CUDA's no-response indication, which is how an empty
+keyboard queue appears. A real CUDA may echo the command byte before the
+data; a three-byte reply is treated that way, while QEMU's two-byte reply is
+not.
+
+The driver deliberately does not issue an ADB bus reset. A reset returns
+every device to its default address, and the address the driver uses comes
+from the firmware tree; preserving it keeps the two in agreement without an
+enumeration pass. It also leaves the VIA's shift-register interrupt disabled,
+so the timer interrupt proof is unaffected.
+
+The keyboard is polled with `talk(address, 0)`.  `Modifiers` tracks left and
+right shift and caps lock from the transitions, because the direct talk reply
+does not carry register 2.  `adb::characters` maps the Apple Standard Keyboard
+scancodes to the unshifted and shifted US ASCII characters; letters use shift
+XOR caps, the digit and punctuation keys use the shifted symbol. A release has
+bit 7 set and no ASCII character. `keyboard::poll` decodes every non-`0xff`
+byte in the reply into a `Key { code, down, ascii }` and pushes it into a
+32-event ring; `keyboard::pop` is the consumer API for the input path in
+#321. `keyboard::wait_for_key` is the boot proof: it polls every 5 ms,
+discards events until the first printable press, and is bounded by three
+seconds of timebase.
+
+The PMU path is the M4753's hardware route. The same 6522 has TREQ as an
+output and TACK as an input, so a byte is sent by writing SR with `SR_OUT` set
+and pulsing TREQ; each byte waits for TACK low and then high. An ADB talk is
+`PMU_ADB_CMD` (`0x20`) with the arguments `<adb byte>, <flags>, <following
+count>`, followed by `PMU_INT_ACK` (`0x78`), whose reply starts with a length
+byte and carries the interrupt bits. A packet with `PMU_INT_ADB` and without
+`PMU_INT_ADB_AUTO` is the direct reply; `PMU_ADB_POLL_OFF` (`0x21`) is sent
+at init so the talk owns the bus. QEMU's g3beige has no PMU model, so this
+path cannot run in the gate and is marked pending hardware verification.
+
+Observed on the gate:
+
+```
+ppc: adb transport=cuda via=0x81096000 keyboard=8
+...
+ppc: keyboard transport=cuda address=8
+ppc: keyboard reset=ok
+ppc: keyboard waiting
+ppc: adb key code=0x00 down=1 ascii=0x61 char=a
+KEY-OK
+ppc: halted
+```
+
 ## ATA disk
 
 The disk path is the Mac I/O ATA controller, not an ISA IDE port. QEMU's
@@ -479,7 +553,7 @@ The image is built with `-Zbuild-std=core`, the raw binary is extracted with
 qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
   -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
   -nographic -serial file:serial.log -serial file:serial-b.log \
-  -monitor none -no-reboot
+  -monitor unix:monitor.sock,server=on,wait=off -no-reboot
 ```
 
 That boot has no input path. A second boot replaces channel A's file with a
@@ -501,6 +575,9 @@ the next.
 The gate creates `ata.img` as 8192 zero sectors and writes
 `IRIX7-ATA-SIG001` at LBA 4. It attaches that image to the first Mac I/O ATA
 channel, so the selected Mac I/O node has the disk the kernel identifies.
+When the serial log shows `ppc: keyboard waiting`, the gate opens the monitor
+socket and sends `sendkey a`; the decoded scancode, ASCII character and
+`KEY-OK` are then required in the log.
 
 The g3beige machine has no `isa-debug-exit` device and no RTAS shutdown call,
 so the kernel halts in a spin loop after `ppc: halted` and the gate stops QEMU
@@ -525,12 +602,15 @@ order it must appear on channel A, then parses the exception reports:
 - at least four external interrupts were counted, `IRQ-OK` repeats the same
   count, and the controller's pending-event and the timer's flag register are
   both zero after the last acknowledge;
+- the primary boot injects `a`, reports `ppc: adb key code=0x00 down=1
+  ascii=0x61 char=a`, prints `KEY-OK` and does not print the timeout marker;
 - the selected Mac I/O path is a `/pci` node containing `mac-io` and reports at
   least one ESCC child and one ATA child; the ESCC and ATA windows lie inside
   that node's window;
 - a second boot with an extra `macio-oldworld` device first in tree order
-  still selects the built-in `mac-io@10`, and completes the ESCC, ATA, IRQ and
-  module path on both channels;
+  still selects the built-in `mac-io@10`, completes the ESCC, ATA, IRQ and
+  module path on both channels, receives no input, and reaches
+  `ppc: keyboard timeout` plus `KEY-SKIP reason=no-key` before `ppc: halted`;
 - the ESCC report names channel B at the window base and channel A at
   `window + 0x20`, and the firmware's `output-device` names the same channel
   the kernel reports as selected;
@@ -600,6 +680,8 @@ IRQ-OK count=10
 ppc: ata model=QEMU HARDDISK sectors=8192 lba48=1
 ppc: ata lba=4 sector=49524958372d4154412d534947303031
 ATA-OK
+ppc: adb transport=cuda via=0x81096000 keyboard=8
+...
 ppc: module length=708 digest=44d8a8c78bd75eec6a05fcaab7049e83e6c371a3ab187c38fb903bd1d1a3c64e
 PPC-MODULE-RUN
 module info: ppc: g3beige
@@ -608,6 +690,11 @@ ppc: module status=0 tick=1 length=708
 MODULE-OK
 ppc: monitor wait input=a
 ppc: monitor timeout
+ppc: keyboard transport=cuda address=8
+ppc: keyboard reset=ok
+ppc: keyboard waiting
+ppc: adb key code=0x00 down=1 ascii=0x61 char=a
+KEY-OK
 ppc: halted
 ```
 
@@ -625,8 +712,10 @@ ppc: halted
   the interrupted stack with `MSR[EE]` clear; a fault inside a handler would
   recurse.
 - The external interrupt path is the Heathrow controller and one timer source,
-  not a general interrupt layer. There is no block device, network device, ADB
-  or PMU, and no handler is shared between devices.
+  not a general interrupt layer. There is no block service, network device or
+  PMU housekeeping, and no handler is shared between devices. The ADB keyboard
+  is polled directly; its shift-register interrupt stays masked so the timer
+  proof owns the controller line.
 - The ATA driver is polled PIO only. It reads one 512-byte sector per command,
   addresses LBA28, and performs no DMA, writes, ATAPI commands, partition
   parsing or filesystem access. The block layer and the interrupt-driven path
@@ -637,8 +726,11 @@ ppc: halted
   Heathrow register layout; no other Gatwick-specific device is driven.
 - The PowerBook's timer is the PMU's VIA, not a CUDA. `platform::cuda` looks
   for `via-cuda` below the selected Mac I/O node, so the M4753 stops at
-  `ppc: device tree has no CUDA timer` after the console report. The PMU is a
-  separate device with its own command protocol and is outside this slice.
+  `ppc: timer via=absent external-irq=skipped` after the console report. The
+  keyboard lookup falls back to `via-pmu` and uses the PMU ADB command path,
+  but QEMU has no PMU model: that path is written from the Linux `via-pmu`
+  sequence and is pending hardware verification. PMU housekeeping (RTC,
+  NVRAM, power events) remains outside this slice.
 - The media-bay ATA scan is device-tree support only; no PowerBook media-bay
   hardware has been tested. The gate's second controller is a
   `macio-oldworld` instance with an ESCC and empty ATA channels, so it proves
@@ -648,12 +740,17 @@ ppc: halted
   WR11, WR12, WR13 and WR14 for the 3.6864 MHz ESCC clock and enables both
   receivers, but input is polled on the selected channel only. There is no
   interrupt-driven input, flow control, termios or baud negotiation, and no
-  ADB keyboard or framebuffer console. An overrun drops a byte because RR1 is
-  not read.
+  framebuffer console. An overrun drops a byte because RR1 is not read.
 - The monitor is fixed at three commands with no line editor, history,
   cursor movement or argument parsing. A line longer than 32 characters is
   truncated and reported as an unknown command. There is no command to boot,
-  load a module or dump memory.
+  load a module or dump memory. It reads the serial channel only; the decoded
+  ADB queue is not wired into it yet.
+- The ADB driver has no autopoll, no device enumeration or address assignment,
+  no mouse or trackpad support and no keyboard LEDs. It preserves the address
+  the firmware assigned instead of resetting the bus, so a keyboard that the
+  firmware left at a non-standard address still works as long as the tree
+  names it.
 - Mirroring proves that both ESCC register banks accept the boot log. It does
   not prove that both are electrically wired on a particular PowerBook: QEMU's
   channel B is a chardev, and the Geoport/IR wiring still needs the hardware
