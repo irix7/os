@@ -10,7 +10,7 @@ that path lands after #326/#327.
 ## Run
 
 ```sh
-source /path/to/toolchain/env.sh
+nix develop
 export CC=cc
 tools/one-computer/run.sh
 ```

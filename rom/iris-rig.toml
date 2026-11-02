@@ -2,7 +2,7 @@
 #
 # Run iris from a directory that has the SCSI images, e.g.:
 #
-#   cd /mnt/europa/iris
+#   cd /path/to/iris
 #   ./target/launcher/bin/iris --config /path/to/rom/iris-rig.toml \
 #          --prom /path/to/rom.bin \
 #          --bank0 32 --bank1 0 \
@@ -25,8 +25,8 @@ board = "newport"
 heads = 1
 resolution = "1280x1024"
 
-# The internal disk used by the M4 SCSI tests.  Run iris from a directory that
-# contains scsi1.raw (normally /mnt/europa/iris).
+# The internal disk used by the SCSI and module tests.  Run iris from a
+# directory that contains scsi1.raw.
 [scsi.1]
 path = "scsi1.raw"
 

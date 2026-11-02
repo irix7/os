@@ -2,6 +2,7 @@
 
 - [Introduction](README.md)
 - [Install guide](install.md)
+- [Toolchain setup](toolchain.md)
 - [Project map](map.md)
 
 ## Architecture
@@ -22,6 +23,7 @@
 ## Architecture decisions
 
 - [ADR index](adr/README.md)
+- [M0-ADR-0001 — LLVM only codegen](adr/m0-0001-llvm-only.md)
 - [M2-ADR-0001 — two-node rig](adr/m2-0001-two-node-rig.md)
 - [M2-ADR-0002 — transport](adr/m2-0002-transport.md)
 - [M2-ADR-0003 — authority](adr/m2-0003-authority.md)

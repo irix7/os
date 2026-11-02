@@ -34,7 +34,7 @@ gate.  Eight live kernels are not claimed; see the M3 runbook.
 ## Quick start
 
 ```sh
-source /path/to/toolchain/env.sh
+nix develop
 tools/m2-rig/build.sh
 cargo run --manifest-path tools/m2-rig/Cargo.toml -- run \
   --iris /path/to/iris --iris-ci /path/to/iris-ci

@@ -108,7 +108,7 @@ is a planning aid, not a legal opinion.
 - X11 parity target and the GLX bridge.
 - Original Indigo Magic desktop under X11: supported, best-effort, or out of scope.
 - MCP tool schemas, GDB stub, audit/approval flow.
-- `-Z build-std` host-toolchain glue and the GCC-backend disk-space blocker.
+- The `-Z build-std` host-toolchain glue and the pinned-nightly drift risk.
 - Overlay persistence and local cache format.
 - `irix7-9p` scope and the optional 9P remote mounts.
 - Benchmark suite contents (tracked, never gated).

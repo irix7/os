@@ -54,7 +54,7 @@ The harness is the standalone `tools/m2-rig` crate.  It is not a workspace membe
 ## Build
 
 ```sh
-source /path/to/toolchain/env.sh   # nightly-2026-10-03 + rust-src
+nix develop                        # pinned nightly-2026-10-03 + rust-src
 tools/m2-rig/build.sh              # defaults to target/m2-rig
 ```
 

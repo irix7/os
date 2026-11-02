@@ -48,10 +48,11 @@ descriptors are available to the std image.  The std heap is a 1 MiB anonymous
 window mapped with two 256 KiB page pairs; the loader frees the image and stack
 pairs on exit.
 
-Build it from the repository root:
+Build it in the development shell:
 
 ```sh
-export PATH=/mnt/europa/rust-toolchain/bin:/mnt/europa/rust-toolchain/cargo/bin:$PATH
+nix develop
+
 cd user/hello
 CARGO_TARGET_DIR=/tmp/irix7-user-hello-target \
 CARGO_TARGET_MIPS3_SGI_IRIX7_NATIVE_N32_RUSTFLAGS="-Clink-arg=-T$PWD/linker.ld" \

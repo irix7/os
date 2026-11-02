@@ -14,7 +14,9 @@ The PowerBook G3 Series (M4753) is a 32-bit big-endian PowerPC 750 machine with
 - `tools/powerpc-check.sh`, which proves the shell builds 32-bit big-endian
   PowerPC objects.
 
-The default dev shell and every existing check are unchanged.
+This slice does not change the target spec or the PowerPC checks. The default dev shell
+was later repinned to the same nightly through `rust-overlay`; see
+[M0-ADR-0001](../adr/m0-0001-llvm-only.md).
 
 ## Toolchain
 
@@ -29,20 +31,18 @@ The default dev shell and every existing check are unchanged.
 | ELF tools | `pkgs.llvmPackages.bintools` (`llvm-readobj`, `llvm-objcopy`) |
 | Emulator | `pkgs.qemu` 11.1.2, which includes `qemu-system-ppc` |
 
-The shell uses rustup rather than nixpkgs' `rustc` because nixpkgs ships a
-stable toolchain without `rust-src`, and `-Zbuild-std` needs that component from
-the pinned nightly. `RUSTUP_TOOLCHAIN` is set to the pinned channel so the shell
-works from outside the repository root, and the shell hook runs `rustup
-component add rust-src llvm-tools-preview` for that channel. The first entry
-downloads the channel and its components into `RUSTUP_HOME`.
+The shell uses rustup rather than the pinned-toolchain derivation because its first
+entry installs the channel from `rust-toolchain.toml` into `RUSTUP_HOME`, including
+`rust-src` and `llvm-tools-preview`. `RUSTUP_TOOLCHAIN` is set to the pinned channel so
+the shell works from outside the repository root.
 
 The irix7 organisation has no Rust or LLVM fork. `irix7/gcc` is a fork of
-`rust-lang/gcc` carrying the libgccjit changes needed by `rustc_codegen_gcc`,
-default branch `master`; `irix7/binutils-gdb` is a read-only mirror of
-sourceware's binutils-gdb, default branch `master`. `flake.nix` has one input
-(nixpkgs) and `rust-toolchain.toml` names the stock channel, so the pinned
-toolchain is stock. `docs/toolchain.md` records that `rustc_codegen_gcc` is not
-available in this project.
+`rust-lang/gcc` carrying the libgccjit changes needed for the compatibility container's
+system toolchain, default branch `master`; `irix7/binutils-gdb` is a read-only mirror of
+sourceware's binutils-gdb, default branch `master`. `flake.nix` has two inputs (nixpkgs
+and rust-overlay) and `rust-toolchain.toml` names the stock channel, so the pinned
+toolchain is stock. Rust code generation uses rustc's LLVM backend only; see
+[M0-ADR-0001](../adr/m0-0001-llvm-only.md).
 
 ## Target spec
 

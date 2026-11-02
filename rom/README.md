@@ -96,13 +96,13 @@ The raw `rom.bin` is what the PROM socket and iris `--prom` expect.
 ## Run
 
 ```bash
-cd /mnt/europa/iris
+cd /path/to/iris
 ./target/launcher/bin/iris --prom /path/to/rom.bin \
   --bank0 32 --bank1 0 \
   --monitor-port 9998 --serial-log serial.log
 ```
 
-Use iris `0.1.3+irix7` (2026-10-24) or later. The launcher carries the flake's runtime
+Use iris `v0.1.13+irix7` or later (CI pins that release). The launcher carries the flake's runtime
 library path, so it needs no `LD_LIBRARY_PATH`; build it once with
 `nix develop --command cargo build --release --features lightning,gpujit`, which installs
 `target/launcher/bin/iris` alongside the raw `target/release/iris`.
@@ -141,8 +141,8 @@ telnet console:
 
 ```bash
 python3 rom/tools/smoke.py \
-  --iris /mnt/europa/iris/target/launcher/bin/iris --prom /tmp/rom.bin \
-  --cwd /mnt/europa/iris --commands "status,mem,ping 10.1.1.3"
+  --iris /path/to/iris/target/launcher/bin/iris --prom /tmp/rom.bin \
+  --cwd /path/to/iris --commands "status,mem,ping 10.1.1.3"
 ```
 
 It is not part of CI (it needs iris and the disk images); it is the repeatable
@@ -303,8 +303,8 @@ To start and stop its own guest, give it `--iris`, `--prom` and either
 `--erofs-image` (the fixture to attach at SCSI ID 2) or `--scsi2` (a raw image):
 
 ```bash
-rom/tools/mcp-smoke.py --iris /mnt/europa/iris/target/launcher/bin/iris \
-  --prom /tmp/rom.bin --cwd /mnt/europa/iris \
+rom/tools/mcp-smoke.py --iris /path/to/iris/target/launcher/bin/iris \
+  --prom /tmp/rom.bin --cwd /path/to/iris \
   --erofs-image crates/erofs/tests/fixtures/root.erofs \
   --token secret-token
 ```

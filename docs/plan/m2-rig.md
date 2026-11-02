@@ -57,7 +57,7 @@ a plain `cargo build` at the repository root does not cross-build it.
 ## Build
 
 ```sh
-source /path/to/toolchain/env.sh   # rustup nightly-2026-10-03 + rust-src
+nix develop                        # pinned nightly-2026-10-03 + rust-src
 tools/m2-rig/build.sh
 ```
 

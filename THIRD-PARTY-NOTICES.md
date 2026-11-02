@@ -42,7 +42,7 @@ the Mozilla CA bundle, not a separately licensed work; see `kernel/src/ca/README
 | Tool | Licence | Use |
 |---|---|---|
 | rustc / Cargo | MIT OR Apache-2.0 | Rust toolchain |
-| GCC / libgccjit | GPL-3.0-or-later | `rustc_codegen_gcc` |
+| GCC | GPL-3.0-or-later | Host C compiler for build scripts; IRIX 6.5 container toolchain |
 | binutils | GPL-3.0-or-later | Linker and assembler |
 | Nix | LGPL-2.1 | Build environment |
 | mdBook | MPL-2.0 | Documentation site |

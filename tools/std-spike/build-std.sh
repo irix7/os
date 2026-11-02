@@ -15,7 +15,7 @@
 #   tools/std-spike/build-std.sh --no-clean # reuse the patched scratch trees
 #
 # Environment:
-#   STD_SPIKE_WORK  scratch root (default: /mnt/europa).  Must have ~1 GiB.
+#   STD_SPIKE_WORK  scratch root (default: <repo>/target/std-spike).  Must have ~1 GiB.
 #   CC              host C compiler for build scripts (default: cc)
 #
 # What it does:
@@ -51,7 +51,7 @@ for arg in "$@"; do
     esac
 done
 
-WORK=${STD_SPIKE_WORK:-/mnt/europa}
+WORK=${STD_SPIKE_WORK:-$REPO_ROOT/target/std-spike}
 RUST_SRC="$WORK/rust-src-std-spike"
 LIBC_SRC="$WORK/libc-std-spike"
 NATIVE_ABI_SRC="$WORK/native-abi"
@@ -62,7 +62,7 @@ PATCHES="$SCRIPT_DIR/patches"
 export CC
 
 if ! command -v cargo >/dev/null 2>&1; then
-    echo "cargo not found; source the project environment (see /mnt/europa/env.sh)" >&2
+    echo "cargo not found; run inside 'nix develop' or install the pinned rustup toolchain" >&2
     exit 1
 fi
 if ! command -v "$CC" >/dev/null 2>&1; then

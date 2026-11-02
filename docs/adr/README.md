@@ -1,18 +1,20 @@
-# Architecture decision records — M2 and M3 working series
+# Architecture decision records — working series
 
 **Status:** living index
-**Scope:** the decisions M2 needed for join, transport, route-cache, migration and failure,
-and the first M3 shard and multi-member decisions.
+**Scope:** the toolchain decision that unblocked M0, the decisions M2 needed for join,
+transport, route-cache, migration and failure, and the first M3 shard and multi-member
+decisions.
 
 The project's main ADR series is numbered from **ADR-0021** onward for the architecture
 decisions D1–D31 in [`../spec/architecture.md`](../spec/architecture.md) §2.2; see
-[`../plan/risks.md`](../plan/risks.md) §4. The M2 decisions below are deliberately
-prefixed **M2-ADR** so they can be reviewed as a group without claiming a permanent
-number. When a decision is promoted to the main series it keeps its title and gains the
-next free global number.
+[`../plan/risks.md`](../plan/risks.md) §4. The decisions below are deliberately
+prefixed (**M0-ADR**, **M2-ADR**, **M3-ADR**) so they can be reviewed as a group without
+claiming a permanent number. When a decision is promoted to the main series it keeps its
+title and gains the next free global number.
 
 | ADR | Decision | Status |
 |---|---|---|
+| [M0-ADR-0001](m0-0001-llvm-only.md) | LLVM is the only Rust code generation backend; ADR-0018 is amended | Accepted |
 | [M2-ADR-0001](m2-0001-two-node-rig.md) | Two independent iris instances, a Rust host relay, and a repeatable two-way probe | Accepted for M2 |
 | [M2-ADR-0002](m2-0002-transport.md) | TCP with length-prefixed `MeshEnvelope` framing; TLS deferred | Accepted for M2 |
 | [M2-ADR-0003](m2-0003-authority.md) | A 1-of-1 authority root for the M2 membership epoch | Accepted for M2, limited |

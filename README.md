@@ -142,7 +142,7 @@ wasmi Wasm runtime probe also runs as a loadable module, but the Wasm policy
 core and mesh are not integrated; a fixed two-slot module area lets MCP and the
 Wasm probe and seven-region kernel module multiplexer coexist. The multiplexer gives every boot slot and arena region its own verified tick; dynamic relocation is still missing. The M1 software gate is complete on iris; the real-Indy validation is the
 recorded limitation in #16, and the full resident Wasm/actor policy is later
-work. M2 is next.
+work. M2 closed on iris on 2026-10-27; the first M3 shard slice is in progress.
 
 The SDK is at [irix7/os-sdk](https://github.com/irix7/os-sdk): module ABI 11,
 user SDK and `wasm-abi` v1. The production POSIX layer is the
