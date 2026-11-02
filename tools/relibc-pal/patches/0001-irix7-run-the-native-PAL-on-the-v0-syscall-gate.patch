@@ -1,0 +1,1193 @@
+From 7cef23414399a02e62be8e836bf071c92b7dca66 Mon Sep 17 00:00:00 2001
+From: Jupiter Belic <belikh@users.noreply.github.com>
+Date: Mon, 2 Nov 2026 15:21:23 +1000
+Subject: [PATCH 1/2] irix7: run the native PAL on the v0 syscall gate
+
+Replace the provisional 0xffffffff-on-failure backend with the native
+gate (syscall 0x1F7, CELL_E_* status in $2, value in $3) and map the
+status through the shared status table to Err(Errno(...)).
+
+Use relibc's 136-byte n32 struct stat directly.  The kernel now writes
+that layout, so delete KernelStat and copy_stat.
+
+Set $28 in _start to a 16-byte main-thread TCB (self at 0, dtv at 4,
+errno at 8, libc-private at 12) and make errno read and write TP+8.
+MIPS III has no rdhwr, so replace every #[thread_local] in the library
+with a plain static on this target; SingleThread states the
+single-threaded invariant at the declaration.
+
+Read the auxiliary vector from $a3, store it for Stack::auxv, and use
+the native auxv numbering so getauxval reports the kernel's values.
+Keep getdents synthesised over the one-entry readdir call because the
+kernel has no directory cookie.
+
+Make futex wait/wake no-ops: the kernel has no futex and there is one
+thread, so an ENOSYS there turns every mutex unlock into a panic.
+
+Build with -mno-abicalls -G0; the std shim remains the exception.
+
+Signed-off-by: Jupiter Belic <belikh@users.noreply.github.com>
+---
+ src/crt0/src/lib.rs             |  32 ++-
+ src/cxa.rs                      |   4 +
+ src/header/dlfcn/mod.rs         |   3 +
+ src/header/errno/mod.rs         |   3 +
+ src/header/locale/mod.rs        |   5 +
+ src/header/netdb/mod.rs         |   4 +
+ src/header/pthread/mod.rs       |   8 +
+ src/header/pthread/tls.rs       |   4 +
+ src/header/sys_auxv/mod.rs      |  12 +-
+ src/platform/auxv_defs_irix7.rs |  26 ++
+ src/platform/irix7/mod.rs       | 476 ++++++++++++--------------------
+ src/platform/mod.rs             | 125 +++++++--
+ src/start.rs                    |   9 +
+ src/sync/pthread_mutex.rs       |   4 +
+ 14 files changed, 390 insertions(+), 325 deletions(-)
+ create mode 100644 src/platform/auxv_defs_irix7.rs
+
+diff --git a/src/crt0/src/lib.rs b/src/crt0/src/lib.rs
+index 9b713290..a8385343 100644
+--- a/src/crt0/src/lib.rs
++++ b/src/crt0/src/lib.rs
+@@ -75,22 +75,44 @@ _start:
+ "
+ );
+ 
+-// MIPS n32 (IRIX 7).  `$sp` points at the argc/argv/envp block; the kernel
+-// does not provide an auxiliary vector.  `-mno-abicalls` is required by the
+-// target, so use an absolute `la`/`jalr` call rather than `$gp`-relative
+-// abicalls.
+-#[cfg(target_arch = "mips64")]
++// MIPS n32 (IRIX 7).  The kernel enters with the System V stack in `$sp`,
++// `$a3` pointing at the auxiliary vector, and `$28` zero.  Establish the
++// main-thread TCB (`self` at 0, `dtv` 0 at 4, `errno` at 8, libc-private at 12)
++// before any Rust code runs, and stash `$a3` for `Stack::auxv`.  MIPS III has
++// no `rdhwr`, so `$28` is the only thread pointer.
++//
++// `-mno-abicalls` is required by the target, so use an absolute `la`/`jalr`
++// call rather than `$gp`-relative abicalls.
++#[cfg(all(target_arch = "mips64", target_os = "irix7"))]
+ global_asm!(
+     "
+     .set noreorder
++    .set mips3
+     .globl _start
+     .type _start, @function
+ _start:
++    lui $8, %hi(__irix7_main_tcb)
++    addiu $8, $8, %lo(__irix7_main_tcb)
++    sw $8, 0($8)                # self
++    sw $zero, 4($8)             # dtv: no ELF TLS on this target
++    sw $zero, 8($8)             # errno
++    sw $zero, 12($8)            # libc-private
++    move $28, $8
++
++    lui $9, %hi(__irix7_auxv)
++    addiu $9, $9, %lo(__irix7_auxv)
++    sw $7, 0($9)                # $a3 = auxv
++
+     move $4, $sp
+     la $25, relibc_crt0
+     jalr $25
+     nop
+     .size _start, . - _start
++
++    .bss
++    .align 4
++__irix7_main_tcb:
++    .space 16
+ "
+ );
+ 
+diff --git a/src/cxa.rs b/src/cxa.rs
+index c1d77247..0c4b5318 100644
+--- a/src/cxa.rs
++++ b/src/cxa.rs
+@@ -18,8 +18,12 @@ struct CxaThreadAtExitFunc {
+ }
+ 
+ static CXA_ATEXIT_FUNCS: Mutex<Vec<Option<CxaAtExitFunc>>> = Mutex::new(Vec::new());
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static DTORS: RefCell<Vec<CxaThreadAtExitFunc>> = RefCell::new(Vec::new());
++#[cfg(target_os = "irix7")]
++static DTORS: crate::platform::SingleThread<RefCell<Vec<CxaThreadAtExitFunc>>> =
++    crate::platform::SingleThread(RefCell::new(Vec::new()));
+ 
+ #[unsafe(no_mangle)]
+ pub unsafe extern "C" fn __cxa_atexit(
+diff --git a/src/header/dlfcn/mod.rs b/src/header/dlfcn/mod.rs
+index 7968202d..a08cc00c 100644
+--- a/src/header/dlfcn/mod.rs
++++ b/src/header/dlfcn/mod.rs
+@@ -49,8 +49,11 @@ pub const RTLD_DEFAULT: *mut c_void = 0 as *mut c_void; // XXX: cbindgen doesn't
+ 
+ static ERROR_NOT_SUPPORTED: &core::ffi::CStr = c"dlfcn not supported";
+ 
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static ERROR: AtomicUsize = AtomicUsize::new(0);
++#[cfg(target_os = "irix7")]
++static ERROR: AtomicUsize = AtomicUsize::new(0);
+ 
+ fn set_last_error(error: DlError) {
+     ERROR.store(error.repr().as_ptr() as usize, Ordering::SeqCst);
+diff --git a/src/header/errno/mod.rs b/src/header/errno/mod.rs
+index aceb0311..3763da13 100644
+--- a/src/header/errno/mod.rs
++++ b/src/header/errno/mod.rs
+@@ -15,6 +15,9 @@ pub extern "C" fn __errno() -> *mut c_int {
+ 
+ /// Provide a pointer to relibc's internal `errno` variable.
+ ///
++/// On the native IRIX 7 target this is `TP + 8`: `$28` points at the 16-byte
++/// main-thread TCB, whose third word is `errno`.
++///
+ /// This is the basis of the C-facing macro definition of `errno`, and should
+ /// not be used directly.
+ #[unsafe(no_mangle)]
+diff --git a/src/header/locale/mod.rs b/src/header/locale/mod.rs
+index 5ad88dda..3b27c826 100644
+--- a/src/header/locale/mod.rs
++++ b/src/header/locale/mod.rs
+@@ -31,8 +31,13 @@ pub const LC_GLOBAL_LOCALE: locale_t = -1isize as locale_t;
+ /// process-wide locale, used by setlocale() and localeconv()
+ static mut GLOBAL_LOCALE: *mut GlobalLocaleData = ptr::null_mut();
+ /// thread-wide locale, used by uselocale() and localeconv()
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ pub(crate) static mut THREAD_LOCALE: *mut LocaleData = ptr::null_mut();
++/// The native IRIX 7 target is single-threaded, so the thread locale is the
++/// process locale.
++#[cfg(target_os = "irix7")]
++pub(crate) static mut THREAD_LOCALE: *mut LocaleData = ptr::null_mut();
+ 
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/functions/localeconv.html>.
+ #[unsafe(no_mangle)]
+diff --git a/src/header/netdb/mod.rs b/src/header/netdb/mod.rs
+index 59cfe4b6..a3a806cc 100644
+--- a/src/header/netdb/mod.rs
++++ b/src/header/netdb/mod.rs
+@@ -207,8 +207,12 @@ pub static mut NET_ADDR: Option<u32> = None;
+ static mut N_POS: usize = 0;
+ static mut NET_STAYOPEN: c_int = 0;
+ 
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ pub static H_ERRNO: Cell<c_int> = Cell::new(0);
++#[cfg(target_os = "irix7")]
++pub static H_ERRNO: crate::platform::SingleThread<Cell<c_int>> =
++    crate::platform::SingleThread(Cell::new(0));
+ const H_UNSET: c_int = 0;
+ pub const HOST_NOT_FOUND: c_int = 1;
+ pub const NO_DATA: c_int = 2;
+diff --git a/src/header/pthread/mod.rs b/src/header/pthread/mod.rs
+index ed1bc2a5..1f34ed00 100644
+--- a/src/header/pthread/mod.rs
++++ b/src/header/pthread/mod.rs
+@@ -93,8 +93,11 @@ pub use self::barrier::*;
+ pub mod cond;
+ pub use self::cond::*;
+ 
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ pub static mut fork_hooks: [LinkedList<extern "C" fn()>; 3] = [const { LinkedList::new() }; 3];
++#[cfg(target_os = "irix7")]
++pub static mut fork_hooks: [LinkedList<extern "C" fn()>; 3] = [const { LinkedList::new() }; 3];
+ 
+ /// See <https://pubs.opengroup.org/onlinepubs/9799919799/functions/pthread_cancel.html>.
+ #[unsafe(no_mangle)]
+@@ -322,9 +325,14 @@ pub(crate) struct CleanupLinkedListEntry {
+     prev: *const c_void,
+ }
+ 
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ pub(crate) static CLEANUP_LL_HEAD: Cell<*const CleanupLinkedListEntry> =
+     Cell::new(core::ptr::null());
++#[cfg(target_os = "irix7")]
++pub(crate) static CLEANUP_LL_HEAD:
++    crate::platform::SingleThread<Cell<*const CleanupLinkedListEntry>> =
++    crate::platform::SingleThread(Cell::new(core::ptr::null()));
+ 
+ // TODO: unwind? setjmp/longjmp?
+ 
+diff --git a/src/header/pthread/tls.rs b/src/header/pthread/tls.rs
+index 9dced7db..8f10aaf5 100644
+--- a/src/header/pthread/tls.rs
++++ b/src/header/pthread/tls.rs
+@@ -24,8 +24,12 @@ struct Record {
+     data: *mut c_void,
+ }
+ 
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static VALUES: RefCell<BTreeMap<pthread_key_t, Record>> = RefCell::new(BTreeMap::new());
++#[cfg(target_os = "irix7")]
++static VALUES: crate::platform::SingleThread<RefCell<BTreeMap<pthread_key_t, Record>>> =
++    crate::platform::SingleThread(RefCell::new(BTreeMap::new()));
+ static KEYS: Mutex<BTreeMap<pthread_key_t, Dtor>> = Mutex::new(BTreeMap::new());
+ static NEXTKEY: AtomicUsize = AtomicUsize::new(1);
+ 
+diff --git a/src/header/sys_auxv/mod.rs b/src/header/sys_auxv/mod.rs
+index dbd26a8c..5db0e1e4 100644
+--- a/src/header/sys_auxv/mod.rs
++++ b/src/header/sys_auxv/mod.rs
+@@ -8,6 +8,14 @@ pub use crate::platform::auxv_defs::*;
+ 
+ /// See <https://www.man7.org/linux/man-pages/man3/getauxval.3.html>.
+ #[unsafe(no_mangle)]
+-pub extern "C" fn getauxval(_t: c_ulong) -> c_ulong {
+-    0
++pub extern "C" fn getauxval(t: c_ulong) -> c_ulong {
++    #[cfg(target_os = "irix7")]
++    {
++        return crate::platform::getauxval(t as usize) as c_ulong;
++    }
++    #[cfg(not(target_os = "irix7"))]
++    {
++        let _ = t;
++        0
++    }
+ }
+diff --git a/src/platform/auxv_defs_irix7.rs b/src/platform/auxv_defs_irix7.rs
+new file mode 100644
+index 00000000..1eeef15a
+--- /dev/null
++++ b/src/platform/auxv_defs_irix7.rs
+@@ -0,0 +1,26 @@
++//! Auxiliary-vector types for the IRIX 7 native loader.
++//!
++//! The kernel uses its own compact numbering rather than the Linux one: the
++//! vector is `[type, value]` pairs terminated by `AT_NULL`/0, and the C oracle
++//! in `user/c-probe/abi.h` pins every value.  Keep this file in step with
++//! `kernel/src/user.rs::initial_stack`.
++
++pub const AT_NULL: usize = 0; /* End of vector */
++pub const AT_PAGESZ: usize = 1; /* System page size */
++pub const AT_ENTRY: usize = 2; /* Entry point of program */
++pub const AT_PHDR: usize = 3; /* Program headers for program */
++pub const AT_PHNUM: usize = 4; /* Number of program header entries */
++// The v0 loader does not emit AT_PHENT; the constant exists because the
++// static linker startup reads it, but the arm is unreachable.
++pub const AT_PHENT: usize = 16;
++pub const AT_BASE: usize = 5; /* Base address of interpreter */
++pub const AT_RANDOM: usize = 6; /* Address of 16 random bytes */
++pub const AT_EXECFN: usize = 7; /* Filename of executable */
++pub const AT_UID: usize = 8; /* Real uid */
++pub const AT_EUID: usize = 9; /* Effective uid */
++pub const AT_GID: usize = 10; /* Real gid */
++pub const AT_EGID: usize = 11; /* Effective gid */
++pub const AT_HWCAP: usize = 12; /* Machine-dependent hints */
++pub const AT_CLKTCK: usize = 13; /* Frequency of times() */
++pub const AT_SECURE: usize = 14; /* Secure mode boolean */
++pub const AT_PLATFORM: usize = 15; /* String identifying platform */
+diff --git a/src/platform/irix7/mod.rs b/src/platform/irix7/mod.rs
+index 571b169d..727d4cfe 100644
+--- a/src/platform/irix7/mod.rs
++++ b/src/platform/irix7/mod.rs
+@@ -1,29 +1,22 @@
+ //! IRIX 7 native syscall backend for relibc.
+ //!
+-//! This is a **scaffold over the provisional IRIX 7 kernel syscall ABI**, not the
+-//! final capability-based PAL.  The kernel currently exposes 21 flat, numbered
+-//! syscalls to a statically loaded n32 user image:
+-//!
+-//! ```text
+-//!   $2 = number, $4..$7 = arguments, $2 = result
+-//!   0xffff_ffff means "failed"; there is no error-code channel
+-//! ```
++//! This is the v0 native gate: `syscall 0x1F7`, number in `$2`, arguments in
++//! `$4`–`$7`, `CELL_E_*` status in `$2` and the value in `$3` on return.  The
++//! kernel never returns a libc `errno`; [`STATUS_ERRNO`] maps the status to the
++//! POSIX value this libc reports through `errno`.
+ //!
+ //! Real implementations are provided only for the calls the kernel actually
+-//! services (the hello/fs probe set).  Everything else returns `ENOSYS`, which
+-//! is deliberate: silently pretending to implement `fork`, sockets, signals or
+-//! timers would misrepresent the platform.
++//! services.  Everything else returns `ENOSYS`, which is deliberate: silently
++//! pretending to implement `fork`, sockets, signals or timers would misrepresent
++//! the platform.
+ //!
+-//! Known mismatches that the shim papers over and the report records:
++//! Known limits of the v0 ABI:
+ //!
+-//! * The kernel's `struct stat` is a private 128-byte layout, not relibc's n32
+-//!   `struct stat`; [`copy_stat`] translates field by field.
+ //! * The kernel's `readdir` is `(fd, index, buf, len)` returning a type byte,
+ //!   not `getdents`.  [`Sys::getdents`] synthesises relibc `dirent` records and
+-//!   uses the opaque offset as the kernel directory index.
+-//! * The kernel returns `-1` for every failure, so errno values below are
+-//!   best-effort guesses (`EBADF`, `ENOENT`, `EIO`), not kernel-provided codes.
+-//! * `getentropy` succeeds but the kernel fills the buffer with zeroes.
++//!   uses the opaque offset as the kernel directory index; there is no
++//!   directory cookie to advance.
++//! * `getentropy` reports success but the kernel zero-fills the buffer.
+ //! * `poll` ignores its timeout; `nanosleep` is a busy wait.
+ //! * There is no process, thread, signal or socket support, hence the ENOSYS
+ //!   stubs in [`PalSignal`], [`PalSocket`], [`PalEpoll`] and [`PalPtrace`].
+@@ -41,7 +34,7 @@ use crate::{
+     error::{Errno, Result},
+     header::{
+         dirent::dirent,
+-        errno::{EBADF, EINVAL, EIO, ENOENT, ENOMEM, ENOSYS, ERANGE},
++        errno::{EINVAL, EIO, ENOSYS},
+         fcntl::AT_FDCWD,
+         signal::{sigaction, sigevent, siginfo_t, sigval, stack_t},
+         sys_epoll::epoll_event,
+@@ -84,104 +77,92 @@ const SYS_READDIR: usize = 19;
+ const SYS_NANOSLEEP: usize = 20;
+ const SYS_CHDIR: usize = 21;
+ 
+-/// The kernel returns all ones from `$2` when a syscall fails.
+-const SYS_ERROR: usize = usize::MAX;
+-
+-// MIPS `syscall`: number in `$2`, arguments in `$4`..`$7`, result in `$2`.
+-#[inline(always)]
+-unsafe fn syscall0(n: usize) -> usize {
+-    let result: usize;
+-    unsafe {
+-        asm!(
+-            "syscall",
+-            inout("$2") n => result,
+-            out("$4") _,
+-            out("$5") _,
+-            out("$6") _,
+-            out("$7") _,
+-            options(nostack),
+-        );
+-    }
+-    result
+-}
+-
+-#[inline(always)]
+-unsafe fn syscall1(n: usize, a0: usize) -> usize {
+-    let result: usize;
+-    unsafe {
+-        asm!(
+-            "syscall",
+-            inout("$2") n => result,
+-            inout("$4") a0 => _,
+-            out("$5") _,
+-            out("$6") _,
+-            out("$7") _,
+-            options(nostack),
+-        );
+-    }
+-    result
+-}
+-
+-#[inline(always)]
+-unsafe fn syscall2(n: usize, a0: usize, a1: usize) -> usize {
+-    let result: usize;
+-    unsafe {
+-        asm!(
+-            "syscall",
+-            inout("$2") n => result,
+-            inout("$4") a0 => _,
+-            inout("$5") a1 => _,
+-            out("$6") _,
+-            out("$7") _,
+-            options(nostack),
+-        );
+-    }
+-    result
+-}
+-
+-#[inline(always)]
+-unsafe fn syscall3(n: usize, a0: usize, a1: usize, a2: usize) -> usize {
+-    let result: usize;
+-    unsafe {
+-        asm!(
+-            "syscall",
+-            inout("$2") n => result,
+-            inout("$4") a0 => _,
+-            inout("$5") a1 => _,
+-            inout("$6") a2 => _,
+-            out("$7") _,
+-            options(nostack),
+-        );
+-    }
+-    result
+-}
+-
++/// Map a `CELL_E_*` status to the POSIX `errno` value.
++///
++/// This mirrors `crates/native-abi/src/status.rs::status_to_errno` in the
++/// kernel repository; the two tables are the shared error contract.
++const STATUS_ERRNO: [c_int; 53] = [
++    0,   // CELL_OK
++    1,   // EPERM
++    2,   // ENOENT
++    4,   // EINTR
++    5,   // EIO
++    9,   // EBADF
++    11,  // EAGAIN
++    12,  // ENOMEM
++    13,  // EACCES
++    14,  // EFAULT
++    16,  // EBUSY
++    17,  // EEXIST
++    22,  // EINVAL
++    28,  // ENOSPC
++    20,  // ENOTDIR
++    21,  // EISDIR
++    39,  // ENOTEMPTY
++    95,  // ENOTSUP
++    75,  // EOVERFLOW
++    110, // ETIMEDOUT
++    125, // ECANCELED
++    9,   // E_REVOKED -> EBADF
++    90,  // EMSGSIZE
++    71,  // EPROTO
++    111, // ECONNREFUSED
++    107, // ENOTCONN
++    98,  // EADDRINUSE
++    101, // ENETUNREACH
++    113, // EHOSTUNREACH
++    36,  // ENAMETOOLONG
++    40,  // ELOOP
++    10,  // ECHILD
++    3,   // ESRCH
++    38,  // ENOSYS
++    32,  // EPIPE
++    34,  // ERANGE
++    33,  // EDOM
++    35,  // EDEADLK
++    37,  // ENOLCK
++    42,  // ENOMSG
++    43,  // EIDRM
++    25,  // ENOTTY
++    29,  // ESPIPE
++    26,  // ETXTBSY
++    27,  // EFBIG
++    31,  // EMLINK
++    30,  // EROFS
++    19,  // ENODEV
++    6,   // ENXIO
++    15,  // ENOTBLK
++    7,   // E2BIG
++    24,  // EMFILE
++    23,  // ENFILE
++];
++
++/// Invoke the native gate.
++///
++/// The kernel writes the status to `$2` and the value to `$3`; every path that
++/// does not exit returns through here so the status-to-errno mapping exists in
++/// exactly one place.
+ #[inline(always)]
+-unsafe fn syscall4(n: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> usize {
+-    let result: usize;
++unsafe fn syscall(n: usize, a0: usize, a1: usize, a2: usize, a3: usize) -> Result<usize> {
++    let status: usize;
++    let value: usize;
+     unsafe {
+         asm!(
+-            "syscall",
+-            inout("$2") n => result,
+-            inout("$4") a0 => _,
+-            inout("$5") a1 => _,
+-            inout("$6") a2 => _,
+-            inout("$7") a3 => _,
++            "syscall 0x1F7",
++            inout("$2") n => status,
++            lateout("$3") value,
++            in("$4") a0,
++            in("$5") a1,
++            in("$6") a2,
++            in("$7") a3,
+             options(nostack),
+         );
+     }
+-    result
+-}
+-
+-/// Map the kernel's success/`0xffff_ffff` convention onto [`Result`].
+-///
+-/// There is no errno channel, so [`EIO`] is the generic answer.  Individual
+-/// call sites narrow it where the kernel's behaviour makes the cause obvious.
+-fn e_raw(ret: usize) -> Result<usize> {
+-    if ret == SYS_ERROR {
+-        Err(Errno(EIO))
++    if status == 0 {
++        Ok(value)
+     } else {
+-        Ok(ret)
++        let errno = STATUS_ERRNO.get(status).copied().unwrap_or(EIO);
++        Err(Errno(errno))
+     }
+ }
+ 
+@@ -189,57 +170,6 @@ fn enosys<T>() -> Result<T> {
+     Err(Errno(ENOSYS))
+ }
+ 
+-/// The kernel's private `struct stat` (`kernel/src/user.rs::KernelStat`).
+-///
+-/// This is **not** relibc's n32 `struct stat`; see [`copy_stat`].
+-#[repr(C)]
+-struct KernelStat {
+-    st_dev: u64,
+-    st_ino: u64,
+-    st_mode: u32,
+-    st_nlink: u32,
+-    st_uid: u32,
+-    st_gid: u32,
+-    st_rdev: u64,
+-    st_size: i64,
+-    st_blksize: i32,
+-    _pad: u32,
+-    st_blocks: i64,
+-    st_atim: [i64; 2],
+-    st_mtim: [i64; 2],
+-    st_ctim: [i64; 2],
+-    spare: [u8; 16],
+-}
+-
+-fn copy_stat(from: &KernelStat, to: *mut stat) {
+-    // SAFETY: callers pass a non-NULL, aligned `struct stat` pointer.
+-    unsafe {
+-        (*to).st_dev = from.st_dev;
+-        (*to).st_ino = from.st_ino;
+-        (*to).st_nlink = from.st_nlink as nlink_t;
+-        (*to).st_mode = from.st_mode as mode_t;
+-        (*to).st_uid = from.st_uid as uid_t;
+-        (*to).st_gid = from.st_gid as gid_t;
+-        (*to).st_rdev = from.st_rdev;
+-        (*to).st_size = from.st_size;
+-        (*to).st_blksize = from.st_blksize as blksize_t;
+-        (*to).st_blocks = from.st_blocks;
+-        (*to).st_atim = timespec {
+-            tv_sec: from.st_atim[0],
+-            tv_nsec: from.st_atim[1] as c_long,
+-        };
+-        (*to).st_mtim = timespec {
+-            tv_sec: from.st_mtim[0],
+-            tv_nsec: from.st_mtim[1] as c_long,
+-        };
+-        (*to).st_ctim = timespec {
+-            tv_sec: from.st_ctim[0],
+-            tv_nsec: from.st_ctim[1] as c_long,
+-        };
+-        (*to)._pad = [0; 24];
+-    }
+-}
+-
+ /// Fill a fixed-size C string array, truncating at the array length.
+ fn fill_name(field: &mut [c_char], name: &[u8]) {
+     let len = name.len().min(field.len().saturating_sub(1));
+@@ -264,12 +194,8 @@ impl Sys {
+             // pointer in its range check.
+             return Ok(0);
+         }
+-        let ret = unsafe { syscall2(SYS_POLL, fds.as_mut_ptr() as usize, fds.len()) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(EIO))
+-        } else {
+-            Ok(ret as c_int)
+-        }
++        let ready = unsafe { syscall(SYS_POLL, fds.as_mut_ptr() as usize, fds.len(), 0, 0) }?;
++        Ok(ready as c_int)
+     }
+ }
+ 
+@@ -286,7 +212,7 @@ impl Pal for Sys {
+     }
+ 
+     fn chdir(path: CStr) -> Result<()> {
+-        e_raw(unsafe { syscall1(SYS_CHDIR, path.as_ptr() as usize) }).map(|_| ())
++        unsafe { syscall(SYS_CHDIR, path.as_ptr() as usize, 0, 0, 0) }.map(|_| ())
+     }
+ 
+     fn clock_getres(_clk_id: clockid_t, _tp: Option<Out<timespec>>) -> Result<()> {
+@@ -294,10 +220,18 @@ impl Pal for Sys {
+     }
+ 
+     fn clock_gettime(clk_id: clockid_t, mut tp: Out<timespec>) -> Result<()> {
+-        // The kernel writes { i64 sec, i32 nsec, u32 pad }, which is exactly
+-        // relibc's n32 `timespec` (16 bytes including tail padding).
+-        e_raw(unsafe { syscall2(SYS_CLOCK_GETTIME, clk_id as usize, tp.as_mut_ptr() as usize) })
+-            .map(|_| ())
++        // The kernel writes relibc's n32 `timespec` directly (16 bytes,
++        // 64-bit seconds, 32-bit nanoseconds plus tail padding).
++        unsafe {
++            syscall(
++                SYS_CLOCK_GETTIME,
++                clk_id as usize,
++                tp.as_mut_ptr() as usize,
++                0,
++                0,
++            )
++        }
++        .map(|_| ())
+     }
+ 
+     unsafe fn clock_settime(_clk_id: clockid_t, _tp: *const timespec) -> Result<()> {
+@@ -305,21 +239,12 @@ impl Pal for Sys {
+     }
+ 
+     fn close(fildes: c_int) -> Result<()> {
+-        let ret = unsafe { syscall1(SYS_CLOSE, fildes as usize) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(EBADF))
+-        } else {
+-            Ok(())
+-        }
++        unsafe { syscall(SYS_CLOSE, fildes as usize, 0, 0, 0) }.map(|_| ())
+     }
+ 
+     fn dup(fildes: c_int) -> Result<c_int> {
+-        let ret = unsafe { syscall1(SYS_DUP, fildes as usize) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(EBADF))
+-        } else {
+-            Ok(ret as c_int)
+-        }
++        let fd = unsafe { syscall(SYS_DUP, fildes as usize, 0, 0, 0) }?;
++        Ok(fd as c_int)
+     }
+ 
+     fn dup2(_fildes: c_int, _fildes2: c_int) -> Result<c_int> {
+@@ -345,7 +270,7 @@ impl Pal for Sys {
+ 
+     fn exit(status: c_int) -> ! {
+         unsafe {
+-            syscall1(SYS_EXIT, status as usize);
++            let _ = syscall(SYS_EXIT, status as usize, 0, 0, 0);
+         }
+         unreachable!("the kernel always exits on SYS_EXIT")
+     }
+@@ -382,35 +307,17 @@ impl Pal for Sys {
+     }
+ 
+     fn fstat(fildes: c_int, mut buf: Out<stat>) -> Result<()> {
+-        let mut kernel = KernelStat {
+-            st_dev: 0,
+-            st_ino: 0,
+-            st_mode: 0,
+-            st_nlink: 0,
+-            st_uid: 0,
+-            st_gid: 0,
+-            st_rdev: 0,
+-            st_size: 0,
+-            st_blksize: 0,
+-            _pad: 0,
+-            st_blocks: 0,
+-            st_atim: [0; 2],
+-            st_mtim: [0; 2],
+-            st_ctim: [0; 2],
+-            spare: [0; 16],
+-        };
+-        let ret = unsafe {
+-            syscall2(
++        // The kernel writes relibc's 136-byte n32 `struct stat` directly.
++        unsafe {
++            syscall(
+                 SYS_FSTAT,
+                 fildes as usize,
+-                ptr::from_mut(&mut kernel) as usize,
++                buf.as_mut_ptr() as usize,
++                0,
++                0,
+             )
+-        };
+-        if ret == SYS_ERROR {
+-            return Err(Errno(EBADF));
+         }
+-        copy_stat(&kernel, buf.as_mut_ptr());
+-        Ok(())
++        .map(|_| ())
+     }
+ 
+     fn fstatat(fildes: c_int, path: Option<CStr>, mut buf: Out<stat>, _flags: c_int) -> Result<()> {
+@@ -422,34 +329,9 @@ impl Pal for Sys {
+                 if fildes != AT_FDCWD {
+                     return enosys();
+                 }
+-                let mut kernel = KernelStat {
+-                    st_dev: 0,
+-                    st_ino: 0,
+-                    st_mode: 0,
+-                    st_nlink: 0,
+-                    st_uid: 0,
+-                    st_gid: 0,
+-                    st_rdev: 0,
+-                    st_size: 0,
+-                    st_blksize: 0,
+-                    _pad: 0,
+-                    st_blocks: 0,
+-                    st_atim: [0; 2],
+-                    st_mtim: [0; 2],
+-                    st_ctim: [0; 2],
+-                    spare: [0; 16],
+-                };
+-                let ret = unsafe {
+-                    syscall2(
+-                        SYS_STAT,
+-                        path.as_ptr() as usize,
+-                        ptr::from_mut(&mut kernel) as usize,
+-                    )
+-                };
+-                if ret == SYS_ERROR {
+-                    return Err(Errno(ENOENT));
+-                }
+-                copy_stat(&kernel, buf.as_mut_ptr());
++                unsafe {
++                    syscall(SYS_STAT, path.as_ptr() as usize, buf.as_mut_ptr() as usize, 0, 0)
++                }?;
+                 return Ok(());
+             }
+         }
+@@ -461,13 +343,19 @@ impl Pal for Sys {
+     }
+ 
+     fn fcntl(fildes: c_int, cmd: c_int, arg: c_ulonglong) -> Result<c_int> {
+-        // The kernel's fcntl is an unconditional success with no side effects
+-        // (traps.rs case 8).  Passing it through keeps F_GETFD/F_SETFD working
+-        // for stdio, but no command is actually interpreted.
+-        Ok(
+-            e_raw(unsafe { syscall3(SYS_FCNTL, fildes as usize, cmd as usize, arg as usize) })?
+-                as c_int,
+-        )
++        // The kernel treats fcntl as an unconditional success with no side
++        // effects.  Passing it through keeps F_GETFD/F_SETFD working for stdio,
++        // but no command is actually interpreted.
++        let value = unsafe {
++            syscall(
++                SYS_FCNTL,
++                fildes as usize,
++                cmd as usize,
++                arg as usize,
++                0,
++            )
++        }?;
++        Ok(value as c_int)
+     }
+ 
+     unsafe fn fork() -> Result<pid_t> {
+@@ -487,11 +375,15 @@ impl Pal for Sys {
+     }
+ 
+     unsafe fn futex_wait(_addr: *mut u32, _val: u32, _deadline: Option<&timespec>) -> Result<()> {
+-        enosys()
++        // One thread: no one can change the word while we look at it, so there
++        // is nothing to wait for.  Reporting success keeps the generic mutex
++        // path from treating an absent futex as a fatal error.
++        Ok(())
+     }
+ 
+     unsafe fn futex_wake(_addr: *mut u32, _num: u32) -> Result<u32> {
+-        enosys()
++        // As above: there are no waiters to wake.
++        Ok(0)
+     }
+ 
+     unsafe fn utimensat(
+@@ -504,18 +396,16 @@ impl Pal for Sys {
+     }
+ 
+     fn getcwd(mut buf: Out<[u8]>) -> Result<()> {
+-        let ret = unsafe {
+-            syscall2(
++        unsafe {
++            syscall(
+                 SYS_GETCWD,
+                 buf.as_mut_ptr().as_mut_ptr() as usize,
+                 buf.len(),
++                0,
++                0,
+             )
+-        };
+-        if ret == SYS_ERROR {
+-            Err(Errno(ERANGE))
+-        } else {
+-            Ok(())
+         }
++        .map(|_| ())
+     }
+ 
+     fn getdents(fd: c_int, buf: &mut [u8], opaque_offset: u64) -> Result<usize> {
+@@ -532,17 +422,16 @@ impl Pal for Sys {
+         }
+         let mut name = [0u8; 256];
+         let kind = unsafe {
+-            syscall4(
++            syscall(
+                 SYS_READDIR,
+                 fd as usize,
+                 opaque_offset as usize,
+                 name.as_mut_ptr() as usize,
+                 name.len(),
+             )
+-        };
++        }?;
+         match kind {
+             0 => Ok(0),
+-            SYS_ERROR => Err(Errno(EBADF)),
+             kind => {
+                 let mut dent = dirent {
+                     d_ino: opaque_offset + 1,
+@@ -616,7 +505,9 @@ impl Pal for Sys {
+     }
+ 
+     fn getpid() -> pid_t {
+-        unsafe { syscall0(SYS_GETPID) as pid_t }
++        unsafe { syscall(SYS_GETPID, 0, 0, 0, 0) }
++            .map(|pid| pid as pid_t)
++            .unwrap_or(0)
+     }
+ 
+     fn getppid() -> pid_t {
+@@ -635,9 +526,7 @@ impl Pal for Sys {
+             // Avoid asking the kernel to range-check a dangling empty slice.
+             return Ok(0);
+         }
+-        e_raw(unsafe {
+-            syscall2(SYS_GETENTROPY, buf.as_mut_ptr() as usize, buf.len())
+-        })
++        unsafe { syscall(SYS_GETENTROPY, buf.as_mut_ptr() as usize, buf.len(), 0, 0) }
+     }
+ 
+     fn getresgid(
+@@ -754,12 +643,16 @@ impl Pal for Sys {
+     ) -> Result<*mut c_void> {
+         // Provisional mmap(addr, length, prot, flags): the kernel ignores the
+         // address, protection and flags and bumps a fixed 1 MiB heap.
+-        let ret = unsafe { syscall4(SYS_MMAP, addr as usize, len, prot as usize, flags as usize) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(ENOMEM))
+-        } else {
+-            Ok(ret as *mut c_void)
+-        }
++        let address = unsafe {
++            syscall(
++                SYS_MMAP,
++                addr as usize,
++                len,
++                prot as usize,
++                flags as usize,
++            )
++        }?;
++        Ok(address as *mut c_void)
+     }
+ 
+     unsafe fn mremap(
+@@ -773,7 +666,7 @@ impl Pal for Sys {
+     }
+ 
+     unsafe fn mprotect(addr: *mut c_void, len: usize, prot: c_int) -> Result<()> {
+-        e_raw(unsafe { syscall3(SYS_MPROTECT, addr as usize, len, prot as usize) }).map(|_| ())
++        unsafe { syscall(SYS_MPROTECT, addr as usize, len, prot as usize, 0) }.map(|_| ())
+     }
+ 
+     unsafe fn msync(_addr: *mut c_void, _len: usize, _flags: c_int) -> Result<()> {
+@@ -796,12 +689,12 @@ impl Pal for Sys {
+     unsafe fn munmap(addr: *mut c_void, len: usize) -> Result<()> {
+         // The v0 heap is one-way; the kernel returns success and releases the
+         // mappings at process exit.
+-        e_raw(unsafe { syscall2(SYS_MUNMAP, addr as usize, len) }).map(|_| ())
++        unsafe { syscall(SYS_MUNMAP, addr as usize, len, 0, 0) }.map(|_| ())
+     }
+ 
+     unsafe fn nanosleep(rqtp: *const timespec, _rmtp: *mut timespec) -> Result<()> {
+         // The kernel busy-waits and does not report the remaining time.
+-        e_raw(unsafe { syscall1(SYS_NANOSLEEP, rqtp as usize) }).map(|_| ())
++        unsafe { syscall(SYS_NANOSLEEP, rqtp as usize, 0, 0, 0) }.map(|_| ())
+     }
+ 
+     fn openat(dirfd: c_int, path: CStr, oflag: c_int, _mode: mode_t) -> Result<c_int> {
+@@ -809,12 +702,8 @@ impl Pal for Sys {
+             // Relative paths always resolve against the kernel cwd.
+             return enosys();
+         }
+-        let ret = unsafe { syscall3(SYS_OPEN, path.as_ptr() as usize, oflag as usize, 0) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(ENOENT))
+-        } else {
+-            Ok(ret as c_int)
+-        }
++        let fd = unsafe { syscall(SYS_OPEN, path.as_ptr() as usize, oflag as usize, 0, 0) }?;
++        Ok(fd as c_int)
+     }
+ 
+     fn pipe2(_fildes: Out<[c_int; 2]>, _flags: c_int) -> Result<()> {
+@@ -854,19 +743,16 @@ impl Pal for Sys {
+             // rejects the dangling pointer of an empty Rust slice.
+             return Ok(0);
+         }
+-        let ret = unsafe {
+-            syscall3(
++        let count = unsafe {
++            syscall(
+                 SYS_READ,
+                 fildes as usize,
+                 buf.as_mut_ptr() as usize,
+                 buf.len(),
++                0,
+             )
+-        };
+-        if ret == SYS_ERROR {
+-            Err(Errno(EBADF))
+-        } else {
+-            Ok(ret)
+-        }
++        }?;
++        Ok(count)
+     }
+ 
+     fn pread(_fildes: c_int, _buf: &mut [u8], _offset: off_t) -> Result<usize> {
+@@ -1014,12 +900,16 @@ impl Pal for Sys {
+         if buf.is_empty() {
+             return Ok(0);
+         }
+-        let ret = unsafe { syscall3(SYS_WRITE, fildes as usize, buf.as_ptr() as usize, buf.len()) };
+-        if ret == SYS_ERROR {
+-            Err(Errno(EBADF))
+-        } else {
+-            Ok(ret)
+-        }
++        let count = unsafe {
++            syscall(
++                SYS_WRITE,
++                fildes as usize,
++                buf.as_ptr() as usize,
++                buf.len(),
++                0,
++            )
++        }?;
++        Ok(count)
+     }
+ 
+     fn pwrite(_fildes: c_int, _buf: &[u8], _offset: off_t) -> Result<usize> {
+@@ -1047,8 +937,9 @@ impl Pal for Sys {
+ 
+     fn verify() -> bool {
+         // The only platform check available: the ABI's getpid must answer.
+-        let pid = unsafe { syscall0(SYS_GETPID) };
+-        pid != SYS_ERROR && pid != 0
++        unsafe { syscall(SYS_GETPID, 0, 0, 0, 0) }
++            .map(|pid| pid != 0)
++            .unwrap_or(false)
+     }
+ }
+ 
+@@ -1254,7 +1145,6 @@ const _: () = {
+     use core::mem::offset_of;
+     use crate::header::{dirent::dirent, poll::pollfd, time::timespec};
+ 
+-    assert!(size_of::<KernelStat>() == 128);
+     assert!(size_of::<stat>() == 136);
+     assert!(offset_of!(stat, st_nlink) == 16);
+     assert!(offset_of!(stat, st_mode) == 20);
+diff --git a/src/platform/mod.rs b/src/platform/mod.rs
+index 72d174b1..6f65eb37 100644
+--- a/src/platform/mod.rs
++++ b/src/platform/mod.rs
+@@ -38,7 +38,11 @@ pub(crate) mod sys;
+ pub use self::rlb::{Line, RawLineBuffer};
+ pub mod rlb;
+ 
+-#[cfg(any(target_os = "linux", target_os = "irix7"))]
++#[cfg(target_os = "irix7")]
++#[path = "auxv_defs_irix7.rs"]
++pub mod auxv_defs;
++
++#[cfg(target_os = "linux")]
+ #[path = "auxv_defs.rs"]
+ pub mod auxv_defs;
+ 
+@@ -53,34 +57,74 @@ pub mod types;
+ #[thread_local]
+ pub static ERRNO: Cell<c_int> = Cell::new(0);
+ 
+-/// Single-threaded errno storage for IRIX 7.
++/// `errno` storage on the main-thread TCB.
+ ///
+-/// The IRIX 7 kernel does not set a thread pointer and the target declares
+-/// `has-thread-local: false`, so a `#[thread_local]` errno would dereference
+-/// whatever `$29`/UserLocal happens to hold.  Until the kernel gains TLS and
+-/// the PAL learns to activate a TCB, errno is one global.  This makes the
+-/// whole library single-threaded, which matches the current kernel.
++/// The native image's `_start` sets `$28` to a 16-byte TCB: `self` at 0, `dtv`
++/// at 4, `errno` at 8 and libc-private space at 12.  `__errno_location` is
++/// therefore `TP + 8`, and this type reads and writes that slot directly.  The
++/// target declares `has-thread-local: false`; there is no ELF TLS block.
++#[cfg(target_os = "irix7")]
++#[inline(always)]
++fn thread_pointer() -> *mut c_int {
++    let tp: usize;
++    // SAFETY: reading `$28` has no side effects.  `_start` establishes the TCB
++    // before any Rust code runs, and the kernel preserves `$28` across the
++    // native gate.
++    unsafe {
++        core::arch::asm!("move {tp}, $28", tp = out(reg) tp, options(nomem, nostack));
++    }
++    tp as *mut c_int
++}
++
+ #[cfg(target_os = "irix7")]
+-pub struct SingleThreadErrno(UnsafeCell<c_int>);
++#[inline(always)]
++fn errno_slot() -> *mut c_int {
++    // TP points at the start of the TCB; errno is the third 32-bit word.
++    unsafe { thread_pointer().cast::<u8>().add(8).cast::<c_int>() }
++}
++
+ #[cfg(target_os = "irix7")]
+-// SAFETY: the IRIX 7 kernel runs one thread; there is no concurrent access.
+-unsafe impl Sync for SingleThreadErrno {}
++pub struct TcbErrno;
++
+ #[cfg(target_os = "irix7")]
+-impl SingleThreadErrno {
++impl TcbErrno {
+     pub fn get(&self) -> c_int {
+-        // SAFETY: single-threaded as above.
+-        unsafe { *self.0.get() }
++        // SAFETY: the TCB is mapped and errno is a plain 32-bit word.
++        unsafe { core::ptr::read_volatile(errno_slot()) }
+     }
+     pub fn set(&self, value: c_int) {
+-        // SAFETY: single-threaded as above.
+-        unsafe { *self.0.get() = value };
++        // SAFETY: as above.
++        unsafe { core::ptr::write_volatile(errno_slot(), value) };
+     }
+     pub fn as_ptr(&self) -> *mut c_int {
+-        self.0.get()
++        errno_slot()
+     }
+ }
+ #[cfg(target_os = "irix7")]
+-pub static ERRNO: SingleThreadErrno = SingleThreadErrno(UnsafeCell::new(0));
++pub static ERRNO: TcbErrno = TcbErrno;
++
++/// A `static` that is shared by the whole process because the platform has no
++/// threads.
++///
++/// Rust requires `static` items to be `Sync`, but `Cell` and `RefCell` are
++/// deliberately not.  The IRIX 7 kernel runs one thread, so the interior
++/// mutability cannot race; this wrapper states that fact at each declaration
++/// instead of weakening the type globally.
++#[cfg(target_os = "irix7")]
++pub struct SingleThread<T>(pub T);
++
++// SAFETY: the IRIX 7 kernel has no threads and no signal delivery, so there is
++// no concurrent access to these values.
++#[cfg(target_os = "irix7")]
++unsafe impl<T> Sync for SingleThread<T> {}
++
++#[cfg(target_os = "irix7")]
++impl<T> core::ops::Deref for SingleThread<T> {
++    type Target = T;
++    fn deref(&self) -> &T {
++        &self.0
++    }
++}
+ 
+ /// The `argv` argument available to a program's `main` function.
+ // TODO: change remaining static mut to RawCell
+@@ -94,6 +138,39 @@ pub static mut environ: *mut *mut c_char = ptr::null_mut();
+ 
+ pub static OUR_ENVIRON: RawCell<Vec<*mut c_char>> = RawCell::new(Vec::new());
+ 
++/// Auxiliary-vector pointer handed to `_start` in `$a3`.
++///
++/// The kernel builds the System V stack and passes `$a3 = auxv`; `crt0`
++/// stores that pointer here before entering Rust, and [`crate::start::Stack`]
++/// returns it.  It is a plain word rather than an argument so the stack shape
++/// stays exactly the System V one the kernel writes.
++#[cfg(target_os = "irix7")]
++#[unsafe(no_mangle)]
++pub static mut __irix7_auxv: usize = 0;
++
++/// Look up one auxiliary-vector entry.
++///
++/// The vector is the one the kernel passed in `$a3`; the numbering is the
++/// native one in [`auxv_defs`], not Linux's.
++#[cfg(target_os = "irix7")]
++pub fn getauxval(kind: usize) -> usize {
++    // SAFETY: the pointer is set by `_start` before Rust runs and points at a
++    // kernel-built, AT_NULL-terminated array of [type, value] pairs.
++    unsafe {
++        let mut at = __irix7_auxv as *const usize;
++        if at.is_null() {
++            return 0;
++        }
++        while *at != 0 {
++            if *at == kind {
++                return *at.add(1);
++            }
++            at = at.add(2);
++        }
++        0
++    }
++}
++
+ pub fn environ_iter() -> impl Iterator<Item = *mut c_char> + 'static {
+     unsafe {
+         let mut ptrs = environ;
+@@ -354,15 +431,13 @@ pub unsafe fn get_auxvs(ptr: *const usize) -> Box<[[usize; 2]]> {
+     auxvs.into_boxed_slice()
+ }
+ 
+-/// IRIX 7 has no auxiliary vector yet.
+-///
+-/// The kernel's initial stack in `kernel/src/user.rs` contains argc, argv and
+-/// envp only; there is no ELF auxv terminator after them.  Iterating it would
+-/// walk off into the environment strings, so report an empty vector and let
+-/// relibc's getauxval paths fall back to their defaults.
++/// IRIX 7 supplies the auxiliary vector in `$a3`; parse it with the native
++/// numbering in [`auxv_defs`].
+ #[cfg(target_os = "irix7")]
+-pub unsafe fn get_auxvs(_ptr: *const usize) -> Box<[[usize; 2]]> {
+-    Vec::new().into_boxed_slice()
++pub unsafe fn get_auxvs(ptr: *const usize) -> Box<[[usize; 2]]> {
++    let mut auxvs = unsafe { auxv_iter(ptr) }.collect::<Vec<_>>();
++    auxvs.sort_unstable_by_key(|[kind, _]| *kind);
++    auxvs.into_boxed_slice()
+ }
+ // TODO: Find an auxv replacement for Redox's execv protocol
+ #[cold]
+diff --git a/src/start.rs b/src/start.rs
+index 0fb3c8f3..6ed661bd 100644
+--- a/src/start.rs
++++ b/src/start.rs
+@@ -61,6 +61,15 @@ impl<'a> Stack<'a> {
+     }
+ 
+     pub fn auxv(&self) -> *const (usize, usize) {
++        // The IRIX 7 loader passes the auxiliary vector in `$a3` in addition to
++        // the System V stack; `_start` stores it before entering Rust.
++        #[cfg(target_os = "irix7")]
++        {
++            let auxv = unsafe { crate::platform::__irix7_auxv };
++            if auxv != 0 {
++                return auxv as *const (usize, usize);
++            }
++        }
+         unsafe {
+             let mut envp = self.envp_raw();
+             while !(*envp).is_null() {
+diff --git a/src/sync/pthread_mutex.rs b/src/sync/pthread_mutex.rs
+index a2e435d4..569a22b8 100644
+--- a/src/sync/pthread_mutex.rs
++++ b/src/sync/pthread_mutex.rs
+@@ -234,8 +234,12 @@ enum Ty {
+ }
+ 
+ // Children after fork can only call async-signal-safe functions until they exec.
++#[cfg(not(target_os = "irix7"))]
+ #[thread_local]
+ static CACHED_OS_TID_INVALID_AFTER_FORK: Cell<u32> = Cell::new(0);
++#[cfg(target_os = "irix7")]
++static CACHED_OS_TID_INVALID_AFTER_FORK: crate::platform::SingleThread<Cell<u32>> =
++    crate::platform::SingleThread(Cell::new(0));
+ 
+ // Assumes TIDs are unique between processes, which I only know is true for Redox.
+ fn os_tid_invalid_after_fork() -> u32 {
+-- 
+2.55.0
+

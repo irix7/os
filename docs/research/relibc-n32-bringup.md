@@ -2,10 +2,13 @@
 
 Status: **gate passed (research)**. 2026-10-25.
 
-> **2026-11-02 update:** the kernel now provides the v0 native gate, the
+> **2026-11-02 update:** the kernel provides the v0 native gate, the
 > `CELL_E_*` status channel, the 136-byte relibc `stat` layout, the auxv stack
-> and the `$28` TCB convention.  A freestanding C probe has booted on iris; the
-> relibc-linked PAL has not.  See [`c-probe-bringup.md`](c-probe-bringup.md).
+> and the `$28` TCB convention.  A freestanding C probe booted first, and the
+> relibc-linked PAL now boots too; see
+> [`c-probe-bringup.md`](c-probe-bringup.md) and
+> [`relibc-pal-bringup.md`](relibc-pal-bringup.md).  The PAL commit is
+> `d484536c49fed26a5377d2c511962b891e1c8dfb` on the `irix7-pal` branch.
 
 Upstream relibc is not n32-ready, but a contained port has been demonstrated.  A
 patched relibc built a static, big-endian, n32 `libc.a`, and four smoke tests ran
@@ -44,7 +47,8 @@ IRIX PAL would need the same architecture seam.
 - 64-bit syscall arguments are truncated by `usize` casts.
 - The headers are not a full sysroot.
 - The n32 syscall backend used for the QEMU gate is Linux, not the IRIX 7 native
-  ABI.  The provisional `irix7-pal` scaffold replaces it but has not been booted.
+  ABI.  The `irix7-pal` branch replaces it and now boots; see
+  [`relibc-pal-bringup.md`](relibc-pal-bringup.md).
 - Nightly-only, custom target, and QEMU-specific clone validation.
 
 ## IRIX PAL scaffold (2026-10-25)
@@ -53,19 +57,22 @@ A provisional `irix7-pal` branch in the fork replaces the Linux `sc` backend
 with an `irix7` module.  It builds `librelibc.a` for the native target and links
 a C hello and an fs probe with no undefined symbols and no FP instructions.
 
-This is **not a working PAL**.  Neither binary has been executed on IRIX 7: the
-host has no system-mode MIPS emulator, and the probe cannot be meaningfully run
-under user-mode QEMU because IRIX syscall 15 (`getpid`) collides with Linux n32
-`mknod`.  The scaffold also guessed errno because the kernel had no error
-channel, had no TLS/thread pointer (MIPS III has no `rdhwr`), passed no
-auxiliary vector, and used a private 128-byte `stat` layout that differed from
-relibc's 136-byte n32 layout.  The 2026-11 kernel work replaces all four; see
-[`c-probe-bringup.md`](c-probe-bringup.md).  Signals, sockets, processes, `lseek`
-and the remaining POSIX surface are still `ENOSYS` walls.
+At that point this was **not a working PAL**.  Neither binary had been executed
+on IRIX 7: the host had no system-mode MIPS emulator, and the probe could not be
+meaningfully run under user-mode QEMU because IRIX syscall 15 (`getpid`)
+collides with Linux n32 `mknod`.  The scaffold also guessed errno because the
+kernel had no error channel, had no TLS/thread pointer (MIPS III has no
+`rdhwr`), passed no auxiliary vector, and used a private 128-byte `stat` layout
+that differed from relibc's 136-byte n32 layout.  The 2026-11 kernel work
+replaces all four; the PAL commit
+`d484536c49fed26a5377d2c511962b891e1c8dfb` now boots on iris.  See
+[`c-probe-bringup.md`](c-probe-bringup.md) and
+[`relibc-pal-bringup.md`](relibc-pal-bringup.md).  Signals, sockets, processes,
+`lseek` and the remaining POSIX surface are still `ENOSYS` walls.
 
-The branch is at <https://github.com/irix7/relibc/tree/irix7-pal>.  The next
-gate is a bootable probe on iris with a real negative-errno channel and a shared
-`stat`/directory ABI, not a success claim from linking alone.
+The branch is at <https://github.com/irix7/relibc/tree/irix7-pal>.  The gate
+described above has passed: a relibc-linked probe now runs with the negative
+errno channel and the shared `stat` ABI.
 
 ## Repository artefacts
 

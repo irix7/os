@@ -125,9 +125,9 @@ because every console fragment flushes the graphics console.
 
 ## Limits
 
-- The probe is freestanding C, not linked against relibc. The relibc fork still
-  needs the PAL-side changes in the next section before it can be called a
-  running PAL.
+- This probe is freestanding C, not linked against relibc.  The separate
+  [`relibc-probe`](../../user/relibc-probe/probe.c) is the relibc-linked
+  counterpart; see [`relibc-pal-bringup.md`](relibc-pal-bringup.md).
 - The native gate is the v0 flat form in
   [`../spec/native-abi.md`](../spec/native-abi.md) §5.8. The capability
   invocation encoding is not implemented; the gate will be replaced, not
@@ -142,23 +142,20 @@ because every console fragment flushes the graphics console.
 - No threads, signals, processes, sockets or termios. The kernel remains
   single-threaded.
 
-## relibc-side change still required
+## relibc-side change now landed
 
-The fork's `src/platform/irix7/mod.rs` is the PAL scaffold. It needs exactly
-these changes before the relibc-linked C probe can run:
+The relibc-linked PAL has booted; see
+[`relibc-pal-bringup.md`](relibc-pal-bringup.md). The fork branch
+`irix7-pal` at `d484536c49fed26a5377d2c511962b891e1c8dfb` now:
 
-1. Replace the `syscall0..4` stubs with `syscall 0x1F7`; read the status from
-   `$v0` and the value from `$v1`. Return `Err(Errno(status_errno[status]))`
-   on a non-zero status.
-2. Delete the private `KernelStat` and `copy_stat` translation. Use the 136-byte
-   n32 `struct stat` directly; the kernel now writes that layout.
-3. Make `__errno_location` return `TP + 8`, where `TP` is `$28`, and build the
-   main TCB in `_start` (`self` at 0, `dtv` 0 at 4, `errno` at 8, libc-private
-   at 12). The native target must remain `has-thread-local: false`.
-4. Replace the C startup's argv/envp discovery with the System V stack plus
-   `$a3 = auxv`; the loader now builds both.
-5. Keep `getdents` synthesised over the one-entry `readdir` call until the
-   kernel grows a real directory-cookie interface.
+1. Uses `syscall 0x1F7`, reads the status from `$v0` and the value from `$v1`,
+   and maps through the shared status table to `Err(Errno(...))`.
+2. Deletes `KernelStat`/`copy_stat` and passes the 136-byte n32 `struct stat`
+   directly.
+3. Sets `$28` to a TCB with `self` at 0, `dtv` 0 at 4, `errno` at 8 and
+   libc-private at 12; `__errno_location` returns `TP+8`.
+4. Uses the System V stack and `$a3 = auxv`.
+5. Keeps `getdents` synthesised over the one-entry `readdir` call.
 
 The status table is
 [`crates/native-abi/src/status.rs`](../../crates/native-abi/src/status.rs); the
