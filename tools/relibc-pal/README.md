@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `bf5fee5e29a7a5054fa3cf82f6c5916de4b45b19` |
+| Commit | `8a7e044f584945dbf5fdbad11fd76e16daa420b9` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep) |
-| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep, `0009` fork/exec/wait) |
+| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c), [`user/relibc-forkexec-probe/probe.c`](../../user/relibc-forkexec-probe/probe.c) and [`user/relibc-forkexec-child/probe.c`](../../user/relibc-forkexec-child/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..bf5fee5e` and applies
+The mirror is generated with `git format-patch a36041ac..8a7e044f` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -103,9 +103,10 @@ tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
 `libcrt0.a`, compiles the C probe, the thread probe, the futex probe, the
-pthread probe and the sleep probe, strips each ELF and pads 256 KiB
-`probe.raw`, `thread-probe.raw`, `futex-probe.raw`, `pthread-probe.raw` and
-`sleep-probe.raw` images.  It records the relibc commit in
+pthread probe, the sleep probe and the two fork/exec images, strips each ELF
+and pads 256 KiB `probe.raw`, `thread-probe.raw`, `futex-probe.raw`,
+`pthread-probe.raw`, `sleep-probe.raw`, `forkexec-probe.raw` and
+`forkexec-child.raw` images.  It records the relibc commit in
 `BUILD-PROVENANCE.txt`.  An existing checkout needs its submodules initialised
 (`git submodule update --init --recursive`).
 
@@ -157,6 +158,37 @@ PTHREAD-PROBE: checks=29 failures=0
 user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 ```
+
+The fork/exec probes attach the parent at SCSI target 2 and the child at target
+3:
+
+```toml
+[scsi.2]
+path = "/tmp/opencode/relibc-pal-work/out/forkexec-probe.raw"
+cdrom = false
+
+[scsi.3]
+path = "/tmp/opencode/relibc-pal-work/out/forkexec-child.raw"
+cdrom = false
+```
+
+The parent expects:
+
+```text
+fork: pid=1 child=2 actor=...
+exec: entry=0x10000000
+CHILD-OK
+process: exit pid=2 status=0x00000007
+FORK-EXEC-OK
+user: exit syscall code=0x00000000
+kernel: userland returned to kernel console
+```
+
+The child inherits fd 3 (a ramfs file) and verifies that fd 4, marked
+`FD_CLOEXEC` by the parent, is closed after `execve`.  The parent checks that
+`waitpid(pid, ..., WNOHANG)` reports 0 before the child runs, that the blocking
+wait returns the child pid with status 7, and that the inherited open file
+description still shares its offset.
 
 The sleep probe (`sleep-probe.raw`) expects:
 
@@ -214,8 +246,12 @@ unlinked inode still readable through its descriptor, and `EEXIST`,
   enabled returns `ENOSYS`.  `pthread_key_delete` removes the key from the
   calling thread's map only.  A detached thread's TCB and stack are not
   reclaimed because the kernel's `munmap` is a bump-allocator no-op.
-- No signals, TLS block or process table.
-- `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
+- No signals or TLS block.
+- `fork`, `execve` and `waitpid` are the local cell fast path.  A process is
+  one cell with a Unix personality; its `pid` is local to the replica and the
+  POSIX surface does not expose the global `Job`/actor handle.  Remote
+  spawn/wait, copy-on-write, job control, more than eight local cells and the
+  socket API are not implemented.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.
 - The kernel's mutable ramfs is the only filesystem: 32 inodes, 4096 bytes

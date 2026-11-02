@@ -169,6 +169,12 @@ pub fn invalidate_index(index: u32) {
     }
 }
 
+/// Clear PageMask after a huge-page mapping.  The general trap path and the
+/// 4 KiB helpers assume a zero PageMask.
+pub fn set_pagemask_zero() {
+    pagemask_write(0);
+}
+
 /// Allocate a new ASID for a legacy process.
 pub fn alloc_asid() -> u32 {
     unsafe {

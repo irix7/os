@@ -85,6 +85,72 @@ const EMPTY: Thread = Thread {
 static mut THREADS: [Thread; MAX_THREADS] = [EMPTY; MAX_THREADS];
 static mut CURRENT: usize = 0;
 
+/// A complete thread table, saved with the process that owns it.
+///
+/// Threads share one address space, so the table is live state, not part of the
+/// address space.  A process switch snapshots the outgoing table and installs
+/// the incoming one; the opaque wrapper keeps `Thread` private.
+#[derive(Clone, Copy)]
+pub struct Snapshot {
+    slots: [Thread; MAX_THREADS],
+    current: usize,
+}
+
+impl Snapshot {
+    /// An empty table, for a process slot that has never run.
+    pub const EMPTY: Self = Self {
+        slots: [EMPTY; MAX_THREADS],
+        current: 0,
+    };
+}
+
+/// Copy the live thread table.
+pub fn snapshot() -> Snapshot {
+    // SAFETY: single-threaded kernel; the table is not modified during the
+    // copy.
+    unsafe {
+        Snapshot {
+            slots: THREADS,
+            current: CURRENT,
+        }
+    }
+}
+
+/// Make `table` the live thread table.
+pub fn install(table: Snapshot) {
+    // SAFETY: single-threaded kernel; the table belongs to the process the
+    // address space and TLB set are being switched to.
+    unsafe {
+        THREADS = table.slots;
+        CURRENT = table.current;
+    }
+}
+
+/// Save the running thread's frame into its slot before a process switch.
+pub fn save_current(tf: &TrapFrame) {
+    unsafe {
+        let threads = &mut *core::ptr::addr_of_mut!(THREADS);
+        threads[CURRENT].frame = *tf;
+    }
+}
+
+/// Build a table whose only thread is the process's main thread.
+pub fn single(frame: TrapFrame) -> Snapshot {
+    let mut snapshot = Snapshot::EMPTY;
+    for (index, slot) in snapshot.slots.iter_mut().enumerate() {
+        slot.tid = index as u32 + 1;
+    }
+    snapshot.slots[0].state = State::Running;
+    snapshot.slots[0].frame = frame;
+    snapshot.current = 0;
+    snapshot
+}
+
+/// The running thread id (the main thread is 1).
+pub fn current_tid() -> u32 {
+    unsafe { (*core::ptr::addr_of!(THREADS))[CURRENT].tid }
+}
+
 /// The result of retiring the running thread.
 pub enum Exit {
     /// The trap frame now belongs to another thread.

@@ -23,6 +23,50 @@ pub const MAX_NODES: usize = 32;
 pub const FILE_CAPACITY: usize = 4096;
 pub const NAME_MAX: usize = 63;
 pub const ROOT: u16 = 0;
+/// Largest executable image a ramfs `Image` node can name.
+///
+/// The staging slot is the same 256 KiB slot the target-2 loader uses, so a
+/// staged child ELF fits without a second large `.bss` allocation.
+pub const IMAGE_CAPACITY: usize = 256 * 1024;
+
+static mut IMAGE_DATA: [u8; IMAGE_CAPACITY] = [0; IMAGE_CAPACITY];
+static mut IMAGE_LEN: usize = 0;
+
+/// The writable staging buffer behind `/bin/child`.
+///
+/// The boot path reads SCSI target 3 into it before userland starts.  The
+/// contents survive [`reset`]: the node is recreated, the bytes are not.
+pub fn image_buffer() -> &'static mut [u8] {
+    // SAFETY: the console owns the machine while staging, and user code never
+    // receives this pointer.  The loader copies out of it.
+    unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_DATA) }
+}
+
+/// Publish the staged image length.  Longer than [`IMAGE_CAPACITY`] is refused.
+pub fn set_image_size(size: usize) -> bool {
+    if size > IMAGE_CAPACITY {
+        return false;
+    }
+    // SAFETY: single-threaded kernel; the staging buffer is not mapped into a
+    // user address space.
+    unsafe {
+        IMAGE_LEN = size;
+    }
+    true
+}
+
+/// Length of the staged image.
+pub fn image_size() -> usize {
+    // SAFETY: single-threaded kernel.
+    unsafe { IMAGE_LEN }
+}
+
+/// The staged image bytes, for the ELF loader.
+pub fn image_data() -> &'static [u8] {
+    // SAFETY: the length is set once by the boot staging path and never exceeds
+    // IMAGE_CAPACITY.
+    unsafe { &(&*core::ptr::addr_of!(IMAGE_DATA))[..IMAGE_LEN] }
+}
 
 /// `dirent.d_type` values used by the native ABI.
 pub const TYPE_CHR: u8 = 2;
@@ -35,6 +79,8 @@ const DIR: u8 = 2;
 const LOGICAL: u8 = 3;
 const NULL_DEVICE: u8 = 4;
 const CONSOLE_DEVICE: u8 = 5;
+/// An executable image backed by the staging buffer, not by `Node::data`.
+const IMAGE: u8 = 6;
 
 #[derive(Clone, Copy)]
 struct Node {
@@ -71,6 +117,8 @@ pub enum NodeType {
     Logical,
     Null,
     Console,
+    /// `/bin/child`: the staged executable image.
+    Image,
 }
 
 /// A resolved path: either an inode or a missing final name in a directory.
@@ -141,6 +189,30 @@ pub fn reset() {
     let _ = allocate(NULL_DEVICE, 3, b"null", 0o020666);
     let _ = allocate(CONSOLE_DEVICE, 3, b"tty", 0o020666);
     let _ = allocate(CONSOLE_DEVICE, 3, b"console", 0o020666);
+    // `/bin` is installed only when a child image has actually been staged;
+    // the fixture tree stays exactly the five entries the ramfs probe expects.
+    unsafe {
+        IMAGE_LEN = 0;
+    }
+}
+
+/// Install the staged image as `/bin/child`.
+///
+/// It is called only after [`set_image_size`] has accepted a real image, so a
+/// node that exists always names valid bytes.  `reset` removes it again.
+pub fn install_image() -> bool {
+    let bin = match find_child(ROOT, b"bin") {
+        Some(node) if is_dir(node) => node,
+        Some(_) => return false,
+        None => match create(ROOT, b"bin", true, 0o040755) {
+            Ok(node) => node,
+            Err(_) => return false,
+        },
+    };
+    if find_child(bin, b"child").is_some() {
+        return true;
+    }
+    allocate(IMAGE, bin, b"child", 0o100755).is_ok()
 }
 
 fn find_child(dir: u16, name: &[u8]) -> Option<u16> {
@@ -242,14 +314,15 @@ pub fn node_type(index: u16) -> NodeType {
         DIR => NodeType::Dir,
         LOGICAL => NodeType::Logical,
         NULL_DEVICE => NodeType::Null,
-        _ => NodeType::Console,
+        CONSOLE_DEVICE => NodeType::Console,
+        _ => NodeType::Image,
     }
 }
 
 pub fn type_of(index: u16) -> u8 {
     match kind_of(index) {
         DIR => TYPE_DIR,
-        FILE | LOGICAL => TYPE_REG,
+        FILE | LOGICAL | IMAGE => TYPE_REG,
         _ => TYPE_CHR,
     }
 }
@@ -284,6 +357,7 @@ pub fn mode(index: u16) -> u32 {
     match kind_of(index) {
         FREE => 0,
         LOGICAL => 0o100644,
+        IMAGE => 0o100755,
         _ => node(index).mode,
     }
 }
@@ -292,6 +366,7 @@ pub fn size(index: u16) -> usize {
     match kind_of(index) {
         FILE => node(index).size as usize,
         LOGICAL => crate::logical::file_size(b"/etc/motd").unwrap_or(0),
+        IMAGE => image_size(),
         _ => 0,
     }
 }
@@ -365,8 +440,18 @@ pub fn path_of(index: u16, out: &mut [u8; 64]) -> Option<usize> {
 }
 
 pub fn read(index: u16, start: usize, buffer: &mut [u8]) -> SysResult<usize> {
-    if kind_of(index) != FILE {
-        return Err(CELL_E_ISDIR);
+    match kind_of(index) {
+        FILE => {}
+        IMAGE => {
+            let data = image_data();
+            if start >= data.len() {
+                return Ok(0);
+            }
+            let count = buffer.len().min(data.len() - start);
+            buffer[..count].copy_from_slice(&data[start..start + count]);
+            return Ok(count);
+        }
+        _ => return Err(CELL_E_ISDIR),
     }
     let entry = node(index);
     let len = entry.size as usize;
@@ -381,8 +466,10 @@ pub fn read(index: u16, start: usize, buffer: &mut [u8]) -> SysResult<usize> {
 /// Write at `start`.  A write that reaches the capacity is short; the next
 /// write at end-of-file is `ENOSPC`.
 pub fn write(index: u16, start: usize, buffer: &[u8]) -> SysResult<usize> {
-    if kind_of(index) != FILE {
-        return Err(CELL_E_ISDIR);
+    match kind_of(index) {
+        FILE => {}
+        IMAGE => return Err(CELL_E_ROFS),
+        _ => return Err(CELL_E_ISDIR),
     }
     if buffer.is_empty() {
         return Ok(0);
@@ -403,7 +490,7 @@ pub fn truncate(index: u16, length: usize) -> SysResult<()> {
     match kind_of(index) {
         FILE => {}
         DIR => return Err(CELL_E_ISDIR),
-        LOGICAL => return Err(CELL_E_ROFS),
+        LOGICAL | IMAGE => return Err(CELL_E_ROFS),
         _ => return Err(CELL_E_INVAL),
     }
     if length > FILE_CAPACITY {

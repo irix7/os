@@ -86,6 +86,32 @@ static mut FD_FLAGS: [u32; MAX_FDS] = [0; MAX_FDS];
 /// The current working directory as an inode in the ramfs tree.
 static mut CWD_NODE: u16 = ramfs::ROOT;
 
+/// One process's descriptor slots and working directory.
+///
+/// The open file descriptions and pipes are system-wide objects; a descriptor
+/// names one of them.  `fork` copies this table and takes a reference on every
+/// description, so the child shares offsets and pipe state exactly as POSIX
+/// requires while its own slots and cwd are independent.
+#[derive(Clone, Copy)]
+pub struct Snapshot {
+    open: [i32; MAX_FDS],
+    flags: [u32; MAX_FDS],
+    cwd: u16,
+}
+
+impl Snapshot {
+    pub const EMPTY: Self = Self {
+        open: [-1; MAX_FDS],
+        flags: [0; MAX_FDS],
+        cwd: ramfs::ROOT,
+    };
+}
+
+/// Reset the system-wide descriptor machinery and the ramfs tree.
+///
+/// This is the console's world reset, not a per-process operation.  It clears
+/// every open description and pipe; call [`console_table`] to build the first
+/// process's standard descriptors.
 pub fn reset() {
     ramfs::reset();
     unsafe {
@@ -95,17 +121,72 @@ pub fn reset() {
         OPEN_OFFSET = [0; MAX_OPEN_FILES];
         OPEN_REFS = [0; MAX_OPEN_FILES];
         OPEN_STATUS = [0; MAX_OPEN_FILES];
+        CWD_NODE = ramfs::ROOT;
+        PIPE_HEAD = [0; MAX_PIPES];
+        PIPE_LEN = [0; MAX_PIPES];
+        PIPE_USED = [false; MAX_PIPES];
+        CONSOLE_WINSIZE = [24, 80, 0, 0];
+    }
+}
+
+/// Build the standard console table for a new root process and make it live.
+pub fn console_table() -> Snapshot {
+    unsafe {
+        FD_OPEN = [-1; MAX_FDS];
+        FD_FLAGS = [0; MAX_FDS];
+        CWD_NODE = ramfs::ROOT;
         for fd in 0..3 {
             if let Some(description) = open_description(Kind::Console, O_RDWR) {
                 FD_OPEN[fd] = description as i32;
             }
             FD_FLAGS[fd] = 0;
         }
-        CWD_NODE = ramfs::ROOT;
-        PIPE_HEAD = [0; MAX_PIPES];
-        PIPE_LEN = [0; MAX_PIPES];
-        PIPE_USED = [false; MAX_PIPES];
-        CONSOLE_WINSIZE = [24, 80, 0, 0];
+    }
+    snapshot()
+}
+
+/// Copy the live descriptor table without changing its reference counts.
+pub fn snapshot() -> Snapshot {
+    // SAFETY: single-threaded kernel; the live table is not modified during the
+    // copy.
+    unsafe {
+        Snapshot {
+            open: FD_OPEN,
+            flags: FD_FLAGS,
+            cwd: CWD_NODE,
+        }
+    }
+}
+
+/// Make `table` the live descriptor table.
+pub fn restore(table: Snapshot) {
+    // SAFETY: single-threaded kernel; the table belongs to the process this
+    // address space and TLB set are being switched to.
+    unsafe {
+        FD_OPEN = table.open;
+        FD_FLAGS = table.flags;
+        CWD_NODE = table.cwd;
+    }
+}
+
+/// Snapshot the live table for a fork and take a reference on every open
+/// description.  The child shares descriptions; close-on-exec stays per slot.
+pub fn fork_snapshot() -> Snapshot {
+    let table = snapshot();
+    for index in 0..MAX_FDS {
+        if table.open[index] >= 0 {
+            let _ = retain_description(table.open[index] as usize);
+        }
+    }
+    table
+}
+
+/// Drop every reference a dead process's table holds.
+pub fn release_snapshot(table: &Snapshot) {
+    for index in 0..MAX_FDS {
+        if table.open[index] >= 0 {
+            release_description(table.open[index] as usize);
+        }
     }
 }
 
@@ -339,7 +420,7 @@ fn release_pipe(index: usize) {
     }
 }
 
-fn cwd() -> u16 {
+pub(crate) fn cwd() -> u16 {
     unsafe { CWD_NODE }
 }
 
@@ -365,7 +446,7 @@ fn logical_available() -> bool {
 
 fn kind_for(node: u16) -> Kind {
     match ramfs::node_type(node) {
-        NodeType::File => Kind::File(node),
+        NodeType::File | NodeType::Image => Kind::File(node),
         NodeType::Dir => Kind::Dir(node),
         NodeType::Logical => Kind::Logical(node),
         NodeType::Null => Kind::Null,
@@ -431,7 +512,7 @@ pub fn open_path(path: &[u8], flags: u32, mode: u32) -> SysResult<i32> {
         // POSIX truncates regular files only; O_TRUNC on a device is a no-op.
         match ramfs::node_type(node) {
             NodeType::File => ramfs::truncate(node, 0)?,
-            NodeType::Logical => return Err(CELL_E_ROFS),
+            NodeType::Logical | NodeType::Image => return Err(CELL_E_ROFS),
             NodeType::Null | NodeType::Console => {}
             NodeType::Dir => return Err(CELL_E_ISDIR),
         }
@@ -571,6 +652,17 @@ pub fn dup(fd: i32) -> SysResult<i32> {
         FD_FLAGS[new as usize] = 0;
     }
     Ok(new)
+}
+
+/// Close every descriptor marked close-on-exec.  `execve` calls this before it
+/// installs the new image; the open file descriptions are released when the
+/// last reference goes.
+pub fn close_cloexec() {
+    for fd in 0..MAX_FDS {
+        if unsafe { FD_FLAGS[fd] } & FD_CLOEXEC != 0 {
+            close_slot(fd as i32);
+        }
+    }
 }
 
 /// Duplicate `fd` onto `new_fd`, closing any descriptor already there.

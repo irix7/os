@@ -938,3 +938,23 @@ pub fn read_blocks(target: u8, lba: u32, buf: &mut [u8]) -> Result<(), &'static 
 pub fn read_sector(target: u8, lba: u32, buf: &mut [u8; 512]) -> Result<(), &'static str> {
     read_blocks(target, lba, buf)
 }
+
+/// Read with the polled PIO path only, bypassing the DMA engine.
+///
+/// The user-image loader uses this for the boot images: it runs once, and a
+/// failed DMA transfer leaves the target in a phase where a retry can return
+/// the previous command's data.  PIO has no bounce buffer or descriptor chain,
+/// so a short or failed transfer cannot silently reuse an earlier block.
+pub fn read_blocks_pio(target: u8, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+    if buf.is_empty() || buf.len() % SECTOR != 0 {
+        return Err("read length is not a whole number of sectors");
+    }
+    let blocks = buf.len() / SECTOR;
+    if blocks > MAX_RD6_BLOCKS {
+        return Err("read is larger than READ(6) allows");
+    }
+    if blocks > 0 && lba.saturating_add(blocks as u32 - 1) > MAX_RD6_LBA {
+        return Err("LBA is out of range for READ(6)");
+    }
+    read_pio(target, lba, blocks, buf)
+}

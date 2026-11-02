@@ -5,11 +5,17 @@
 //! and no mesh frame is constructed. The mesh policy crates are the same ones
 //! the host tests and the future multi-node kernel use.
 
-use mesh_core::{home_for, MembershipView};
+use mesh_core::{actor_home, home_for, MembershipView};
 use mesh_service::MembershipTable;
-use sys_primitives::{NodeId, ObjectId};
+use sys_primitives::{ActorId, NodeId, ObjectId};
 
 static mut NODE: NodeId = NodeId::ZERO;
+/// The local membership table.  M1 has one confirmed replica; the table is the
+/// same state machine the join path installs when a mesh is confirmed.
+static mut TABLE: Option<MembershipTable> = None;
+/// This boot's incarnation.  It rises across a restart and is the value the
+/// membership view records when the node heartbeats.
+static mut INCARNATION: u64 = 0;
 /// M1 instrumentation: a byte would not be sent by the single-node path.
 static mut FRAMES: u32 = 0;
 static mut RPCS: u32 = 0;
@@ -21,14 +27,23 @@ pub fn init() {
     let mut bytes = [0u8; 16];
     bytes[..mac.len()].copy_from_slice(&mac);
     let node = NodeId(bytes);
-    unsafe {
-        NODE = node;
-    }
-
-    let table = MembershipTable::single(node, 0);
+    let now_ms = crate::idle::uptime_ms();
+    let table = MembershipTable::single(node, now_ms.saturating_mul(1_000_000));
     let view = table.snapshot();
     debug_assert!(view.is_single());
     debug_assert_eq!(home_for(&ObjectId([0x5a; 32]), &view), Some(node));
+
+    // The RTC keeps a real wall clock across a power cycle; mixing in CP0 Count
+    // keeps two RTC-less boots distinct.  The value is a boot incarnation, not a
+    // monotonic global clock.
+    let clock = crate::rtc::read_unix().unwrap_or(0) as u64;
+    let count = crate::traps::count_read() as u64;
+    let incarnation = (clock.rotate_left(17) ^ count ^ 0x4952_4958_3700_0001).max(1);
+    unsafe {
+        NODE = node;
+        TABLE = Some(table);
+        INCARNATION = incarnation;
+    }
 
     self_test();
     crate::print_str("mesh: single node ");
@@ -101,6 +116,24 @@ pub fn is_single() -> bool {
     !node_id().is_zero()
 }
 
+/// The confirmed membership epoch this replica is routing at.
+pub fn epoch() -> u32 {
+    // SAFETY: single-threaded kernel; the table is installed once at boot.
+    unsafe {
+        (*core::ptr::addr_of!(TABLE))
+            .as_ref()
+            .map(|table| table.epoch())
+    }
+    .unwrap_or(0)
+}
+
+/// This boot's incarnation.  A stale handle that names an older incarnation of
+/// the same node is refused by the home.
+pub fn incarnation() -> u64 {
+    // SAFETY: single-threaded kernel.
+    unsafe { INCARNATION }
+}
+
 /// Resolve an object home in the current local view.
 pub fn home(object: ObjectId) -> Option<NodeId> {
     let node = node_id();
@@ -108,4 +141,12 @@ pub fn home(object: ObjectId) -> Option<NodeId> {
         return None;
     }
     home_for(&object, &MembershipView::single(node))
+}
+
+/// Resolve an actor's rendezvous home in the confirmed local view.
+pub fn actor_home_for(actor: &ActorId) -> Option<NodeId> {
+    // SAFETY: single-threaded kernel; the table is installed once at boot and
+    // a snapshot allocates only for the duration of this call.
+    let table = unsafe { (*core::ptr::addr_of!(TABLE)).as_ref()? };
+    actor_home(actor, &table.snapshot())
 }
