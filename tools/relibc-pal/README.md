@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `2a345f7802615633115ea55b8c7f010d2b13dfb6` |
+| Commit | `5c78551d891fe199d9933638152f194c50c9c4f2` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs) |
-| Probe source | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex) |
+| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..2a345f78` and applies
+The mirror is generated with `git format-patch a36041ac..5c78551d` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -48,10 +48,16 @@ the branch commit, not the patch.
    `mkdirat` maps to `mkdir`, `renameat2` maps to `rename`, and `ftruncate`
    splits the 64-bit length across two argument registers.  `umask` keeps
    process state.
+9. `futex_wait`/`futex_wake` map to `SYS_FUTEX_WAIT`/`SYS_FUTEX_WAKE`.
+   `futex_wait` takes relibc's absolute `CLOCK_MONOTONIC` deadline, converts it
+   to the native relative millisecond timeout, returns `EAGAIN` for a changed
+   word and `ETIMEDOUT` at a real deadline, and re-parks when the kernel's
+   100 ms poll bound expires early or when the caller waits indefinitely.
+   `futex_wake` returns the kernel's woken count.  Before this, both calls were
+   no-ops, so a mutex unlock had no waiter to tell and a wait reported success
+   without blocking.
 
-`futex_wait` and `futex_wake` are no-ops: the kernel has no futex and there is
-one thread, so returning `ENOSYS` makes every mutex unlock panic.  `printf`
-uses the generic path and now completes.
+`printf` uses the generic path and completes.
 
 The target is `targets/mips3-sgi-irix7-native-n32.json`: n32, big-endian,
 MIPS III, soft float, `-mno-abicalls -G0`.  The `std` shim remains the abicalls
@@ -72,9 +78,10 @@ tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
-`libcrt0.a`, compiles the C probe, strips the ELF and pads a 256 KiB
-`probe.raw`.  It records the relibc commit in `BUILD-PROVENANCE.txt`.  An
-existing checkout needs its submodules initialised
+`libcrt0.a`, compiles the C probe, the thread probe and the futex probe,
+strips each ELF and pads 256 KiB `probe.raw`, `thread-probe.raw` and
+`futex-probe.raw` images.  It records the relibc commit in
+`BUILD-PROVENANCE.txt`.  An existing checkout needs its submodules initialised
 (`git submodule update --init --recursive`).
 
 ## Run
@@ -132,10 +139,13 @@ unlinked inode still readable through its descriptor, and `EEXIST`,
 
 ## Limits
 
-- Single-threaded: no threads, TLS block, signals or process table.
-- There is no scheduler wakeup.  `poll` and a blocking read or write recheck
-  readiness for at most 100 ms and then return `EAGAIN`; a negative `poll`
-  timeout is clamped to that bound.
+- No `pthread_create`: the PAL does not create threads yet, so relibc runs on
+  the main thread.  The kernel's cooperative thread and futex gates are
+  exercised by the thread and futex probes through raw gate stubs.
+- There is no timer wakeup.  `poll`, a blocking read or write and a futex wait
+  are bounded by the kernel's 100 ms poll limit; the libc re-parks a futex wait
+  whose bounded expiry precedes its deadline.
+- No signals, TLS block or process table.
 - `fork`, `execve`, `waitpid` and the socket API remain `ENOSYS`.
 - `getentropy` succeeds but the kernel zero-fills the buffer.
 - `mmap` is the kernel's bump allocator; `munmap`/`mprotect` are metadata-only.

@@ -72,3 +72,10 @@ pub const SYS_YIELD: u32 = 38;
 /// `thread_exit(status)`; retire this thread, or return to the console when
 /// it was the last one.
 pub const SYS_THREAD_EXIT: u32 = 39;
+/// `futex_wait(uaddr, expected, timeout_ms)`; block while the 32-bit user word
+/// at `uaddr` equals `expected`.  A negative timeout is bounded by the poll
+/// rule and a positive one is clamped to the same bound; zero probes.
+pub const SYS_FUTEX_WAIT: u32 = 40;
+/// `futex_wake(uaddr, count)`; make up to `count` waiters on `uaddr` runnable
+/// and return how many were woken.
+pub const SYS_FUTEX_WAKE: u32 = 41;
