@@ -20,8 +20,8 @@ use crate::{halt, print_dec, print_dec64, print_hex, print_line, print_model, se
 const WAIT_MS: u32 = 1000;
 
 /// Longest accepted command line, excluding the terminator.  Further
-/// printable characters are read and discarded without an echo, then the
-/// truncated line is reported as an unknown command.
+/// printable characters are read and discarded without an echo; the line is
+/// then refused as too long instead of being matched in truncated form.
 const LINE_CAPACITY: usize = 32;
 
 /// What the module check did, for the `info` command.
@@ -71,10 +71,14 @@ pub fn first_key() -> Option<u8> {
 /// wakes the machine.
 pub fn run(info: &Info, first: u8) -> ! {
     print_line(b"ppc: monitor ready");
+    if serial::take_overflow() {
+        print_line(b"monitor: input overrun");
+    }
     serial::write(b"ppc> ");
 
     let mut line = [0u8; LINE_CAPACITY];
     let mut length = 0;
+    let mut overflow = false;
     let mut pending = Some(first);
     loop {
         let byte = match pending.take() {
@@ -84,20 +88,32 @@ pub fn run(info: &Info, first: u8) -> ! {
         match byte {
             b'\r' | b'\n' => {
                 serial::write_byte(b'\n');
-                execute(info, &line[..length]);
+                if overflow {
+                    print_line(b"monitor: command too long");
+                } else {
+                    execute(info, &line[..length]);
+                }
                 length = 0;
+                overflow = false;
                 serial::write(b"ppc> ");
             }
             0x08 | 0x7f => {
-                if length > 0 {
+                if !overflow && length > 0 {
                     length -= 1;
                     serial::write(b"\x08 \x08");
                 }
             }
-            byte if (0x20..0x7f).contains(&byte) && length < line.len() => {
-                line[length] = byte;
-                length += 1;
-                serial::write_byte(byte);
+            byte if (0x20..0x7f).contains(&byte) => {
+                if length < line.len() {
+                    line[length] = byte;
+                    length += 1;
+                    serial::write_byte(byte);
+                } else {
+                    // The rest of the line cannot be kept.  Consume it
+                    // without an echo and refuse the whole line at CR, so a
+                    // paste cannot turn into a valid command by truncation.
+                    overflow = true;
+                }
             }
             _ => {}
         }
@@ -107,6 +123,9 @@ pub fn run(info: &Info, first: u8) -> ! {
 fn read_blocking() -> u8 {
     loop {
         if let Some(byte) = serial::read_byte() {
+            if serial::take_overflow() {
+                print_line(b"monitor: input overrun");
+            }
             return byte;
         }
         core::hint::spin_loop();

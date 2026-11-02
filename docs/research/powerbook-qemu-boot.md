@@ -23,10 +23,11 @@ tree gives the keyboard, prints the scancode and US ASCII character, prints
 QEMU monitor once the kernel prints `ppc: keyboard waiting`. A boot with no
 input prints `ppc: keyboard timeout`, `KEY-SKIP reason=no-key` and still
 reaches `ppc: halted`. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build. On
-a PMU machine such as the M4753 there is no `via-cuda`; the kernel skips the
-external-interrupt probe, continues on the decrementer and does not print
-`IRQ-OK`, and the keyboard path uses the PMU transport, which is written but
-pending hardware verification.
+a PMU machine such as the M4753 there is no `via-cuda`; the timer lookup then
+selects `via-pmu`, programs the same 6522 timer and prints `IRQ-OK`. QEMU has
+no PMU model, so that path is pending real M4753 verification under #16. The
+keyboard path uses the PMU transport, which is written but also pending
+hardware verification.
 
 ## The `-kernel` path
 
@@ -217,10 +218,20 @@ monitor polls exactly one channel: the one the firmware selected, or channel A
 when the firmware names no ESCC channel. Channel A is the external Geoport on
 the M4753, and reading both channels into one line buffer would interleave two
 terminals. `serial::read_byte` selects RR0, tests bit 0 (Rx character
-available) and reads the channel's data port; `serial::init` drains any byte
-latched before the monitor existed. The receiver is polled rather than
-interrupt-driven, and RR1 is not inspected: an overrun drops a byte instead of
-reporting it.
+available) and drains every waiting byte into a 64-byte receive ring before
+returning one; `serial::init` drains any byte latched before the monitor
+existed. The ring is the paste path: while a command executes, the next bytes
+wait there instead of overwriting the ESCC's single receive register. A full
+ring drops the newest byte and prints `monitor: input overrun` once, so loss
+is visible rather than silent. The receiver is polled rather than
+interrupt-driven, and RR1 is not inspected.
+
+The monitor accepts a line of printable ASCII up to 32 characters. Backspace
+erases the previous character; a longer line is consumed without echo and
+refused at CR with `monitor: command too long` rather than being matched in
+truncated form. An unrecognised line prints `monitor: unknown command:` and
+the retained line. The gate pastes several commands, a backspace edit, an
+overlong line and an unknown command in one write.
 
 The Geoport is a mini-DIN-9 serial connector, backwards-compatible with the
 8-pin Mac serial port, on SCC channel A. A modem card in the communication slot
@@ -451,9 +462,12 @@ to the acknowledge port. The mask has one bit per source, with one meaning
 enabled. The registers are little-endian on the Mac I/O bus, so the driver
 byte-reverses every 32-bit access.
 
-The timer is timer 1 in the CUDA's MOS 6522 VIA. The device tree gives its
-window (`reg = <0x16000 0x2000>`) and line (`AAPL,interrupts = <0x12>`); the
-VIA registers are 0x200 bytes apart inside that window. Timer 1 runs in
+The timer is timer 1 in the MOS 6522 VIA. The device tree gives its window
+(`reg = <0x16000 0x2000>`) and line (`AAPL,interrupts = <0x12>`) for the CUDA,
+or the corresponding `via-pmu` window and line on the M4753; the VIA registers
+are 0x200 bytes apart inside that window. `platform::via_timer` selects
+`via-cuda` first and `via-pmu` second, matching Linux's
+`via_calibrate_decr`; both nodes program the same timer. Timer 1 runs in
 continuous mode at 4.7 MHz / 6: a latch of 781 gives one interrupt about every
 millisecond. The handler clears the VIA's T1 flag, writes the event bit to the
 controller's acknowledge port, and checks that the next event read has the
@@ -462,19 +476,25 @@ timer underflow can set the flag again between clearing it and acknowledging
 the controller, so the handler repeats the clear/acknowledge pair a bounded
 number of times instead of reporting a false failure. The stop path disables
 the interrupt, switches T1 to one-shot mode, loads the longest count and then
-clears the flag, so its final IFR read cannot race the next underflow.
+clears the flag, so its final IFR read cannot race the next underflow. Before
+T1 is enabled the VIA's other interrupt sources are masked: all seven share
+one output, and a source the firmware left enabled must not reach the PIC
+during the proof.
 
-On the M4753 there is no `via-cuda` node.  `platform::cuda` returns `None`,
-`main` logs `ppc: timer via=absent external-irq=skipped`, and the IRQ probe is
-skipped; the decrementer still provides `clock_ms` and the boot continues to
-`BOOT-OK`, the fault probes, the ATA read and the module check.
+On the M4753 there is no `via-cuda` node. The same probe now selects
+`via-pmu`, logs `ppc: timer transport=pmu via=... line=...`, programs timer 1
+through the same `Via` abstraction and expects `IRQ-OK count=10`. QEMU's
+`g3beige` has no PMU model, so the gate cannot run this path and does not
+pretend to; it is compiled in and the real M4753 check is pending under #16.
+The QEMU boot continues to use the CUDA and must keep printing
+`ppc: timer transport=cuda` and `IRQ-OK`.
 
 The `0x500` stub shares `trap_entry` with the fault vectors. An external
 interrupt is taken at an instruction boundary, so SRR0 already holds the
 instruction to resume at and the dispatcher writes it back unchanged. SRR1
 holds the interrupted MSR with `EE` set. The boot leaves the controller masked
 and the timer stopped while the fault probes run, then starts the timer,
-unmasks line `0x12` and collects ten interrupts:
+unmasks the tree's line (line `0x12` on `g3beige`) and collects ten interrupts:
 
 ```
 ppc: irq controller=0x81080000 timer=0x81096000 line=0x12 period=781
@@ -678,10 +698,34 @@ qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
   -monitor none -no-reboot
 ```
 
-The gate creates `serial-monitor.in` and `serial-monitor.out`, writes one byte
-at a time to `.in`, and copies `.out` to `serial-monitor.log`. It waits for
-`ppc: monitor wait` before typing and for each command's output before typing
-the next.
+The gate creates `serial-monitor.in` and `serial-monitor.out` and copies
+`.out` to `serial-monitor.log`. It waits for `ppc: monitor wait` before
+typing. The first commands are written as whole lines: `info`, then `help`.
+A single paste then carries another `help`, a backspace-edited `help`
+(`helx`, backspace, `p`), a 40-character line and `bogus`. The gate requires
+the two help outputs, `monitor: command too long` and
+`monitor: unknown command: bogus`, then sends `halt` and requires
+`ppc: halted`. This exercises the receive ring, echo, erase, overlong and
+unknown paths in one burst.
+
+A further boot proves the B-selected channel. OpenBIOS under `-nographic`
+always names channel A, so the gate seeds NVRAM with `auto-boot?=false`
+(`-prom-env`), waits at the OpenBIOS prompt, types
+`setenv output-device sccb`, then `boot`:
+
+```sh
+qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
+  -drive file=ata.img,format=raw,if=ide,index=0,media=disk \
+  -nographic -chardev pipe,id=b-a,path=serial-b-a \
+  -serial chardev:b-a -chardev pipe,id=b-b,path=serial-b-b \
+  -serial chardev:b-b -prom-env 'auto-boot?=false' \
+  -monitor none -no-reboot
+```
+
+The kernel must log `output-device=sccb ... selected=b`, print
+`ppc: monitor wait input=b`, and run a pasted `info`/`help`/`halt` on channel
+B. `info` must report `console=b input=b`. Channel A remains the OpenBIOS
+console; both kernel outputs are still mirrored.
 
 The gate creates `ata.img` as 8192 zero sectors and writes
 `IRIX7-ATA-SIG001` at LBA 4. It attaches that image to the first Mac I/O ATA
@@ -848,13 +892,15 @@ ppc: halted
   OpenPIC needs a separate controller driver and a different machine tree.
   The Gatwick Mac I/O controller's interrupt block is accepted as the same
   Heathrow register layout; no other Gatwick-specific device is driven.
-- The PowerBook's timer is the PMU's VIA, not a CUDA. `platform::cuda` looks
-  for `via-cuda` below the selected Mac I/O node, so the M4753 stops at
-  `ppc: timer via=absent external-irq=skipped` after the console report. The
-  keyboard lookup falls back to `via-pmu` and uses the PMU ADB command path,
-  but QEMU has no PMU model: that path is written from the Linux `via-pmu`
-  sequence and is pending hardware verification. PMU housekeeping (RTC,
-  NVRAM, power events) remains outside this slice.
+- The PowerBook's timer is the PMU's VIA, not a CUDA. `platform::via_timer`
+  looks for `via-cuda` and then `via-pmu` below the selected Mac I/O node and
+  programs either through the same 6522 registers, so the M4753 path is
+  expected to run the `0x500` proof and print `IRQ-OK`. QEMU has no PMU model:
+  the PMU path is compiled and selected from the device tree but its evidence
+  is pending a real M4753 run under #16. The keyboard lookup also falls back
+  to `via-pmu` and uses the PMU ADB command path; that path is written from
+  the Linux `via-pmu` sequence and is likewise pending hardware verification.
+  PMU housekeeping (RTC, NVRAM, power events) remains outside this slice.
 - The media-bay ATA scan is device-tree support only; no PowerBook media-bay
   hardware has been tested. The gate's second controller is a
   `macio-oldworld` instance with an ESCC and empty ATA channels, so it proves
@@ -862,14 +908,16 @@ ppc: halted
   wiring.
 - The console receives on one ESCC channel at a fixed 38400 8N1. It programs
   WR11, WR12, WR13 and WR14 for the 3.6864 MHz ESCC clock and enables both
-  receivers, but input is polled on the selected channel only. There is no
-  interrupt-driven input, flow control, termios or baud negotiation. An
-  overrun drops a byte because RR1 is not read.
+  receivers, but input is polled on the selected channel only. A 64-byte ring
+  between the receiver and the monitor retains a paste; a full ring reports
+  `monitor: input overrun`. There is no interrupt-driven input, flow control,
+  termios or baud negotiation. RR1 is not read, so an ESCC overrun is only
+  visible as a ring overrun.
 - The monitor is fixed at three commands with no line editor, history,
   cursor movement or argument parsing. A line longer than 32 characters is
-  truncated and reported as an unknown command. There is no command to boot,
-  load a module or dump memory. It reads the serial channel only; the decoded
-  ADB queue and the framebuffer are not input consoles yet.
+  refused as too long. There is no command to boot, load a module or dump
+  memory. It reads the serial channel only; the decoded ADB queue and the
+  framebuffer are not input consoles yet.
 - The ADB driver has no autopoll, no device enumeration or address assignment,
   no mouse or trackpad support and no keyboard LEDs. It preserves the address
   the firmware assigned instead of resetting the bus, so a keyboard that the

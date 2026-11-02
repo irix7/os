@@ -9,7 +9,8 @@
 //! initialises both ESCC channels, mirrors the boot log to both, takes
 //! decrementer ticks through the 0x900 vector, then proves every exception
 //! path it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
-//! one system call round-trip.  Finally it programs the CUDA timer, takes
+//! one system call round-trip.  Finally it programs the VIA timer the device
+//! tree names (the CUDA on a beige G3, the PMU on a PowerBook), takes
 //! external interrupts through the Heathrow controller at the 0x500 vector,
 //! acknowledges each one and reports the count, then identifies the ATA disk
 //! named by the Mac I/O device tree and reads one PIO sector.  After the
@@ -224,7 +225,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     // selected Mac I/O node, so a machine with a missing child still shows
     // which controller was chosen.
     let controller = platform::pic(&client, &macio);
-    let cuda = platform::cuda(&client, &macio);
+    let via_timer = platform::via_timer(&client, &macio);
     let disk = platform::ata(&client, &macio);
     let adb = platform::adb(&client, &macio);
     let display = platform::display(&client);
@@ -359,8 +360,17 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
-    let cuda = match cuda {
-        Some(cuda) => Some(cuda),
+    let via_timer = match via_timer {
+        Some(via_timer) => {
+            console::write(b"ppc: timer transport=");
+            console::write(via_timer.kind.name().as_bytes());
+            console::write(b" via=");
+            print_hex(via_timer.base);
+            console::write(b" line=");
+            print_hex(via_timer.line);
+            console::write_byte(b'\n');
+            Some(via_timer)
+        }
         None => {
             print_line(b"ppc: timer via=absent external-irq=skipped");
             None
@@ -398,8 +408,8 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         None => print_line(b"ppc: adb absent"),
     }
 
-    if let Some(cuda) = &cuda {
-        irq::prepare(controller.base, cuda.base, cuda.line);
+    if let Some(via_timer) = &via_timer {
+        irq::prepare(controller.base, via_timer.base, via_timer.line);
     }
 
     timer::enable();
@@ -420,7 +430,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     probe::run();
     print_line(b"TRAPS-OK");
 
-    if let Some(_cuda) = &cuda {
+    if let Some(_via_timer) = &via_timer {
         irq::start();
         let irq_started = timer::timebase();
         let irq_deadline = timebase.saturating_mul(2);
@@ -444,7 +454,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         print_dec(count);
         console::write_byte(b'\n');
     } else {
-        print_line(b"IRQ-SKIP reason=no-cuda");
+        print_line(b"IRQ-SKIP reason=no-via");
     }
 
     let channel = ata::Channel::new(disk.base);

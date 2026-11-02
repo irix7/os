@@ -3,8 +3,10 @@
 //!
 //! The machine's interrupt controller is the Heathrow block at the start of
 //! the Mac I/O window; the external interrupt exception is vector 0x500.  The
-//! deterministic source is timer 1 in the CUDA's MOS 6522 VIA, whose line
-//! number and register window both come from the device tree.
+//! deterministic source is timer 1 in the MOS 6522 VIA, whose line number and
+//! register window both come from the device tree.  The VIA is a CUDA on a
+//! beige G3 and QEMU's `g3beige`, and the PMU interface on the PowerBook G3
+//! M4753; both program the same timer registers.
 //!
 //! The handler reads the controller's pending-event register, clears the
 //! timer flag that raised the event, writes the event bit back to the
@@ -17,8 +19,9 @@ use crate::pic::Controller;
 use crate::via::Timer;
 use crate::{console, halt, print_dec, print_hex, print_line};
 
-/// Timer 1 period in CUDA clocks: one millisecond minus the timer's two
-/// reload counts.
+/// Timer 1 period in VIA clocks: one millisecond minus the timer's two
+/// reload counts.  Both the CUDA and the PMU VIA divide the 4.7 MHz clock by
+/// six; Linux's `via_calibrate_decr` uses the same rate for either node.
 const PERIOD_TICKS: u16 = (crate::via::T1_HZ / 1000 - 2) as u16;
 
 /// Interrupts to collect before the gate reports success.

@@ -42,12 +42,13 @@ tree-order case.
 
 The interrupt controller in both nodes is the Heathrow register block, so the
 driver accepts `compatible = "heathrow"` and `"gatwick"`. The M4753's VIA is
-the PMU (`via-pmu`), not a CUDA. The kernel logs `ppc: timer via=absent
-external-irq=skipped`, uses the decrementer for its clock and skips the CUDA
-external-interrupt proof. The keyboard lookup falls back to the PMU and sends
-ADB commands with `PMU_ADB_CMD`; that path is written from the Linux `via-pmu`
-sequence but has not run on hardware. PMU housekeeping (RTC, NVRAM, power) is
-a later slice.
+the PMU (`via-pmu`), not a CUDA. The kernel selects the timer node from the
+device tree: the CUDA on QEMU's `g3beige`, the PMU VIA on the M4753, both
+programmed through the same 6522 timer registers. It logs `ppc: timer
+transport=cuda` or `ppc: timer transport=pmu` with the window and line.
+The keyboard lookup falls back to the PMU and sends ADB commands with
+`PMU_ADB_CMD`; that path is written from the Linux `via-pmu` sequence but has
+not run on hardware. PMU housekeeping (RTC, NVRAM, power) is a later slice.
 
 ## What this changes
 
@@ -102,11 +103,16 @@ A new machine layer, in the same shape as the x86 one:
   install.
 - **No userland yet.** As on x86, userland follows the machine layer.
 - **The timer is in the PMU.** The M4753 exposes `via-pmu`, not `via-cuda`.
-  The external-interrupt proof programs the CUDA's 6522 timer, so on this
-  machine the kernel logs `ppc: timer via=absent external-irq=skipped`, skips
-  `IRQ-OK` and continues on the decrementer. The keyboard uses the same 6522
-  through the PMU's command protocol, which is written but has not been run on
-  hardware; QEMU cannot model it. PMU housekeeping is a separate slice.
+  `platform::via_timer` looks for `via-cuda` first and then `via-pmu`, reads
+  the 6522 window from `reg` and the controller line from `AAPL,interrupts`
+  or `interrupts`, and programs timer 1 through the same `Via` abstraction as
+  the CUDA path.  The kernel is expected to take ten external interrupts
+  through the Heathrow/Gatwick PIC and print `IRQ-OK count=10`.  QEMU's
+  `g3beige` has no PMU model, so this path is compiled and selected from the
+  device tree but has not run: real M4753 evidence is pending under #16, and
+  there is deliberately no fake PMU device in the QEMU gate.  The keyboard
+  uses the same 6522 through the PMU's command protocol, which is also written
+  and pending hardware verification.  PMU housekeeping is a separate slice.
 - **The framebuffer mode is Open Firmware's.** The kernel reads
   `width`/`height`/`depth`/`linebytes` and the `assigned-addresses` aperture
   from the Rage LT node and draws into it without setting a mode. 8, 16 and
