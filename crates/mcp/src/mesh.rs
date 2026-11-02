@@ -47,11 +47,11 @@
 
 use mesh_core::{
     fixture_objects, shard_objects, HomeTable, HOME_FIXTURE_DEFAULT, HOME_FIXTURE_MAX,
-    MAX_NODES as MAX_MESH_NODES, SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
+    SHARD_FIXTURE_DEFAULT, SHARD_FIXTURE_MAX,
 };
 use mesh_join::{
-    EpochConfirmation, EpochRecord, JoinEvent, JoinMessage, JoinNode, MembershipSnapshot, Role,
-    Tick, MAX_BODY as JOIN_BODY_MAX,
+    gossip_targets, EpochConfirmation, EpochRecord, JoinEvent, JoinMessage, JoinNode,
+    MembershipSnapshot, Role, Tick, FANOUT as GOSSIP_FANOUT, MAX_BODY as JOIN_BODY_MAX,
 };
 use mesh_migrate::{
     Event as MigrateEvent, MigrateNode, Signer as MigrateSigner, Step as MigrateStep,
@@ -124,9 +124,34 @@ const BULK_CREDIT_GRANT: u32 = 2;
 /// 10,000 outstanding tags, and that result must not be read as a claim that
 /// the live MCP module holds 10,000 tags.
 const PENDING_CAPACITY: u32 = 8;
+/// Live bound on distinct member links.
+///
+/// The wire membership allows 128 members, but the module holds one send
+/// queue, pending table and heartbeat per source.  Eight is the largest real
+/// kernel count the M3 rig drives; a ninth source is refused rather than
+/// growing the module's fixed memory on the data path.
+const MAX_MESH_LINKS: usize = 8;
+/// Send-queue size for a non-authority link.
+///
+/// Join, route, migration and one aggregate are all far below 4 KiB; bulk and
+/// latency stay on the authority link's 32 KiB queue.
+const LINK_QUEUE_BYTES: usize = 4 * 1024;
+/// Reply-tag capacity for a gossip link.
+const LINK_PENDING_CAPACITY: u32 = 2;
+/// Interval between anti-entropy re-gossip of the current aggregate.
+///
+/// The root re-sends the same signed object to a rotating bounded window, so
+/// a lost push is repaired without another signature or an O(N) broadcast.
+const GOSSIP_RESYNC_MS: u64 = 60_000;
+/// A gossip record's header hop budget.
+///
+/// The live hard bound is "each node forwards one aggregate per epoch"; this
+/// field records the intended bounded depth for diagnostics and forwarding
+/// policy in a future hop-counting path.
+const GOSSIP_TTL: u8 = 3;
 const LINE_CAP: usize = 768;
 
-/// Fixed control channels on the one peer link.
+/// Fixed control channels on every link.
 ///
 /// The bulk data channel is allocated per transfer, so a transfer cannot
 /// collide with a control ID and both sides keep the initiator/responder
@@ -138,8 +163,9 @@ const STREAM_MIGRATE: u32 = 4;
 const STREAM_LATENCY: u32 = 6;
 
 /// Frames the module may stage for one tick before the class scheduler drains
-/// them.  A tick produces at most one frame per stream plus a retry, so this is
-/// a bound on damage, not a throughput target.
+/// them.  The stage is shared by every link.  One link produces at most one
+/// frame per stream plus a retry in a tick; when several links fill the stage,
+/// `stage_room` drains it into the link queues early.
 const STAGE_FRAMES: usize = 8;
 /// Body storage for the small control records that share a tick: route and
 /// migration bodies are at most 512 bytes each.  Join bodies already live in
@@ -239,6 +265,8 @@ enum BodyStore {
 /// One encoded frame waiting for its class turn in the scheduler.
 #[derive(Clone, Copy)]
 struct StagedFrame {
+    /// Link the frame leaves on: zero for the authority link, else the peer.
+    link: NodeId,
     stream: u32,
     class: Class,
     header: MeshHeader,
@@ -248,22 +276,100 @@ struct StagedFrame {
     body_len: usize,
 }
 
+/// Per-source membership and send state.
+///
+/// One TCP session carries every source.  The decoder is a property of that
+/// session (a record's length prefix has no source field), but everything from
+/// the envelope source onwards is per link: the send queue, reply tags,
+/// heartbeat, last-seen time, summary counter, last aggregate epoch sent and
+/// the stream mux, whose send ledger follows this link's FIFO queue.
+/// That is what a hub-multiplexed root needs to give each member its own
+/// bounded state instead of one shared queue and one global join view.
+struct MeshLink {
+    /// The source `NodeId`; zero only for the root's unbound listener link.
+    peer: NodeId,
+    /// A frame from this source has been accepted.
+    confirmed: bool,
+    queue: SendQueue,
+    /// Version 1 stream mux: table, class scheduler and send ledger.
+    streams: StreamMux,
+    pending: PendingTable,
+    heartbeat: Heartbeat,
+    last_rx_ms: u64,
+    /// Highest member-summary counter accepted from this peer.
+    summary_counter: u64,
+    /// Highest aggregate epoch queued to this peer.
+    sent_epoch: u32,
+    /// Bytes and whole frames written from this link's queue.
+    bytes_sent: u64,
+    frames_sent: u64,
+}
+
+impl MeshLink {
+    fn new(peer: NodeId, primary: bool, heartbeat: Heartbeat, side: Side, now: u64) -> Self {
+        let queue = if primary {
+            SendQueue::new()
+        } else {
+            SendQueue::with_capacity(LINK_QUEUE_BYTES)
+        };
+        let pending = PendingTable::new(if primary {
+            PENDING_CAPACITY
+        } else {
+            LINK_PENDING_CAPACITY
+        });
+        let mut heartbeat = heartbeat;
+        heartbeat.reset(now);
+        Self {
+            peer,
+            confirmed: false,
+            queue,
+            streams: live_streams(side),
+            pending,
+            heartbeat,
+            last_rx_ms: now,
+            summary_counter: 0,
+            sent_epoch: 0,
+            bytes_sent: 0,
+            frames_sent: 0,
+        }
+    }
+}
+
 struct Mesh {
     phase: Phase,
     self_id: NodeId,
+    /// The authority peer: the root on a member, the first member on a root.
+    /// Route, migration and latency use this peer.
     peer: Option<NodeId>,
-    /// Every source accepted on this link, in first-seen order.
-    ///
-    /// M2 has one peer per link.  The M3 host hub multiplexes the member links
-    /// onto the root's single mesh slot, so the root sees several source
-    /// `NodeId`s on one byte stream.  A member still sees only the root.
-    peers: [NodeId; MAX_MESH_NODES],
-    peer_count: usize,
+    /// Bounded per-source link table.  The M3 host hub multiplexes several
+    /// member sessions onto one module TCP slot, so a root sees one source per
+    /// member; each gets its own queue, tags and heartbeat.  The table lives on
+    /// the module heap, not in the static image, so eight links do not consume
+    /// the 512 KiB slot.
+    links: alloc::vec::Vec<MeshLink>,
+    /// Index of the authority link in `links`.
+    primary_link: Option<usize>,
     peer_confirmed: bool,
+    /// Record framer for the one TCP session.
+    ///
+    /// The length prefix is per session, not per source, so the decoder stays
+    /// single.  It is reset only when the session is replaced; per-source
+    /// processing begins after `decode_record` exposes `MeshHeader.src`.
     decoder: StreamDecoder,
-    queue: SendQueue,
-    pending: PendingTable,
     stats: Stats,
+    /// Greedy-gossip round counter; rotates the bounded target window.
+    gossip_round: u64,
+    /// Highest aggregate epoch this node has forwarded or published.
+    gossip_floor: u32,
+    /// Last anti-entropy re-gossip time (root only).
+    last_gossip_ms: u64,
+    /// Member summaries emitted and accepted.
+    gossip_summaries_sent: u64,
+    gossip_summaries_received: u64,
+    /// Aggregates queued and forwarded.
+    gossip_aggregates_sent: u64,
+    gossip_aggregates_forwarded: u64,
+    /// Heartbeat policy copied into each link when the session is established.
     heartbeat: Heartbeat,
     join: Option<JoinNode>,
     /// Join requests this boot has queued.  A restarted member starts at zero,
@@ -314,9 +420,7 @@ struct Mesh {
     last_connect_ms: u64,
     /// Active latency measurement.
     latency: Option<LatencyProbe>,
-    /// Version 1 stream mux: table, class scheduler and send ledger.
-    streams: StreamMux,
-    /// Frames encoded this tick, in production order.
+    /// Frames encoded this tick for every link, in production order.
     staged: [Option<StagedFrame>; STAGE_FRAMES],
     /// Body bytes used in this tick.
     stage_len: usize,
@@ -408,8 +512,12 @@ struct BulkReply {
     stream: u32,
 }
 
-/// Receive buffer for one join body.  A static keeps the 4 KiB bound out of
-/// the frame loop's stack frame; the module is single-threaded.
+/// Receive/transmit buffer for one frame body.
+///
+/// The control plane is single-threaded and never holds an inbound body across
+/// a tick, so the frame receive copy and the outgoing bulk chunk share one
+/// 16 KiB static.  Sharing is safe because `queue_bulk_chunk` runs from
+/// `bulk_tick` after `feed` has returned.
 static mut FRAME_RX: [u8; FRAME_BODY_MAX] = [0; FRAME_BODY_MAX];
 /// Encode buffer for one outgoing join body.
 static mut JOIN_TX: [u8; JOIN_BODY_MAX] = [0; JOIN_BODY_MAX];
@@ -427,6 +535,12 @@ static mut READ_BUF: [u8; READ_CHUNK] = [0; READ_CHUNK];
 
 static mut MESH: Option<Mesh> = None;
 static mut ENABLED: bool = false;
+
+/// The authority link's stream mux, borrowed from the link table alone so a
+/// caller can hold another `Mesh` field at the same time.
+fn primary_mux(links: &mut [MeshLink], primary: Option<usize>) -> Option<&mut StreamMux> {
+    links.get_mut(primary?).map(|link| &mut link.streams)
+}
 
 /// Build the fixed stream set for one link side.
 fn live_streams(side: Side) -> StreamMux {
@@ -522,17 +636,26 @@ pub unsafe fn init(services: *const Services) -> bool {
     } else {
         Phase::Arm
     };
+    let peer = match join.as_ref().map(|join| (join.role(), join.root())) {
+        Some((Role::Member, root)) => Some(root),
+        _ => None,
+    };
     let mesh = Mesh {
         phase,
         self_id,
-        peer: None,
-        peers: [NodeId::ZERO; MAX_MESH_NODES],
-        peer_count: 0,
+        peer,
+        links: alloc::vec::Vec::new(),
+        primary_link: None,
         peer_confirmed: false,
         decoder: StreamDecoder::new(),
-        queue: SendQueue::new(),
-        pending: PendingTable::new(PENDING_CAPACITY),
         stats: Stats::default(),
+        gossip_round: 0,
+        gossip_floor: 0,
+        last_gossip_ms: 0,
+        gossip_summaries_sent: 0,
+        gossip_summaries_received: 0,
+        gossip_aggregates_sent: 0,
+        gossip_aggregates_forwarded: 0,
         heartbeat,
         join,
         join_requests: 0,
@@ -567,11 +690,6 @@ pub unsafe fn init(services: *const Services) -> bool {
         connect_started_ms: now,
         last_connect_ms: 0,
         latency: None,
-        streams: live_streams(if direct_initiator {
-            Side::Initiator
-        } else {
-            Side::Responder
-        }),
         staged: [None; STAGE_FRAMES],
         stage_len: 0,
         stage_fault: None,
@@ -824,7 +942,7 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
             header.flags = mesh_flags::PROBE;
             header.ttl = MeshHeader::MAX_HOPS;
             let frame_header = frame.header;
-            sent = mesh.stage_control(stream, header, frame_header, &body);
+            sent = mesh.stage_control(stream, header, frame_header, &body, now);
         }
         if sent {
             // The cancel record is queued; reset after the sink accepts it so
@@ -913,22 +1031,25 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
     body.u64(mesh.stats.bulk_chunks_sent);
     body.str(" bulk_abort=");
     body.u64(mesh.stats.bulk_aborts);
+    // The stream counters are the authority link's; a node with no session
+    // reports zero for each.
+    let streams = mesh.primary_streams();
     body.str(" stream_open=");
-    body.u64(mesh.streams.len() as u64);
+    body.u64(streams.map_or(0, |streams| streams.len() as u64));
     body.str(" stream_opens=");
-    body.u64(mesh.streams.opens());
+    body.u64(streams.map_or(0, |streams| streams.opens()));
     body.str(" stream_resets=");
-    body.u64(mesh.streams.resets());
+    body.u64(streams.map_or(0, |streams| streams.resets()));
     body.str(" stream_credit_stall=");
-    body.u64(mesh.streams.credit_stalls());
+    body.u64(streams.map_or(0, |streams| streams.credit_stalls()));
     body.str(" stream_control_stall=");
-    body.u64(mesh.streams.control_stalls());
+    body.u64(streams.map_or(0, |streams| streams.control_stalls()));
     body.str(" stream_tx_control=");
-    body.u64(mesh.streams.control_frames());
+    body.u64(streams.map_or(0, |streams| streams.control_frames()));
     body.str(" stream_tx_data=");
-    body.u64(mesh.streams.data_frames());
+    body.u64(streams.map_or(0, |streams| streams.data_frames()));
     body.str(" stream_queued=");
-    body.u64(mesh.streams.queued_bytes() as u64);
+    body.u64(streams.map_or(0, |streams| streams.queued_bytes() as u64));
     body.push(b'\n');
     let state = match mesh.bulk.as_ref().map(|transfer| transfer.state) {
         Some(BulkState::Done) => 200,
@@ -1786,6 +1907,149 @@ impl<'a> Body<'a> {
 }
 
 impl Mesh {
+    fn link_count(&self) -> usize {
+        self.links.len()
+    }
+
+    fn link_index(&self, peer: NodeId) -> Option<usize> {
+        if peer.is_zero() {
+            return self.primary_link;
+        }
+        self.links.iter().position(|link| link.peer == peer)
+    }
+
+    fn link(&self, peer: NodeId) -> Option<&MeshLink> {
+        self.link_index(peer).map(|index| &self.links[index])
+    }
+
+    fn link_mut(&mut self, peer: NodeId) -> Option<&mut MeshLink> {
+        let index = self.link_index(peer)?;
+        self.links.get_mut(index)
+    }
+
+    /// Return the link for `peer`, creating a bounded gossip link if needed.
+    ///
+    /// The hub forwards by destination over the shared session, so a member can
+    /// address another member without a separate TCP connection.  A full link
+    /// table falls back to the primary queue: the frame is still routable, but
+    /// it no longer has per-peer queue state, and the table never grows.
+    fn ensure_link(&mut self, peer: NodeId, now: u64) -> Option<usize> {
+        if peer.is_zero() {
+            return self.primary_link;
+        }
+        if let Some(index) = self.link_index(peer) {
+            return Some(index);
+        }
+        if self.links.len() >= MAX_MESH_LINKS {
+            return self.primary_link;
+        }
+        let side = self.side_for(peer);
+        self.links
+            .push(MeshLink::new(peer, false, self.heartbeat, side, now));
+        Some(self.links.len() - 1)
+    }
+
+    fn outbound_index(&mut self, destination: NodeId, now: u64) -> Option<usize> {
+        if destination.is_zero() {
+            self.primary_link
+        } else {
+            self.ensure_link(destination, now)
+        }
+    }
+
+    /// The authority link's stream mux; bulk and latency use this one.
+    fn primary_streams(&self) -> Option<&StreamMux> {
+        let index = self.primary_link?;
+        self.links.get(index).map(|link| &link.streams)
+    }
+
+    fn primary_streams_mut(&mut self) -> Option<&mut StreamMux> {
+        primary_mux(&mut self.links, self.primary_link)
+    }
+
+    /// Start a fresh session: one unbound authority link, no gossip state.
+    ///
+    /// A member's authority link is addressed to the configured root from the
+    /// start.  A root cannot know the first member's `NodeId` until a frame
+    /// arrives, so its authority link starts unbound and is bound by
+    /// `learn_peer` on the first accepted source.
+    fn reset_links(&mut self, now: u64) {
+        self.links.clear();
+        let role = self.join.as_ref().map(|join| join.role());
+        let root = self.join.as_ref().map(|join| join.root());
+        let primary_peer = match (role, root) {
+            (Some(Role::Member), Some(root)) => root,
+            _ => NodeId::ZERO,
+        };
+        let side = self.side_for(primary_peer);
+        self.links
+            .push(MeshLink::new(primary_peer, true, self.heartbeat, side, now));
+        self.primary_link = Some(0);
+        self.stage_reset();
+        self.stage_fault = None;
+        self.retire_stream = None;
+        self.peer = match role {
+            Some(Role::Member) => Some(primary_peer),
+            _ => None,
+        };
+        // A member's route and migration policy start bound to the authority
+        // link.  Without this the first route frame from the root is refused as
+        // `peer-mismatch`; the old single-link path set this on the first
+        // learned peer, but a member now knows the root before it hears a frame.
+        if role == Some(Role::Member) {
+            if let Some(route) = self.route.as_mut() {
+                let _ = route.set_peer(primary_peer, now);
+            }
+            if let Some(migrate) = self.migrate.as_mut() {
+                let _ = migrate.set_peer(primary_peer);
+            }
+        }
+        self.peer_confirmed = false;
+        self.gossip_floor = 0;
+        self.gossip_round = 0;
+        self.last_gossip_ms = now;
+    }
+
+    /// Bind the root's unbound authority link to the first accepted source.
+    fn bind_primary(&mut self, peer: NodeId) -> Option<usize> {
+        let index = self.primary_link?;
+        let link = self.links.get_mut(index)?;
+        if link.peer.is_zero() {
+            link.peer = peer;
+            link.confirmed = true;
+            if self.peer.is_none() {
+                self.peer = Some(peer);
+            }
+        }
+        Some(index)
+    }
+
+    /// Drop a link after the failure detector removed its member.
+    fn forget_link(&mut self, peer: NodeId) {
+        let Some(index) = self.link_index(peer) else {
+            return;
+        };
+        if Some(index) == self.primary_link {
+            // A member never removes its root.  A root keeps the primary slot
+            // as its authority route target even if that member failed; the
+            // slot is reused by the next confirmed member only if unbound.
+            return;
+        }
+        self.links.remove(index);
+    }
+
+    fn mark_sent_epoch(&mut self, peer: NodeId, epoch: u32) {
+        if let Some(link) = self.link_mut(peer) {
+            if epoch > link.sent_epoch {
+                link.sent_epoch = epoch;
+            }
+        }
+    }
+
+    fn link_sent_epoch(&self, peer: NodeId) -> u32 {
+        self.link(peer).map(|link| link.sent_epoch).unwrap_or(0)
+    }
+
     fn tick(&mut self, services: &Services) {
         let now = (services.clock_ms)();
         // Failure detection runs in every phase: a partition may leave the
@@ -1895,6 +2159,7 @@ impl Mesh {
                 }
             }
         }
+        let had_removal = removed.is_some();
         if let Some(snapshot) = removed {
             self.log_homes(services, &snapshot, true);
             self.on_route_snapshot(services, &snapshot, now);
@@ -1902,6 +2167,13 @@ impl Mesh {
             // the removed node.  Persist the root's new signed view so a root
             // restart resumes the post-removal epoch rather than the seed.
             self.persist_root(services);
+        }
+        if had_removal && self.join.as_ref().map(|join| join.role()) == Some(Role::Root) {
+            // Publish the new view once and seed it to a bounded window; a
+            // member that misses the push is repaired from its next summary.
+            if let Some(aggregate) = self.join.as_mut().and_then(|join| join.publish_aggregate()) {
+                self.gossip_epoch(services, &aggregate, None, now, false);
+            }
         }
     }
 
@@ -1977,23 +2249,12 @@ impl Mesh {
         self.stats.connects = self.stats.connects.saturating_add(1);
         self.link_generation = self.link_generation.wrapping_add(1);
         self.decoder.reset();
-        self.queue.clear();
-        self.pending = PendingTable::new(PENDING_CAPACITY);
-        self.peer = None;
-        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
-        self.peer_count = 0;
-        self.peer_confirmed = false;
+        self.reset_links(now);
         self.pass_logged = false;
         self.join_timeout_logged = false;
         self.last_rx_ms = now;
-        self.heartbeat.reset(now);
         self.phase = Phase::Connected;
         self.connect_attempts = 0;
-        self.reset_streams(if self.direct_initiator {
-            Side::Initiator
-        } else {
-            Side::Responder
-        });
         self.last_connect_ms = if self.direct_initiator {
             now.saturating_sub(self.connect_started_ms)
         } else {
@@ -2002,6 +2263,8 @@ impl Mesh {
         let mut line = Line::new();
         line.str("mesh-transport: connected connect_ms=");
         line.u64(self.last_connect_ms);
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
         self.send_handshake(now);
@@ -2053,7 +2316,6 @@ impl Mesh {
             let count = read as usize;
             self.stats.bytes_received = self.stats.bytes_received.saturating_add(count as u64);
             self.last_rx_ms = now;
-            self.heartbeat.on_receive(now);
             if let Err(error) = self.feed(services, &buffer[..count], now) {
                 self.reject(services, now, error);
                 return;
@@ -2067,12 +2329,20 @@ impl Mesh {
             self.disconnect(services, now, "receive-deadline");
             return;
         }
-        if self.queue.send_deadline_expired(now) {
+        if self
+            .links
+            .iter()
+            .any(|link| link.queue.send_deadline_expired(now))
+        {
             self.stats.send_deadlines = self.stats.send_deadlines.saturating_add(1);
             self.disconnect(services, now, "send-deadline");
             return;
         }
-        if self.heartbeat.timed_out(now) {
+        // A silent gossip link is dropped; the authority link is kept until
+        // every link is silent, because under the hub one quiet member must
+        // not tear down the root's session with the others.
+        self.expire_silent_links(services, now);
+        if !self.links.iter().any(|link| !link.heartbeat.timed_out(now)) {
             self.stats.heartbeat_timeouts = self.stats.heartbeat_timeouts.saturating_add(1);
             self.disconnect(services, now, "heartbeat-timeout");
             return;
@@ -2116,12 +2386,39 @@ impl Mesh {
             }
             Some((Tick::Summary, _)) => {
                 // Routine M3 refresh: the member reports liveness with a small
-                // summary instead of a full signed join request.  The root
-                // answers with one signed aggregate for the whole view.
-                if let Some(join) = self.join.as_mut() {
-                    let root = join.root();
-                    if let Some(summary) = join.member_summary() {
-                        self.send_join(services, JoinMessage::Summary(summary), root, now, false);
+                // signed summary.  The root is always a target; a bounded
+                // rotating window of other members receives the same summary
+                // so membership evidence spreads without a central directory
+                // and without one record per peer per interval.
+                if let Some((summary, root, snapshot)) = self.join.as_mut().and_then(|join| {
+                    let summary = join.member_summary()?;
+                    Some((summary, join.root(), join.snapshot()))
+                }) {
+                    let mut targets: alloc::vec::Vec<NodeId> =
+                        alloc::vec::Vec::with_capacity(GOSSIP_FANOUT);
+                    targets.push(root);
+                    let peers = gossip_targets(
+                        self.self_id,
+                        &snapshot.members,
+                        &[root],
+                        self.gossip_round,
+                        GOSSIP_FANOUT.saturating_sub(1),
+                    );
+                    self.gossip_round = self.gossip_round.wrapping_add(1);
+                    targets.extend(peers);
+                    targets.sort_unstable();
+                    targets.dedup();
+                    for target in targets {
+                        if self.send_join(
+                            services,
+                            JoinMessage::Summary(summary),
+                            target,
+                            now,
+                            false,
+                        ) {
+                            self.gossip_summaries_sent =
+                                self.gossip_summaries_sent.saturating_add(1);
+                        }
                     }
                 }
             }
@@ -2158,8 +2455,48 @@ impl Mesh {
         // above has already been queued, so a chunk cannot delay it.
         self.bulk_tick(services, now);
 
-        if self.heartbeat.due(now) {
-            let destination = self.peer.unwrap_or(NodeId::ZERO);
+        // Root anti-entropy: re-send the current signed aggregate to a
+        // rotating bounded window.  The object is not re-signed, so a lost
+        // push costs bytes, not another Ed25519 signature.
+        //
+        // The interval restarts whether or not a resync is due.  A two-member
+        // view has nobody to resync, and testing `snapshot()` on every tick
+        // would clone the member list each time; the x86 kernel's bump heap
+        // never frees those copies.
+        if self.join.as_ref().map(|join| join.role()) == Some(Role::Root)
+            && now.saturating_sub(self.last_gossip_ms) >= GOSSIP_RESYNC_MS
+        {
+            self.last_gossip_ms = now;
+            if self
+                .join
+                .as_ref()
+                .is_some_and(|join| join.snapshot().len() > 2)
+            {
+                if let Some(summary) = self
+                    .join
+                    .as_ref()
+                    .and_then(|join| join.current_aggregate())
+                    .cloned()
+                {
+                    self.gossip_epoch(services, &summary, None, now, true);
+                }
+            }
+        }
+
+        // One heartbeat per link.  The authority link and each gossip peer
+        // have independent clocks, so a quiet member cannot suppress the
+        // root's heartbeat to a healthy one.
+        let mut pings: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        for link in self.links.iter() {
+            if link.heartbeat.due(now) {
+                pings.push(if link.peer.is_zero() {
+                    NodeId::ZERO
+                } else {
+                    link.peer
+                });
+            }
+        }
+        for destination in pings {
             if self.queue_ping(
                 now,
                 MessageKind::Control,
@@ -2171,19 +2508,163 @@ impl Mesh {
                 Tag(0),
             ) {
                 self.stats.heartbeats_sent = self.stats.heartbeats_sent.saturating_add(1);
-                self.heartbeat.on_transmit(now);
+                if let Some(link) = self.link_mut(destination) {
+                    link.heartbeat.on_transmit(now);
+                }
             }
         }
-        let expired = self.pending.expire(now);
+        let mut expired = 0usize;
+        for link in self.links.iter_mut() {
+            expired += link.pending.expire(now);
+        }
         self.stats.expired_tags = self.stats.expired_tags.saturating_add(expired as u64);
         self.flush(services, now);
         self.maybe_log_pass(services);
     }
 
+    /// Drop silent gossip links while at least one link remains.
+    fn expire_silent_links(&mut self, services: &Services, now: u64) {
+        let mut silent: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        for (index, link) in self.links.iter().enumerate() {
+            if Some(index) == self.primary_link || link.peer.is_zero() {
+                continue;
+            }
+            if link.heartbeat.timed_out(now) {
+                silent.push(link.peer);
+            }
+        }
+        if silent.len() >= self.link_count().saturating_sub(1) {
+            // Keep the last link; the session heartbeat below decides whether
+            // the whole session is dead.
+            return;
+        }
+        for peer in silent {
+            let mut line = Line::new();
+            line.str("mesh-link: expired peer=");
+            line.node(&peer);
+            line.push(b'\n');
+            log(services, line.as_bytes());
+            self.forget_link(peer);
+        }
+    }
+
+    /// Queue one root-signed aggregate to a bounded deterministic window.
+    ///
+    /// `resync` re-sends an already-forwarded epoch to a rotating window for
+    /// anti-entropy.  Otherwise each node forwards a given epoch once, so the
+    /// work per change set is `O(N * FANOUT)` records, not an `O(N)` broadcast
+    /// of an `O(N)` object by the root.
+    fn gossip_epoch(
+        &mut self,
+        services: &Services,
+        summary: &mesh_join::EpochSummary,
+        exclude: Option<NodeId>,
+        now: u64,
+        resync: bool,
+    ) {
+        let Some(snapshot) = self.join.as_ref().map(|join| join.snapshot()) else {
+            return;
+        };
+        if !snapshot.members.contains(&self.self_id) {
+            return;
+        }
+        if !resync && summary.epoch <= self.gossip_floor {
+            return;
+        }
+        let mut excludes: alloc::vec::Vec<NodeId> = alloc::vec::Vec::new();
+        if let Some(source) = exclude {
+            excludes.push(source);
+        }
+        // The root is the writer; a member forwards to peers only.  Sending an
+        // aggregate back to the root would be an unexpected message there.
+        let member = self.join.as_ref().map(|join| join.role()) == Some(Role::Member);
+        let root = self
+            .join
+            .as_ref()
+            .map(|join| join.root())
+            .unwrap_or(NodeId::ZERO);
+        if member && !root.is_zero() {
+            excludes.push(root);
+        }
+        let targets = gossip_targets(
+            self.self_id,
+            &snapshot.members,
+            &excludes,
+            self.gossip_round,
+            GOSSIP_FANOUT,
+        );
+        self.gossip_round = self.gossip_round.wrapping_add(1);
+        let mut sent = 0usize;
+        for target in targets {
+            if !resync && self.link_sent_epoch(target) >= summary.epoch {
+                continue;
+            }
+            if self.send_join(
+                services,
+                JoinMessage::Epoch(summary.clone()),
+                target,
+                now,
+                false,
+            ) {
+                self.mark_sent_epoch(target, summary.epoch);
+                sent += 1;
+            }
+        }
+        if sent == 0 {
+            return;
+        }
+        if summary.epoch > self.gossip_floor {
+            self.gossip_floor = summary.epoch;
+        }
+        self.gossip_aggregates_sent = self.gossip_aggregates_sent.saturating_add(sent as u64);
+        let forwarded = member;
+        if forwarded {
+            self.gossip_aggregates_forwarded =
+                self.gossip_aggregates_forwarded.saturating_add(sent as u64);
+        }
+        let mut line = Line::new();
+        line.str("mesh-gossip: aggregate epoch=");
+        line.u64(summary.epoch as u64);
+        line.str(" members=");
+        line.u64(summary.grants.len() as u64);
+        line.str(" targets=");
+        line.u64(sent as u64);
+        line.str(match forwarded {
+            true => " forward=1",
+            false => " forward=0",
+        });
+        line.push(b'\n');
+        log(services, line.as_bytes());
+    }
+
+    /// Forward the aggregate this member installed, once per epoch.
+    fn maybe_forward_aggregate(&mut self, services: &Services, source: NodeId, now: u64) {
+        if self.join.as_ref().map(|join| join.role()) != Some(Role::Member) {
+            return;
+        }
+        let Some(summary) = self
+            .join
+            .as_ref()
+            .and_then(|join| join.current_aggregate())
+            .cloned()
+        else {
+            return;
+        };
+        self.gossip_epoch(services, &summary, Some(source), now, false);
+    }
+
     fn send_handshake(&mut self, now: u64) {
+        let Some(index) = self.primary_link else {
+            return;
+        };
         let Ok(tag) = self
-            .pending
-            .begin_at(now.saturating_add(RECEIVE_DEADLINE_MS))
+            .links
+            .get_mut(index)
+            .map(|link| {
+                link.pending
+                    .begin_at(now.saturating_add(RECEIVE_DEADLINE_MS))
+            })
+            .unwrap_or(Err(TransportError::NoTag))
         else {
             return;
         };
@@ -2198,9 +2679,11 @@ impl Mesh {
             tag,
         ) {
             self.stats.heartbeats_sent = self.stats.heartbeats_sent.saturating_add(1);
-            self.heartbeat.on_transmit(now);
-        } else {
-            let _ = self.pending.complete(tag);
+            if let Some(link) = self.links.get_mut(index) {
+                link.heartbeat.on_transmit(now);
+            }
+        } else if let Some(link) = self.links.get_mut(index) {
+            let _ = link.pending.complete(tag);
         }
     }
 
@@ -2329,8 +2812,8 @@ impl Mesh {
             OpCode::Read => {
                 incoming.stream != 0
                     && !self
-                        .streams
-                        .stream(incoming.stream)
+                        .primary_streams()
+                        .and_then(|streams| streams.stream(incoming.stream))
                         .is_some_and(|stream| stream.control)
             }
             OpCode::WindowUpdate | OpCode::Cancel => incoming.stream != 0,
@@ -2340,7 +2823,12 @@ impl Mesh {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
             return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
-        self.learn_peer(services, source, now)?;
+        self.learn_peer(services, source, now, incoming.kind, incoming.opcode)?;
+        if let Some(link) = self.link_mut(source) {
+            link.confirmed = true;
+            link.last_rx_ms = now;
+            link.heartbeat.on_receive(now);
+        }
         // Only the configured authority renews a member's write lease.  A
         // frame from another member proves that member is alive, not that the
         // authority still holds the view.
@@ -2398,7 +2886,9 @@ impl Mesh {
             (MessageKind::Response, OpCode::Ping) => {
                 let reply_to = incoming.header.reply_to as u32;
                 let tag = Tag(reply_to);
-                let _ = self.pending.complete(tag);
+                if let Some(link) = self.link_mut(source) {
+                    let _ = link.pending.complete(tag);
+                }
                 self.peer_confirmed = true;
                 self.on_latency(reply_to, now);
             }
@@ -2442,10 +2932,25 @@ impl Mesh {
                     JoinMessage::Confirm(confirmation) => Some(confirmation.clone()),
                     _ => None,
                 };
+                let summary = match &message {
+                    JoinMessage::Summary(summary) => Some(summary.counter),
+                    _ => None,
+                };
                 let outcome = match &mut self.join {
                     Some(join) => join.on_message(source, message, now),
                     None => return Ok(()),
                 };
+                if let Some(counter) = summary {
+                    if !matches!(outcome.event, JoinEvent::Rejected(_)) {
+                        if let Some(link) = self.link_mut(source) {
+                            if counter > link.summary_counter {
+                                link.summary_counter = counter;
+                            }
+                        }
+                        self.gossip_summaries_received =
+                            self.gossip_summaries_received.saturating_add(1);
+                    }
+                }
                 if let Some(confirmation) = stored_confirmation {
                     let accepted = match &outcome.event {
                         JoinEvent::Converged(snapshot)
@@ -2583,8 +3088,7 @@ impl Mesh {
         wire.apply_trace(&mut frame.header);
         let header = wire.header(self.self_id);
         let frame_header = frame.header;
-        let _ = now;
-        self.stage_control(STREAM_ROUTE, header, frame_header, &wire.body)
+        self.stage_control(STREAM_ROUTE, header, frame_header, &wire.body, now)
     }
 
     fn dispatch_migrate(&mut self, services: &Services, step: MigrateStep, now: u64) {
@@ -2615,8 +3119,7 @@ impl Mesh {
         frame.header.status = wire.status;
         let header = wire.header(self.self_id);
         let frame_header = frame.header;
-        let _ = now;
-        self.stage_control(STREAM_MIGRATE, header, frame_header, &wire.body)
+        self.stage_control(STREAM_MIGRATE, header, frame_header, &wire.body, now)
     }
 
     fn after_join(
@@ -2799,11 +3302,10 @@ impl Mesh {
             | JoinEvent::None => {}
         }
 
-        // Root: sign one aggregate for each change set and push it to every
-        // known peer.  This is the M3 aggregated refresh: one signed
-        // EpochSummary per change set, not one full confirmation per member
-        // per refresh interval.  `publish_aggregate` returns owned data, so
-        // the mutable borrow on `self.join` ends before we iterate `self.peers`.
+        // Root: sign at most one aggregate for a changed view and seed it to a
+        // bounded deterministic window.  Members forward the same signed
+        // object once per epoch.  `publish_aggregate` returns owned data, so
+        // the mutable borrow on `self.join` ends before gossip needs `self`.
         let is_root = self.join.as_ref().map(|join| join.role()) == Some(Role::Root);
         if is_root {
             match &outcome.event {
@@ -2811,20 +3313,24 @@ impl Mesh {
                     if let Some(aggregate) =
                         self.join.as_mut().and_then(|join| join.publish_aggregate())
                     {
-                        let peers: alloc::vec::Vec<NodeId> = self.peers[..self.peer_count].to_vec();
-                        for peer in peers {
-                            self.send_join(
-                                services,
-                                JoinMessage::Epoch(aggregate.clone()),
-                                peer,
-                                now,
-                                false,
-                            );
-                        }
+                        self.gossip_epoch(services, &aggregate, None, now, false);
                     }
                 }
                 _ => {}
             }
+            match &outcome.event {
+                JoinEvent::Removed { node, .. } => self.forget_link(*node),
+                JoinEvent::RemovedBatch { nodes, .. } => {
+                    for node in nodes {
+                        self.forget_link(*node);
+                    }
+                }
+                _ => {}
+            }
+        } else {
+            // A member that installed an aggregate forwards it once.  The
+            // source is excluded so the record does not echo to its sender.
+            self.maybe_forward_aggregate(services, source, now);
         }
     }
 
@@ -3170,7 +3676,7 @@ impl Mesh {
         reply_to_source: NodeId,
         now: u64,
         verbose: bool,
-    ) {
+    ) -> bool {
         if matches!(message, JoinMessage::Request(_)) {
             self.join_requests = self.join_requests.saturating_add(1);
         }
@@ -3184,7 +3690,7 @@ impl Mesh {
         {
             self.drain_stage(now);
             if self.stage_fault.is_some() {
-                return;
+                return false;
             }
         }
         // SAFETY: single-threaded module; JOIN_TX is the only encode buffer and
@@ -3198,7 +3704,7 @@ impl Mesh {
                 line.str(error.as_str());
                 line.push(b'\n');
                 log(services, line.as_bytes());
-                return;
+                return false;
             }
         };
         // The ack is sent by the member to the root, not to the member's own
@@ -3298,7 +3804,9 @@ impl Mesh {
             line.str(message.kind());
             line.push(b'\n');
             log(services, line.as_bytes());
+            return false;
         }
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -3309,7 +3817,7 @@ impl Mesh {
         request_id: u64,
         reply_to: u64,
         body: &[u8],
-        _now: u64,
+        now: u64,
     ) -> bool {
         let Ok(frame) =
             MessageFrame::inline(kind, OpCode::Hello, StreamId(STREAM_JOIN), Tag(0), body)
@@ -3323,18 +3831,31 @@ impl Mesh {
         }
         header.request_id = request_id;
         header.reply_to = reply_to;
-        header.ttl = MeshHeader::MAX_HOPS;
+        header.ttl = if kind == MessageKind::Control {
+            GOSSIP_TTL
+        } else {
+            MeshHeader::MAX_HOPS
+        };
         let frame_header = frame.header;
-        self.stage_control_join(STREAM_JOIN, header, frame_header, body)
+        self.stage_control_join(STREAM_JOIN, header, frame_header, body, now)
     }
 
-    /// The stream-allocator side for the current peer.
-    fn link_side(&self) -> Side {
-        match self.peer {
-            Some(peer) if self.self_id < peer => Side::Initiator,
-            Some(_) => Side::Responder,
-            None if self.direct_initiator => Side::Initiator,
-            None => Side::Responder,
+    /// The stream-allocator side for the link to `peer`.
+    ///
+    /// Dynamic stream IDs follow the lower `NodeId` as initiator.  An unbound
+    /// link (the root's listener before the first frame) uses the direct
+    /// connect role until `learn_peer` binds it.
+    fn side_for(&self, peer: NodeId) -> Side {
+        if peer.is_zero() {
+            if self.direct_initiator {
+                Side::Initiator
+            } else {
+                Side::Responder
+            }
+        } else if self.self_id < peer {
+            Side::Initiator
+        } else {
+            Side::Responder
         }
     }
 
@@ -3343,27 +3864,36 @@ impl Mesh {
         services: &Services,
         source: NodeId,
         now: u64,
+        kind: MessageKind,
+        opcode: OpCode,
     ) -> Result<(), TransportError> {
-        if self.peer_count > 0 && self.peers[..self.peer_count].contains(&source) {
+        if self.link_index(source).is_some() {
             return Ok(());
         }
-        if self.peer_count >= MAX_MESH_NODES {
-            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        let role = self.join.as_ref().map(|join| join.role());
+        let root = self.join.as_ref().map(|join| join.root());
+        // A member accepts the authority plus confirmed members carrying
+        // membership gossip.  Route, migration and bulk frames from a third
+        // node are not a member link and are refused before they reach policy.
+        if role == Some(Role::Member) && root != Some(source) {
+            let gossip = matches!((kind, opcode), (MessageKind::Control, OpCode::Hello));
+            let member = self
+                .join
+                .as_ref()
+                .map(|join| join.snapshot().members.contains(&source))
+                .unwrap_or(false);
+            if !gossip || !member {
+                self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+                return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+            }
         }
-        if self.join.as_ref().map(|join| join.role()) == Some(Role::Member)
-            && self.peer.is_some()
-            && self.peer != Some(source)
+        // The root's authority link is unbound until the first member frame.
+        if self
+            .primary_link
+            .and_then(|index| self.links.get(index))
+            .is_some_and(|link| link.peer.is_zero())
         {
-            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
-        }
-        // A member link has exactly one source, the root.  A root link may see
-        // every member when the M3 host hub multiplexes the star onto the
-        // root's single mesh slot.  The first source remains the route and
-        // migration peer; the join state handles each member by `src`.
-        if self.peer.is_none() {
-            self.peer = Some(source);
+            self.bind_primary(source);
             if let Some(route) = self.route.as_mut() {
                 let _ = route.set_peer(source, now);
             }
@@ -3372,18 +3902,45 @@ impl Mesh {
             }
             // Dynamic stream IDs follow the lower NodeId as initiator, so
             // both ends agree without a negotiation round trip.
-            let side = self.link_side();
-            if self.streams.side() != side {
-                self.reset_streams(side);
+            let side = self.side_for(source);
+            if let Some(streams) = self.primary_streams_mut() {
+                if streams.side() != side {
+                    *streams = live_streams(side);
+                    self.staged
+                        .iter_mut()
+                        .filter(|frame| frame.is_some_and(|frame| frame.link.is_zero()))
+                        .for_each(|frame| *frame = None);
+                    self.retire_stream = None;
+                }
             }
         }
-        self.peers[self.peer_count] = source;
-        self.peer_count += 1;
+        if self.link_index(source).is_some() {
+            return Ok(());
+        }
+        if self.link_count() >= MAX_MESH_LINKS {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if self.ensure_link(source, now).is_none() {
+            self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
+            return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
+        }
+        if let Some(link) = self.link_mut(source) {
+            link.confirmed = true;
+            link.last_rx_ms = now;
+        }
         let mut line = Line::new();
-        line.str("mesh-transport: peer=");
+        line.str("mesh-link: peer=");
         line.node(&source);
-        line.str(" peers=");
-        line.u64(self.peer_count as u64);
+        line.str(" role=");
+        line.str(match (role, root == Some(source)) {
+            (Some(Role::Root), _) => "member",
+            (Some(Role::Member), true) => "authority",
+            (Some(Role::Member), false) => "gossip",
+            _ => "peer",
+        });
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
         line.push(b'\n');
         log(services, line.as_bytes());
         Ok(())
@@ -3392,7 +3949,7 @@ impl Mesh {
     #[allow(clippy::too_many_arguments)]
     fn queue_ping(
         &mut self,
-        _now: u64,
+        now: u64,
         kind: MessageKind,
         opcode: OpCode,
         stream: u32,
@@ -3414,7 +3971,7 @@ impl Mesh {
         header.reply_to = reply_to;
         header.ttl = MeshHeader::MAX_HOPS;
         let frame_header = frame.header;
-        self.stage_control(stream, header, frame_header, &body)
+        self.stage_control(stream, header, frame_header, &body, now)
     }
 
     fn start_latency(&mut self, count: u32, gap_ms: u32, now: u64) -> bool {
@@ -3507,8 +4064,7 @@ impl Mesh {
         header.flags = mesh_flags::PROBE;
         header.ttl = MeshHeader::MAX_HOPS;
         let frame_header = frame.header;
-        let _ = now;
-        self.stage_control(stream, header, frame_header, &body);
+        self.stage_control(stream, header, frame_header, &body, now);
     }
 
     fn on_window_update(&mut self, body: &[u8]) -> Result<(), TransportError> {
@@ -3522,7 +4078,9 @@ impl Mesh {
             .clamp(1, mesh_stream::MAX_CREDIT);
         // A window update can cross a cancel in flight.  A grant for a stream
         // this side has already reset is stale, not a protocol failure.
-        let _ = self.streams.grant_send(stream, credit);
+        if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+            let _ = streams.grant_send(stream, credit);
+        }
         if let Some(reply) = self.bulk_reply.as_mut() {
             if reply.stream == stream {
                 let chunks = (credit / reply.chunk.max(1)).max(1);
@@ -3545,7 +4103,9 @@ impl Mesh {
         if stream == 0 {
             return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
-        if self.streams.reset(stream).is_err() {
+        if !primary_mux(&mut self.links, self.primary_link)
+            .is_some_and(|streams| streams.reset(stream).is_ok())
+        {
             // A cancel for a stream this side already retired is stale, not a
             // protocol failure; there is nothing left to reclaim.
             return Ok(());
@@ -3572,7 +4132,7 @@ impl Mesh {
         line.str("mesh-stream: cancel stream=");
         line.u64(stream as u64);
         line.str(" reset=");
-        line.u64(self.streams.resets());
+        line.u64(self.primary_streams().map_or(0, |streams| streams.resets()));
         line.push(b'\n');
         log(services, line.as_bytes());
         Ok(())
@@ -3600,7 +4160,9 @@ impl Mesh {
             return false;
         }
         let nonce = (now as u32) ^ self.stats.frames_sent as u32 ^ 0x4952_4237;
-        let Ok(stream) = self.streams.open_channel(false) else {
+        let Some(stream) = primary_mux(&mut self.links, self.primary_link)
+            .and_then(|streams| streams.open_channel(false).ok())
+        else {
             return false;
         };
         self.bulk = Some(BulkTransfer {
@@ -3655,11 +4217,17 @@ impl Mesh {
         if let Some(reply) = self.bulk_reply.as_ref() {
             if reply.stream != stream {
                 let old = reply.stream;
-                let _ = self.streams.reset(old);
+                if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                    let _ = streams.reset(old);
+                }
                 self.bulk_reply = None;
             }
         }
-        if let Err(error) = self.streams.accept_channel(stream, false) {
+        let accepted = match primary_mux(&mut self.links, self.primary_link) {
+            Some(streams) => streams.accept_channel(stream, false),
+            None => Err(mesh_stream::Error::BadStream),
+        };
+        if let Err(error) = accepted {
             let mut line = Line::new();
             line.str("mesh-stream: reject reason=");
             line.str(error.as_str());
@@ -3669,12 +4237,12 @@ impl Mesh {
             log(services, line.as_bytes());
             return Err(TransportError::Envelope(sys_primitives::Error::Protocol));
         }
-        if let Err(error) = self
-            .streams
-            .set_send_credit(stream, credit.saturating_mul(chunk))
-        {
+        if !primary_mux(&mut self.links, self.primary_link).is_some_and(|streams| {
+            streams
+                .set_send_credit(stream, credit.saturating_mul(chunk))
+                .is_ok()
+        }) {
             self.stats.protocol_rejects = self.stats.protocol_rejects.saturating_add(1);
-            let _ = error;
             return Ok(());
         }
         self.bulk_reply = Some(BulkReply {
@@ -3736,10 +4304,8 @@ impl Mesh {
             self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
             return Ok(());
         }
-        if self
-            .streams
-            .consume_receive(stream, payload as u32)
-            .is_err()
+        if !primary_mux(&mut self.links, self.primary_link)
+            .is_some_and(|streams| streams.consume_receive(stream, payload as u32).is_ok())
         {
             transfer.state = BulkState::Failed;
             transfer.error = Some("credit");
@@ -3765,7 +4331,9 @@ impl Mesh {
         if received == total {
             transfer.state = BulkState::Done;
             transfer.finished_ms = now;
-            let _ = self.streams.close_remote(stream);
+            if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                let _ = streams.close_remote(stream);
+            }
             self.retire_stream = Some(stream);
         }
         let elapsed = now.saturating_sub(started_ms);
@@ -3774,7 +4342,9 @@ impl Mesh {
             // The origin grants the next pair of chunks only after it has
             // consumed the previous pair.  The wire value is bytes.
             let grant_bytes = BULK_CREDIT_GRANT * chunk;
-            let _ = self.streams.grant_receive(stream, grant_bytes);
+            if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                let _ = streams.grant_receive(stream, grant_bytes);
+            }
             self.queue_window_update(source, stream, nonce, grant_bytes, now);
             self.stats.credit_grants = self.stats.credit_grants.saturating_add(1);
         }
@@ -3814,7 +4384,9 @@ impl Mesh {
                     transfer.error = Some("timeout");
                     transfer.finished_ms = now;
                 }
-                let _ = self.streams.reset(stream);
+                if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                    let _ = streams.reset(stream);
+                }
                 self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
                 self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
                 let mut line = Line::new();
@@ -3840,7 +4412,9 @@ impl Mesh {
                     transfer.error = Some("queue");
                     transfer.finished_ms = now;
                 }
-                let _ = self.streams.reset(stream);
+                if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                    let _ = streams.reset(stream);
+                }
                 self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
             }
         }
@@ -3853,7 +4427,9 @@ impl Mesh {
         if now.saturating_sub(reply.started_ms) >= BULK_DEADLINE_MS {
             let stream = reply.stream;
             self.bulk_reply = None;
-            let _ = self.streams.reset(stream);
+            if let Some(streams) = primary_mux(&mut self.links, self.primary_link) {
+                let _ = streams.reset(stream);
+            }
             self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
             self.stats.bulk_aborts = self.stats.bulk_aborts.saturating_add(1);
             return;
@@ -3926,9 +4502,9 @@ impl Mesh {
         header.request_id = u64::from(nonce);
         // The request carries the initial window; the receiver must enforce it
         // before the first chunk arrives.
-        let _ = self
-            .streams
-            .set_receive_credit(stream, BULK_INITIAL_CREDIT * chunk);
+        if let Some(streams) = self.primary_streams_mut() {
+            let _ = streams.set_receive_credit(stream, BULK_INITIAL_CREDIT * chunk);
+        }
         let frame_header = frame.header;
         self.stage_data_rx(
             stream,
@@ -3966,7 +4542,15 @@ impl Mesh {
             }
         }
         let bytes = chunk;
-        let Ok(class) = self.streams.begin(stream, bytes) else {
+        // Bulk is measurement traffic on the authority link.
+        let Some(index) = self.primary_link else {
+            return false;
+        };
+        let Some(class) = self
+            .links
+            .get_mut(index)
+            .and_then(|link| link.streams.begin(stream, bytes).ok())
+        else {
             self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
             return false;
         };
@@ -3990,7 +4574,9 @@ impl Mesh {
             Tag(0),
             body,
         ) else {
-            self.streams.abort(stream, bytes);
+            if let Some(link) = self.links.get_mut(index) {
+                link.streams.abort(stream, bytes);
+            }
             return false;
         };
         frame.header.flags |= if final_chunk {
@@ -4006,6 +4592,7 @@ impl Mesh {
         header.request_id = u64::from(nonce);
         let frame_header = frame.header;
         self.stage_record(
+            index,
             stream,
             class,
             header,
@@ -4017,17 +4604,46 @@ impl Mesh {
         )
     }
 
-    /// Rebuild the per-link stream set for `side`.
-    fn reset_streams(&mut self, side: Side) {
-        self.streams = live_streams(side);
-        self.stage_reset();
-        self.retire_stream = None;
-    }
-
     /// Drop staged frames and their bodies.
     fn stage_reset(&mut self) {
         self.staged = [None; STAGE_FRAMES];
         self.stage_len = 0;
+    }
+
+    /// The key a staged frame records for the link at `index`.
+    ///
+    /// The authority link is keyed as zero because the root binds its peer
+    /// after frames may already be staged; every other link is keyed by peer.
+    fn link_key(&self, index: usize) -> NodeId {
+        if Some(index) == self.primary_link {
+            return NodeId::ZERO;
+        }
+        self.links.get(index).map_or(NodeId::ZERO, |link| link.peer)
+    }
+
+    /// Record a control frame that could not be staged or queued.
+    ///
+    /// The authority link fails closed at the next flush, so a join, route or
+    /// migration record is never skipped.  A gossip link drops the frame: its
+    /// summaries and aggregates are repaired by the next interval or resync,
+    /// and one full 4 KiB queue must not close the session for every member.
+    fn stage_failed(&mut self, index: usize, reason: &'static str) {
+        if Some(index) == self.primary_link {
+            self.stage_fault = Some(reason);
+        }
+    }
+
+    /// Make room for one more staged frame with a `small` byte body.
+    ///
+    /// The stage is shared by every link, and a root with eight links can
+    /// owe eight heartbeats in the tick that also carries join and route
+    /// records.  A full stage is drained into the link queues early; it is
+    /// never a reason to fail a control record.
+    fn stage_room(&mut self, small: usize, now: u64) {
+        let slots_full = self.staged.iter().all(Option::is_some);
+        if slots_full || self.stage_len.saturating_add(small) > STAGE_SMALL_MAX {
+            self.drain_stage(now);
+        }
     }
 
     /// Copy one small control body into the tick's staging area.
@@ -4045,10 +4661,12 @@ impl Mesh {
         Some((start, body.len()))
     }
 
-    /// Stage one frame whose body already sits at `body_start`.
+    /// Stage one frame for the link at `index`; its body already sits at
+    /// `body_start`.
     #[allow(clippy::too_many_arguments)]
     fn stage_record(
         &mut self,
+        index: usize,
         id: u32,
         class: Class,
         header: MeshHeader,
@@ -4058,21 +4676,24 @@ impl Mesh {
         body_len: usize,
         bytes: u32,
     ) -> bool {
-        let Some(slot) = self.staged.iter().position(Option::is_none) else {
+        let link = self.link_key(index);
+        let slot = self.staged.iter().position(Option::is_none);
+        let scheduled = slot.is_some()
+            && self
+                .links
+                .get_mut(index)
+                .is_some_and(|target| target.streams.schedule(id, class).is_ok());
+        let Some(slot) = slot.filter(|_| scheduled) else {
             if store == BodyStore::Small {
                 self.stage_len = body_start;
             }
-            self.streams.abort(id, bytes);
+            if let Some(target) = self.links.get_mut(index) {
+                target.streams.abort(id, bytes);
+            }
             return false;
         };
-        if self.streams.schedule(id, class).is_err() {
-            if store == BodyStore::Small {
-                self.stage_len = body_start;
-            }
-            self.streams.abort(id, bytes);
-            return false;
-        }
         self.staged[slot] = Some(StagedFrame {
+            link,
             stream: id,
             class,
             header,
@@ -4085,8 +4706,10 @@ impl Mesh {
     }
 
     /// Stage one frame after copying its small body into the staging area.
+    #[allow(clippy::too_many_arguments)]
     fn stage_commit(
         &mut self,
+        index: usize,
         id: u32,
         class: Class,
         header: MeshHeader,
@@ -4095,10 +4718,13 @@ impl Mesh {
         bytes: u32,
     ) -> bool {
         let Some((body_start, body_len)) = self.stage_body_bytes(body) else {
-            self.streams.abort(id, bytes);
+            if let Some(target) = self.links.get_mut(index) {
+                target.streams.abort(id, bytes);
+            }
             return false;
         };
         self.stage_record(
+            index,
             id,
             class,
             header,
@@ -4110,25 +4736,32 @@ impl Mesh {
         )
     }
 
-    /// Stage a control-class frame.  Sets the fail-closed marker on failure.
+    /// Stage a control-class frame on the link for `header.dst`.
     fn stage_control(
         &mut self,
         id: u32,
         header: MeshHeader,
         frame: FrameHeader,
         body: &[u8],
+        now: u64,
     ) -> bool {
-        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
-        let Ok(class) = self.streams.begin_control(id, bytes) else {
-            self.stage_fault = Some("stream-control");
+        let Some(index) = self.outbound_index(header.dst, now) else {
             return false;
         };
-        if self.stage_commit(id, class, header, frame, body, bytes) {
-            true
-        } else {
-            self.stage_fault = Some("stream-control");
-            false
+        self.stage_room(body.len(), now);
+        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        let class = self
+            .links
+            .get_mut(index)
+            .and_then(|link| link.streams.begin_control(id, bytes).ok());
+        let staged = match class {
+            Some(class) => self.stage_commit(index, id, class, header, frame, body, bytes),
+            None => false,
+        };
+        if !staged {
+            self.stage_failed(index, "stream-control");
         }
+        staged
     }
 
     /// Stage a join frame whose body is the current `JOIN_TX` contents.
@@ -4138,35 +4771,42 @@ impl Mesh {
         header: MeshHeader,
         frame: FrameHeader,
         body: &[u8],
+        now: u64,
     ) -> bool {
-        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
-        let Ok(class) = self.streams.begin_control(id, bytes) else {
-            self.stage_fault = Some("stream-control");
+        let Some(index) = self.outbound_index(header.dst, now) else {
             return false;
         };
-        if self.stage_record(
-            id,
-            class,
-            header,
-            frame,
-            BodyStore::Join,
-            0,
-            body.len(),
-            bytes,
-        ) {
-            true
-        } else {
-            self.stage_fault = Some("stream-control");
-            false
+        self.stage_room(0, now);
+        let bytes = u32::try_from(body.len()).unwrap_or(u32::MAX);
+        let class = self
+            .links
+            .get_mut(index)
+            .and_then(|link| link.streams.begin_control(id, bytes).ok());
+        let staged = match class {
+            Some(class) => self.stage_record(
+                index,
+                id,
+                class,
+                header,
+                frame,
+                BodyStore::Join,
+                0,
+                body.len(),
+                bytes,
+            ),
+            None => false,
+        };
+        if !staged {
+            self.stage_failed(index, "stream-control");
         }
+        staged
     }
 
     /// Stage a data-class frame whose body is the current `FRAME_RX` contents.
     ///
-    /// `credit_bytes` is the payload size the stream window counts.  A bulk
-    /// chunk's 20-byte body header is framing, not window credit, so the
-    /// window stays in payload units.
-    #[allow(clippy::too_many_arguments)]
+    /// Data frames use the authority link.  `credit_bytes` is the payload size
+    /// the stream window counts.  A bulk chunk's 20-byte body header is
+    /// framing, not window credit, so the window stays in payload units.
     fn stage_data_rx(
         &mut self,
         id: u32,
@@ -4175,11 +4815,19 @@ impl Mesh {
         body_len: usize,
         credit_bytes: u32,
     ) -> bool {
-        let Ok(class) = self.streams.begin(id, credit_bytes) else {
+        let Some(index) = self.primary_link else {
+            return false;
+        };
+        let Some(class) = self
+            .links
+            .get_mut(index)
+            .and_then(|link| link.streams.begin(id, credit_bytes).ok())
+        else {
             self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
             return false;
         };
         self.stage_record(
+            index,
             id,
             class,
             header,
@@ -4191,11 +4839,48 @@ impl Mesh {
         )
     }
 
-    /// Drain staged frames into the transport queue, control class first.
+    /// Drain staged frames into each link's transport queue.
+    ///
+    /// The authority link drains first; within a link the scheduler puts the
+    /// control class ahead of data.
     fn drain_stage(&mut self, now: u64) {
-        while let Some((id, class)) = self.streams.next_frame() {
+        for pass in 0..2 {
+            for index in 0..self.links.len() {
+                let primary = Some(index) == self.primary_link;
+                if (pass == 0) == primary {
+                    self.drain_link(index, now);
+                }
+            }
+        }
+        self.staged = [None; STAGE_FRAMES];
+        self.stage_len = 0;
+    }
+
+    /// Release a staged frame that never reached its transport queue.
+    fn drain_failed(&mut self, index: usize, frame: &StagedFrame, reason: &'static str) {
+        let bytes = u32::try_from(frame.body_len).unwrap_or(u32::MAX);
+        if let Some(link) = self.links.get_mut(index) {
+            link.streams.abort(frame.stream, bytes);
+        }
+        if frame.class == Class::Control {
+            self.stage_failed(index, reason);
+        } else {
+            self.rollback_data(frame);
+        }
+    }
+
+    /// Move the staged frames of one link into its queue, in scheduler order.
+    fn drain_link(&mut self, index: usize, now: u64) {
+        let key = self.link_key(index);
+        while let Some((id, class)) = self
+            .links
+            .get_mut(index)
+            .and_then(|link| link.streams.next_frame())
+        {
             let Some(slot) = self.staged.iter().position(|frame| {
-                frame.is_some_and(|frame| frame.stream == id && frame.class == class)
+                frame.is_some_and(|frame| {
+                    frame.link == key && frame.stream == id && frame.class == class
+                })
             }) else {
                 continue;
             };
@@ -4203,13 +4888,12 @@ impl Mesh {
                 continue;
             };
             let bytes = u32::try_from(frame.body_len).unwrap_or(u32::MAX);
-            if !self.streams.can_commit() {
-                self.streams.abort(id, bytes);
-                if class == Class::Control {
-                    self.stage_fault = Some("stream-ledger");
-                } else {
-                    self.rollback_data(&frame);
-                }
+            if !self
+                .links
+                .get(index)
+                .is_some_and(|link| link.streams.can_commit())
+            {
+                self.drain_failed(index, &frame, "stream-ledger");
                 continue;
             }
             let body = unsafe {
@@ -4237,12 +4921,7 @@ impl Mesh {
                 frame.frame.tag,
                 body,
             ) else {
-                self.streams.abort(id, bytes);
-                if class == Class::Control {
-                    self.stage_fault = Some("stream-encode");
-                } else {
-                    self.rollback_data(&frame);
-                }
+                self.drain_failed(index, &frame, "stream-encode");
                 continue;
             };
             message.header = frame.frame;
@@ -4250,36 +4929,29 @@ impl Mesh {
                 header: frame.header,
                 frame: message,
             };
+            let Some(link) = self.links.get_mut(index) else {
+                continue;
+            };
             let queued = match class {
-                Class::Control => self.queue.push_record(&envelope, now),
-                Class::Data => self.queue.push_data_record(&envelope, now),
+                Class::Control => link.queue.push_record(&envelope, now),
+                Class::Data => link.queue.push_data_record(&envelope, now),
             };
             match queued {
                 Ok(()) => {
-                    if self.streams.commit(id, bytes).is_err() {
-                        self.streams.abort(id, bytes);
-                        if class == Class::Control {
-                            self.stage_fault = Some("stream-ledger");
-                        } else {
-                            self.rollback_data(&frame);
-                        }
+                    if link.streams.commit(id, bytes).is_err() {
+                        self.drain_failed(index, &frame, "stream-ledger");
                     }
                 }
                 Err(_) => {
-                    self.streams.abort(id, bytes);
-                    if class == Class::Control {
-                        // Never skip a control record.  Close the link and let
-                        // the rejoin path retry it on a fresh queue.
-                        self.stage_fault = Some("stream-queue");
-                    } else {
-                        self.rollback_data(&frame);
+                    // Never skip an authority control record.  Close the link
+                    // and let the rejoin path retry it on a fresh queue.
+                    self.drain_failed(index, &frame, "stream-queue");
+                    if class == Class::Data {
                         self.stats.credit_stalls = self.stats.credit_stalls.saturating_add(1);
                     }
                 }
             }
         }
-        self.staged = [None; STAGE_FRAMES];
-        self.stage_len = 0;
     }
 
     /// Put a data frame that never reached the transport queue back at the
@@ -4318,12 +4990,52 @@ impl Mesh {
             services,
             slot: MESH_SLOT,
         };
-        let report = self.queue.flush(&mut sink);
-        self.streams.settle(report.frames_written);
+        // Flush the authority link first, then every gossip link.  The sink is
+        // one TCP session, so a blocked queue stops later queues too; the
+        // order keeps join/route control ahead of gossip.
+        let mut bytes = 0usize;
+        let mut frames = 0usize;
+        let mut writes = 0usize;
+        let mut blocked = false;
+        let mut closed = false;
+        let mut batching = 0u64;
+        let mut peak = 0usize;
+        for pass in 0..2 {
+            for index in 0..self.links.len() {
+                let primary = Some(index) == self.primary_link;
+                if (pass == 0) != primary {
+                    continue;
+                }
+                let Some(link) = self.links.get_mut(index) else {
+                    continue;
+                };
+                let report = link.queue.flush(&mut sink);
+                // Each link's ledger follows its own FIFO queue.
+                link.streams.settle(report.frames_written);
+                bytes += report.bytes_written;
+                frames += report.frames_written;
+                writes += report.writes;
+                blocked |= report.blocked;
+                closed |= report.closed;
+                if report.frames_written > 1 && report.writes == 1 {
+                    batching += 1;
+                }
+                peak = peak.max(link.queue.peak_pending());
+                link.bytes_sent = link.bytes_sent.saturating_add(report.bytes_written as u64);
+                link.frames_sent = link
+                    .frames_sent
+                    .saturating_add(report.frames_written as u64);
+            }
+        }
         if let Some(stream) = self.retire_stream {
-            let queued = self.streams.stream(stream).map_or(0, |state| state.queued);
+            let queued = self
+                .primary_streams()
+                .and_then(|streams| streams.stream(stream))
+                .map_or(0, |state| state.queued);
             if queued == 0 {
-                let _ = self.streams.reset(stream);
+                if let Some(streams) = self.primary_streams_mut() {
+                    let _ = streams.reset(stream);
+                }
                 self.stats.stream_resets = self.stats.stream_resets.saturating_add(1);
                 self.retire_stream = None;
                 if self
@@ -4335,27 +5047,19 @@ impl Mesh {
                 }
             }
         }
-        self.stats.bytes_sent = self
-            .stats
-            .bytes_sent
-            .saturating_add(report.bytes_written as u64);
-        self.stats.frames_sent = self
-            .stats
-            .frames_sent
-            .saturating_add(report.frames_written as u64);
-        self.stats.writes = self.stats.writes.saturating_add(report.writes as u64);
-        if report.frames_written > 1 && report.writes == 1 {
-            self.stats.batched_flushes = self.stats.batched_flushes.saturating_add(1);
-        }
-        self.stats.peak_queued_bytes = self.stats.peak_queued_bytes.max(self.queue.peak_pending());
+        self.stats.bytes_sent = self.stats.bytes_sent.saturating_add(bytes as u64);
+        self.stats.frames_sent = self.stats.frames_sent.saturating_add(frames as u64);
+        self.stats.writes = self.stats.writes.saturating_add(writes as u64);
+        self.stats.batched_flushes = self.stats.batched_flushes.saturating_add(batching);
+        self.stats.peak_queued_bytes = self.stats.peak_queued_bytes.max(peak);
         self.stats.peak_decoder_bytes = self
             .stats
             .peak_decoder_bytes
             .max(self.decoder.buffered_len());
-        if report.blocked {
+        if blocked {
             self.stats.short_writes = self.stats.short_writes.saturating_add(1);
         }
-        if report.closed {
+        if closed {
             self.disconnect(services, now, "send-closed");
         }
     }
@@ -4394,6 +5098,16 @@ impl Mesh {
         line.u64(self.stats.connects);
         line.str(" connect_ms=");
         line.u64(self.last_connect_ms);
+        line.str(" links=");
+        line.u64(self.link_count() as u64);
+        line.str(" gossip_sum=");
+        line.u64(self.gossip_summaries_sent);
+        line.str(" gossip_sum_rx=");
+        line.u64(self.gossip_summaries_received);
+        line.str(" gossip_agg=");
+        line.u64(self.gossip_aggregates_sent);
+        line.str(" gossip_fwd=");
+        line.u64(self.gossip_aggregates_forwarded);
         line.str(" writes=");
         line.u64(self.stats.writes);
         line.str(" batched=");
@@ -4414,20 +5128,22 @@ impl Mesh {
         line.u64(self.stats.credit_grants);
         line.str(" stream_reset=");
         line.u64(self.stats.stream_resets);
-        line.str(" stream_open=");
-        line.u64(self.streams.len() as u64);
-        line.str(" stream_opens=");
-        line.u64(self.streams.opens());
-        line.str(" stream_credit_stall=");
-        line.u64(self.streams.credit_stalls());
-        line.str(" stream_control_stall=");
-        line.u64(self.streams.control_stalls());
-        line.str(" stream_tx_control=");
-        line.u64(self.streams.control_frames());
-        line.str(" stream_tx_data=");
-        line.u64(self.streams.data_frames());
-        line.str(" stream_inflight=");
-        line.u64(self.streams.inflight() as u64);
+        if let Some(streams) = self.primary_streams() {
+            line.str(" stream_open=");
+            line.u64(streams.len() as u64);
+            line.str(" stream_opens=");
+            line.u64(streams.opens());
+            line.str(" stream_credit_stall=");
+            line.u64(streams.credit_stalls());
+            line.str(" stream_control_stall=");
+            line.u64(streams.control_stalls());
+            line.str(" stream_tx_control=");
+            line.u64(streams.control_frames());
+            line.str(" stream_tx_data=");
+            line.u64(streams.data_frames());
+            line.str(" stream_inflight=");
+            line.u64(streams.inflight() as u64);
+        }
         line.push(b'\n');
         log(services, line.as_bytes());
         self.pass_logged = true;
@@ -4468,15 +5184,15 @@ impl Mesh {
         let poisoned = self.decoder.is_poisoned();
         (services.tcp_abort)(MESH_SLOT);
         self.decoder.reset();
-        self.queue.clear();
-        self.streams.clear();
+        self.links.clear();
+        self.primary_link = None;
+        self.peer = match self.join.as_ref().map(|join| (join.role(), join.root())) {
+            Some((Role::Member, root)) => Some(root),
+            _ => None,
+        };
         self.stage_reset();
         self.stage_fault = None;
         self.retire_stream = None;
-        self.pending = PendingTable::new(PENDING_CAPACITY);
-        self.peer = None;
-        self.peers = [NodeId::ZERO; MAX_MESH_NODES];
-        self.peer_count = 0;
         self.peer_confirmed = false;
         self.pass_logged = false;
         self.join_timeout_logged = false;
@@ -4591,7 +5307,7 @@ fn body_limit(kind: MessageKind, opcode: OpCode) -> usize {
 }
 
 fn body_bytes(len: usize) -> &'static [u8] {
-    // SAFETY: single-threaded module; FRAME_RX holds the current frame body and
+    // SAFETY: single-threaded module; FRAME_BODY holds the current frame body and
     // the slice is consumed before the next record is decoded.
     unsafe { core::slice::from_raw_parts(core::ptr::addr_of!(FRAME_RX) as *const u8, len) }
 }

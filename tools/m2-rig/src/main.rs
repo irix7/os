@@ -133,7 +133,7 @@ Options:
   --transport M    relay (default), direct, or direct-fail (bulk/run)
   --timeout SECS   boot deadline (default: 180)
   --fault MODE     none (default), no-peer, wrong-authority, no-route,
-                   kill-peer, partition or udp
+                   kill-peer, kill-root, partition or udp
   --keep           with run or shard, leave the nodes running
   --rx-poll        boot with net.rx=off (the polled receive control)
   --verbose        print extra detail
@@ -340,6 +340,7 @@ fn run_failure_scenario(
     nodes: &[Node],
     running: &mut [RunningNode],
     mesh_relay: &mut Option<MeshRelay>,
+    facts: &[BootFacts],
     join: &JoinEvidence,
     stale_object: Option<&str>,
 ) -> Result<FailureEvidence, String> {
@@ -370,6 +371,27 @@ fn run_failure_scenario(
                 &before,
                 stale_object,
                 &mut kill,
+            ))
+        }
+        Fault::KillRoot => {
+            // One mutable borrow of `running` covers both the SIGKILL and the
+            // store-backed restart, so the two actions cannot interleave with
+            // another user of the process table.
+            let mut control = |action: failure::RootAction| match action {
+                failure::RootAction::Kill => {
+                    rig::kill_node(&mut running[0])?;
+                    Ok(None)
+                }
+                failure::RootAction::Restart => {
+                    restart_root(options, nodes, running, facts, mesh_relay).map(Some)
+                }
+            };
+            Ok(failure::kill_root(
+                &nodes[0],
+                &nodes[1],
+                &before,
+                stale_object,
+                &mut control,
             ))
         }
         Fault::Partition => {
@@ -430,7 +452,7 @@ fn collect_route(
     join: &JoinEvidence,
 ) -> Result<route::RouteEvidence, String> {
     match options.fault {
-        Fault::None | Fault::KillPeer | Fault::Partition => {
+        Fault::None | Fault::KillPeer | Fault::Partition | Fault::KillRoot => {
             if join.epoch.is_none() || join.digest.is_none() || join.members.len() != 2 {
                 return Err("join evidence is not a converged two-node view".into());
             }
@@ -463,7 +485,7 @@ fn collect_migration(
         Fault::NoPeer | Fault::NoRoute | Fault::WrongAuthority => {
             migrate::fetch_disabled(nodes, options.fault, crate::timing::secs(30))
         }
-        Fault::None | Fault::KillPeer | Fault::Partition | Fault::Udp => {
+        Fault::None | Fault::KillPeer | Fault::Partition | Fault::KillRoot | Fault::Udp => {
             Err("the migration scenario is driven by run".into())
         }
     }
@@ -478,6 +500,17 @@ fn print_failure_result(failure: &FailureEvidence) {
     );
     for check in &failure.checks {
         println!("  ok: {check}");
+    }
+    if let Some(restart) = &failure.root_restart {
+        println!(
+            "  root restart: epoch {} store {:?} local {:?} member_last {:?} confirm {:?} same={}",
+            restart.first_epoch,
+            restart.store_epoch,
+            restart.local_epoch,
+            restart.member_last_epoch,
+            restart.confirm_epoch,
+            restart.same_epoch
+        );
     }
     for line in &failure.serial {
         println!("  {line}");
@@ -1044,6 +1077,7 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
                 &nodes,
                 &mut running,
                 &mut mesh_relay,
+                &facts,
                 &join_before,
                 stale.as_deref(),
             ) {
@@ -1446,7 +1480,7 @@ fn collect_homes(
 ) -> HomeInputs {
     let mut inputs = HomeInputs::default();
     match options.fault {
-        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition | Fault::KillRoot => {
             let (Some(epoch), Some(digest)) = (join.epoch, join.digest.as_deref()) else {
                 inputs.error = Some("join evidence has no epoch/digest for homes".into());
                 return inputs;
