@@ -599,35 +599,52 @@ pub fn write_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
     }
 }
 
-#[repr(C)]
-struct UserPollFd {
-    fd: i32,
-    events: i16,
-    revents: i16,
-}
+/// `poll(fds, count, timeout)` over the console, pipes and files.
+///
+/// `timeout` is milliseconds: 0 probes once, a positive value waits that long,
+/// and a negative value means "no deadline" in POSIX.  The kernel is
+/// single-threaded, so a negative timeout is bounded by
+/// [`crate::fd::WAIT_LIMIT_MS`] rather than waiting forever; the same cap
+/// applies to a longer positive timeout.  Readiness is re-evaluated while the
+/// call waits, so console input arriving during the wait is reported.
+pub fn poll_user(address: u32, count: u32, timeout: i32) -> SysResult<u32> {
+    use native_abi::pollfd;
 
-/// A tiny poll implementation: console and null descriptors are always ready.
-pub fn poll_user(address: u32, count: u32) -> SysResult<u32> {
-    let bytes = count as usize * core::mem::size_of::<UserPollFd>();
-    if !range_ok(address, bytes as u32) {
+    let record = core::mem::size_of::<pollfd>() as u32;
+    let bytes = count.checked_mul(record).ok_or(CELL_E_INVAL)?;
+    // A count of zero has no descriptor array; the pointer is not inspected.
+    if bytes != 0 && !range_ok(address, bytes) {
         return Err(CELL_E_FAULT);
     }
-    let mut ready = 0u32;
-    for index in 0..count as usize {
-        let base = address + (index * core::mem::size_of::<UserPollFd>()) as u32;
-        let fd = unsafe { core::ptr::read_volatile(base as *const i32) };
-        let events = unsafe { core::ptr::read_volatile((base + 4) as *const i16) };
-        let revents = if crate::fd::kind(fd) == crate::fd::Kind::Closed {
-            0x20 // POLLNVAL
-        } else {
-            ready += 1;
-            events
-        };
-        unsafe {
-            core::ptr::write_volatile((base + 6) as *mut i16, revents);
+    let wait_ms = if timeout < 0 {
+        crate::fd::WAIT_LIMIT_MS
+    } else {
+        (timeout as u32).min(crate::fd::WAIT_LIMIT_MS)
+    };
+    let limit = wait_ms.saturating_mul(crate::fd::TICKS_PER_MS);
+    let start = crate::traps::count_read();
+    loop {
+        let mut ready = 0u32;
+        for index in 0..count as usize {
+            let base = address + (index as u32) * record;
+            let fd = unsafe { core::ptr::read_volatile(base as *const i32) };
+            let events = unsafe { core::ptr::read_volatile((base + 4) as *const i16) };
+            let revents = crate::fd::poll_events(fd, events);
+            unsafe {
+                core::ptr::write_volatile((base + 6) as *mut i16, revents);
+            }
+            if revents != 0 {
+                ready += 1;
+            }
         }
+        if ready != 0 {
+            return Ok(ready);
+        }
+        if crate::traps::count_read().wrapping_sub(start) >= limit {
+            return Ok(0);
+        }
+        core::hint::spin_loop();
     }
-    Ok(ready)
 }
 
 pub fn getcwd_user(address: u32, size: u32) -> SysResult<()> {

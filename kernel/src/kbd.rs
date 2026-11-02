@@ -298,6 +298,84 @@ pub fn poll_key() -> Option<Key> {
     }
 }
 
+/// Console input queue capacity.  The queue exists so `poll` can report a
+/// console readable only when a byte is actually available: the PS/2
+/// controller is drained up to here, and modifier keys that produce no byte
+/// never make a descriptor look ready.
+const INPUT_CAPACITY: usize = 64;
+static mut INPUT: [u8; INPUT_CAPACITY] = [0; INPUT_CAPACITY];
+static mut INPUT_HEAD: usize = 0;
+static mut INPUT_LEN: usize = 0;
+
+/// The byte a key event contributes to the console stream, if any.
+fn byte_for(key: Key) -> Option<u8> {
+    Some(match key {
+        Key::Char(byte) => byte,
+        Key::Enter => b'\r',
+        Key::Backspace => 0x7F,
+        Key::Escape => 0x1B,
+        Key::Up | Key::Down | Key::Left | Key::Right => return None,
+    })
+}
+
+/// Drain the PS/2 controller and the serial receiver into the queue.
+///
+/// Leaves queued bytes in place when the queue is full, so a later read makes
+/// progress.  The serial console is part of the same stream: the machine's
+/// console is whichever input source is present.
+fn fill_input() {
+    unsafe {
+        while INPUT_LEN < INPUT_CAPACITY {
+            let byte = if let Some(key) = poll_key() {
+                match byte_for(key) {
+                    Some(byte) => byte,
+                    None => continue,
+                }
+            } else if let Some(byte) = crate::serial_read_byte() {
+                byte
+            } else {
+                return;
+            };
+            let tail = (INPUT_HEAD + INPUT_LEN) % INPUT_CAPACITY;
+            INPUT[tail] = byte;
+            INPUT_LEN += 1;
+        }
+    }
+}
+
+/// Whether at least one console byte is queued.
+pub fn input_ready() -> bool {
+    fill_input();
+    unsafe { INPUT_LEN != 0 }
+}
+
+/// Pop one queued console byte.
+pub fn read_input_byte() -> Option<u8> {
+    fill_input();
+    unsafe {
+        if INPUT_LEN == 0 {
+            return None;
+        }
+        let byte = INPUT[INPUT_HEAD];
+        INPUT_HEAD = (INPUT_HEAD + 1) % INPUT_CAPACITY;
+        INPUT_LEN -= 1;
+        Some(byte)
+    }
+}
+
+/// Copy queued console bytes into `out` and return the count.
+pub fn read_input(out: &mut [u8]) -> usize {
+    let mut written = 0;
+    while written < out.len() {
+        let Some(byte) = read_input_byte() else {
+            break;
+        };
+        out[written] = byte;
+        written += 1;
+    }
+    written
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

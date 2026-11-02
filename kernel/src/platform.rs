@@ -347,22 +347,9 @@ impl PlatformShim for IndyShim {
     }
 
     fn console_read(&mut self, out: &mut [u8]) -> usize {
-        let mut written = 0;
-        while written < out.len() {
-            let Some(key) = crate::kbd::poll_key() else {
-                break;
-            };
-            let byte = match key {
-                crate::kbd::Key::Char(byte) => byte,
-                crate::kbd::Key::Enter => b'\n',
-                crate::kbd::Key::Escape => 0x1b,
-                crate::kbd::Key::Backspace => 0x08,
-                _ => continue,
-            };
-            out[written] = byte;
-            written += 1;
-        }
-        written
+        // Share the kernel's console input queue, so a byte typed while a user
+        // image runs is not lost when the console service resumes.
+        crate::kbd::read_input(out)
     }
 
     fn random(&mut self, out: &mut [u8]) -> Result<(), PlatformError> {

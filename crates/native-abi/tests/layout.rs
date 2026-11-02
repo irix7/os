@@ -30,6 +30,9 @@ fn time_and_io_structs() {
     assert_eq!((size_of::<itimerspec>(), align_of::<itimerspec>()), (32, 8));
     assert_eq!((size_of::<iovec>(), align_of::<iovec>()), (8, 4));
     assert_eq!((size_of::<pollfd>(), align_of::<pollfd>()), (8, 4));
+    assert_eq!(offset_of!(pollfd, fd), 0);
+    assert_eq!(offset_of!(pollfd, events), 4);
+    assert_eq!(offset_of!(pollfd, revents), 6);
     assert_eq!((size_of::<winsize>(), align_of::<winsize>()), (8, 2));
     assert_eq!((size_of::<rlimit>(), align_of::<rlimit>()), (16, 8));
 }
@@ -152,6 +155,15 @@ fn lseek_and_fd_flag_constants_match_posix() {
     assert_eq!((SEEK_DATA, SEEK_HOLE), (3, 4));
     assert_eq!(FD_CLOEXEC, 1);
     assert_eq!((F_GETFD, F_SETFD), (1, 2));
+    assert_eq!((F_GETFL, F_SETFL), (3, 4));
+    assert_eq!((O_RDONLY, O_WRONLY, O_RDWR, O_ACCMODE), (0, 1, 2, 3));
+    assert_eq!(O_NONBLOCK, 0o4000);
+}
+
+#[test]
+fn poll_constants_match_posix() {
+    assert_eq!((POLLIN, POLLPRI, POLLOUT), (0x001, 0x002, 0x004));
+    assert_eq!((POLLERR, POLLHUP, POLLNVAL), (0x008, 0x010, 0x020));
 }
 
 #[test]

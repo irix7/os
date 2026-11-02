@@ -191,6 +191,25 @@ pub fn write_bytes(data: &[u8]) {
     crate::telnet::write_output(data);
 }
 
+/// Read one byte from the serial receiver, if the SCC has one waiting.
+///
+/// The receiver is enabled by the ROM's 8N1 setup (WR3 = 0xC1).  Console
+/// input is polled, like output, so this is safe while interrupts are masked
+/// and while the console is owned by a user image.
+pub fn serial_read_byte() -> Option<u8> {
+    if rd(RR0) & 0x01 == 0 {
+        return None;
+    }
+    unsafe {
+        write_volatile(Z85C30_BASE, WR0_DATA);
+        core::arch::asm!("sync", options(nostack));
+        for _ in 0..16 {
+            core::arch::asm!("nop", options(nostack));
+        }
+        Some(read_volatile(Z85C30_BASE))
+    }
+}
+
 fn serial_byte(b: u8) {
     // Wait for the transmitter, but never forever: the IOC can return a
     // stale register and the CP0 Count is not yet guaranteed to run this

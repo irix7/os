@@ -900,7 +900,11 @@ pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
                 tf.advance_epc();
             }
             11 => {
-                tf.set_result(legacy_u32(crate::user::poll_user(tf.arg(4), tf.arg(5))));
+                tf.set_result(legacy_u32(crate::user::poll_user(
+                    tf.arg(4),
+                    tf.arg(5),
+                    tf.arg(6) as i32,
+                )));
                 tf.advance_epc();
             }
             12 => {

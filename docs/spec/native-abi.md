@@ -1548,7 +1548,7 @@ success.  `SYS_EXIT` does not return.
 | 8 | `fcntl` | `fd`, `cmd`, `arg` |
 | 9 | `dup` | `fd` |
 | 10 | `getcwd` | `buf`, `len` |
-| 11 | `poll` | `fds`, `count` |
+| 11 | `poll` | `fds`, `count`, `timeout_ms` |
 | 12 | `signal` | `sig`, `handler` |
 | 13 | `getentropy` | `buf`, `len` |
 | 14 | `clock_gettime` | `clock_id`, `timespec` |
@@ -1592,18 +1592,36 @@ so `lseek(fd, d_off, SEEK_SET)` resumes where the record left off; the one-name
 `readdir(fd, index, buf, len)` remains as a wrapper over the same table.  A buffer too
 small for one record is `EINVAL`.
 
-Pipes are bounded and non-blocking on this single-threaded kernel.  A read of an empty
-pipe with a live writer is `EAGAIN`; when every writer is closed it is a zero-length
-read.  A write with no reader is `EPIPE`; a write with no space is `EAGAIN`, and a
-short count is returned when only part of the buffer fits.  `pipe2` accepts `O_CLOEXEC`
-and `O_NONBLOCK` (the latter states the behaviour that already holds) and rejects other
-flags with `EINVAL`.
+`poll` takes an array of 8-byte `struct pollfd` records (`fd`, `events`, `revents`), a
+count and a millisecond timeout in `$a2`.  It reports `POLLIN`, `POLLOUT`, `POLLERR`,
+`POLLHUP` and `POLLNVAL`; error and hang-up events are reported even when the caller did
+not request them.  A negative descriptor is ignored (its `revents` stay zero) and a
+closed one is `POLLNVAL`.  Pipe readiness is: data available (`POLLIN`), space available
+(`POLLOUT`), every writer closed (`POLLHUP` on the read end), and no reader left
+(`POLLERR` on the write end).  The console is writable and becomes readable when an
+input byte (PS/2 keyboard or serial receiver) is queued.  Regular files, `/dev/null`
+and directory descriptors are always ready.
 
-`fcntl` implements `F_GETFD` and `F_SETFD` with real `FD_CLOEXEC` state; `open` records
-`O_CLOEXEC`, `dup` and `dup2` clear it on the new descriptor, and every other `fcntl`
-command is `EINVAL`.  Signals are still absent, so `signal` is an explicit no-op
-success.  `mmap` is a bump allocator over a fixed 1 MiB window; `munmap` and `mprotect`
-are metadata-only no-ops.  These are bring-up boundaries, not the v1 POSIX contract.
+The kernel is single-threaded: no other thread can run while a descriptor is waiting.
+`poll` therefore treats a negative timeout (POSIX "no deadline") as a wait bounded by
+`WAIT_LIMIT_MS` (100 ms), and clamps a longer positive timeout to the same bound.  A
+zero timeout probes once.  Reads and writes use the same bound: a descriptor without
+`O_NONBLOCK` rechecks readiness for up to 100 ms and then returns `EAGAIN` rather than
+hanging the machine.
+
+`fcntl` implements `F_GETFD` and `F_SETFD` with real per-descriptor `FD_CLOEXEC` state,
+and `F_GETFL`/`F_SETFL` with the access mode and `O_NONBLOCK` per open file description.
+`open` and `pipe2` record `O_NONBLOCK` from their flags, and `pipe` creates a blocking
+pair; `dup` and `dup2` share the status flags and clear close-on-exec on the new
+descriptor.  A non-blocking read of an empty pipe or an idle console is `EAGAIN`.  Every other `fcntl` command is `EINVAL`.  Pipes are
+bounded: a read of an empty pipe with a live writer is `EAGAIN`; when every writer is
+closed it is a zero-length read.  A write with no reader is `EPIPE`; a write with no
+space is `EAGAIN`, and a short count is returned when only part of the buffer fits.
+`pipe2` accepts `O_CLOEXEC` and `O_NONBLOCK` and rejects other flags with `EINVAL`.
+
+Signals are still absent, so `signal` is an explicit no-op success.  `mmap` is a bump
+allocator over a fixed 1 MiB window; `munmap` and `mprotect` are metadata-only no-ops.
+These are bring-up boundaries, not the v1 POSIX contract.
 
 ---
 

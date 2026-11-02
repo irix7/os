@@ -19,12 +19,18 @@ use crate::syserr::{
 pub const MAX_FDS: usize = 16;
 const MAX_OPEN_FILES: usize = 16;
 const FILE_CAPACITY: usize = 512;
+const O_RDONLY: u32 = 0;
+const O_WRONLY: u32 = 1;
+const O_RDWR: u32 = 2;
+const O_ACCMODE: u32 = 3;
 const O_TRUNC: u32 = 0o1000;
 const O_NONBLOCK: u32 = 0o4000;
 const O_CLOEXEC: u32 = 0o2000000;
 const FD_CLOEXEC: u32 = 1;
 const F_GETFD: u32 = 1;
 const F_SETFD: u32 = 2;
+const F_GETFL: u32 = 3;
+const F_SETFL: u32 = 4;
 const SEEK_SET: u32 = 0;
 const SEEK_CUR: u32 = 1;
 const SEEK_END: u32 = 2;
@@ -32,6 +38,18 @@ const SEEK_DATA: u32 = 3;
 const SEEK_HOLE: u32 = 4;
 const MAX_PIPES: usize = 8;
 const PIPE_CAPACITY: usize = 4096;
+
+/// The longest a "blocking" read or write waits before returning `EAGAIN`.
+///
+/// The kernel is single-threaded: no other thread can run while a descriptor
+/// wait is in progress, so an unbounded wait would hang the machine rather
+/// than make progress.  The wait is a real readiness poll (console input and
+/// pipe state are rechecked) with a fixed upper bound.  `poll` uses the same
+/// bound for a negative timeout.
+pub const WAIT_LIMIT_MS: u32 = 100;
+/// CP0 Count ticks per millisecond at the Indy's 33 MHz rate.
+pub const TICKS_PER_MS: u32 = 33_000;
+const WAIT_LIMIT_TICKS: u32 = WAIT_LIMIT_MS * TICKS_PER_MS;
 
 pub struct FileEntry {
     pub path: &'static [u8],
@@ -126,6 +144,9 @@ pub enum Kind {
 static mut OPEN_KIND: [Kind; MAX_OPEN_FILES] = [Kind::Closed; MAX_OPEN_FILES];
 static mut OPEN_OFFSET: [usize; MAX_OPEN_FILES] = [0; MAX_OPEN_FILES];
 static mut OPEN_REFS: [u8; MAX_OPEN_FILES] = [0; MAX_OPEN_FILES];
+/// Per-description status flags: the access mode and `O_NONBLOCK`.  They
+/// belong to the description, so `dup` shares them, as POSIX requires.
+static mut OPEN_STATUS: [u32; MAX_OPEN_FILES] = [0; MAX_OPEN_FILES];
 
 /// Descriptor slots: the description index, or -1 when the slot is free.
 static mut FD_OPEN: [i32; MAX_FDS] = [-1; MAX_FDS];
@@ -140,8 +161,9 @@ pub fn reset() {
         OPEN_KIND = [Kind::Closed; MAX_OPEN_FILES];
         OPEN_OFFSET = [0; MAX_OPEN_FILES];
         OPEN_REFS = [0; MAX_OPEN_FILES];
+        OPEN_STATUS = [0; MAX_OPEN_FILES];
         for fd in 0..3 {
-            if let Some(description) = open_description(Kind::Console) {
+            if let Some(description) = open_description(Kind::Console, O_RDWR) {
                 FD_OPEN[fd] = description as i32;
             }
             FD_FLAGS[fd] = 0;
@@ -161,13 +183,14 @@ pub fn reset() {
 }
 
 /// Allocate a fresh open file description.  The caller owns its single ref.
-fn open_description(kind: Kind) -> Option<usize> {
+fn open_description(kind: Kind, status: u32) -> Option<usize> {
     unsafe {
         for index in 0..MAX_OPEN_FILES {
             if OPEN_KIND[index] == Kind::Closed && OPEN_REFS[index] == 0 {
                 OPEN_KIND[index] = kind;
                 OPEN_OFFSET[index] = 0;
                 OPEN_REFS[index] = 1;
+                OPEN_STATUS[index] = status;
                 return Some(index);
             }
         }
@@ -186,6 +209,7 @@ fn release_description(index: usize) {
             let kind = OPEN_KIND[index];
             OPEN_KIND[index] = Kind::Closed;
             OPEN_OFFSET[index] = 0;
+            OPEN_STATUS[index] = 0;
             if let Kind::PipeRead(pipe) | Kind::PipeWrite(pipe) = kind {
                 release_pipe(pipe as usize);
             }
@@ -237,13 +261,13 @@ fn set_offset(fd: i32, value: usize) {
     }
 }
 
-fn install_flags(kind: Kind, flags: u32) -> SysResult<i32> {
-    let description = open_description(kind).ok_or(CELL_E_MFILE)?;
+fn install_flags(kind: Kind, descriptor_flags: u32, status_flags: u32) -> SysResult<i32> {
+    let description = open_description(kind, status_flags).ok_or(CELL_E_MFILE)?;
     match free_descriptor() {
         Some(fd) => {
             unsafe {
                 FD_OPEN[fd as usize] = description as i32;
-                FD_FLAGS[fd as usize] = flags;
+                FD_FLAGS[fd as usize] = descriptor_flags;
             }
             Ok(fd)
         }
@@ -271,8 +295,6 @@ fn close_slot(fd: i32) {
 }
 
 fn pipe_flags(flags: u32) -> SysResult<u32> {
-    // Pipes are always non-blocking on this single-threaded kernel; O_NONBLOCK
-    // is accepted because it describes the behaviour that already holds.
     if flags & !(O_CLOEXEC | O_NONBLOCK) != 0 {
         return Err(CELL_E_INVAL);
     }
@@ -288,9 +310,10 @@ pub fn pipe() -> SysResult<(i32, i32)> {
     pipe2(0)
 }
 
-/// Create a pipe with `O_CLOEXEC` applied to both descriptors.
+/// Create a pipe with `O_CLOEXEC` and `O_NONBLOCK` applied to both descriptors.
 pub fn pipe2(flags: u32) -> SysResult<(i32, i32)> {
     let close_on_exec = pipe_flags(flags)?;
+    let nonblock = flags & O_NONBLOCK;
     unsafe {
         let Some(index) = (0..MAX_PIPES).find(|index| !PIPE_USED[*index]) else {
             return Err(CELL_E_MFILE);
@@ -298,14 +321,22 @@ pub fn pipe2(flags: u32) -> SysResult<(i32, i32)> {
         PIPE_USED[index] = true;
         PIPE_HEAD[index] = 0;
         PIPE_LEN[index] = 0;
-        let read = match install_flags(Kind::PipeRead(index as u32), close_on_exec) {
+        let read = match install_flags(
+            Kind::PipeRead(index as u32),
+            close_on_exec,
+            O_RDONLY | nonblock,
+        ) {
             Ok(fd) => fd,
             Err(status) => {
                 PIPE_USED[index] = false;
                 return Err(status);
             }
         };
-        match install_flags(Kind::PipeWrite(index as u32), close_on_exec) {
+        match install_flags(
+            Kind::PipeWrite(index as u32),
+            close_on_exec,
+            O_WRONLY | nonblock,
+        ) {
             Ok(write) => Ok((read, write)),
             Err(status) => {
                 close_slot(read);
@@ -436,14 +467,19 @@ pub fn open_path(path: &[u8], flags: u32) -> SysResult<i32> {
         return Err(CELL_E_NAMETOOLONG);
     };
     let path = &resolved[..len];
+    let access = flags & O_ACCMODE;
+    if access == O_ACCMODE {
+        return Err(CELL_E_INVAL);
+    }
     let close_on_exec = if flags & O_CLOEXEC != 0 {
         FD_CLOEXEC
     } else {
         0
     };
+    let status = access | (flags & O_NONBLOCK);
     if path == b"/dev/null" {
         return if crate::logical::device(path) {
-            install_flags(Kind::Null, close_on_exec)
+            install_flags(Kind::Null, close_on_exec, status)
         } else {
             Err(CELL_E_NODEV)
         };
@@ -452,20 +488,20 @@ pub fn open_path(path: &[u8], flags: u32) -> SysResult<i32> {
         return Ok(0);
     }
     if path == b"/" || path == b"/." {
-        return install_flags(Kind::Dir(0), close_on_exec);
+        return install_flags(Kind::Dir(0), close_on_exec, status);
     }
     if path == b"/etc" {
-        return install_flags(Kind::Dir(1), close_on_exec);
+        return install_flags(Kind::Dir(1), close_on_exec, status);
     }
     if path == b"/etc/motd" {
         return if crate::logical::open_file(path) {
-            install_flags(Kind::Logical, close_on_exec)
+            install_flags(Kind::Logical, close_on_exec, status)
         } else {
             Err(CELL_E_NOENT)
         };
     }
     if path == b"/dev" {
-        return install_flags(Kind::Dir(2), close_on_exec);
+        return install_flags(Kind::Dir(2), close_on_exec, status);
     }
     for (index, file) in FILES.iter().enumerate() {
         if file.path == path {
@@ -474,7 +510,7 @@ pub fn open_path(path: &[u8], flags: u32) -> SysResult<i32> {
                     FILE_LEN[index] = 0;
                 }
             }
-            return install_flags(Kind::File(index as u32), close_on_exec);
+            return install_flags(Kind::File(index as u32), close_on_exec, status);
         }
     }
     Err(CELL_E_NOENT)
@@ -525,14 +561,17 @@ pub fn dup2(fd: i32, new_fd: i32) -> SysResult<i32> {
     Ok(new_fd)
 }
 
-/// `fcntl` for the two descriptor flags this bring-up keeps.
+/// `fcntl` for the descriptor and status flags this bring-up keeps.
 ///
-/// Unknown commands are `EINVAL`, not a silent success: there is no open-file
-/// status word to report, and claiming otherwise would misrepresent the table.
+/// `F_GETFD`/`F_SETFD` are per descriptor (close-on-exec).  `F_GETFL`/
+/// `F_SETFL` are per open file description: they hold the access mode and
+/// `O_NONBLOCK`, and `dup` shares them.  Unknown commands are `EINVAL`, not a
+/// silent success: there is no lock or owner state to report, and claiming
+/// otherwise would misrepresent the table.
 pub fn fcntl(fd: i32, cmd: u32, arg: u32) -> SysResult<i32> {
-    if description(fd).is_none() {
+    let Some(description) = description(fd) else {
         return Err(CELL_E_BADF);
-    }
+    };
     match cmd {
         F_GETFD => Ok(unsafe { FD_FLAGS[fd as usize] } as i32),
         F_SETFD => {
@@ -541,8 +580,29 @@ pub fn fcntl(fd: i32, cmd: u32, arg: u32) -> SysResult<i32> {
             }
             Ok(0)
         }
+        F_GETFL => Ok(unsafe { OPEN_STATUS[description] } as i32),
+        F_SETFL => {
+            let access = unsafe { OPEN_STATUS[description] } & O_ACCMODE;
+            unsafe {
+                OPEN_STATUS[description] = access | (arg & O_NONBLOCK);
+            }
+            Ok(0)
+        }
         _ => Err(CELL_E_INVAL),
     }
+}
+
+/// The recorded status flags of a descriptor's open file description.
+fn status_flags(fd: i32) -> u32 {
+    match description(fd) {
+        Some(index) => unsafe { OPEN_STATUS[index] },
+        None => 0,
+    }
+}
+
+/// Whether the descriptor was opened (or set) with `O_NONBLOCK`.
+pub fn nonblocking(fd: i32) -> bool {
+    status_flags(fd) & O_NONBLOCK != 0
 }
 
 /// The size `SEEK_END`, `SEEK_DATA` and `SEEK_HOLE` measure against.
@@ -657,21 +717,51 @@ fn write_at(kind: Kind, start: usize, buffer: &[u8]) -> SysResult<usize> {
     }
 }
 
-fn read_pipe(index: usize, buffer: &mut [u8]) -> SysResult<usize> {
-    let len = unsafe { PIPE_LEN[index] };
-    if len == 0 {
-        // With no writer left the pipe is at end-of-file; otherwise this is a
-        // non-blocking read with nothing to return.
-        return if pipe_has_writer(index) {
-            Err(CELL_E_AGAIN)
-        } else {
-            Ok(0)
-        };
+/// Wait for `ready` until the fixed kernel bound.  Returns the final state.
+///
+/// The kernel has no scheduler, so this is the longest wait any descriptor
+/// operation performs.  Interrupts are masked by EXL for the whole syscall,
+/// but CP0 Count still advances.
+fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
+    let start = crate::traps::count_read();
+    loop {
+        if ready() {
+            return true;
+        }
+        if crate::traps::count_read().wrapping_sub(start) >= WAIT_LIMIT_TICKS {
+            return ready();
+        }
+        core::hint::spin_loop();
     }
-    let count = buffer.len().min(len);
-    if count == 0 {
+}
+
+fn read_pipe(index: usize, buffer: &mut [u8], nonblocking: bool) -> SysResult<usize> {
+    if buffer.is_empty() {
         return Ok(0);
     }
+    let mut len = unsafe { PIPE_LEN[index] };
+    if len == 0 {
+        // With no writer left the pipe is at end-of-file.  Otherwise a
+        // non-blocking read returns EAGAIN and a blocking one waits for the
+        // bounded kernel interval before doing the same.
+        if !pipe_has_writer(index) {
+            return Ok(0);
+        }
+        if !nonblocking
+            && !wait_for(|| (unsafe { PIPE_LEN[index] != 0 }) || !pipe_has_writer(index))
+        {
+            return Err(CELL_E_AGAIN);
+        }
+        len = unsafe { PIPE_LEN[index] };
+        if len == 0 {
+            return if pipe_has_writer(index) {
+                Err(CELL_E_AGAIN)
+            } else {
+                Ok(0)
+            };
+        }
+    }
+    let count = buffer.len().min(len);
     let head = unsafe { PIPE_HEAD[index] };
     for (position, slot) in buffer[..count].iter_mut().enumerate() {
         *slot = unsafe { PIPE_DATA[index][(head + position) % PIPE_CAPACITY] };
@@ -683,17 +773,29 @@ fn read_pipe(index: usize, buffer: &mut [u8]) -> SysResult<usize> {
     Ok(count)
 }
 
-fn write_pipe(index: usize, buffer: &[u8]) -> SysResult<usize> {
+fn write_pipe(index: usize, buffer: &[u8], nonblocking: bool) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
     if !pipe_has_reader(index) {
         return Err(CELL_E_PIPE);
     }
-    let len = unsafe { PIPE_LEN[index] };
-    let free = PIPE_CAPACITY.saturating_sub(len);
+    let mut len = unsafe { PIPE_LEN[index] };
+    let mut free = PIPE_CAPACITY.saturating_sub(len);
     if free == 0 {
-        return Err(CELL_E_AGAIN);
+        if !nonblocking
+            && !wait_for(|| !pipe_has_reader(index) || unsafe { PIPE_LEN[index] } < PIPE_CAPACITY)
+        {
+            return Err(CELL_E_AGAIN);
+        }
+        if !pipe_has_reader(index) {
+            return Err(CELL_E_PIPE);
+        }
+        len = unsafe { PIPE_LEN[index] };
+        free = PIPE_CAPACITY.saturating_sub(len);
+        if free == 0 {
+            return Err(CELL_E_AGAIN);
+        }
     }
     let count = buffer.len().min(free);
     let head = unsafe { PIPE_HEAD[index] };
@@ -708,13 +810,92 @@ fn write_pipe(index: usize, buffer: &[u8]) -> SysResult<usize> {
     Ok(count)
 }
 
+/// Read the console as a byte stream, honouring `O_NONBLOCK`.
+fn read_console(buffer: &mut [u8], nonblocking: bool) -> SysResult<usize> {
+    if buffer.is_empty() {
+        return Ok(0);
+    }
+    let count = crate::kbd::read_input(buffer);
+    if count != 0 {
+        return Ok(count);
+    }
+    if nonblocking {
+        return Err(CELL_E_AGAIN);
+    }
+    if !wait_for(crate::kbd::input_ready) {
+        return Err(CELL_E_AGAIN);
+    }
+    let count = crate::kbd::read_input(buffer);
+    if count == 0 {
+        Err(CELL_E_AGAIN)
+    } else {
+        Ok(count)
+    }
+}
+
+/// Readiness for `poll`.
+///
+/// `revents` carries only the requested events, plus `POLLERR`/`POLLHUP`/
+/// `POLLNVAL`, which POSIX always reports.  A negative descriptor is ignored
+/// and reports nothing.
+pub fn poll_events(fd: i32, events: i16) -> i16 {
+    use native_abi::{POLLERR, POLLHUP, POLLIN, POLLNVAL, POLLOUT};
+
+    if fd < 0 {
+        return 0;
+    }
+    let mut revents = 0i16;
+    match kind(fd) {
+        Kind::Closed => return POLLNVAL,
+        Kind::PipeRead(index) => {
+            let index = index as usize;
+            let len = unsafe { PIPE_LEN[index] };
+            if len != 0 && events & POLLIN != 0 {
+                revents |= POLLIN;
+            }
+            if !pipe_has_writer(index) {
+                revents |= POLLHUP;
+            }
+        }
+        Kind::PipeWrite(index) => {
+            let index = index as usize;
+            if !pipe_has_reader(index) {
+                revents |= POLLERR;
+            }
+            if unsafe { PIPE_LEN[index] } < PIPE_CAPACITY && events & POLLOUT != 0 {
+                revents |= POLLOUT;
+            }
+        }
+        Kind::Console => {
+            if events & POLLIN != 0 && crate::kbd::input_ready() {
+                revents |= POLLIN;
+            }
+            if events & POLLOUT != 0 {
+                revents |= POLLOUT;
+            }
+        }
+        // /dev/null and regular files are always ready: a read either returns
+        // data or end-of-file without blocking.
+        Kind::Null | Kind::File(_) | Kind::Logical => {
+            revents |= events & (POLLIN | POLLOUT);
+        }
+        Kind::Dir(_) => {
+            revents |= events & POLLIN;
+        }
+    }
+    revents
+}
+
 pub fn read(fd: i32, buffer: &mut [u8]) -> SysResult<usize> {
     let file = kind(fd);
     if file == Kind::Closed {
         return Err(CELL_E_BADF);
     }
-    if let Kind::PipeRead(index) = file {
-        return read_pipe(index as usize, buffer);
+    let nonblocking = nonblocking(fd);
+    match file {
+        Kind::PipeRead(index) => return read_pipe(index as usize, buffer, nonblocking),
+        Kind::Console => return read_console(buffer, nonblocking),
+        _ => {}
     }
     let start = offset(fd);
     let count = read_at(file, start, buffer)?;
@@ -728,7 +909,7 @@ pub fn write(fd: i32, buffer: &[u8]) -> SysResult<usize> {
         return Err(CELL_E_BADF);
     }
     if let Kind::PipeWrite(index) = file {
-        return write_pipe(index as usize, buffer);
+        return write_pipe(index as usize, buffer, nonblocking(fd));
     }
     let start = offset(fd);
     let count = write_at(file, start, buffer)?;
