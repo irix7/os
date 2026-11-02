@@ -739,14 +739,37 @@ pub fn wait_ticks(limit: u32) {
 /// Only the timer fast path can run in that window; it uses `$k0`/`$k1` and
 /// the same Count/Compare pair, and it does not touch the trap frame.
 fn wait_from_handler() {
+    // EPC still names the user syscall.  If a timer is already pending when
+    // EXL is cleared, the CPU can take it before the `wait` below; its `eret`
+    // would then return to the user PC with kernel status.  Point EPC at the
+    // wait instruction first, so either path lands there.
+    epc_write(__irix7_wait_point as usize as u32);
     let status = status_read();
     status_write((status & !(STATUS_EXL | STATUS_KSU_MASK)) | STATUS_IE);
-    // SAFETY: the timer is running and Compare was just armed for a future
-    // Count value, so the instruction returns from the interrupt.
+    // SAFETY: Compare is armed for a future Count value.  A pending timer may
+    // return to the wait instruction once; it then blocks until the deadline.
     unsafe {
-        core::arch::asm!("wait", options(nomem, nostack));
+        __irix7_wait_point();
     }
     status_write(status | STATUS_EXL);
+}
+
+core::arch::global_asm!(
+    r#"
+    .set noreorder
+    .set mips3
+    .section .text.__irix7_wait_point, "ax", @progbits
+    .align 4
+    .globl __irix7_wait_point
+__irix7_wait_point:
+    wait
+    jr      $ra
+    nop
+"#
+);
+
+extern "C" {
+    fn __irix7_wait_point();
 }
 
 /// Read CP0 PRId (processor identifier).
