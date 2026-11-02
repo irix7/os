@@ -72,6 +72,13 @@ Telnet additionally retains the kernel-only commands `diagnostics`, `scsi`,
 `tlb` and `gfx`; local sash deliberately does not expose network fetches or
 test hooks.  Sash has no userland, process table or job control dependency.
 
+`gfx` reads the REX3's own registers back (mode, colour, `WRMASK`, the staged
+primitive coordinates) after a 1024-command FIFO burst, and leaves a probe
+rectangle on the display that `tools/rex3-gate.py` checks against iris's
+framebuffer.  `gfx fault` clears `rgbmode` in the engine and paints the probe
+in colour-index mode; the gate requires the same pixel check to fail on those
+pixels, so the probe is a negative control and not just a smoke test.
+
 The local prompt is printed when the target-2 user image returns, or when no
 image is attached.  Telnet sash is independently available whenever networking
 is up.  The `packages` and `mount` commands are deferred so they run outside the

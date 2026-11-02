@@ -160,5 +160,10 @@ pub fn flush() {
                 TEXT.2,
             );
         }
+
+        // The full-screen fill above covers the self-test probe area, so the
+        // probe is repainted last: a host framebuffer dump then always sees
+        // the engine's fill output rather than the console background.
+        gfx::paint_probe();
     }
 }

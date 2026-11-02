@@ -289,6 +289,33 @@ The CI must be reproducible from a clean checkout; no manual steps.
 - **Hardware-in-the-loop**: the `indy` self-hosted runner is described in
   [`hardware-lab.md`](hardware-lab.md).
 
+### 5.1 REX3 (Newport) gate
+
+`tools/rex3-gate.py` boots the PROM under iris and checks the graphics driver
+from both ends: the guest `gfx` diagnostic reads `DRAWMODE1`, the colour
+registers, `WRMASK` and the staged coordinates back from the REX3, drains a
+1024-command FIFO burst, and leaves a probe rectangle on the display; the host
+then reads that rectangle from iris's `rex fbdump` output and requires all
+three channels, and repeats the read after `gfx fault` has cleared `rgbmode`
+and painted the probe in colour-index mode.
+
+Two limits are recorded rather than worked around:
+
+- **No readback on real hardware.** Newport has no CPU framebuffer aperture;
+  the 8 KiB window at `0x1F0F_0000` is registers only, so `REX3WAIT`/register
+  readback is all the guest can verify. The pixel half exists only because
+  iris exposes its framebuffer to the monitor. On an Indy the probe has to be
+  checked on the monitor (the guest prints its coordinates and colour); the
+  same probe under a failure shows a single channel.
+- **No FIFO depth or drop model.** The real REX3 FIFO is 32 entries and a full
+  queue stalls or drops the GIO write. iris queues 65 536 entries, so it
+  accepts the whole burst, reports level 0 and never drops. The gate proves the
+  driver waits while the engine is busy and that the queue drains; it cannot
+  prove the absence of dropped commands. That half needs the real machine.
+
+The gate does not run in `ci.yml`; it is a local/lab gate at present, and the
+guest half (`gfx`, `gfx fault`) remains reachable over the telnet console.
+
 ## 6. Tools
 
 | Tool | Use |
@@ -302,6 +329,7 @@ The CI must be reproducible from a clean checkout; no manual steps.
 | `cargo-llvm-cov` | Coverage (informational) |
 | `criterion` | Host microbenchmarks |
 | `perf`/`RPSS` | Indy profiling |
+| `tools/rex3-gate.py` | REX3 engine readback and framebuffer pixel gate (iris) |
 | `lychee` | Link checking |
 | `markdownlint` | Docs style |
 | `typos` | Spelling (Australian English) |

@@ -43,9 +43,9 @@ I did not run `iris` or QEMU for this audit. Real-kernel evidence is the CI `Boo
 
 | Verdict | Count | Issues |
 |---|---:|---|
-| implemented | 11 | 2, 115, 116, 117, 119, 204, 205, 206, 214, 217, 271 |
+| implemented | 12 | 2, 115, 116, 117, 118, 119, 204, 205, 206, 214, 217, 271 |
 | partial | 4 | 1, 33, 43, 213 |
-| divergent | 1 | 118 |
+| divergent | 0 | — |
 | contract-only | 0 | — |
 | superseded | 0 | — |
 
@@ -60,7 +60,7 @@ I did not run `iris` or QEMU for this audit. Real-kernel evidence is the CI `Boo
 | 115 | console: unify kernel and user output | implemented | low | Add automated telnet/MCP assertion for user stdout |
 | 116 | boot: emit a machine-readable READY marker | implemented | low | Make `boot=` monotonic or document RTC-second reuse |
 | 117 | kernel: fix TLB teardown and refill after user mode | implemented | low | Add the `user` then `tlb` regression to CI |
-| 118 | rex3: verify rgbmode and FIFO drain | divergent | medium | Reopen #118: test the REX3 framebuffer, not the CPU shadow; fill the FIFO |
+| 118 | rex3: verify rgbmode and FIFO drain | implemented | medium | Resolved (2026-11-03): engine register readback, FIFO burst, host framebuffer gate |
 | 119 | ci: replace sleep-based guest startup | implemented | low | Add explicit failed-boot cleanup assertion |
 | 204 | M1-T1: complete the Wasm host ABI probe | implemented | medium | Record submit/poll/cancel as synthetic probe semantics |
 | 205 | M1-T2: run the local policy from Wasm | implemented | medium | Keep the guest-only import test; add a negative trap boot |
@@ -225,7 +225,12 @@ Evidence grade: manual real-kernel evidence; no automated regression.
 
 ### #118 — rex3: verify driver rgbmode and FIFO drain semantics
 
-**Verdict: divergent. Foundation risk: medium.**
+**Verdict: implemented (resolved 2026-11-03). Foundation risk: medium.**
+
+The finding below is the audit of `origin/main` at `cac1a5a`. The resolution
+that follows it replaces the shadow check with engine readback plus a host
+framebuffer gate; the original text is kept so the divergence it records stays
+visible.
 
 What is implemented:
 
@@ -242,6 +247,41 @@ Why the verdict is divergent:
 The issue's acceptance says: "The OS self-test fails if `rgbmode` is cleared or a fill only reaches the red channel" and "The driver's FIFO wait path is exercised, not bypassed". The code cannot satisfy the second half of the first sentence and does not fill the FIFO for the second.
 
 Evidence grade: manual iris diagnostic; no hardware or CI evidence.
+
+Resolution (2026-11-03):
+
+- **Engine readback, not the shadow.** The self-test reads `DRAWMODE1`,
+  `COLORRED`/`COLORGRN`/`COLORBLUE`, `WRMASK` and the staged
+  `XYSTARTI`/`XYENDI` back from the REX3 register window
+  (`kernel/src/gfx.rs`, `self_test`). `rgbmode`, the RGB planes, 24-bit depth
+  and the SRC logicop are checked in the word the engine returns; a fill with
+  only the red channel staged fails on the green/blue readbacks. The CPU
+  shadow is no longer part of the check.
+- **FIFO burst.** 1024 full-width span GOs are issued with no intervening
+  wait, followed by a full-screen block fill, and only then does the test wait.
+  `wait_idle` records polls, busy polls and the deepest level it saw
+  (`WaitStats`). The test requires `busy_polls > 0` and a final
+  `GFXBUSY=0`/level 0; that is evidence the wait was needed, not a call count.
+- **Framebuffer gate.** Newport has no CPU aperture, so the pixel half is
+  host-side: `kernel/src/graphics_console.rs` repaints a fixed probe rectangle
+  after every console repaint, and `tools/rex3-gate.py` boots the ROM under
+  iris, runs `gfx` over telnet, cross-checks the guest readback against iris's
+  independent `rex status` dump, then reads the probe back from
+  `rex fbdump`'s `rgb.bin`. All three channels must be present at five points
+  in the rectangle.
+- **Negative control.** `gfx fault` clears `rgbmode` in the engine and paints
+  the probe in colour-index mode; the gate requires that same pixel check to
+  observe a single-channel word (`rgb(42, 0, 0)`) and then requires a following
+  `gfx` to restore the RGB probe. A build with the rgbmode bit cleared in
+  `DM1_RGB24` fails the gate at the guest check (`rgbmode=CLEAR`, `FAILED`);
+  a build that stages only `COLORRED` fails it at `colour=BAD`.
+- **Evidence.** `tools/rex3-gate.py` passes on iris (three consecutive runs):
+  probe `rgb(17,34,51)` at five points, fault pixel `rgb(42,0,0)`, `busy_polls`
+  > 0, `GFIFO 0/65536`, `GO TOTAL +1026`. Remote-Indy evidence is still owed:
+  a real REX3 has no readback path, so on hardware the probe has to be checked
+  on the monitor and only the register half is automated. iris also queues
+  64 K commands, so it cannot reproduce the 32-entry FIFO's dropped or stalled
+  writes; see `docs/plan/testing.md` section 5.
 
 ### #119 — ci: replace sleep-based guest startup with readiness polling and cleanup
 
@@ -445,9 +485,11 @@ The fix is either to reserve region 4 for the bridge, move the bridge into its o
 
 `kernel/src/mesh.rs:41-74` still has no transport caller. The `m1`/`m1-post` lines report `mesh=0/0/0` after a self-test that increments and resets the counters. At M1 closure there was no transport; today `modules/mcp` contains a mesh transport and `m2-mesh` exports one. The kernel counter is therefore not a whole-system "zero mesh RPC" measurement. The issue body says this honestly ("construction invariant, not packet-level instrumentation"), but the marker is still read as stronger evidence than it is.
 
-### 4.7 The REX3 self-test does not test the REX3
+### 4.7 The REX3 self-test does not test the REX3 (resolved)
 
-`kernel/src/gfx.rs:475-479` reads the CPU shadow. The shadow is written before the REX3 command (`:429-445`), so the test passes even if the hardware ignores rgbmode. The FIFO check counts `wait_idle` calls rather than filling the FIFO. This is the one closed issue whose evidence directly contradicts its acceptance text.
+At the audit base, `kernel/src/gfx.rs:475-479` read the CPU shadow. The shadow is written before the REX3 command (`:429-445`), so the test passed even if the hardware ignored rgbmode. The FIFO check counted `wait_idle` calls rather than filling the FIFO. This was the one closed issue whose evidence directly contradicted its acceptance text.
+
+Resolved on 2026-11-03: the self-test now reads the engine's registers and `tools/rex3-gate.py` gates the engine's framebuffer; see the resolution under #118.
 
 ### 4.8 Documentation drift around the stack
 
@@ -470,7 +512,7 @@ Ranked by foundation risk.
 
 5. **Reopen #1 and fix the default devshell or document the rustup path.** The Nix shell must either use rustup with `rust-toolchain.toml`/`rust-src` or stop claiming to be the canonical cross toolchain. Update `docs/install.md` to the working command. Record the LLVM-only decision against ADR-0018 and `docs/spec/architecture.md:274`, or revive the GCC backend.
 
-6. **Reopen #118 and test the framebuffer, not the shadow.** Read the REX3 framebuffer through a known physical address or a readback path, fill the FIFO with enough primitives to force a wait, and report dropped/waited commands. If the hardware path cannot be tested under iris, mark the diagnostic as shadow-only and do not claim the red-channel failure mode is covered.
+6. ~~**Reopen #118 and test the framebuffer, not the shadow.**~~ Done: engine register readback, a 1024-command FIFO burst, and `tools/rex3-gate.py`, which reads the probe back from iris's REX3 framebuffer and requires the colour-index fault to fail the same check. The real-Indy readback limit is recorded in `docs/plan/testing.md` section 5.
 
 7. **Update #43's install guide.** Replace `scripts/rig/task-rig.sh` with the actual `iris`/`iris-ci` commands, update the status table (M2 closed), and fix the `nix develop` instruction. Link the real CI boot commands from `.github/workflows/ci.yml`.
 
@@ -492,6 +534,6 @@ The weak foundations are:
 - the "live" Wasm policy is a bridge whose address overlaps the runtime arena and whose failed-reload behaviour contradicts its acceptance;
 - M1/M2 are still iris-only, against the plan's real-kernel gate;
 - the documented Nix toolchain cannot build the kernel;
-- the REX3 self-test verifies a CPU shadow, not the hardware.
+- the REX3 self-test now reads the engine, but its pixel half runs under iris only: a real Indy has no framebuffer readback.
 
 Those are the items that should carry the next round of work before the one-logical-computer plan treats M1 as a settled foundation.
