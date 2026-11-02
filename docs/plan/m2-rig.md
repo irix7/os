@@ -101,12 +101,16 @@ fetches both migration reports on the stable initial pair, then stops and restar
 **n1** (the member) to prove the signed epoch restore and same-epoch rejoin, and finally
 stops and restarts **n0** (the root) while the member stays up to prove root epoch
 recovery.  It stops both nodes and writes
-`target/m2-rig/evidence/`.  In `kill-peer` and `partition` it runs the failure scenario
+`target/m2-rig/evidence/`.  In `kill-peer`, `kill-root` and `partition` it runs the failure scenario
 instead of the restarts; migration and the restart gates are not driven in those modes.
+`kill-root` runs the failure scenario and restarts the root inside it, so the same store
+that a clean `run` probes is exercised after an ungraceful root death.
 
 A fresh `up`/`run` deletes each node's scratch image so an earlier run cannot leak a
 record into a new one.  The restart paths call `start_node` directly and therefore keep
-the image across the restart under test.
+the image across the restart under test.  Both `run` and `shard` write a dedicated
+`[scsi.3]` scratch volume in every node configuration; `m2_and_shard_configs_provision_the_epoch_store`
+asserts the layout, and `reset_scratch` clears it only for a fresh `up`/`run`.
 
 The lifecycle commands:
 
@@ -116,14 +120,14 @@ The lifecycle commands:
 | `status` | Show `iris-ci` state and the boot/join markers for both nodes. |
 | `probe` | Probe both directions (HTTP, mesh framing, join) against running nodes and write evidence. It does not restart a node. |
 | `down` | Send `iris-ci quit` to both and wait for the processes. |
-| `run` | `up` + probe + member restart/rejoin (or the failure/partition scenario) + `down` + evidence. |
+| `run` | `up` + probe + member restart/rejoin (or the failure, root-failure or partition scenario) + `down` + evidence. |
 | `ports` | Boot one node running `modules/ports`, open one socket per kernel slot, echo one line on each, and write `evidence/ports.json`. Transport prerequisite for #249; no membership traffic. |
 | `print-config` | Print the derived instance/port table and the NVRAM keys without starting. |
 | `clean` | Remove the work directory. Stop the nodes first. |
 
 Useful options: `--work DIR`, `--base-port N`, `--timeout SECS`, `--keep` (with `run`,
 leave the nodes running), `--verbose`, and
-`--fault none|no-peer|wrong-authority|no-route|kill-peer|partition|udp`.
+`--fault none|no-peer|wrong-authority|no-route|kill-peer|kill-root|partition|udp`.
 
 ### Module slot probe
 
@@ -154,6 +158,7 @@ The fault modes are negative evidence, not extra features:
 | `wrong-authority` | n1 gets a valid but wrong `mesh.pub`. | n0 signs; n1 logs `mesh-join: reject reason=bad-signature`, stays at its seed view and serves `409 pending` with no homes. |
 | `no-route` | The join and homes keys are written, but `mesh.route` is absent. | The join and homes pass exactly as in M2-3; both kernels log `mesh-route: disabled reason=config` and `mesh-migrate: disabled reason=config`, `/mesh/route` and `/mesh/migrate` are `404 disabled`, and no route step, `MOVED` or migration runs. |
 | `kill-peer` | The full route configuration (`mesh.route=1`); n1 is `SIGKILL`ed after steps 1–5. | n0 logs `mesh-fail: suspect`, `failed` and `removed`; the epoch advances 2→3 with a one-member table; every object is recomputed to n0; a fence row names n1 as the stale home; step 6 completes at n0 with one attempt, no send and no timeout; step 7 is `stale-epoch`; step 8 commits; step 9 reads. |
+| `kill-root` | The full route configuration (`mesh.route=1`); n0 is `SIGKILL`ed after steps 1–5. | n1 logs `mesh-fail: suspect`, `failed` and `authority state=lost epoch=2 ... mutable=0 reads=lease`; it keeps epoch 2 with both members, records no fence and no commit, refuses step 8 and reports the step 6 remote home as `no-authority`. The rig then restarts n0; n0 logs `epoch-store: restored ... source=root-record` at epoch 2, n1 re-presents epoch 2, n0 confirms it, both reports are `authority=current` with `mutable=1`, the digest is unchanged and there is no `epoch-regression`. No commit is driven after recovery: the gate is the epoch/authority recovery, not the restarted HTTP slot. |
 | `partition` | The full route configuration (`mesh.route=1`); the mesh relay is paused (frames dropped, sessions kept). | The root follows the same removal path; the live member keeps epoch 2 and two members, reports `authority state=lost mutable=0 reads=lease`, refuses step 8 with `no-authority` and reports a remote home in step 6 as `no-authority`. Resuming the seam resets both guest links through the link-only `mesh.reconnect` control and starts a fresh relay; the member rejoins at epoch 4 with the two-member table; the root then commits a peer-homed object (step 10) and the recovered member serves it. |
 | `udp` | No `mesh.*` key is written. Each node carries `netprobe.peer=<its gateway>:<relay port>`, `netprobe.name` and `netprobe.port`; the module binds a UDP slot and the rig runs a two-flow UDP relay on host loopback. | Both kernels log `netprobe: up`, `netprobe: ping`, `netprobe: ping-rx` and `netprobe: pong`, so a datagram crossed from each kernel to the other and a reply came back through the sender address `udp_recv` reported. This is the M3-ADR-0006 transport gate; it runs no join. |
 
@@ -431,6 +436,25 @@ The authority root removes a failed member with exactly one epoch advance and in
 full remaining member list. The member side never removes the root and never advances the
 epoch: losing the authority is not a membership change.
 
+### Root failure and the epoch store
+
+`run --fault kill-root` sends `SIGKILL` to n0 after the M2-4 route steps. The live member
+must log `mesh-fail: suspect`, `failed` and `authority state=lost epoch=2 ... mutable=0
+reads=lease`, keep the two-member epoch-2 view, record no fence and no commit, and refuse a
+mutable commit and a remote home with `no-authority`. That is a safe stop, not an election.
+
+The rig then starts n0 again without clearing its scratch image. The root reads the signed
+record from SCSI target 3 before it listens and logs `epoch-store: restored epoch=2 ...
+source=root-record`; the member re-presents epoch 2 in its next join request; the root
+confirms the same epoch and digest; both reports return to `authority=current` and
+`mutable=1`. The gate rejects any `epoch-regression`, any changed digest or member list, any
+fence, and any member log that shows it acted as an epoch writer.
+
+If the store is missing or corrupt, the root starts at the seed and refuses a live member's
+higher epoch with `epoch-regression`; the member keeps its view. That is the documented
+recovery that cannot create two roots. The Ed25519 key is provisioned on exactly one node;
+a second node with the same key is a configuration error, not a failover path.
+
 `RouteNode::on_snapshot` fences every cached route and home lease that named a node no
 longer in the view. The fence is local: the object is re-routed from the new view with
 `mesh_core::home_for`, no message goes to the removed node and no quorum is consulted. A
@@ -492,8 +516,8 @@ whose *result* is a `409` refusal, so the response carries the same reason and t
 request-id replay check. Step 8 issues the mutable commit; step 9 the read.
 
 The default `run` restarts the member for the M2-2 rejoin check only in the `none` and
-`no-route` modes. `kill-peer` and `partition` use the failure scenario instead, and the
-evidence bundle records the scenario, node reports, expected views and every check.
+`no-route` modes. `kill-peer`, `kill-root` and `partition` use the failure scenario instead,
+and the evidence bundle records the scenario, node reports, expected views and every check.
 
 ## L0 stackless-actor migration (M2-5)
 
@@ -594,7 +618,7 @@ capability handle and canonical hash independently of the module. It requires:
 The migration report, the steps, the independent checks and both raw reports are recorded
 in `run.json` and `summary.md`. `--fault no-peer`, `no-route` and `wrong-authority`
 exercise the disabled marker and preserve the earlier M1/M2-1/M2-2/M2-3/M2-4 evidence;
-`kill-peer` and `partition` keep `mesh.route=1` and the M2-6 scenario.
+`kill-peer`, `kill-root` and `partition` keep `mesh.route=1` and the M2-6 scenario.
 
 ## NVRAM keys
 
@@ -886,8 +910,9 @@ the survivor before the kill.
 - **The `MOVED` retry is exactly one hop.** Multi-hop forwarding, an arbitrary stale-route
   chase and a third-member retry are not implemented.
 - **The default rejoin check does not change the member set.** The member restarts and
-  rejoins at the same epoch in `none`/`no-route`. The `kill-peer` and `partition` modes
-  change it through failure and recovery (2 → 3 → 4); a third-node join remains M3.
+  rejoins at the same epoch in `none`/`no-route`. `kill-peer` and `partition` change it
+  through failure and recovery (2 → 3 → 4); `kill-root` keeps the two-member epoch and
+  changes only who is authoritative. A third-node join remains M3.
 - **The guests still print `mesh=single`.** That is the kernel's M1 bootstrap view; the
   module's confirmed view is `mesh-join: converged`.
 
@@ -971,9 +996,10 @@ M2-6 (failure, lease fencing and partition) is implemented in `crates/mesh-servi
 
 The M2 gate is now covered end to end by this run: join, membership epoch, signed epoch
 restore for both roles, rendezvous homes, remote capability route, L0 migration both ways
-and one-node failure/partition.  The `.github/workflows/ci.yml` `mesh-real` job builds the
+and member failure/partition.  The `.github/workflows/ci.yml` `mesh-real` job builds the
 same artefacts and runs the `none`, `no-peer`, `kill-peer` and `partition` modes on two
-real `iris` kernels, with evidence uploads on failure and success.
+real `iris` kernels, with evidence uploads on failure and success.  The `kill-root` mode is
+a rig gate in this slice; it is not yet in that CI job.
 
 The run does not claim live TLS/socket/fd migration, L2 safepoint migration, a general
 actor scheduler, gossip, a replicated epoch log, a persistent route/migration directory or

@@ -281,6 +281,16 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
         )
         .map_err(|error| format!("copy root first-boot serial log: {error}"))?;
     }
+    if let Some(restart) = evidence
+        .failure
+        .and_then(|failure| failure.root_restart.as_ref())
+    {
+        copy_if_present(
+            &restart.boot1_log,
+            &directory.join(format!("serial-{}-boot1.log", restart.node)),
+        )
+        .map_err(|error| format!("copy root-failure first-boot serial log: {error}"))?;
+    }
 
     let json = render_json(evidence);
     write_text(&directory.join("run.json"), &json)?;
@@ -719,6 +729,14 @@ fn render_failure_json(failure: &crate::failure::FailureEvidence) -> String {
     out.push_str(&format!("\"serial\": {}, ", json_strings(&failure.serial)));
     out.push_str(&format!("\"steps\": {}, ", json_strings(&failure.steps)));
     out.push_str(&format!("\"checks\": {}, ", json_strings(&failure.checks)));
+    out.push_str(&format!(
+        "\"root_restart\": {}, ",
+        failure
+            .root_restart
+            .as_ref()
+            .map(render_root_restart_json)
+            .unwrap_or_else(|| "null".into())
+    ));
     out.push_str("\"nodes\": [");
     for (index, node) in failure.nodes.iter().enumerate() {
         out.push_str(&format!(
@@ -736,6 +754,31 @@ fn render_failure_json(failure: &crate::failure::FailureEvidence) -> String {
     }
     out.push_str("]}");
     out
+}
+
+fn render_root_restart_json(restart: &crate::join::RootRestartEvidence) -> String {
+    format!(
+        "{{\"node\": \"{}\", \"first_epoch\": {}, \"first_digest\": \"{}\", \
+         \"store_epoch\": {}, \"local_epoch\": {}, \"member_last_epoch\": {}, \
+         \"confirm_epoch\": {}, \"member_epoch\": {}, \"epoch_regression\": {}, \
+         \"same_epoch\": {}}}",
+        json_escape(&restart.node),
+        restart.first_epoch,
+        json_escape(&restart.first_digest),
+        json_option_u32(restart.store_epoch),
+        json_option_u32(restart.local_epoch),
+        json_option_u32(restart.member_last_epoch),
+        json_option_u32(restart.confirm_epoch),
+        json_option_u32(restart.member_epoch),
+        restart.epoch_regression,
+        restart.same_epoch
+    )
+}
+
+fn json_option_u32(value: Option<u32>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "null".into())
 }
 
 fn render_homes_json(homes: &HomesEvidence) -> String {
@@ -1689,6 +1732,23 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
                 recovered.epoch,
                 recovered.members.len(),
                 recovered.digest
+            ));
+        }
+        if let Some(restart) = &failure.root_restart {
+            out.push_str("### Root restart from the epoch store\n\n");
+            out.push_str(&format!(
+                "Confirmed epoch {} digest `{}`; store restored {:?}, local {:?}, \
+                 member last {:?}, confirmation {:?}, member view {:?}; \
+                 epoch regression {}, same epoch {}.\n\n",
+                restart.first_epoch,
+                restart.first_digest,
+                restart.store_epoch,
+                restart.local_epoch,
+                restart.member_last_epoch,
+                restart.confirm_epoch,
+                restart.member_epoch,
+                restart.epoch_regression,
+                restart.same_epoch
             ));
         }
         if !failure.serial.is_empty() {
