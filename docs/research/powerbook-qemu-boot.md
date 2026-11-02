@@ -1,11 +1,11 @@
 # Booting a PowerPC kernel on QEMU's g3beige
 
-**Status:** the second boot slice of #287, tracked as #291, works. `kernel-ppc`
+**Status:** the third boot slice of #287, tracked as #295, works. `kernel-ppc`
 is loaded by OpenBIOS, reads the machine description from the device tree,
 installs its own BAT entries, points SDR1 at an empty table, prints to the ESCC
-serial port, takes ten decrementer ticks, halts with `BOOT-OK`, then takes a
-deliberate unmapped load through the 0x300 vector and reports `DSISR`, `DAR`,
-`EPC` and `FAULT-OK`. Observed with QEMU 11.1.1 and its OpenBIOS 1.1 build.
+serial port, takes ten decrementer ticks and prints `BOOT-OK`. It then proves
+the DSI, ISI, alignment, program and system-call vectors in order, prints
+`TRAPS-OK` and halts. Observed with QEMU 11.1.2 and its OpenBIOS 1.1 build.
 
 ## The `-kernel` path
 
@@ -118,21 +118,69 @@ QEMU's 750 model advertises `PPC_MEM_TLBIE` and `PPC_MEM_TLBSYNC` but not
 the equivalent for the ranges the kernel relies on, and is correct on the 750
 where `tlbie` invalidates the addressed entry.
 
-## Data storage interrupt
+## Exception vectors
 
-`trap::install` writes branches to the 0x300 and 0x900 vectors before the
-switch. `dsi_handler` in `boot.S` reads DSISR (SPR 18), DAR (SPR 19) and SRR0
-(SPR 26), resets r1 to `__stack_top` and calls `dsi_report`, which prints:
+`trap::install` writes a branch to every vector before the switch:
+
+| Vector | Exception | Handler |
+|---|---|---|
+| `0x300` | data storage | `dsi_handler` |
+| `0x400` | instruction storage | `isi_handler` |
+| `0x600` | alignment | `alignment_handler` |
+| `0x700` | program | `program_handler` |
+| `0x900` | decrementer | `decrementer_handler` |
+| `0xC00` | system call | `system_call_handler` |
+
+The five fault vectors share `trap_entry` in `boot.S`. Each stub parks the
+interrupted r0 in SPRG0, puts its vector number in r0 and branches to the
+common entry. The entry saves r0 and r2-r12 plus CR, LR, CTR and XER in a
+128-byte frame, calls `trap_dispatch`, stores the returned r3 and restores the
+context with `rfi`. r13-r31 are callee-saved by the Rust handler. SPRG0 is
+safe as scratch because the hardware clears `MSR[EE]` on exception entry, so a
+stub cannot be interrupted by another exception.
+
+`trap_dispatch` prints one report for every exception. DSISR and DAR are
+printed for the DSI and alignment vectors, the two memory faults:
 
 ```
-ppc: dsi dsisr=0x40000000 dar=0x20000000 epc=0x010009dc
-FAULT-OK
-ppc: halted
+ppc: trap vector=0x300 srr0=0x10020a4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
+ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
+ppc: trap vector=0x600 srr0=0x10020e8 srr1=0xa030 dsisr=0x40000060 dar=0x10200f1
+ppc: trap vector=0x700 srr0=0x100210c srr1=0x8a030
+ppc: trap vector=0xc00 srr0=0x100211c srr1=0xa030
+ppc: syscall call=0x2a result=0x2b
 ```
 
-The deliberate load is from `0x20000000`, below RAM at every memory size the
-gate uses and outside the PCI hole. DSISR bit 1 (`0x40000000`) is the
-translation-not-found load case. The image never returns from the handler.
+### Resume policy
+
+For a data fault, alignment fault or program exception, SRR0 holds the
+faulting instruction; the handler writes `SRR0 + 4` and `rfi` resumes at the
+next instruction. The system call exception already saves the instruction
+after `sc`, so its SRR0 is written back unchanged; the handler reads the call
+number from r3 and returns call + 1 in r3.
+
+An instruction fetch has no instruction at SRR0 to step over. The probe
+reaches `0x20000000` with `bctrl`, so the handler resumes at the interrupted
+LR. It refuses an LR outside the image or not word aligned, prints
+`ppc: isi without a resume address` and halts instead of returning to an
+arbitrary address.
+
+The probes run after `BOOT-OK`, each marker after the faulting instruction has
+returned:
+
+| Probe | Fault | Marker |
+|---|---|---|
+| `0x20000000` load | DSI | `FAULT-OK` |
+| `bctrl` to `0x20000000` | ISI | `ISI-OK` |
+| `lwarx` at an odd address | alignment | `ALIGN-OK` |
+| the all-zero word | program | `PROGRAM-OK` |
+| `li 3, 0x2a; sc` | system call | `SYSCALL-OK` |
+
+The deliberate DSI load is from `0x20000000`, below RAM at every memory size
+the gate uses and outside the PCI hole. DSISR bit 1 (`0x40000000`) is the
+translation-not-found load case. The alignment probe uses `lwarx` because
+QEMU's 750 model does not check a plain `lwz` for word alignment. The program
+probe's illegal-instruction cause appears in SRR1 bit 12 (`0x00080000`).
 
 ## Gate
 
@@ -153,22 +201,27 @@ qemu-system-ppc -M g3beige -m 64M -kernel kernel-ppc.bin \
 
 The g3beige machine has no `isa-debug-exit` device and no RTAS shutdown call,
 so the kernel halts in a spin loop after `ppc: halted` and the gate stops QEMU
-once that marker reaches the serial file. The gate then checks:
+once that marker reaches the serial file. The gate checks every marker in the
+order it must appear, then parses the exception reports:
 
 - the banner, memory map, tick count and `BOOT-OK` appear after
   `ppc: mmu enabled`;
-- `FAULT-OK` appears after `BOOT-OK`;
-- the DSI line matches
-  `ppc: dsi dsisr=0x... dar=0x... epc=0x...`;
-- DSISR is a translation-not-found load and DAR is `0x20000000`;
-- EPC falls inside the image BAT range printed in the log;
+- `FAULT-OK`, `ISI-OK`, `ALIGN-OK`, `PROGRAM-OK`, `SYSCALL-OK`, `TRAPS-OK`
+  and `ppc: halted` follow in that order;
+- every vector report matches `ppc: trap vector=0x... srr0=0x... srr1=0x...`,
+  with `dsisr` and `dar` for the DSI and alignment vectors;
+- DSISR is a translation-not-found load, DAR is `0x20000000`, and the DSI
+  SRR0 falls inside the image BAT range printed in the log;
+- the ISI SRR0 is `0x20000000`, the alignment DAR is not word aligned, the
+  program SRR1 carries the illegal-instruction cause, and the system call
+  returns `0x2b` for call `0x2a`;
 - the image contains no FP instruction.
 
 Observed serial output:
 
 ```
 
->> [ppc] Kernel already loaded (0x01000000 + 0x000203b4) (initrd 0x00000000 + 0x00000000)
+>> [ppc] Kernel already loaded (0x01000000 + 0x0002043c) (initrd 0x00000000 + 0x00000000)
 >> [ppc] Kernel command line:
 >> switching to new context:
 ppc: mmu enabled sdr1=0x1010000
@@ -184,8 +237,21 @@ ppc: timebase=16600000 Hz
 ppc: decrementer ticks=10
 BOOT-OK
 ppc: deliberate unmapped load
-ppc: dsi dsisr=0x40000000 dar=0x20000000 epc=0x10009dc
+ppc: trap vector=0x300 srr0=0x10020a4 srr1=0xa030 dsisr=0x40000000 dar=0x20000000
 FAULT-OK
+ppc: deliberate unmapped fetch
+ppc: trap vector=0x400 srr0=0x20000000 srr1=0x4000a030
+ISI-OK
+ppc: deliberate misaligned load
+ppc: trap vector=0x600 srr0=0x10020e8 srr1=0xa030 dsisr=0x40000060 dar=0x10200f1
+ALIGN-OK
+ppc: deliberate illegal instruction
+ppc: trap vector=0x700 srr0=0x100210c srr1=0x8a030
+PROGRAM-OK
+ppc: trap vector=0xc00 srr0=0x100211c srr1=0xa030
+ppc: syscall call=0x2a result=0x2b
+SYSCALL-OK
+TRAPS-OK
 ppc: halted
 ```
 
@@ -195,6 +261,13 @@ ppc: halted
   beyond the image is not mapped, and there is no frame allocator.
 - BAT entries only: there are no page tables, no user address space and no demand
   paging. SDR1 points at a zeroed table solely to make a missing BAT fault.
+- The exception layer is a bring-up proof, not a production fault handler. A
+  data, alignment or program fault is always stepped over, and an ISI resumes
+  only through the LR fixup, so a real unexpected fault in arbitrary code would
+  resume at a meaningless address rather than panic.
+- There is one kernel stack and no nested-exception frame. The fault handlers
+  run on the interrupted stack with `MSR[EE]` clear; a fault inside the handler
+  would recurse.
 - The only interrupt is the decrementer. There is no console input, block
   device, network device, ADB or PMU.
 - The ESCC baud generator is not programmed; QEMU's model ignores it. Real

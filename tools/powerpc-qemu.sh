@@ -6,10 +6,10 @@
 # The gate is marker-based: OpenBIOS enters the raw image at 0x01000000, the
 # kernel reads the memory map and the ESCC address from the device tree,
 # installs its own BAT entries, points SDR1 at an empty table, takes ten
-# decrementer ticks through the 0x900 vector, then takes a deliberate unmapped
-# load through the 0x300 vector.  QEMU's g3beige machine has no debug-exit
-# device, so the gate stops QEMU once the final `ppc: halted` reaches the
-# serial file.
+# decrementer ticks through the 0x900 vector, then proves the five exception
+# paths it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
+# one system call round-trip.  QEMU's g3beige machine has no debug-exit device,
+# so the gate stops QEMU once the final `ppc: halted` reaches the serial file.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -106,15 +106,32 @@ markers=(
   "ppc: timebase="
   "ppc: decrementer ticks="
   "BOOT-OK"
-  "ppc: dsi dsisr=0x"
+  "ppc: trap vector=0x300"
   "FAULT-OK"
+  "ppc: trap vector=0x400"
+  "ISI-OK"
+  "ppc: trap vector=0x600"
+  "ALIGN-OK"
+  "ppc: trap vector=0x700"
+  "PROGRAM-OK"
+  "ppc: trap vector=0xc00"
+  "SYSCALL-OK"
+  "TRAPS-OK"
   "ppc: halted"
 )
+
+previous=0
 for marker in "${markers[@]}"; do
-  if ! grep -qF -- "$marker" "$SERIAL"; then
+  line="$(grep -nF -- "$marker" "$SERIAL" | head -n 1 | cut -d: -f1)" || true
+  if [ -z "$line" ]; then
     echo "powerpc-qemu: missing marker: $marker" >&2
     exit 1
   fi
+  if [ "$line" -le "$previous" ]; then
+    echo "powerpc-qemu: marker out of order: $marker (line $line, previous $previous)" >&2
+    exit 1
+  fi
+  previous="$line"
 done
 
 line_of() {
@@ -128,10 +145,81 @@ if [ -z "$mmu_line" ] || [ -z "$banner_line" ] || [ "$mmu_line" -ge "$banner_lin
   exit 1
 fi
 
-boot_line="$(line_of "BOOT-OK")" || true
-fault_line="$(line_of "FAULT-OK")" || true
-if [ -z "$boot_line" ] || [ -z "$fault_line" ] || [ "$boot_line" -ge "$fault_line" ]; then
-  echo "powerpc-qemu: FAULT-OK did not follow BOOT-OK" >&2
+# One common report line per exception: the vector, SRR0 and SRR1, plus the
+# memory-fault fields for DSI and alignment.
+trap_line() {
+  tr -d '\r' < "$SERIAL" \
+    | grep -E "$1" \
+    | tail -n 1
+}
+
+dsi="$(trap_line '^ppc: trap vector=0x300 srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+ dsisr=0x[0-9a-f]+ dar=0x[0-9a-f]+$')" || true
+if [ -z "$dsi" ]; then
+  echo "powerpc-qemu: missing or malformed DSI report" >&2
+  exit 1
+fi
+dsisr="$(printf '%s\n' "$dsi" | sed -E 's/^.*dsisr=(0x[0-9a-f]+).*$/\1/')"
+dar="$(printf '%s\n' "$dsi" | sed -E 's/^.*dar=(0x[0-9a-f]+).*$/\1/')"
+srr0="$(printf '%s\n' "$dsi" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+dsisr_value=$((dsisr))
+dar_value=$((dar))
+srr0_value=$((srr0))
+
+if [ $((dsisr_value & 0x40000000)) -eq 0 ] \
+  || [ $((dsisr_value & 0x02000000)) -ne 0 ]; then
+  echo "powerpc-qemu: DSISR $dsisr is not a translation-not-found load" >&2
+  exit 1
+fi
+if [ "$dar_value" -ne $((0x20000000)) ]; then
+  echo "powerpc-qemu: DAR $dar is not the deliberate fault address" >&2
+  exit 1
+fi
+
+isi="$(trap_line '^ppc: trap vector=0x400 srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+$')" || true
+if [ -z "$isi" ]; then
+  echo "powerpc-qemu: missing or malformed ISI report" >&2
+  exit 1
+fi
+isi_srr0="$(printf '%s\n' "$isi" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+if [ $((isi_srr0)) -ne $((0x20000000)) ]; then
+  echo "powerpc-qemu: ISI SRR0 $isi_srr0 is not the deliberate fetch address" >&2
+  exit 1
+fi
+
+alignment="$(trap_line '^ppc: trap vector=0x600 srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+ dsisr=0x[0-9a-f]+ dar=0x[0-9a-f]+$')" || true
+if [ -z "$alignment" ]; then
+  echo "powerpc-qemu: missing or malformed alignment report" >&2
+  exit 1
+fi
+align_dar="$(printf '%s\n' "$alignment" | sed -E 's/^.*dar=(0x[0-9a-f]+).*$/\1/')"
+align_srr0="$(printf '%s\n' "$alignment" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+if [ $((align_dar & 3)) -eq 0 ]; then
+  echo "powerpc-qemu: alignment DAR $align_dar is word aligned" >&2
+  exit 1
+fi
+
+program="$(trap_line '^ppc: trap vector=0x700 srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+$')" || true
+if [ -z "$program" ]; then
+  echo "powerpc-qemu: missing or malformed program report" >&2
+  exit 1
+fi
+program_srr0="$(printf '%s\n' "$program" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+program_srr1="$(printf '%s\n' "$program" | sed -E 's/^.*srr1=(0x[0-9a-f]+).*$/\1/')"
+if [ $((program_srr1 & 0x00080000)) -eq 0 ]; then
+  echo "powerpc-qemu: program SRR1 $program_srr1 is not an illegal-instruction cause" >&2
+  exit 1
+fi
+
+syscall_trap="$(trap_line '^ppc: trap vector=0xc00 srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+$')" || true
+if [ -z "$syscall_trap" ]; then
+  echo "powerpc-qemu: missing or malformed system-call report" >&2
+  exit 1
+fi
+syscall_srr0="$(printf '%s\n' "$syscall_trap" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+
+syscall="$(trap_line '^ppc: syscall call=0x2a result=0x2b$')" || true
+if [ -z "$syscall" ]; then
+  echo "powerpc-qemu: the system call did not return the known value" >&2
   exit 1
 fi
 
@@ -152,30 +240,6 @@ if [ -z "$ram_mib" ] || [ "$ram_mib" -ne "$expected_mib" ]; then
   exit 1
 fi
 
-dsi="$(tr -d '\r' < "$SERIAL" \
-  | grep -E '^ppc: dsi dsisr=0x[0-9a-f]+ dar=0x[0-9a-f]+ epc=0x[0-9a-f]+$' \
-  | tail -n 1)" || true
-if [ -z "$dsi" ]; then
-  echo "powerpc-qemu: missing or malformed DSI report" >&2
-  exit 1
-fi
-dsisr="$(printf '%s\n' "$dsi" | sed -E 's/^.*dsisr=(0x[0-9a-f]+).*$/\1/')"
-dar="$(printf '%s\n' "$dsi" | sed -E 's/^.*dar=(0x[0-9a-f]+).*$/\1/')"
-epc="$(printf '%s\n' "$dsi" | sed -E 's/^.*epc=(0x[0-9a-f]+).*$/\1/')"
-dsisr_value=$((dsisr))
-dar_value=$((dar))
-epc_value=$((epc))
-
-if [ $((dsisr_value & 0x40000000)) -eq 0 ] \
-  || [ $((dsisr_value & 0x02000000)) -ne 0 ]; then
-  echo "powerpc-qemu: DSISR $dsisr is not a translation-not-found load" >&2
-  exit 1
-fi
-if [ "$dar_value" -ne $((0x20000000)) ]; then
-  echo "powerpc-qemu: DAR $dar is not the deliberate fault address" >&2
-  exit 1
-fi
-
 image="$(tr -d '\r' < "$SERIAL" \
   | sed -n 's/^ppc: mmu image base=\(0x[0-9a-f]*\) size=\([0-9][0-9]*\)$/\1 \2/p' \
   | tail -n 1)" || true
@@ -185,9 +249,22 @@ if [ -z "$image" ]; then
 fi
 image_base=$(( ${image% *} ))
 image_end=$(( image_base + ${image#* } ))
-if [ "$epc_value" -lt "$image_base" ] || [ "$epc_value" -ge "$image_end" ]; then
-  echo "powerpc-qemu: EPC $epc is outside the image BAT range" >&2
+if [ "$srr0_value" -lt "$image_base" ] || [ "$srr0_value" -ge "$image_end" ]; then
+  echo "powerpc-qemu: DSI SRR0 $srr0 is outside the image BAT range" >&2
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, dsisr=$dsisr dar=$dar epc=$epc)"
+check_image_srr0() {
+  local name="$1"
+  local address="$2"
+  if [ $((address)) -lt "$image_base" ] || [ $((address)) -ge "$image_end" ]; then
+    echo "powerpc-qemu: $name SRR0 $address is outside the image BAT range" >&2
+    exit 1
+  fi
+}
+
+check_image_srr0 alignment "$align_srr0"
+check_image_srr0 program "$program_srr0"
+check_image_srr0 "system call" "$syscall_srr0"
+
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0)"
