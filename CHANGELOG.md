@@ -18,6 +18,17 @@ All notable changes to IRIX 7 are recorded here. The format follows
   module status.  The QEMU gate boots a pipe chardev on channel A, sends the
   three commands one byte at a time, and checks the prompt, echo and output;
   the no-input boot and every existing marker remain.  See #321.
+- PowerPC G3 ADB keyboard. `kernel-ppc` finds the `adb` keyboard child below
+  `via-cuda` or `via-pmu`, takes its address from the device tree, and drives
+  the CUDA's 6522 shift-register handshake on QEMU's g3beige. The PMU command
+  path (`PMU_ADB_CMD` plus `PMU_INT_ACK`) is implemented for the M4753 but
+  awaits hardware verification. Standard ADB scancodes decode to US ASCII
+  with shift and caps lock, releases keep their scancode, and decoded events
+  go into a 32-entry `keyboard::poll`/`keyboard::pop` queue for the input
+  monitor. After the existing probes the kernel waits three seconds for a
+  key, prints the scancode and character, and prints `KEY-OK`. The QEMU gate
+  sends `a` on a monitor socket and requires the line and marker; a no-input
+  boot requires the timeout marker and still halts. See #324.
 
 - PowerPC G3 Mac I/O selection and the PMU fallback.  The kernel walks
   `/pci`, scores the Mac I/O nodes by their ESCC and disk children, and uses

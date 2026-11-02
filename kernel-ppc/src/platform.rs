@@ -589,6 +589,49 @@ pub struct Cuda {
 
 pub fn cuda(client: &Client, macio: &MacIo) -> Option<Cuda> {
     let node = find_child(client, macio.node, b"via-cuda", b"via-cuda")?;
+    let base = via_base(client, macio, node)?;
+    let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
+    Some(Cuda { base, line })
+}
+
+/// The ADB host and the keyboard's bus address.
+///
+/// QEMU's `g3beige` and a beige G3 route ADB through the CUDA's 6522 shift
+/// register.  The PowerBook G3 M4753 has no CUDA: its 6522 sits in the PMU
+/// node (`via-pmu`) and the PMU microcontroller drives the same ADB pins.
+/// Both trees put an `adb` child under the VIA node and the keyboard below
+/// that, so the transport is selected by the node that exists, and the
+/// keyboard address comes from its `reg` rather than a constant.
+pub enum AdbHost {
+    Cuda { base: u32, keyboard: u8 },
+    Pmu { base: u32, keyboard: u8 },
+}
+
+pub fn adb(client: &Client, macio: &MacIo) -> Option<AdbHost> {
+    if let Some(node) = find_child(client, macio.node, b"via-cuda", b"via-cuda") {
+        if let Some(host) = adb_from_via(client, macio, node, false) {
+            return Some(host);
+        }
+    }
+    if let Some(node) = find_child(client, macio.node, b"via-pmu", b"via-pmu") {
+        if let Some(host) = adb_from_via(client, macio, node, true) {
+            return Some(host);
+        }
+    }
+    None
+}
+
+fn adb_from_via(client: &Client, macio: &MacIo, node: u32, pmu: bool) -> Option<AdbHost> {
+    let base = via_base(client, macio, node)?;
+    let keyboard = adb_keyboard(client, node)?;
+    Some(if pmu {
+        AdbHost::Pmu { base, keyboard }
+    } else {
+        AdbHost::Cuda { base, keyboard }
+    })
+}
+
+fn via_base(client: &Client, macio: &MacIo, node: u32) -> Option<u32> {
     let mut reg = [0u8; 8];
     let length = client.getprop(node, b"reg\0", &mut reg)?;
     if length < 4 {
@@ -605,8 +648,36 @@ pub fn cuda(client: &Client, macio: &MacIo) -> Option<Cuda> {
     if base < macio.base || base.checked_add(size)? > window_end {
         return None;
     }
-    let line = client.getprop_u32(node, b"AAPL,interrupts\0")?;
-    Some(Cuda { base, line })
+    Some(base)
+}
+
+/// The keyboard's ADB address from the `adb` child of the VIA node.
+///
+/// A tree with an `adb` node but no keyboard child is treated as having the
+/// standard address; the gate's tree names `keyboard@8` explicitly, and a
+/// hardware tree that omits the child still gets a working default.
+fn adb_keyboard(client: &Client, via_node: u32) -> Option<u8> {
+    let adb = find_child(client, via_node, b"adb", b"adb")?;
+    let mut child = client.child(adb);
+    while let Some(node) = child {
+        if matches_property(client, node, b"device_type\0", b"keyboard")
+            || matches_property(client, node, b"name\0", b"keyboard")
+        {
+            return Some(adb_address(client, node).unwrap_or(crate::adb::DEFAULT_KEYBOARD_ADDRESS));
+        }
+        child = client.peer(node);
+    }
+    Some(crate::adb::DEFAULT_KEYBOARD_ADDRESS)
+}
+
+fn adb_address(client: &Client, node: u32) -> Option<u8> {
+    let mut reg = [0u8; 4];
+    let length = client.getprop(node, b"reg\0", &mut reg)?;
+    match length {
+        0 => None,
+        1..=3 => Some(reg[0]),
+        _ => Some(reg[3]),
+    }
 }
 
 pub fn timebase(client: &Client) -> Option<u32> {

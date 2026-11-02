@@ -18,14 +18,22 @@
 # captures the same kernel log on channel A and channel B.  A second boot adds
 # an extra `macio-oldworld` device ahead of the built-in controller in tree
 # order and requires the kernel to keep selecting the node with the ESCC and
-# the disk.
+# the disk.  That boot has no keyboard input and must reach both bounded
+# timeout markers.
 #
 # After the module check the kernel waits one second for a key on the selected
-# ESCC channel.  Silence prints `ppc: monitor timeout` and halts as before.
-# A pipe chardev on channel A in a separate boot carries `info`, `help` and
-# `halt` at the `ppc>` prompt, and the gate checks the echo, the prompt and
-# every reported value.  QEMU's g3beige machine has no debug-exit device, so
-# the gate stops QEMU once the final `ppc: halted` reaches both serial files.
+# ESCC channel.  Silence prints `ppc: monitor timeout`.  A pipe chardev on
+# channel A in a separate boot carries `info`, `help` and `halt` at the `ppc>`
+# prompt, and the gate checks the echo, the prompt and every reported value.
+#
+# The primary boot also proves the ADB keyboard.  QEMU's g3beige has a CUDA
+# and an ADB keyboard at the address OpenBIOS put in the device tree.  Once
+# the kernel prints `ppc: keyboard waiting`, the gate sends `sendkey a` on a
+# QEMU monitor socket and requires the decoded scancode, the ASCII character
+# and `KEY-OK`.
+#
+# QEMU's g3beige machine has no debug-exit device, so the gate stops
+# QEMU once the final `ppc: halted` reaches both serial files.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -149,6 +157,50 @@ if [ -z "$SIGNATURE" ]; then
 fi
 
 set +e
+MONITOR="$WORK/monitor.sock"
+rm -f "$MONITOR"
+
+# Send one key through the QEMU monitor once the kernel is waiting.  The
+# monitor is a unix socket because the serial ports already own the chardevs.
+send_key() {
+  python3 -I - "$MONITOR" <<'PY'
+import socket, sys, time
+path = sys.argv[1]
+deadline = time.monotonic() + 5
+while True:
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.connect(path)
+        break
+    except OSError:
+        if time.monotonic() > deadline:
+            sys.exit(1)
+        time.sleep(0.05)
+sock.settimeout(3)
+
+def read_prompt():
+    data = b""
+    while b"(qemu)" not in data:
+        try:
+            chunk = sock.recv(4096)
+        except OSError:
+            return False
+        if not chunk:
+            return False
+        data += chunk
+    return True
+
+# The greeting ends with the first prompt.  Wait for the second prompt after
+# the command so a dropped monitor line fails the gate instead of the key.
+if not read_prompt():
+    sys.exit(1)
+sock.sendall(b"sendkey a\n")
+if not read_prompt():
+    sys.exit(1)
+sock.close()
+PY
+}
+
 "$QEMU" \
   -M g3beige \
   -m "$MEMORY" \
@@ -157,12 +209,23 @@ set +e
   -nographic \
   -serial "file:$SERIAL" \
   -serial "file:$SERIAL_B" \
-  -monitor none \
+  -monitor "unix:$MONITOR,server=on,wait=off" \
   -no-reboot &
 QEMU_PID=$!
 
+key_sent=0
+key_error=0
 deadline=$((SECONDS + 60))
 while kill -0 "$QEMU_PID" 2>/dev/null; do
+  if [ "$key_sent" -eq 0 ] \
+    && grep -qF "ppc: keyboard waiting" "$SERIAL" 2>/dev/null; then
+    if send_key; then
+      key_sent=1
+    else
+      key_error=1
+      break
+    fi
+  fi
   if grep -qF "ppc: halted" "$SERIAL" 2>/dev/null \
     && grep -qF "ppc: halted" "$SERIAL_B" 2>/dev/null; then
     break
@@ -175,6 +238,14 @@ done
 kill "$QEMU_PID" 2>/dev/null
 wait "$QEMU_PID" 2>/dev/null
 set -e
+if [ "$key_error" -ne 0 ]; then
+  echo "powerpc-qemu: could not send a key through $MONITOR" >&2
+  exit 1
+fi
+if [ "$key_sent" -ne 1 ]; then
+  echo "powerpc-qemu: the kernel never reached the keyboard wait" >&2
+  exit 1
+fi
 
 echo "--- serial (channel A) ---"
 cat "$SERIAL" 2>/dev/null || true
@@ -200,6 +271,7 @@ markers=(
   "ppc: timebase="
   "ppc: ata reg base=0x"
   "ppc: ata irq=0xd"
+  "ppc: adb transport=cuda via=0x"
   "ppc: irq controller=0x"
   "ppc: decrementer ticks="
   "BOOT-OK"
@@ -228,6 +300,11 @@ markers=(
   "MODULE-OK"
   "ppc: monitor wait input=a"
   "ppc: monitor timeout"
+  "ppc: keyboard transport=cuda address="
+  "ppc: keyboard reset=ok"
+  "ppc: keyboard waiting"
+  "ppc: adb key code=0x00 down=1 ascii=0x61 char=a"
+  "KEY-OK"
   "ppc: halted"
 )
 
@@ -244,6 +321,35 @@ for marker in "${markers[@]}"; do
   fi
   previous="$line"
 done
+
+key_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: adb key code=0x[0-9a-f][0-9a-f] down=[01] ascii=0x[0-9a-f][0-9a-f] char=.$' \
+  | tail -n 1)" || true
+if [ -z "$key_line" ]; then
+  echo "powerpc-qemu: missing or malformed keyboard report" >&2
+  exit 1
+fi
+if [ "$key_line" != "ppc: adb key code=0x00 down=1 ascii=0x61 char=a" ]; then
+  echo "powerpc-qemu: decoded key '$key_line' is not the injected 'a'" >&2
+  exit 1
+fi
+if grep -qF "ppc: keyboard timeout" "$SERIAL"; then
+  echo "powerpc-qemu: the keyboard timed out after the key was sent" >&2
+  exit 1
+fi
+
+adb_line="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: adb transport=cuda via=0x[0-9a-f]+ keyboard=[0-9]+$' \
+  | tail -n 1)" || true
+if [ -z "$adb_line" ]; then
+  echo "powerpc-qemu: missing or malformed ADB transport report" >&2
+  exit 1
+fi
+adb_keyboard="$(printf '%s\n' "$adb_line" | sed -E 's/^.* keyboard=([0-9]+)$/\1/')"
+if [ "$adb_keyboard" -ne 8 ]; then
+  echo "powerpc-qemu: keyboard address $adb_keyboard, expected the tree's 8" >&2
+  exit 1
+fi
 
 # The selected Mac I/O node must be a PCI mac-io node with an ESCC and at
 # least one ATA child.  g3beige has one candidate; the PowerBook has two and
@@ -857,7 +963,9 @@ if [ "$two_path" != "$macio_path" ]; then
   echo "powerpc-qemu: selected '$two_path' with a second controller, expected '$macio_path'" >&2
   exit 1
 fi
-for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" "ppc: monitor timeout" "ppc: halted"; do
+for marker in "ppc: escc=0x" "ATA-OK" "IRQ-OK count=" "MODULE-OK" \
+  "ppc: monitor timeout" "ppc: keyboard timeout" "KEY-SKIP reason=no-key" \
+  "ppc: halted"; do
   if ! grep -qF -- "$marker" "$TWO_SERIAL"; then
     echo "powerpc-qemu: two-controller boot missing marker: $marker" >&2
     exit 1
@@ -914,4 +1022,4 @@ if grep -qF "MODULE-OK" "$BAD_SERIAL" || grep -qF "PPC-MODULE-RUN" "$BAD_SERIAL"
   exit 1
 fi
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase)"
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0, macio $macio_path escc=$escc_children ata=$ata_children, two-controller $two_path, ata ${ata_sectors} sectors sector4=$ata_sector, module ${MODULE_SIZE} bytes ${MODULE_SHA}, escc ch-a=0x$(printf '%x' "$escc_a") ch-b=0x$(printf '%x' "$escc_b") selected=$selected mirror=both, monitor info/help/halt path=$mon_path console=$mon_console input=$mon_input timebase=$monitor_timebase, key '$key_line')"
