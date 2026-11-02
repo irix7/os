@@ -670,6 +670,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-ppc"
+version = "0.1.0"
+dependencies = [
+ "irix7-fmt",
+]
+
+[[package]]
 name = "kernel-test"
 version = "0.1.0"
 

@@ -29,3 +29,5 @@ traceability.
 - [Direct peer transport](direct-peer.md) — #245.
 
 - [Bounded mesh streams](mesh-streams.md) — #246.
+
+- [PowerPC G3 QEMU boot](powerbook-qemu-boot.md) — #287.
