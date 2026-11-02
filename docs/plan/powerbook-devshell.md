@@ -188,8 +188,8 @@ bays; those need real hardware.
   install.
 - **QEMU gate.** No script boots the image under `qemu-system-ppc -M g3beige`
   and checks serial output.
-- **Machine layer.** OpenPIC, ATA, ADB, PMU/NVRAM/RTC, a console and a network
-  device are unwritten.
+- **Machine layer.** The Heathrow interrupt controller, ATA, ADB,
+  PMU/NVRAM/RTC, a console and a network device are unwritten.
 - **Memory sizing.** The frame allocator must be sized for 32 MiB, and the Wasm
   policy module does not fit that budget yet.
 - **Userland.** There is no PPC ELF loader and no SysV 32-bit userland ABI.

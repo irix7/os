@@ -47,8 +47,10 @@ A new machine layer, in the same shape as the x86 one:
    handoff.
 2. Exception vectors, the MMU (BATs for early identity mapping, then the hashed
    page table), and the decrementer as the tick source.
-3. The platform controller (Heathrow-class I/O): OpenPIC interrupts, ATA for the
-   disk and CD, ADB for keyboard and trackpad, and the PMU for NVRAM and RTC.
+3. The platform controller (Heathrow-class I/O): the Heathrow interrupt
+   controller, ATA for the disk and CD, ADB for keyboard and trackpad, and the
+   PMU for NVRAM and RTC. The M4753 is an Old World Heathrow machine; it has
+   no OpenPIC, which is the New World controller in KeyLargo.
 4. A console: Open Firmware's own console first, then either the serial port or
    the ATI framebuffer.
 5. A network device. The listed configuration has a modem; mesh needs Ethernet,

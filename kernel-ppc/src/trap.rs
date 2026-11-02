@@ -19,6 +19,7 @@ use crate::{halt, print_hex, print_line, serial};
 
 pub const DSI_VECTOR: u32 = 0x300;
 pub const ISI_VECTOR: u32 = 0x400;
+pub const EXTERNAL_VECTOR: u32 = 0x500;
 pub const ALIGNMENT_VECTOR: u32 = 0x600;
 pub const PROGRAM_VECTOR: u32 = 0x700;
 pub const DECREMENTER_VECTOR: u32 = 0x900;
@@ -32,6 +33,7 @@ pub const SYS_CALL_RESULT: u32 = SYS_CALL_PROBE + 1;
 extern "C" {
     fn dsi_handler();
     fn isi_handler();
+    fn external_handler();
     fn alignment_handler();
     fn program_handler();
     fn system_call_handler();
@@ -44,6 +46,7 @@ extern "C" {
 pub fn install() {
     write_vector(DSI_VECTOR, dsi_handler as *const () as u32);
     write_vector(ISI_VECTOR, isi_handler as *const () as u32);
+    write_vector(EXTERNAL_VECTOR, external_handler as *const () as u32);
     write_vector(ALIGNMENT_VECTOR, alignment_handler as *const () as u32);
     write_vector(PROGRAM_VECTOR, program_handler as *const () as u32);
     write_vector(DECREMENTER_VECTOR, decrementer_handler as *const () as u32);
@@ -84,6 +87,15 @@ fn write_vector(vector: u32, handler: u32) {
 pub extern "C" fn trap_dispatch(vector: u32, call: u32, link: u32) -> u32 {
     let srr0 = read_srr0();
     let srr1 = read_srr1();
+
+    // An external interrupt is taken at an instruction boundary: SRR0 is the
+    // instruction to resume at, so it is written back unchanged.  The handler
+    // acknowledges the controller before returning.
+    if vector == EXTERNAL_VECTOR {
+        write_srr0(srr0);
+        return crate::irq::dispatch(srr0, srr1, call);
+    }
+
     report(vector, srr0, srr1);
 
     let resume = match vector {

@@ -8,20 +8,25 @@
 //! SDR1 at an empty table, and from then on runs on translations it owns.  It
 //! takes decrementer ticks through the 0x900 vector, then proves every
 //! exception path it owns: a DSI, an ISI, an alignment fault, an illegal
-//! instruction and one system call round-trip.
+//! instruction and one system call round-trip.  Finally it programs the CUDA
+//! timer, takes external interrupts through the Heathrow controller at the
+//! 0x500 vector, acknowledges each one and reports the count.
 
 #![no_std]
 #![no_main]
 
 use core::panic::PanicInfo;
 
+mod irq;
 mod mmu;
 mod of;
+mod pic;
 mod platform;
 mod probe;
 mod serial;
 mod timer;
 mod trap;
+mod via;
 
 core::arch::global_asm!(include_str!("boot.S"));
 
@@ -91,6 +96,20 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
+    let controller = match platform::pic(&client, &macio) {
+        Some(controller) => controller,
+        None => {
+            print_line(b"ppc: Mac I/O is not a Heathrow controller");
+            halt();
+        }
+    };
+    let cuda = match platform::cuda(&client, &macio) {
+        Some(cuda) => cuda,
+        None => {
+            print_line(b"ppc: device tree has no CUDA timer");
+            halt();
+        }
+    };
 
     let io_end = match macio.base.checked_add(macio.size) {
         Some(end) => end,
@@ -139,6 +158,8 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_dec(timebase);
     print_line(b" Hz");
 
+    irq::prepare(controller.base, cuda.base, cuda.line);
+
     timer::enable();
     let started = timer::timebase();
     let deadline = timebase.saturating_mul(2);
@@ -156,6 +177,30 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_line(b"BOOT-OK");
     probe::run();
     print_line(b"TRAPS-OK");
+
+    irq::start();
+    let irq_started = timer::timebase();
+    let irq_deadline = timebase.saturating_mul(2);
+    while irq::count() < irq::TARGET {
+        if timer::timebase().wrapping_sub(irq_started) > irq_deadline {
+            serial::write(b"ppc: irq stalled count=");
+            print_dec(irq::count());
+            serial::write_byte(b'\n');
+            print_line(b"ppc: halted");
+            halt();
+        }
+        core::hint::spin_loop();
+    }
+    let (count, pending, ifr) = irq::stop();
+    serial::write(b"ppc: irq pending=");
+    print_hex(pending);
+    serial::write(b" ifr=");
+    print_hex(ifr);
+    serial::write_byte(b'\n');
+    serial::write(b"IRQ-OK count=");
+    print_dec(count);
+    serial::write_byte(b'\n');
+
     print_line(b"ppc: halted");
     halt()
 }

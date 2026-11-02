@@ -8,8 +8,10 @@
 # installs its own BAT entries, points SDR1 at an empty table, takes ten
 # decrementer ticks through the 0x900 vector, then proves the five exception
 # paths it owns: a DSI, an ISI, an alignment fault, an illegal instruction and
-# one system call round-trip.  QEMU's g3beige machine has no debug-exit device,
-# so the gate stops QEMU once the final `ppc: halted` reaches the serial file.
+# one system call round-trip.  Finally it programs the CUDA timer and takes
+# ten external interrupts through the Heathrow controller at the 0x500
+# vector.  QEMU's g3beige machine has no debug-exit device, so the gate stops
+# QEMU once the final `ppc: halted` reaches the serial file.
 #
 # Usage:
 #   tools/powerpc-qemu.sh [WORK_DIR]
@@ -104,6 +106,7 @@ markers=(
   "ppc: escc=0x"
   "ppc: memory base=0x"
   "ppc: timebase="
+  "ppc: irq controller=0x"
   "ppc: decrementer ticks="
   "BOOT-OK"
   "ppc: trap vector=0x300"
@@ -117,6 +120,9 @@ markers=(
   "ppc: trap vector=0xc00"
   "SYSCALL-OK"
   "TRAPS-OK"
+  "ppc: irq vector=0x500 line=0x12 count=1"
+  "ppc: irq pending=0x"
+  "IRQ-OK count="
   "ppc: halted"
 )
 
@@ -267,4 +273,56 @@ check_image_srr0 alignment "$align_srr0"
 check_image_srr0 program "$program_srr0"
 check_image_srr0 "system call" "$syscall_srr0"
 
-echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0)"
+# Every external interrupt reports the vector, the controller line, the
+# count, and the interrupted SRR0/SRR1.  The counts must be contiguous from
+# one, the saved MSR must have EE set, and the interrupted instruction must
+# be in the image.
+irq_lines="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: irq vector=0x500 line=0x12 count=[0-9]+ srr0=0x[0-9a-f]+ srr1=0x[0-9a-f]+$')" || true
+if [ -z "$irq_lines" ]; then
+  echo "powerpc-qemu: no external-interrupt reports" >&2
+  exit 1
+fi
+
+expected=1
+while IFS= read -r irq; do
+  count="$(printf '%s\n' "$irq" | sed -E 's/^.*count=([0-9]+) .*$/\1/')"
+  irq_srr0="$(printf '%s\n' "$irq" | sed -E 's/^.*srr0=(0x[0-9a-f]+).*$/\1/')"
+  irq_srr1="$(printf '%s\n' "$irq" | sed -E 's/^.*srr1=(0x[0-9a-f]+).*$/\1/')"
+  if [ "$count" -ne "$expected" ]; then
+    echo "powerpc-qemu: external interrupt count $count, expected $expected" >&2
+    exit 1
+  fi
+  if [ $((irq_srr1 & 0x8000)) -eq 0 ]; then
+    echo "powerpc-qemu: external interrupt SRR1 $irq_srr1 has EE clear" >&2
+    exit 1
+  fi
+  check_image_srr0 "external interrupt" "$irq_srr0"
+  expected=$((expected + 1))
+done <<< "$irq_lines"
+irq_count=$((expected - 1))
+if [ "$irq_count" -lt 4 ]; then
+  echo "powerpc-qemu: implausible external interrupt count: $irq_count" >&2
+  exit 1
+fi
+
+irq_ok="$(tr -d '\r' < "$SERIAL" | sed -n 's/^IRQ-OK count=\([0-9][0-9]*\)$/\1/p')"
+if [ -z "$irq_ok" ] || [ "$irq_ok" -ne "$irq_count" ]; then
+  echo "powerpc-qemu: IRQ-OK count '$irq_ok' does not match the reports ($irq_count)" >&2
+  exit 1
+fi
+
+irq_state="$(tr -d '\r' < "$SERIAL" \
+  | grep -E '^ppc: irq pending=0x[0-9a-f]+ ifr=0x[0-9a-f]+$')" || true
+if [ -z "$irq_state" ]; then
+  echo "powerpc-qemu: missing external-interrupt controller state" >&2
+  exit 1
+fi
+pending="$(printf '%s\n' "$irq_state" | sed -E 's/^ppc: irq pending=(0x[0-9a-f]+).*$/\1/')"
+ifr="$(printf '%s\n' "$irq_state" | sed -E 's/^.*ifr=(0x[0-9a-f]+)$/\1/')"
+if [ $((pending)) -ne 0 ] || [ $((ifr)) -ne 0 ]; then
+  echo "powerpc-qemu: controller still has pending=$pending ifr=$ifr after EOI" >&2
+  exit 1
+fi
+
+echo "powerpc-qemu: ok (${ram_mib} MiB RAM, ${ticks} decrementer ticks, ${irq_count} external interrupts, dsisr=$dsisr dar=$dar srr0=$srr0 isi_srr0=$isi_srr0)"
