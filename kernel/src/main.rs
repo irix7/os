@@ -58,6 +58,7 @@ pub mod rtc;
 pub mod sash;
 pub mod scheduler;
 pub mod scsi;
+pub mod services;
 pub mod status;
 pub mod syserr;
 pub mod telnet;
@@ -487,6 +488,10 @@ pub extern "C" fn _start_rust() -> ! {
     // The native resources the architecture core will use.  This is a shim
     // over the existing bring-up, not a second initialisation path.
     platform::init();
+
+    // The module service table and the image checks are the shared core; the
+    // Indy installs its console, clock, network, arena and SCSI resources once.
+    services::install();
 
     // Boot-time module configuration from the PROM environment.
     let autoload = autoload::boot();

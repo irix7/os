@@ -55,17 +55,53 @@ impl Store {
         self.target.is_none_or(|served| served == target)
     }
 
+    /// Read one sector for a module into a safe buffer.
+    pub fn read_sector(
+        &self,
+        block: &mut impl Block,
+        target: u8,
+        lba: u32,
+        out: &mut [u8; SECTOR],
+    ) -> i32 {
+        if !self.accepts(target) {
+            return -1;
+        }
+        if block.read_sector(target, self.offset + u64::from(lba), out) {
+            0
+        } else {
+            -1
+        }
+    }
+
+    /// Write one sector for a module from a safe buffer.
+    pub fn write_sector(
+        &self,
+        block: &mut impl Block,
+        target: u8,
+        lba: u32,
+        data: &[u8; SECTOR],
+    ) -> i32 {
+        if !self.accepts(target) {
+            return -1;
+        }
+        if block.write_sector(target, self.offset + u64::from(lba), data) {
+            0
+        } else {
+            -1
+        }
+    }
+
     /// Read one sector for a module.
     ///
     /// # Safety
     ///
     /// `ptr` must be valid for `SECTOR` writes for the duration of the call.
     pub unsafe fn read(&self, block: &mut impl Block, target: u8, lba: u32, ptr: *mut u8) -> i32 {
-        if ptr.is_null() || !self.accepts(target) {
+        if ptr.is_null() {
             return -1;
         }
         let mut sector = [0u8; SECTOR];
-        if !block.read_sector(target, self.offset + u64::from(lba), &mut sector) {
+        if self.read_sector(block, target, lba, &mut sector) != 0 {
             return -1;
         }
         // SAFETY: the caller guarantees the destination.
@@ -85,17 +121,13 @@ impl Store {
         lba: u32,
         ptr: *const u8,
     ) -> i32 {
-        if ptr.is_null() || !self.accepts(target) {
+        if ptr.is_null() {
             return -1;
         }
         let mut sector = [0u8; SECTOR];
         // SAFETY: the caller guarantees the source.
         unsafe { core::ptr::copy_nonoverlapping(ptr, sector.as_mut_ptr(), SECTOR) };
-        if block.write_sector(target, self.offset + u64::from(lba), &sector) {
-            0
-        } else {
-            -1
-        }
+        self.write_sector(block, target, lba, &sector)
     }
 }
 

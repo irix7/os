@@ -54,7 +54,7 @@ printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/nul
 printf 'test.key=config-ok\n' | dd of="$DISK" bs=512 seek=100 conv=notrunc 2>/dev/null
 
 # The MCP control-plane module, linked for the x86 window, and its header on
-# sector 8: magic, length and SHA-256 (see kernel-x86/src/module.rs).
+# sector 8: magic, big-endian length and SHA-256 (see crates/kernel-core/src/image.rs).
 MODULE_TARGET="$WORK/module-target"
 CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/mcp/linker-x86.ld -Crelocation-model=static" \
   CARGO_TARGET_DIR="$MODULE_TARGET" \
@@ -86,7 +86,7 @@ python3 -I - "$DISK" "$MODULE" 8 <<'PY'
 import hashlib, struct, sys
 disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
 data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+header = b"IRIX7MOD" + struct.pack(">I", len(data)) + hashlib.sha256(data).digest()
 with open(disk, "r+b") as f:
     f.seek(header_sector * 512)
     f.write(header)
@@ -95,7 +95,7 @@ python3 -I - "$DISK" "$WASM" 10 <<'PY'
 import hashlib, struct, sys
 disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
 data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack("<Q", len(data)) + hashlib.sha256(data).digest()
+header = b"IRIX7MOD" + struct.pack(">I", len(data)) + hashlib.sha256(data).digest()
 with open(disk, "r+b") as f:
     f.seek(header_sector * 512)
     f.write(header)

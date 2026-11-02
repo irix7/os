@@ -660,6 +660,7 @@ dependencies = [
  "irix7-fmt",
  "irix7-netif",
  "irix7-sha256",
+ "kernel-core",
  "m1-policy-bridge",
  "mesh-core",
  "mesh-service",
@@ -676,11 +677,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-core"
+version = "0.1.0"
+dependencies = [
+ "irix7-sha256",
+ "module-abi",
+]
+
+[[package]]
 name = "kernel-ppc"
 version = "0.1.0"
 dependencies = [
  "irix7-fmt",
  "irix7-sha256",
+ "kernel-core",
  "module-abi",
 ]
 
@@ -701,6 +711,7 @@ dependencies = [
  "irix7-fmt",
  "irix7-netif",
  "irix7-sha256",
+ "kernel-core",
  "module-abi",
  "module-block",
  "module-tcp",

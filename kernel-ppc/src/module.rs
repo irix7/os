@@ -1,24 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Loadable modules on the PowerPC G3 machine.
 //!
-//! A module is a flat image linked at [`SLOT_BASE`] and copied there from the
-//! boot disk.  The disk layout matches the x86 machine's intent: one header
-//! sector holds the magic `IRIX7MOD`, the image length as a big-endian u32 and
-//! the image's SHA-256; the image itself starts at a fixed LBA.  The digest in
-//! the header is what this machine trusts.  A real boot takes it from the
-//! signed boot configuration, which the PowerPC machine does not have yet.
+//! A module is a flat image copied into [`SLOT_BASE`] from the boot disk.  The
+//! disk layout is the canonical `IRIX7MOD` header from `kernel-core::image`:
+//! magic, big-endian image length and the SHA-256, then the image at a fixed
+//! LBA.
 //!
-//! The slot is mapped cacheable by IBAT2/DBAT2, so the loader writes every
-//! block back and invalidates the instruction cache before the first fetch of
-//! module code.
+//! The header, digest and vtable rules and the entry call are the shared core;
+//! this file supplies the ATA read, the slot address and the cache flush.
 
-use core::mem::{align_of, size_of};
+use irix7_sha256::Hasher;
 
-use irix7_sha256::{Hasher, Sha256};
-use module_abi::{ModuleVtable, Services};
+use kernel_core::image::{self, Host, Image};
 
 use crate::ata::{self, Channel, SECTOR_SIZE};
-use crate::services::SERVICES;
 use crate::{cache, console, print_dec, print_hex_bytes, print_line};
 
 /// The module slot: 2 MiB at physical `0x0180_0000`.
@@ -32,14 +27,6 @@ pub const SLOT_SIZE: usize = 0x0020_0000;
 pub const HEADER_LBA: u32 = 6;
 /// Disk sector where the flat image starts.
 pub const IMAGE_LBA: u32 = 16;
-
-const MAGIC: &[u8; 8] = b"IRIX7MOD";
-const LENGTH_OFFSET: usize = 8;
-const DIGEST_OFFSET: usize = 12;
-const HEADER_LEN: usize = DIGEST_OFFSET + 32;
-
-/// A module entry point.
-type Entry = unsafe extern "C" fn(*const Services) -> *const ModuleVtable;
 
 /// What the loader found and how the module answered.
 pub struct Report {
@@ -94,6 +81,31 @@ impl Error {
     }
 }
 
+/// The slot and its cache.
+struct PpcHost;
+
+impl Host for PpcHost {
+    fn clear(&mut self, _image: &Image) {
+        zero_slot();
+    }
+
+    fn copy(&mut self, image: &Image, offset: usize, bytes: &[u8]) {
+        // SAFETY: `offset + bytes.len()` is inside the reserved slot, and the
+        // caller streams within the length it checked.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                bytes.as_ptr(),
+                (image.base as *mut u8).add(offset),
+                bytes.len(),
+            );
+        }
+    }
+
+    fn flush_code(&mut self, _image: &Image, length: usize) {
+        cache::flush_code(SLOT_BASE, length);
+    }
+}
+
 /// Read, verify and enter the module on `channel`.
 ///
 /// The slot is zeroed before the copy so `.bss` starts clear.  A digest
@@ -103,23 +115,15 @@ pub fn load(channel: Channel) -> Result<Report, Error> {
     channel
         .read_sector(HEADER_LBA, &mut header)
         .map_err(|error| Error::Read("header", error))?;
-    if &header[..MAGIC.len()] != MAGIC {
-        return Err(Error::Header);
-    }
-    let length = u32::from_be_bytes([
-        header[LENGTH_OFFSET],
-        header[LENGTH_OFFSET + 1],
-        header[LENGTH_OFFSET + 2],
-        header[LENGTH_OFFSET + 3],
-    ]);
-    if length == 0 || length as usize > SLOT_SIZE {
-        return Err(Error::Length(length));
-    }
-    let mut expected = [0u8; 32];
-    expected.copy_from_slice(&header[DIGEST_OFFSET..HEADER_LEN]);
+    let header = match image::parse_header(&header, SLOT_SIZE) {
+        Ok(header) => header,
+        Err(image::HeaderError::Length { length, .. }) => return Err(Error::Length(length)),
+        Err(_) => return Err(Error::Header),
+    };
 
     zero_slot();
 
+    let length = header.length;
     let sectors = (length as usize).div_ceil(SECTOR_SIZE);
     let mut hasher = Hasher::new();
     let mut sector = [0u8; SECTOR_SIZE];
@@ -141,12 +145,13 @@ pub fn load(channel: Channel) -> Result<Report, Error> {
         hasher.update(&sector[..take]);
     }
     let actual = hasher.finalize().0;
-    if !Sha256(actual).eq_digest(&Sha256(expected)) {
+    if image::verify_digest(&header.digest, &actual).is_err() {
         zero_slot();
-        return Err(Error::Digest { expected, actual });
+        return Err(Error::Digest {
+            expected: header.digest,
+            actual,
+        });
     }
-
-    cache::flush_code(SLOT_BASE, length as usize);
 
     console::write(b"ppc: module length=");
     print_dec(length);
@@ -154,44 +159,29 @@ pub fn load(channel: Channel) -> Result<Report, Error> {
     print_hex_bytes(&actual);
     console::write_byte(b'\n');
 
-    // SAFETY: the image was copied into the reserved slot and its digest and
-    // length were checked.  The entry reads the service table only during this
-    // call.
-    let entry: Entry = unsafe { core::mem::transmute(SLOT_BASE) };
-    let vtable = unsafe { entry(&SERVICES) };
-    if vtable.is_null() {
-        return Ok(Report {
-            length,
-            status: 0,
-            ticked: false,
-        });
-    }
-    let base = SLOT_BASE as usize;
-    let image_end = base + length as usize;
-    let address = vtable as usize;
-    if address < base
-        || !address.is_multiple_of(align_of::<ModuleVtable>())
-        || address
-            .checked_add(size_of::<ModuleVtable>())
-            .is_none_or(|end| end > image_end)
-    {
-        return Err(Error::Vtable);
-    }
-    // SAFETY: the vtable pointer was checked against the verified image.
-    let status = unsafe { (*vtable).status };
-    if status != 0 {
-        return Err(Error::Status(status));
-    }
+    let window = Image::new(SLOT_BASE as usize, SLOT_SIZE, "ppc");
+    // SAFETY: the image was copied into the reserved slot and its digest was
+    // checked.  The entry reads the shared service table only during the call.
+    let report = match unsafe { image::enter(&window, length as usize, &mut PpcHost) } {
+        Ok(report) => report,
+        Err(image::Error::Vtable) => return Err(Error::Vtable),
+        Err(image::Error::Status(status)) => return Err(Error::Status(status)),
+        Err(image::Error::Length { length, .. }) => return Err(Error::Length(length as u32)),
+        Err(image::Error::Digest { .. }) => unreachable!("enter does not verify a digest"),
+    };
+
     // SAFETY: the module registered this callback in its own vtable and
     // receives the same table on every call.
     let mut ticked = false;
-    if let Some(tick) = unsafe { (*vtable).tick } {
-        let _ = unsafe { tick(&SERVICES) };
-        ticked = true;
+    if let Some(vtable) = report.vtable() {
+        if let Some(tick) = unsafe { (*vtable).tick } {
+            let _ = unsafe { tick(&kernel_core::service::SERVICES) };
+            ticked = true;
+        }
     }
     Ok(Report {
         length,
-        status,
+        status: report.status,
         ticked,
     })
 }

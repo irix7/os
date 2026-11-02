@@ -454,8 +454,8 @@ fn write_boot_disk(
     for (sector, image) in [(MCP_HEADER_SECTOR, mcp.0), (WASM_HEADER_SECTOR, wasm.0)] {
         let header = sector * SECTOR;
         disk[header..header + 8].copy_from_slice(HEADER_MAGIC);
-        disk[header + 8..header + 16].copy_from_slice(&(image.len() as u64).to_le_bytes());
-        disk[header + 16..header + 48].copy_from_slice(&sha256::digest(image));
+        disk[header + 8..header + 12].copy_from_slice(&(image.len() as u32).to_be_bytes());
+        disk[header + 12..header + 44].copy_from_slice(&sha256::digest(image));
     }
     let mut file =
         fs::File::create(path).map_err(|error| format!("create {}: {error}", path.display()))?;

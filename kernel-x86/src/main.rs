@@ -5,9 +5,9 @@
 //! assembly stub in `boot.S` enters long mode with the first 4 GiB identity
 //! mapped, and this code brings up the serial console, the PVH memory map, the
 //! IDT and the PIT.  A deliberate breakpoint proves the trap path reports
-//! rather than hanging.  The shared kernel core is not linked in yet; the
-//! machine layer is being built first so the core can move onto it without a
-//! second copy of kernel logic.
+//! rather than hanging.  The module loader protocol and the service table are
+//! the shared `kernel-core`; this crate keeps the PVH boot, paging, IDT, timer,
+//! virtio and serial machine layer.  There is no userland yet.
 
 #![no_std]
 #![no_main]
@@ -141,6 +141,11 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         qemu_exit(1);
     }
 
+    // The module service table and the loader protocol are shared; the
+    // machine installs its console, clock, heap, network and block resources
+    // once, before the first module.
+    services::install();
+
     idt::init();
     timer::init();
     print_line(&[b"x86: timer enabled"]);
@@ -177,7 +182,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     }
 
     // Exercise the block service a module uses: write and read back through
-    // the store mapping, not the raw driver.
+    // the shared service table, not the raw driver.
     let mut pattern = [0u8; virtio_blk::SECTOR];
     for (i, byte) in pattern.iter_mut().enumerate() {
         *byte = b"X86-STORE"[i % 9];
@@ -187,8 +192,10 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
     // LBA 64 is inside the reserved store region but away from the epoch
     // record at LBA 8; a self-test must not destroy persisted state.
     const TEST_LBA: u32 = 64;
-    let wrote = unsafe { services::block_write(3, TEST_LBA, pattern.as_ptr()) };
-    let read = unsafe { services::block_read(3, TEST_LBA, readback.as_mut_ptr()) };
+    let wrote =
+        unsafe { (kernel_core::service::SERVICES.block_write)(3, TEST_LBA, pattern.as_ptr()) };
+    let read =
+        unsafe { (kernel_core::service::SERVICES.block_read)(3, TEST_LBA, readback.as_mut_ptr()) };
     if wrote != 0 || read != 0 || readback != pattern {
         print_line(&[b"x86: block service read/write failed"]);
         qemu_exit(1);
@@ -203,6 +210,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         fetch::MCP_URL_SECTOR,
         module::MCP_HEADER_SECTOR,
         fetch::SLOT_MCP,
+        module::MCP.window,
     );
     let wasm_bytes = fetch::image(
         virtio_blk::disk().expect("x86: block device"),
@@ -210,6 +218,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         fetch::WASM_URL_SECTOR,
         module::WASM_HEADER_SECTOR,
         fetch::SLOT_WASM,
+        module::WASM.window,
     );
     let mcp = module::load(&module::MCP, mcp_bytes);
     let mut wasm = core::ptr::null();

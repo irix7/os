@@ -1045,3 +1045,29 @@ so the stale x86 status is a real gap, not a cosmetic one.
   `5aff96e` without rebasing the branch. The 22 core/mesh issues are outside
   this report. The split is declared in §1.1 so the three reports together
   cover the 39 closed issues.
+
+## 7. Status update — #266 shared-core extraction (2026-11-03)
+
+Branch `audit-x86` lands the first shared-core slice against #266/#330. It does
+not change the verdicts above, which describe `cac1a5a`; this section records
+what has moved since.
+
+`crates/kernel-core` now owns the module image protocol (canonical `IRIX7MOD`
+header, size and SHA-256 checks, vtable bounds check, entry call) and the one
+`module_abi::Services` table with a `Platform` boundary. The Indy, x86_64 and
+PowerPC kernels implement `Platform` and no longer carry their own service
+tables. The x86 loader gains the vtable bounds check it lacked, and the x86
+disk header becomes the canonical big-endian format used by the PowerPC
+machine. `tools/x86-qemu.sh` and `tools/powerpc-qemu.sh` pass; the MIPS release
+image links; `cargo test -p kernel-core -p module-tcp -p module-block -p kernel`
+passes. See `docs/research/x86-shared-core.md` for the evidence and the exact
+remaining split.
+
+Still unmet from the original finding: there is no shared userland (fd table,
+ramfs, thread table, native syscalls) and no x86 userland/native gate, because
+both depend on the process model in #326. The module fetch transports, slot
+layouts, runtime arena registry, heaps and all machine drivers remain
+per-machine. The x86 target must still not be described as a second POSIX/IRIX
+target. #266 should stay open for the userland half, or be split into
+"machine and shared module core" (now done) and "x86 userland and native gate"
+(blocked on #326).

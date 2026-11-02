@@ -1,0 +1,10 @@
+[package]
+license = "GPL-3.0-only"
+name = "kernel-core"
+version = "0.1.0"
+edition = "2021"
+description = "Architecture-neutral kernel core: module images and the module service ABI"
+
+[dependencies]
+module-abi.workspace = true
+irix7-sha256 = { path = "../irix7-sha256" }

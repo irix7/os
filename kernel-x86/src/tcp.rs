@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Module TCP slots on the x86_64 machine.
 //!
-//! The slot table is the shared `module-tcp` crate, which the Indy kernel also
-//! uses.  This file supplies the x86 stack and the machine's slot table: one
-//! static table, and the extern entry points the module services call.
+//! The slot table, its bounds and its event policy are the shared
+//! `module-tcp` crate, which the Indy kernel also uses.  This file supplies the
+//! machine's stack: one static table and the two `Stack` accessors.
 
 use smoltcp::iface::{Interface, SocketSet};
 
@@ -33,45 +33,43 @@ impl module_tcp::Stack for X86Stack {
 static mut TABLE: Slots<SLOTS, BUFFER> = Slots::new();
 
 /// The machine's slot table.  The machine is single-threaded.
-pub fn table() -> &'static mut Slots<SLOTS, BUFFER> {
-    // SAFETY: single-threaded; the table is only used from the service entry points.
+fn table() -> &'static mut Slots<SLOTS, BUFFER> {
+    // SAFETY: single-threaded; the table is only used from these entry points.
     unsafe { &mut *core::ptr::addr_of_mut!(TABLE) }
 }
 
-pub unsafe extern "C" fn listen(slot: u32, port: u16) -> i32 {
+pub fn listen(slot: u32, port: u16) -> i32 {
     table().listen::<X86Stack>(slot, port)
 }
 
-pub unsafe extern "C" fn connect(slot: u32, address: u32, port: u16) -> i32 {
+pub fn connect(slot: u32, address: u32, port: u16) -> i32 {
     table().connect::<X86Stack>(slot, address, port)
 }
 
-pub extern "C" fn events(slot: u32) -> u32 {
+pub fn events(slot: u32) -> u32 {
     table().events::<X86Stack>(slot)
 }
 
-pub extern "C" fn slots() -> u32 {
+pub fn slots() -> u32 {
     table().slots()
 }
 
-pub extern "C" fn state(slot: u32) -> u32 {
+pub fn state(slot: u32) -> u32 {
     table().state::<X86Stack>(slot)
 }
 
-pub unsafe extern "C" fn recv(slot: u32, ptr: *mut u8, len: usize) -> isize {
-    // SAFETY: the module owns the destination buffer for the call.
-    unsafe { table().recv::<X86Stack>(slot, ptr, len) }
+pub fn recv(slot: u32, out: &mut [u8]) -> isize {
+    table().recv_into::<X86Stack>(slot, out)
 }
 
-pub unsafe extern "C" fn send(slot: u32, ptr: *const u8, len: usize) -> isize {
-    // SAFETY: the module owns the source buffer for the call.
-    unsafe { table().send::<X86Stack>(slot, ptr, len) }
+pub fn send(slot: u32, bytes: &[u8]) -> isize {
+    table().send_from::<X86Stack>(slot, bytes)
 }
 
-pub extern "C" fn close(slot: u32) {
+pub fn close(slot: u32) {
     table().close::<X86Stack>(slot);
 }
 
-pub extern "C" fn abort(slot: u32) {
+pub fn abort(slot: u32) {
     table().abort::<X86Stack>(slot);
 }

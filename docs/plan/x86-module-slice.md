@@ -11,12 +11,15 @@ returns status 0. The gate checks the digest marker and the status.
 - The module is linked at `0x0200_0000` (`modules/mcp/linker-x86.ld`). The window
   is reserved in the machine's memory map, so the frame allocator never hands it
   out.
-- Disk layout: sector 8 holds the header (`IRIX7MOD`, the image length as a
-  little-endian u64, and the SHA-256); the image starts at sector 16.
-- The services table (`kernel-x86/src/services.rs`) is the SDK's `Services`
-  struct at the pinned tag. It implements `write`, `clock_ms`, `alloc`, `poll` and
-  `config_get`. Every other entry returns an error, so a module that calls one
-  sees a refusal, not a null pointer.
+- Disk layout: sector 8 holds the canonical header from
+  `crates/kernel-core/src/image.rs` (`IRIX7MOD`, the image length as a
+  big-endian u32, and the SHA-256); the image starts at sector 16. The PowerPC
+  machine reads the same header.
+- The service table is the one `module_abi::Services` table in
+  `crates/kernel-core/src/service.rs`, shared with the Indy and the PowerPC
+  machine. The x86 platform installs `write`, `clock_ms`, `alloc`, `poll`,
+  `config_get`, `info` and the block store. Every other entry keeps the shared
+  refusal, so a module that calls one sees the same error on every machine.
 
 ## Serving (sixth slice)
 
@@ -70,14 +73,18 @@ module from the disk.
   not exercised.
 - **M1 fetch.** The wasm module comes from the disk, not from an HTTP fetch as
   on the Indy. Only the MCP module is fetched over HTTP.
-- **Shared loader.** The loader is x86-only. The Indy kernel's loader in
-  `kernel/src/module.rs` is still the only one with the full service table. The
-  shared home is the next step.
+- **Shared loader.** The header, digest, vtable and entry rules are shared in
+  `kernel-core`, and so is the service table. The fetch transports and module
+  windows remain machine-specific: the Indy has two fixed slots and a SCSI or
+  HTTPS fetch, the x86 machine has two 2 MiB windows and an HTTP fetch, and the
+  PowerPC machine streams from ATA.
 
 ## Next
 
 1. The M1 probe: autoload of the wasm module (the fetch path now works), then the
    wasm runtime running it.
 2. UDP slots over smoltcp, for the M3 transport gate.
-3. Move the arch-neutral loader and service logic into a shared module, with the
-   Indy as the first user, so the two kernels stop duplicating it.
+3. ~~Move the arch-neutral loader and service logic into a shared module.~~
+   Done: `kernel-core` is used by the Indy, x86_64 and PowerPC kernels.
+4. Add an x86 userland/native syscall gate. Until then the machine has no
+   POSIX/IRIX contract level, and the docs must not claim one.
