@@ -128,7 +128,8 @@ BOOT-OK
 - The ESCC baud generator is not programmed; QEMU's model ignores it. Real
   hardware needs WR12/WR13/WR14 and the correct clock source.
 - The target is the 750 with the hard-float ABI. Kernel code avoids `f32` and
-  `f64`; no FP instruction is emitted by the linked image.
+  `f64`; the gate disassembles the image and fails if it contains an FP
+  instruction.
 - The gate depends on OpenBIOS's `-kernel` preload path, not on a bootable CD
   or disk image. The PowerBook's Old World firmware path remains a separate
   slice.

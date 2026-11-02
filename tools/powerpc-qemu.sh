@@ -45,6 +45,16 @@ else
 
   ELF="$CARGO_TARGET_DIR/powerpc-unknown-irix7-ppc/release/kernel-ppc"
   OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
+  # The target keeps the hard-float ABI, but the kernel has no FPR
+  # save/restore yet.  Refuse an image that uses the FPU rather than let an
+  # accidental f32/f64 corrupt a thread's state later.
+  OBJDUMP="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objdump"
+  if "$OBJDUMP" -d "$ELF" \
+    | grep -qE $'^ *[0-9a-f]+:.*\t(f[a-z]|lfd|lfs|stfd|stfs|mffs|mtfs)'; then
+    echo "powerpc-qemu: the kernel image uses an FP instruction" >&2
+    exit 1
+  fi
+
   IMAGE="$WORK/kernel-ppc.bin"
   "$OBJCOPY" -O binary "$ELF" "$IMAGE"
 fi
