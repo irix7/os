@@ -1,0 +1,157 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s11-world { position: absolute; inset: 0; transform-origin: 50% 52%; }
+    .s11-head { position: absolute; left: 104px; top: 92px; width: 560px; z-index: 10; }
+    .s11-head .display { margin-top: 22px; font-size: 76px; }
+    .s11-sub { margin-top: 24px; max-width: 420px; font-size: 24px; line-height: 1.45; color: var(--ink-soft); }
+    .s11-grid { position: absolute; left: 610px; top: 150px; width: 1210px; height: 730px; display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 26px; }
+    .s11-panel { position: relative; border: 2px solid var(--indigo); background: var(--paper-light); box-shadow: 10px 10px 0 rgba(23,26,36,.1); overflow: hidden; }
+    .s11-panel .ph { display: flex; justify-content: space-between; padding: 10px 14px; border-bottom: 2px solid var(--ink); font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s11-panel .ph b { color: var(--indigo); font-weight: 500; }
+    .s11-panel .stage { position: relative; height: calc(100% - 44px); }
+    .s11-panel .status { position: absolute; left: 14px; bottom: 12px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s11-panel .status b { color: var(--orange); font-weight: 500; }
+    .s11-node { position: absolute; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: var(--paper-light); border: 2px solid var(--indigo); display: grid; place-items: center; font-family: var(--mono); font-size: 10px; color: var(--indigo); z-index: 3; box-shadow: 3px 3px 0 rgba(23,26,36,.12); }
+    .s11-node::after { content: ""; position: absolute; width: 7px; height: 7px; border-radius: 50%; background: var(--orange); bottom: 6px; }
+    .s11-node.big { width: 96px; height: 96px; margin: -48px 0 0 -48px; font-size: 14px; }
+    .s11-node.dark { background: var(--indigo); color: var(--paper-light); border-color: var(--indigo-deep); }
+    .s11-node.dark::after { background: var(--green); }
+    #s11-p2 .s11-node, #s11-p3 .s11-node, #s11-p4 .s11-node { opacity: 0; }
+    #s11-p2 .s11-link path, #s11-p3 .s11-link path { opacity: 0; }
+    .s11-link { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+    .s11-link path { fill: none; stroke: var(--indigo); stroke-width: 1.6; opacity: .55; }
+    .s11-ghost { position: absolute; inset: 0; opacity: .55; }
+    .s11-ghost i { position: absolute; width: 7px; height: 7px; margin: -3.5px; border-radius: 50%; background: var(--indigo); opacity: .65; }
+    .s11-frame { position: absolute; width: 180px; z-index: 4; }
+    .s11-frame .frame-object { width: 100%; border-width: 4px; }
+    .s11-p1 .s11-frame { left: 50%; top: 46%; margin-left: -90px; margin-top: -68px; }
+    .s11-p2 .s11-frame { left: 50%; top: 46%; margin-left: -90px; margin-top: -68px; width: 130px; margin-left: -65px; margin-top: -49px; }
+    .s11-timeline { position: absolute; left: 104px; top: 850px; width: 420px; display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s11-timeline .bar { flex: 1; height: 2px; background: rgba(23,26,36,.2); }
+    .s11-timeline .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--orange); }
+    .s11-label { position: absolute; left: 104px; top: 620px; width: 420px; font-family: var(--mono); font-size: 13px; line-height: 1.7; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s11-label b { color: var(--indigo); font-weight: 500; }
+    .s11-note { position: absolute; left: 104px; top: 760px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s11-note b { color: var(--orange); font-weight: 500; }
+  </style>
+
+  <div id="root" data-composition-id="scene-11" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 11 / THE EVIDENCE</p>
+      <div class="s11-world" id="s11-world">
+        <div class="s11-head" id="s11-head">
+          <p class="eyebrow" id="s11-eyebrow"><span class="num">11</span> / THE EVIDENCE</p>
+          <h1 class="display" id="s11-title">What actually<br />runs.</h1>
+          <p class="s11-sub" id="s11-sub">In November 2026, one node works on iris. Two nodes work on two real kernels. Eight nodes are in progress. A hundred and twenty-eight are planned.</p>
+        </div>
+
+        <div class="s11-grid" id="s11-grid">
+          <div class="s11-panel s11-p1" id="s11-p1">
+            <div class="ph"><span>ONE NODE</span><b>IRIS</b></div>
+            <div class="stage">
+              <svg class="s11-link" viewBox="0 0 580 300"><path id="s11-l1" d="M290 150 C230 100 190 100 150 150" /><path id="s11-l2" d="M290 150 C350 200 390 200 430 150" /></svg>
+              <div class="s11-frame"><div class="frame-object bare"><div class="frame-art"><div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="fa-circle"></div><div class="fa-cross"></div><div class="fa-top"><span>FRAME 0001</span><span>1 NODE</span></div></div></div></div>
+              <div class="s11-node big dark" id="s11-n1" style="left: 50%; top: 46%">1</div>
+              <div class="s11-node" id="s11-n1a" style="left: 26%; top: 50%">shim</div>
+              <div class="s11-node" id="s11-n1b" style="left: 74%; top: 50%">core</div>
+              <div class="status"><b>works on iris</b> · complete computer</div>
+            </div>
+          </div>
+
+          <div class="s11-panel s11-p2" id="s11-p2">
+            <div class="ph"><span>TWO NODES</span><b>REAL KERNELS</b></div>
+            <div class="stage">
+              <svg class="s11-link" viewBox="0 0 580 300"><path id="s11-l3" d="M170 150 C250 80 330 80 410 150" /><path id="s11-l4" d="M170 150 C250 220 330 220 410 150" /></svg>
+              <div class="s11-frame"><div class="frame-object bare"><div class="frame-art"><div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="fa-circle"></div><div class="fa-cross"></div><div class="fa-top"><span>FRAME 0001</span><span>2 NODES</span></div></div></div></div>
+              <div class="s11-node dark" id="s11-n2a" style="left: 30%; top: 50%">n0</div>
+              <div class="s11-node dark" id="s11-n2b" style="left: 70%; top: 50%">n1</div>
+              <div class="status"><b>works on two kernels</b> · join · placement · migration · fencing</div>
+            </div>
+          </div>
+
+          <div class="s11-panel s11-p3" id="s11-p3">
+            <div class="ph"><span>EIGHT NODES</span><b>IN PROGRESS</b></div>
+            <div class="stage">
+              <svg class="s11-link" viewBox="0 0 580 300"><path id="s11-l5" d="M290 150 C200 80 120 80 80 150" /><path id="s11-l6" d="M290 150 C380 80 460 80 500 150" /><path id="s11-l7" d="M290 150 C200 220 120 220 80 150" /><path id="s11-l8" d="M290 150 C380 220 460 220 500 150" /></svg>
+              <div class="s11-node" id="s11-n3a" style="left: 50%; top: 50%">n0</div>
+              <div class="s11-node" id="s11-n3b" style="left: 28%; top: 38%">n1</div>
+              <div class="s11-node" id="s11-n3c" style="left: 72%; top: 38%">n2</div>
+              <div class="s11-node" id="s11-n3d" style="left: 28%; top: 64%">n3</div>
+              <div class="s11-node" id="s11-n3e" style="left: 72%; top: 64%">n4</div>
+              <div class="s11-node" id="s11-n3f" style="left: 50%; top: 28%">n5</div>
+              <div class="s11-node" id="s11-n3g" style="left: 50%; top: 74%">n6</div>
+              <div class="s11-node" id="s11-n3h" style="left: 12%; top: 50%">n7</div>
+            </div>
+          </div>
+
+          <div class="s11-panel s11-p4" id="s11-p4">
+            <div class="ph"><span>128 NODES</span><b>PLANNED</b></div>
+            <div class="stage">
+              <div class="s11-ghost" id="s11-ghost"></div>
+              <div class="s11-node" id="s11-n4" style="left: 50%; top: 50%">128</div>
+              <div class="status"><b>simulator · cloud</b> · ahead</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s11-timeline" id="s11-timeline"><span>2026.11</span><span class="dot"></span><span class="bar"></span><span>one logical computer</span></div>
+        <div class="s11-label" id="s11-label"><b>THE NUMBERS</b><br />JOIN · PLACEMENT · ROUTING<br />MIGRATION · FAILURE FENCING</div>
+        <div class="s11-note" id="s11-note"><b>EACH NUMBER HAS EVIDENCE BEHIND IT</b></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const ghost = document.querySelector("#s11-ghost");
+    for (let i = 0; i < 56; i += 1) {
+      const a = (i / 56) * Math.PI * 2;
+      const r = 60 + (i % 5) * 22;
+      const d = document.createElement("i");
+      d.style.left = `${50 + Math.cos(a) * r * 0.9}%`;
+      d.style.top = `${50 + Math.sin(a) * r * 0.7}%`;
+      ghost.appendChild(d);
+    }
+
+    tl.fromTo("#s11-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s11-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s11-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s11-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 6.0);
+
+    tl.fromTo("#s11-grid", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s11-p1", { opacity: 0, scale: 0.96 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power3.out" }, 1.0);
+    tl.fromTo("#s11-p2", { opacity: 0, scale: 0.96 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power3.out" }, 1.3);
+    tl.fromTo("#s11-p3", { opacity: 0, scale: 0.96 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power3.out" }, 1.6);
+    tl.fromTo("#s11-p4", { opacity: 0, scale: 0.96 }, { opacity: 1, scale: 1, duration: 0.5, ease: "power3.out" }, 1.9);
+
+    tl.fromTo("#s11-n1", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 2.2);
+    tl.fromTo("#s11-n1a", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 2.5);
+    tl.fromTo("#s11-n1b", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 2.8);
+    tl.fromTo("#s11-n2a", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 6.2);
+    tl.fromTo("#s11-n2b", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 6.5);
+    tl.fromTo("#s11-l3", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.9, ease: "power2.inOut" }, 6.8);
+    tl.fromTo("#s11-l4", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.9, ease: "power2.inOut" }, 7.1);
+
+    tl.to("#s11-world", { scale: 1.06, x: -120, duration: 6, ease: "power2.inOut", overwrite: "auto" }, 6.0);
+    tl.fromTo(".s11-p3 .s11-node", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.3, stagger: 0.08, ease: "power3.out" }, 11.0);
+    tl.fromTo("#s11-l5", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.8, ease: "power2.inOut" }, 11.4);
+    tl.fromTo("#s11-l6", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.8, ease: "power2.inOut" }, 11.7);
+    tl.fromTo("#s11-l7", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.8, ease: "power2.inOut" }, 12.0);
+    tl.fromTo("#s11-l8", { strokeDashoffset: 400, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 0.8, ease: "power2.inOut" }, 12.3);
+
+    tl.to("#s11-world", { scale: 1.1, x: -140, y: 110, duration: 6, ease: "power2.inOut", overwrite: "auto" }, 16.0);
+    tl.fromTo("#s11-ghost", { opacity: 0, scale: 0.8 }, { opacity: .6, scale: 1, duration: 1.8, ease: "power2.out" }, 16.5);
+    tl.fromTo("#s11-n4", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.4, ease: "power3.out" }, 17.0);
+
+    tl.fromTo("#s11-timeline", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.5 }, 20.0);
+    tl.fromTo("#s11-label", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.5 }, 20.6);
+    tl.fromTo("#s11-note", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.4 }, 21.4);
+    tl.to("#s11-world", { scale: 1.0, x: 0, y: 0, duration: 6, ease: "power2.inOut", overwrite: "auto" }, 22.0);
+    tl.to("#s11-grid", { y: -8, duration: 4, ease: "power2.inOut" }, 24.0);
+
+    window.__timelines["scene-11"] = tl;
+  </script>
+</template>

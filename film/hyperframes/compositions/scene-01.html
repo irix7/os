@@ -1,0 +1,132 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .camera { position: absolute; inset: 0; transform-origin: 73% 28%; }
+    .indy-rig { left: 980px; top: 60px; }
+    .s1-head { position: absolute; left: 120px; top: 168px; width: 760px; z-index: 6; }
+    .s1-head .display { margin-top: 26px; }
+    .s1-sub { margin-top: 30px; max-width: 500px; font-size: 29px; line-height: 1.45; color: var(--ink); }
+    .s1-stamp { left: 120px; top: 660px; color: var(--ink); }
+    .s1-label { position: absolute; z-index: 5; }
+    .s1-label .leader { position: absolute; }
+    .s1-label.a { left: 1010px; top: 96px; }
+    .s1-label.b { left: 1620px; top: 520px; }
+    .s1-label.c { left: 900px; top: 690px; }
+    .s1-label .label { background: var(--paper); padding: 3px 7px; }
+    .s1-rule { position: absolute; left: 120px; top: 510px; width: 560px; height: 1px; background: rgba(23,26,36,.24); transform-origin: left; }
+    .manuals { position: absolute; left: 860px; top: 742px; width: 300px; height: 120px; transform: rotate(-2deg); }
+    .manual { position: absolute; width: 240px; height: 34px; background: #c9c0ae; border: 2px solid #6e6250; box-shadow: 4px 4px 0 rgba(23,26,36,.12); }
+    .manual:nth-child(1) { left: 0; top: 0; background: #e4ddce; }
+    .manual:nth-child(2) { left: 14px; top: 34px; background: #d7cdb9; }
+    .manual:nth-child(3) { left: 28px; top: 68px; background: #c5b9a2; }
+    .manual span { position: absolute; left: 12px; top: 7px; font-family: var(--mono); font-size: 11px; letter-spacing: .12em; color: #5f5443; text-transform: uppercase; }
+    .screen-scan { position: absolute; left: 0; right: 0; height: 2px; background: rgba(126,240,160,.28); z-index: 4; }
+    .screen-glare { position: absolute; top: -20%; bottom: -20%; width: 34%; background: linear-gradient(90deg, transparent, rgba(255,255,255,.16), transparent); transform: skewX(-16deg); z-index: 3; }
+    .mote { position: absolute; width: 3px; height: 3px; border-radius: 50%; background: rgba(255,248,226,.8); }
+    .s1-vignette { position: absolute; inset: 0; background: radial-gradient(90% 80% at 50% 45%, transparent 45%, rgba(70,54,33,.28) 100%); pointer-events: none; }
+  </style>
+
+  <div id="root" data-composition-id="scene-01" data-width="1920" data-height="1080">
+    <div class="scene office">
+      <div class="camera" id="s1-camera">
+        <div class="window-light"></div>
+        <div class="desk"></div>
+        <div class="desk-edge"></div>
+
+        <div class="s1-head">
+          <p class="eyebrow" id="s1-eyebrow"><span class="num">01</span> / A FRAME ON A DESK</p>
+          <h1 class="display" id="s1-title">A frame<br />on a desk.</h1>
+          <p class="s1-sub" id="s1-sub">1994. An SGI Indy, a 21-inch monitor, and one image that belongs to one machine.</p>
+        </div>
+
+        <div class="s1-rule" id="s1-rule"></div>
+
+        <div class="indy-rig" id="s1-indy">
+          <div class="indy-shadow"></div>
+          <div class="indy-monitor">
+            <div class="indy-bezel">
+              <div class="indy-screen">
+                <div class="frame-art" id="s1-frame">
+                  <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <div class="fa-circle"></div>
+                  <div class="fa-cross"></div>
+                  <div class="fa-top"><span>FRAME 0001</span><span>640 × 480</span></div>
+                  <div class="fa-meta"><span>SGI INDY · NEWPORT</span><span>RGB · 24-BIT</span></div>
+                </div>
+                <div class="fa-draw" id="s1-draw"></div>
+                <div class="screen-scan" id="s1-scan"></div>
+                <div class="screen-glare" id="s1-glare"></div>
+              </div>
+            </div>
+            <div class="indy-chin"><span class="indy-logo">IRIX</span><span class="indy-led" id="s1-led"></span></div>
+          </div>
+          <div class="indy-neck"></div>
+          <div class="indy-base">
+            <div class="indy-slot"></div>
+            <div class="indy-led2"></div>
+          </div>
+          <div class="indy-keyboard"></div>
+          <div class="indy-cable"></div>
+        </div>
+
+        <div class="manuals" id="s1-manuals">
+          <div class="manual"><span>IRIX 6.5 · System Guide</span></div>
+          <div class="manual"><span>IRIX 6.5 · Programming</span></div>
+          <div class="manual"><span>Indy · Owner's Guide</span></div>
+        </div>
+
+        <div class="s1-label a" id="s1-la"><span class="label up">SGI INDY / IP24</span></div>
+        <div class="s1-label b" id="s1-lb"><span class="label up">FRAMEBUFFER · ONE MACHINE</span></div>
+        <div class="s1-label c" id="s1-lc"><span class="label up">NEWPORT · 24-BIT RGB</span></div>
+
+        <div class="mote" style="left: 420px; top: 250px"></div>
+        <div class="mote" style="left: 760px; top: 180px"></div>
+        <div class="mote" style="left: 1100px; top: 120px"></div>
+        <div class="mote" style="left: 1460px; top: 260px"></div>
+        <div class="mote" style="left: 1650px; top: 480px"></div>
+        <div class="mote" style="left: 360px; top: 600px"></div>
+        <div class="mote" style="left: 880px; top: 520px"></div>
+        <div class="mote" style="left: 1280px; top: 420px"></div>
+        <div class="s1-vignette"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+    const $ = (s) => document.querySelector(s);
+
+    tl.fromTo("#s1-camera", { scale: 1.0, x: 0, y: 0 }, { scale: 1.08, x: -20, y: 0, duration: 15, ease: "none" }, 0);
+    tl.fromTo("#s1-eyebrow", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.25);
+    tl.fromTo("#s1-title", { opacity: 0, y: 54, filter: "blur(10px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.75, ease: "power4.out" }, 0.45);
+    tl.fromTo("#s1-sub", { opacity: 0, y: 20 }, { opacity: 1, y: 0, duration: 0.55, ease: "power3.out" }, 0.95);
+    tl.fromTo("#s1-rule", { scaleX: 0 }, { scaleX: 1, duration: 0.8, ease: "power2.inOut" }, 1.0);
+
+    tl.fromTo("#s1-draw", { scaleY: 1 }, { scaleY: 0, duration: 2.4, ease: "power2.inOut" }, 0.6);
+    tl.fromTo("#s1-scan", { y: 0, opacity: 0 }, { y: 340, opacity: 0.8, duration: 2.0, ease: "power1.inOut" }, 0.8);
+    tl.to("#s1-scan", { opacity: 0, duration: 0.3 }, 2.9);
+
+    tl.fromTo("#s1-la", { opacity: 0, x: -18 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 5.2);
+    tl.fromTo("#s1-lb", { opacity: 0, x: 18 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 6.2);
+    tl.fromTo("#s1-lc", { opacity: 0, x: -18 }, { opacity: 1, x: 0, duration: 0.4, ease: "power2.out" }, 7.2);
+    tl.fromTo("#s1-manuals", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power2.out" }, 7.8);
+
+    tl.to("#s1-led", { opacity: 0.25, duration: 0.16, repeat: 7, yoyo: true, ease: "steps(1)" }, 5.0);
+    tl.to("#s1-led", { opacity: 0.25, duration: 0.16, repeat: 9, yoyo: true, ease: "steps(1)" }, 17.0);
+
+    tl.fromTo(".mote", { y: 0, opacity: 0.2 }, { y: -34, opacity: 0.6, duration: 12, stagger: 0.6, ease: "none" }, 2);
+    tl.to(".mote", { y: -70, opacity: 0.15, duration: 12, stagger: 0.4, ease: "none" }, 14);
+
+    tl.fromTo("#s1-title", { opacity: 1 }, { opacity: 0, y: -24, filter: "blur(8px)", duration: 0.45, ease: "power2.in", immediateRender: false }, 4.8);
+    tl.fromTo("#s1-eyebrow", { opacity: 1 }, { opacity: 0, duration: 0.35, ease: "power2.in", immediateRender: false }, 4.8);
+    tl.fromTo("#s1-sub", { opacity: 1 }, { opacity: 0, duration: 0.35, ease: "power2.in", immediateRender: false }, 4.9);
+    tl.fromTo("#s1-rule", { opacity: 1 }, { opacity: 0, duration: 0.35, immediateRender: false }, 4.9);
+
+    tl.to("#s1-camera", { scale: 1.3, x: 0, y: 0, duration: 6.2, ease: "power2.inOut" }, 15);
+    tl.to("#s1-camera", { scale: 1.86, x: 0, y: 0, duration: 2.8, ease: "power3.in" }, 21.2);
+    tl.fromTo("#s1-frame", { opacity: 1 }, { opacity: 0, duration: 0.25, ease: "power1.in" }, 23.7);
+
+    window.__timelines["scene-01"] = tl;
+  </script>
+</template>

@@ -1,0 +1,149 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s8-world { position: absolute; inset: 0; transform-origin: 50% 52%; }
+    .s8-head { position: absolute; left: 104px; top: 92px; width: 600px; z-index: 9; }
+    .s8-head .display { margin-top: 22px; font-size: 108px; }
+    .s8-sub { margin-top: 24px; max-width: 500px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s8-node { position: absolute; width: 320px; height: 320px; border-radius: 50%; border: 2px solid var(--indigo); display: grid; place-items: center; z-index: 4; }
+    .s8-node.n3 { left: 520px; top: 440px; }
+    .s8-node.n6 { left: 1290px; top: 440px; }
+    .s8-node::before { content: ""; position: absolute; inset: 28px; border-radius: 50%; border: 1px dashed rgba(52,55,140,.4); }
+    .s8-node b { position: absolute; top: 30px; font-family: var(--mono); font-size: 14px; letter-spacing: .12em; color: var(--indigo); }
+    .s8-node span { position: absolute; bottom: 30px; font-family: var(--mono); font-size: 11px; letter-spacing: .1em; color: var(--ink-soft); }
+    .s8-frame { position: absolute; left: 580px; top: 505px; width: 220px; z-index: 6; }
+    .s8-frame .frame-object { width: 100%; border-width: 5px; }
+    .s8-link { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+    .s8-link path { fill: none; stroke: var(--indigo); stroke-width: 2; opacity: .55; }
+    .s8-link path.broken { stroke: var(--orange); stroke-dasharray: 8 12; opacity: 0; }
+    .s8-plug { position: absolute; left: 760px; top: 760px; width: 90px; height: 36px; border: 2px solid var(--ink); background: var(--paper-light); z-index: 7; transform-origin: left center; }
+    .s8-plug::before { content: ""; position: absolute; left: -80px; top: 16px; width: 80px; height: 4px; background: var(--ink); }
+    .s8-plug::after { content: ""; position: absolute; right: -8px; top: 10px; width: 8px; height: 12px; background: var(--orange); }
+    .s8-wave { position: absolute; left: 680px; top: 600px; width: 0; height: 0; z-index: 5; pointer-events: none; }
+    .s8-wave i { position: absolute; left: -160px; top: -160px; width: 320px; height: 320px; border-radius: 50%; border: 3px solid var(--orange); opacity: 0; }
+    .s8-lease { position: absolute; left: 520px; top: 790px; width: 320px; z-index: 6; }
+    .s8-lease .bar { height: 10px; background: rgba(23,26,36,.12); border: 1px solid var(--ink); }
+    .s8-lease .fill { height: 100%; width: 100%; background: var(--orange); transform-origin: left; }
+    .s8-lease .lbl { display: flex; justify-content: space-between; margin-top: 7px; font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s8-epoch { position: absolute; right: 104px; top: 96px; text-align: right; z-index: 8; }
+    .s8-epoch .n { font-family: var(--sans); font-weight: 500; font-size: 120px; line-height: .85; letter-spacing: -.06em; color: var(--indigo); }
+    .s8-epoch .l { margin-top: 8px; font-family: var(--mono); font-size: 13px; letter-spacing: .14em; text-transform: uppercase; color: var(--ink-soft); }
+    .s8-moved { position: absolute; left: 780px; top: 480px; padding: 8px 12px; border: 2px solid var(--orange); background: var(--paper-light); font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--orange); z-index: 8; }
+    .s8-label { position: absolute; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); z-index: 7; }
+    .s8-label b { color: var(--ink); font-weight: 500; }
+    .s8-note { position: absolute; left: 104px; top: 750px; width: 340px; font-family: var(--mono); font-size: 13px; line-height: 1.7; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s8-note b { color: var(--orange); font-weight: 500; }
+    .s8-terminal { position: absolute; left: 1290px; top: 800px; width: 320px; z-index: 7; }
+    .s8-terminal .terminal { position: relative; width: 100%; }
+    .s8-terminal .term-body { min-height: 0; padding: 12px 14px; font-size: 12px; line-height: 1.6; }
+  </style>
+
+  <div id="root" data-composition-id="scene-08" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 08 / FAILURE</p>
+      <div class="s8-world" id="s8-world">
+        <div class="s8-head" id="s8-head">
+          <p class="eyebrow" id="s8-eyebrow"><span class="num">08</span> / FAILURE</p>
+          <h1 class="display" id="s8-title">Pulling<br />the plug.</h1>
+          <p class="s8-sub" id="s8-sub">Here is the test that decides whether a distributed system is real: unplug the home node while it is working.</p>
+        </div>
+
+        <div class="s8-epoch" id="s8-epoch"><div class="n" id="s8-epoch-n">08</div><div class="l">membership epoch</div></div>
+
+        <svg class="s8-link" viewBox="0 0 1920 1080">
+          <path id="s8-link-line" d="M680 600 C900 470 1150 470 1400 600" />
+          <path id="s8-link-broken" class="broken" d="M840 560 L900 520 M940 500 L1000 540 M1040 560 L1100 520" />
+        </svg>
+
+        <div class="s8-node n3" id="s8-n3"><b>HOME · N3</b><span>epoch 8 · lease 6s</span></div>
+        <div class="s8-node n6" id="s8-n6"><b>SURVIVOR · N6</b><span>ready · epoch 8</span></div>
+
+        <div class="s8-frame" id="s8-frame">
+          <div class="frame-object bare">
+            <div class="frame-art">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+              <div class="fa-top"><span>FRAME 0001</span><span>HOME</span></div>
+              <div class="fa-meta"><span>ONE HOME</span><span>ONE LEASE</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s8-plug" id="s8-plug"></div>
+        <div class="s8-wave" id="s8-wave"><i></i><i></i><i></i></div>
+        <div class="s8-lease" id="s8-lease">
+          <div class="bar"><div class="fill" id="s8-lease-fill"></div></div>
+          <div class="lbl"><span id="s8-lease-label">write lease · n3</span><span id="s8-lease-time">6s</span></div>
+        </div>
+
+        <div class="s8-moved" id="s8-moved">MOVED · n6</div>
+
+
+        <div class="s8-label" id="s8-label-a" style="left: 520px; top: 860px"><b>HOME</b> / one writer</div>
+        <div class="s8-label" id="s8-label-b" style="left: 1280px; top: 810px"><b>SURVIVOR</b> / new home</div>
+        <div class="s8-note" id="s8-note"><b>FAILURE IS A STATE</b><br />EPOCH · LEASE · FENCE</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s8-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s8-title", { opacity: 0, y: 46, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s8-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s8-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 5.8);
+
+    tl.fromTo("#s8-n3", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s8-n6", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 1.2);
+    tl.fromTo("#s8-link-line", { strokeDashoffset: 900, opacity: 0 }, { strokeDashoffset: 0, opacity: .55, duration: 1.4, ease: "power2.inOut" }, 1.4);
+    tl.fromTo("#s8-frame", { opacity: 0, scale: 0.9 }, { opacity: 1, scale: 1, duration: 0.6, ease: "power3.out" }, 1.2);
+    tl.fromTo("#s8-lease", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 2.4);
+    tl.fromTo("#s8-lease-fill", { scaleX: 1 }, { scaleX: 0.35, duration: 3.0, ease: "power1.inOut" }, 2.6);
+    tl.fromTo("#s8-label-a", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 2.8);
+
+    tl.to("#s8-plug", { x: 110, y: 30, rotate: 18, duration: 0.7, ease: "power3.in" }, 6.2);
+    tl.to("#s8-plug", { opacity: 0, duration: 0.3 }, 6.8);
+    tl.to("#s8-n3", { backgroundColor: "#c7cec8", color: "#8a8f98", borderColor: "#8a8f98", duration: 0.4 }, 6.8);
+    tl.to("#s8-n3 b", { color: "#8a8f98", duration: 0.3 }, 6.8);
+    tl.to("#s8-link-line", { opacity: .12, duration: 0.4 }, 6.9);
+    tl.fromTo("#s8-link-broken", { opacity: 0 }, { opacity: 1, duration: 0.3 }, 6.9);
+    tl.to("#s8-lease-fill", { scaleX: 0, duration: 0.7, ease: "power2.in" }, 7.0);
+    tl.to("#s8-lease-label", { textContent: "lease lost · n3", duration: 0.01 }, 7.0);
+    tl.to("#s8-frame", { x: 20, y: 0, duration: 0.15, yoyo: true, repeat: 3, ease: "steps(1)" }, 7.2);
+
+    tl.fromTo("#s8-wave", { opacity: 0 }, { opacity: 1, duration: 0.1 }, 8.2);
+    tl.fromTo("#s8-wave i", { scale: 0.2, opacity: .9 }, { scale: 3.2, opacity: 0, duration: 2.0, stagger: 0.25, ease: "power2.out" }, 8.2);
+    tl.to("#s8-epoch-n", { textContent: "09", duration: 0.01 }, 8.4);
+    tl.to("#s8-epoch", { y: -8, duration: 0.3, yoyo: true, repeat: 1 }, 8.4);
+
+    tl.to("#s8-frame", { x: 770, y: -10, duration: 1.7, ease: "power3.inOut" }, 9.0);
+    tl.to("#s8-frame", { scale: 0.9, duration: 1.7, ease: "power2.inOut" }, 9.0);
+    tl.fromTo("#s8-moved", { opacity: 0, x: -10 }, { opacity: 1, x: 0, duration: 0.35, ease: "power2.out" }, 9.6);
+    tl.to("#s8-moved", { opacity: 0, duration: 0.3 }, 11.2);
+    tl.to("#s8-n6", { backgroundColor: "#34378c", color: "#f7f4ea", duration: 0.4 }, 10.6);
+    tl.to("#s8-n6 b", { color: "#f7f4ea", duration: 0.3 }, 10.6);
+    tl.to("#s8-lease", { opacity: 0, duration: 0.35 }, 10.9);
+    tl.to("#s8-n6 span", { textContent: "lease · n6 · epoch 9", duration: 0.01 }, 11.1);
+    tl.to("#s8-lease-fill", { scaleX: 1, duration: 1.4, ease: "power2.out" }, 11.0);
+    tl.to("#s8-lease-label", { textContent: "write lease · n6", duration: 0.01 }, 11.0);
+    tl.fromTo("#s8-label-b", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.35 }, 11.6);
+
+    tl.fromTo("#s8-note", { opacity: 0, y: 8 }, { opacity: 1, y: 0, duration: 0.4 }, 14.0);
+    tl.to("#s8-world", { scale: 0.94, duration: 3, ease: "power2.inOut", overwrite: "auto" }, 5.8);
+    tl.to("#s8-world", { scale: 1.08, x: -140, duration: 4.5, ease: "power2.inOut", overwrite: "auto" }, 9.0);
+    tl.to("#s8-world", { scale: 1.03, x: -120, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 14.5);
+    tl.to("#s8-world", { scale: 1.08, x: -170, duration: 5, ease: "power2.inOut", overwrite: "auto" }, 22.0);
+    tl.to("#s8-frame", { x: 4, y: -4, rotate: -1.2, duration: 3.0, ease: "sine.inOut", overwrite: "auto" }, 14.8);
+    tl.to("#s8-frame", { scale: 1.0, rotate: 1.4, duration: 4, ease: "sine.inOut", overwrite: "auto" }, 18.0);
+    tl.to("#s8-epoch", { opacity: .55, duration: 2, yoyo: true, repeat: 4, ease: "sine.inOut" }, 24.0);
+    tl.to("#s8-world", { scale: 1.12, duration: 5, ease: "sine.inOut", overwrite: "auto" }, 27.0);
+    tl.to("#s8-n6", { scale: 1.02, duration: 3, yoyo: true, repeat: 1, ease: "power2.inOut" }, 19.0);
+    tl.to("#s8-frame", { rotate: 2, duration: 6, ease: "power2.inOut" }, 22.0);
+
+    window.__timelines["scene-08"] = tl;
+  </script>
+</template>

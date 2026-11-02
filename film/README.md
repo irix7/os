@@ -1,45 +1,69 @@
 # The Logical Computer — film source
 
-A 5 minute 38 second animated documentary about IRIX 7, built as one static
-page. Twelve chapters, no audio, no build step, no runtime network requests.
+A 5 minute 58 second documentary about IRIX 7, built as a HyperFrames
+composition and played in the browser. No video render; the timeline is the
+film.
 
-Open `/film/` from a server rooted at the repository:
+The page follows one frame from a 1994 SGI Indy through the object space,
+capabilities, homes, the fabric and a failed node, then back to the machine.
+Twelve chapters, silent, captioned, with a full transcript.
+
+## Run it
+
+From the repository root:
 
 ```sh
 python3 -m http.server 8000
 ```
 
-Then visit <http://127.0.0.1:8000/film/>. The page needs a server rather than
-`file://` because the fonts are loaded as same-origin assets.
+Open <http://127.0.0.1:8000/film/>. The page needs a server rather than
+`file://` because the player fetches the composition and its scene files.
+
+To work on the composition alone, use the HyperFrames player:
+
+```sh
+cd film/hyperframes
+npx hyperframes play
+```
+
+The CLI injects its runtime into the composition for preview. The static page
+loads the vendored `player.js` and the composition loads `hyperframes/runtime.js`
+through the `window.__hyperframes` check in `hyperframes/index.html`.
 
 ## Files
 
 | Path | Purpose |
 | --- | --- |
-| `index.html` | Poster, twelve scenes, caption bar, player, chapter menu, transcript |
-| `film.css` | Layout, type, colour, every animation, responsive and reduced-motion rules |
-| `film.js` | Timeline, captions, counters, controls, deep links, pointer tilt |
-| `assets/fonts/` | Fraunces, Space Grotesk and IBM Plex Mono, with OFL licences |
+| `index.html` | Page chrome: poster, player, controls, chapter menu, transcript |
+| `film.css` | Page layout and the cinema surround |
+| `film.js` | Player controls, chapter and transcript data, deep links |
+| `player.js` | Vendored HyperFrames web component |
+| `hyperframes/index.html` | Root composition: 12 chapter hosts, captions, 5:58 duration |
+| `hyperframes/compositions/` | One scene file per chapter |
+| `hyperframes/assets/film.css` | Shared film styles and layout |
+| `hyperframes/runtime.js` | Vendored HyperFrames runtime |
+| `assets/poster.png` | Page poster, 1920 × 1080 |
 | `assets/og.png` | Open Graph card, 1200 × 630 |
 
-## Editing the timeline
+## Editing a chapter
 
-Each chapter is a `<section class="scene">` in `index.html`. The player reads
-its duration, chapter number and title from data attributes:
+Each chapter is a `<section>` host in `hyperframes/index.html`:
 
 ```html
-<section class="scene scene-homes" data-scene="6" data-duration="32"
-         data-chapter="06" data-title="Homes, not directories">
+<div id="scene-04" data-composition-id="scene-04"
+     data-composition-src="compositions/scene-04.html"
+     data-start="86" data-duration="30" data-title="Everything gets a name"></div>
 ```
 
-Captions are `<p class="cue" data-at="6">` children of that section. `data-at`
-is the offset in seconds from the start of the chapter. Chapter cards,
-scrubber segments and transcript entries are generated from the same markup,
-so adding a cue updates all three.
+The scene file under `hyperframes/compositions/` owns its own GSAP timeline,
+registered as `window.__timelines["scene-04"]`. Change the host's
+`data-duration`, `data-start` and `data-title` together with the scene's
+timeline. Captions are `.caption` clips in the root; `film.js` reads the same
+attributes to build the chapter menu and transcript.
 
-Scene-local animation is CSS only. A scene receives `.is-active` while it is
-on screen; counters restart with it, and `prefers-reduced-motion` switches the
-whole film to a slideshow.
+Scene files use the shared `hyperframes/assets/film.css` and reference local
+media with `assets/...` paths. Every timed element needs `data-start`,
+`data-duration` and a stable `id`.
 
 ## Controls
 
@@ -47,6 +71,9 @@ whole film to a slideshow.
 `Down` move between chapters, `C` opens the chapters, `T` opens the transcript,
 `F` toggles fullscreen, and `Escape` closes a panel or pauses. Deep links use
 `#chapter-1` to `#chapter-12`.
+
+The film is silent; the captions are part of the frame and the transcript
+repeats them. The page pauses the film when a panel opens.
 
 ## Publishing
 

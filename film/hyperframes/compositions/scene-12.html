@@ -1,0 +1,120 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s12-world { position: absolute; inset: 0; transform-origin: 26% 42%; }
+    .s12-desk { position: absolute; left: 0; top: 0; width: 760px; height: 1080px; background: linear-gradient(180deg, #e9e2d4 0%, #ddd5c5 60%, #b9ae9a 100%); }
+    .s12-desk::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26%; background: linear-gradient(180deg, #8d7a5f, #6f5e47); }
+    .s12-indy { position: absolute; left: 70px; top: 250px; width: 620px; height: 560px; z-index: 5; }
+    .s12-indy svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+    .s12-indy .line { fill: none; stroke: #6d6250; stroke-width: 3; }
+    .s12-indy .screen { fill: #101a2e; stroke: #2a2a2c; stroke-width: 5; }
+    .s12-screen { position: absolute; left: 28.75%; top: 12.85%; width: 42.5%; height: 35.7%; background: #101a2e; border: 3px solid #2a2a2c; overflow: hidden; }
+    .s12-screen .frame-art { position: absolute; inset: 0; }
+    .s12-net { position: absolute; left: 700px; top: 0; width: 1220px; height: 1080px; background: radial-gradient(80% 70% at 50% 45%, #2a2d6b 0%, #1d1f4c 50%, #121433 100%); }
+    .s12-net::before { content: ""; position: absolute; inset: 0; background-image: linear-gradient(rgba(223,226,222,.07) 1px, transparent 1px), linear-gradient(90deg, rgba(223,226,222,.07) 1px, transparent 1px); background-size: 64px 64px; mask-image: radial-gradient(70% 70% at 50% 50%, #000 30%, transparent 100%); }
+    .s12-links { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; z-index: 2; }
+    .s12-links path { fill: none; stroke: rgba(223,226,222,.4); stroke-width: 1.4; }
+    .s12-node { position: absolute; width: 78px; height: 78px; margin: -39px 0 0 -39px; border-radius: 50%; background: var(--paper-light); border: 2px solid var(--indigo); display: grid; place-items: center; z-index: 3; box-shadow: 5px 5px 0 rgba(0,0,0,.2); }
+    .s12-node::after { content: ""; width: 18px; height: 12px; border: 1px solid var(--ink); background: var(--orange); }
+    .s12-node.home { background: var(--orange); }
+    .s12-node.home::after { background: var(--paper-light); }
+    .s12-title { position: absolute; left: 720px; top: 120px; width: 1000px; z-index: 8; }
+    .s12-title .display { font-size: 110px; color: var(--paper-light); }
+    .s12-title .display .accent { color: var(--orange); }
+    .s12-title .sub { margin-top: 24px; font-family: var(--mono); font-size: 15px; letter-spacing: .18em; text-transform: uppercase; color: rgba(223,226,222,.6); }
+    .s12-end { position: absolute; left: 720px; top: 430px; z-index: 9; opacity: 0; }
+    .s12-end .display { font-size: 96px; color: var(--paper-light); }
+    .s12-end .display .accent { color: var(--orange); }
+    .s12-end .line { margin-top: 22px; font-family: var(--mono); font-size: 16px; letter-spacing: .18em; text-transform: uppercase; color: rgba(223,226,222,.6); }
+    .s12-end .mark { position: absolute; right: -40px; top: -60px; width: 90px; height: 90px; border: 2px solid var(--orange); transform: rotate(45deg); }
+    .s12-end .mark::after { content: ""; position: absolute; inset: 18px; border: 1px solid var(--paper-light); }
+    .s12-note { position: absolute; left: 104px; top: 900px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+  </style>
+
+  <div id="root" data-composition-id="scene-12" data-width="1920" data-height="1080">
+    <div class="scene">
+      <div class="s12-world" id="s12-world">
+        <div class="s12-desk"></div>
+        <div class="s12-indy" id="s12-indy">
+          <svg viewBox="0 0 800 700" preserveAspectRatio="xMidYMid meet">
+            <rect x="200" y="60" width="400" height="340" rx="18" class="line" />
+            <rect x="230" y="90" width="340" height="250" rx="6" class="screen" />
+            <path d="M320 400v40h160v-40" class="line" />
+            <rect x="240" y="440" width="320" height="100" rx="10" class="line" />
+            <rect x="262" y="540" width="280" height="80" rx="8" class="line" />
+            <circle cx="540" cy="470" r="6" fill="#e85d2a" />
+          </svg>
+          <div class="s12-screen">
+            <div class="frame-art" id="s12-frame">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+              <div class="fa-top"><span>FRAME 0001</span><span>HOME</span></div>
+              <div class="fa-meta"><span>1994</span><span>IRIX 7</span></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="s12-net" id="s12-net">
+          <svg class="s12-links" viewBox="0 0 1220 1080">
+            <path id="s12-l1" d="M120 300 C220 240 400 240 500 250" />
+            <path id="s12-l2" d="M120 300 C220 420 400 460 500 500" />
+            <path id="s12-l3" d="M500 250 C620 270 720 280 800 300" />
+            <path id="s12-l4" d="M500 500 C620 520 720 600 800 650" />
+            <path id="s12-l5" d="M800 300 C900 260 1000 250 1080 250" />
+            <path id="s12-l6" d="M800 650 C900 600 1000 580 1080 550" />
+            <path id="s12-l7" d="M500 250 C500 350 500 400 500 500" />
+          </svg>
+
+          <div class="s12-node" id="s12-n1" style="left: 120px; top: 300px"></div>
+          <div class="s12-node" id="s12-n2" style="left: 500px; top: 250px"></div>
+          <div class="s12-node home" id="s12-n3" style="left: 500px; top: 500px"></div>
+          <div class="s12-node" id="s12-n4" style="left: 800px; top: 300px"></div>
+          <div class="s12-node" id="s12-n5" style="left: 800px; top: 650px"></div>
+          <div class="s12-node" id="s12-n6" style="left: 1080px; top: 250px"></div>
+          <div class="s12-node" id="s12-n7" style="left: 1080px; top: 550px"></div>
+        </div>
+
+        <div class="s12-title" id="s12-title">
+          <p class="eyebrow" style="color: var(--orange-soft)"><span class="num">12</span> / CODA</p>
+          <h1 class="display">The network<br /><span class="accent">is the computer.</span></h1>
+          <p class="sub">ONE LOGICAL COMPUTER · 1–128 NODES</p>
+        </div>
+
+        <div class="s12-end" id="s12-end">
+          <div class="mark"></div>
+          <h2 class="display">IRIX 7<br /><span class="accent">The Logical Computer</span></h2>
+          <p class="line">OBJECTS · CAPABILITIES · HOMES · FABRIC · FAILURE</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s12-world", { scale: 1.55, x: 300, y: 120 }, { scale: 1.0, x: 0, y: 0, duration: 10, ease: "power2.inOut" }, 0.2);
+    tl.fromTo("#s12-frame", { opacity: 0, scale: 1.06 }, { opacity: 1, scale: 1, duration: 0.8, ease: "power3.out" }, 0.2);
+    tl.to(".s12-node", { opacity: .22, duration: 1.0, ease: "power2.inOut" }, 6.8);
+    tl.to(".s12-links path", { opacity: .18, duration: 1.0, ease: "power2.inOut" }, 6.8);
+    tl.fromTo("#s12-title", { opacity: 0, y: 30 }, { opacity: 1, y: 0, duration: 0.7, ease: "power3.out" }, 7.0);
+    tl.to("#s12-title", { opacity: 0, y: -20, duration: 0.5, ease: "power2.in" }, 12.4);
+
+    tl.fromTo("#s12-net", { opacity: 1 }, { opacity: 1, duration: 0.01 }, 0);
+    tl.fromTo(".s12-node", { opacity: 0, scale: 0.6 }, { opacity: 1, scale: 1, duration: 0.45, stagger: 0.12, ease: "power3.out" }, 5.4);
+    tl.fromTo(".s12-links path", { strokeDashoffset: 900, opacity: 0 }, { strokeDashoffset: 0, opacity: .4, duration: 1.2, stagger: 0.12, ease: "power2.inOut" }, 5.6);
+    tl.fromTo("#s12-n3", { backgroundColor: "#f7f4ea" }, { backgroundColor: "#e85d2a", duration: 0.4 }, 7.0);
+
+    tl.to("#s12-world", { scale: 1.1, x: -100, y: -20, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 10.0);
+    tl.to("#s12-frame", { scale: 0.8, duration: 4, ease: "power2.inOut" }, 10.2);
+    tl.to(".s12-node", { opacity: 0, duration: 1.2, stagger: 0.06, ease: "power2.in" }, 14.8);
+    tl.to(".s12-links path", { opacity: 0, duration: 1.2, ease: "power2.in" }, 14.8);
+    tl.fromTo("#s12-end", { opacity: 0, y: 24 }, { opacity: 1, y: 0, duration: 0.8, ease: "power3.out" }, 16.0);
+    tl.fromTo("#s12-end .line", { opacity: 0 }, { opacity: 1, duration: 0.5 }, 17.0);
+    tl.to("#s12-world", { scale: 1.04, duration: 7, ease: "power2.inOut", overwrite: "auto" }, 19.0);
+    tl.to("#s12-end", { y: -8, duration: 4, ease: "power2.inOut" }, 22.0);
+
+    window.__timelines["scene-12"] = tl;
+  </script>
+</template>

@@ -1,621 +1,147 @@
 <!doctype html>
 <html lang="en-AU">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>The Logical Computer — an IRIX 7 film</title>
-<meta name="description" content="An animated documentary about IRIX 7: an operating system that turns 1–128 machines into one logical computer, without a distributed system above it.">
-<meta name="theme-color" content="#05070f">
-<meta name="color-scheme" content="dark">
-<link rel="canonical" href="https://irix7.github.io/os/film/">
-<meta property="og:type" content="video.other">
-<meta property="og:title" content="The Logical Computer — an IRIX 7 film">
-<meta property="og:description" content="One operating system. One object space. One authority graph. 1–128 machines.">
-<meta property="og:url" content="https://irix7.github.io/os/film/">
-<meta property="og:image" content="https://irix7.github.io/os/film/assets/og.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
-<meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="The Logical Computer — an IRIX 7 film">
-<meta name="twitter:description" content="An animated documentary about one operating system becoming one computer.">
-<meta name="twitter:image" content="https://irix7.github.io/os/film/assets/og.png">
-<link rel="icon" href="../tree/assets/favicon.svg" type="image/svg+xml">
-<link rel="preload" href="assets/fonts/fraunces.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="assets/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="stylesheet" href="film.css">
-</head>
-<body>
-<a class="skip" href="#transcript-body">Skip to the transcript</a>
-<div id="app">
-  <div class="backdrop" aria-hidden="true">
-    <div class="aurora"><span></span><span></span><span></span><span></span></div>
-    <div class="stars"></div>
-    <div class="grid"></div>
-    <div class="vignette"></div>
-  </div>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>The Logical Computer — an IRIX 7 film</title>
+    <meta
+      name="description"
+      content="A documentary about a 1994 SGI Indy and the operating system built to make every machine after it part of the same computer."
+    />
+    <meta name="theme-color" content="#0b0e17" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="canonical" href="https://irix7.github.io/os/film/" />
+    <meta property="og:type" content="video.other" />
+    <meta property="og:title" content="The Logical Computer — an IRIX 7 film" />
+    <meta property="og:description" content="A 1994 workstation. One operating system. 1–128 machines." />
+    <meta property="og:url" content="https://irix7.github.io/os/film/" />
+    <meta property="og:image" content="https://irix7.github.io/os/film/assets/og.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="The Logical Computer — an IRIX 7 film" />
+    <meta name="twitter:description" content="A documentary about one operating system becoming one computer." />
+    <meta name="twitter:image" content="https://irix7.github.io/os/film/assets/og.png" />
+    <link rel="icon" href="../tree/assets/favicon.svg" type="image/svg+xml" />
+    <link rel="preload" href="assets/fonts/space-grotesk.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="film.css" />
+  </head>
+  <body>
+    <a class="skip" href="#player">Skip to the film</a>
 
-  <header class="topbar">
-    <a class="brand" href="../" aria-label="IRIX 7 documentation">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-        <path d="M16 3 29 10.5v11L16 29 3 21.5v-11L16 3Z"/>
-        <path d="M16 3v26M3 10.5l13 7.5 13-7.5M16 18v11"/>
-      </svg>
-      <span class="brand-text"><span class="brand-name">IRIX 7</span><span class="brand-sub">The Logical Computer</span></span>
-    </a>
-    <nav class="top-links" aria-label="Related pages">
-      <a href="../tree/">Tree</a>
-      <a href="../">Docs</a>
-      <a href="https://github.com/irix7/os">GitHub</a>
-      <button class="top-button" data-open-transcript>Transcript</button>
-    </nav>
-  </header>
-
-  <main id="film" tabindex="-1" aria-label="The Logical Computer, an animated documentary">
-    <div id="scenes">
-
-      <section class="scene scene-opening" data-scene="1" data-duration="20" data-chapter="01" data-title="One machine. Then one computer.">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>01</span> Cold open</p>
-            <h2 class="scene-title title-reveal">One machine.<br><em>Then one computer.</em></h2>
-            <p class="scene-lead">In 1994, an SGI Indy was a workstation. IRIX 7 starts by asking what happens if the operating system is the network.</p>
-            <div class="beats">
-              <p><span class="beat-mark">1994</span> MIPS R4400. 21-inch monitor. IRIX 6.5.</p>
-              <p><span class="beat-mark">2026</span> A clean-room Rust successor, built to run the old binaries.</p>
-              <p><span class="beat-mark">One</span> Logical computer, from 1 to 128 replicas.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>One machine. One kernel. One failure domain.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>Many machines. One object graph. One computer.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="indy-hero" aria-hidden="true">
-              <svg viewBox="0 0 420 320" class="indy-svg">
-                <rect class="indy-glow" x="55" y="20" width="270" height="205" rx="14"/>
-                <rect class="indy-line" x="70" y="34" width="240" height="178" rx="9"/>
-                <rect class="indy-screen" x="84" y="48" width="212" height="150" rx="5"/>
-                <text class="screen-title" x="190" y="105" text-anchor="middle">IRIX 7</text>
-                <text class="screen-sub" x="190" y="122" text-anchor="middle">ONE LOGICAL COMPUTER</text>
-                <text class="screen-boot" x="102" y="168">boot&gt; <tspan class="screen-ok">BOOT-READY</tspan><tspan class="screen-cursor">_</tspan></text>
-                <path class="indy-scan" d="M88 63h204M88 77h150M88 184h190M88 191h120"/>
-                <path class="indy-line" d="M126 212v20h108v-20"/>
-                <rect class="indy-line" x="100" y="232" width="160" height="44" rx="6"/>
-                <path class="indy-line" d="M118 246h44M118 256h70M236 246h8M236 256h8"/>
-                <circle class="indy-led" cx="250" cy="252" r="3"/>
-                <text class="indy-label" x="210" y="305" text-anchor="middle">SGI INDY · IP24</text>
-              </svg>
-              <div class="hero-word">IRIX<span>7</span></div>
-            </div>
-            <div class="ticker" aria-hidden="true">
-              <div class="ticker-track">
-                <span>ONE OBJECT SPACE · 1–128 NODES · NO CENTRAL DIRECTORY · NATIVE IRIX COMPATIBILITY · </span>
-                <span>ONE OBJECT SPACE · 1–128 NODES · NO CENTRAL DIRECTORY · NATIVE IRIX COMPATIBILITY · </span>
-              </div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">In 1994, an SGI Indy was one computer.</p>
-        <p class="cue" data-at="5">A MIPS R4400, a Newport display, IRIX 6.5.</p>
-        <p class="cue" data-at="10">Thirty years later, IRIX 7 asks a different question.</p>
-        <p class="cue" data-at="15">What if the operating system itself was the network?</p>
-      </section>
-
-      <section class="scene scene-regular" data-scene="2" data-duration="28" data-chapter="02" data-title="A government for one machine">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>02</span> The regular operating system</p>
-            <h2 class="scene-title title-reveal">A government<br><em>for one machine.</em></h2>
-            <p class="scene-lead">Linux and Windows are extraordinary single-machine systems. The seam is the machine boundary.</p>
-            <div class="beats">
-              <p><span class="beat-mark">One</span> scheduler, one page table, one VFS, one root.</p>
-              <p><span class="beat-mark">Eight</span> machines means eight kernels — then Kubernetes, etcd, CNI, CSI, a cluster filesystem.</p>
-              <p><span class="beat-mark">Above</span> the OS, distribution becomes a second system with its own identity, naming and failure model.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>One kernel, one namespace, one failure domain.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>One object graph, many shims, no second control plane.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="monolith-wrap" aria-hidden="true">
-              <div class="machine-boundary">MACHINE BOUNDARY</div>
-              <div class="monolith">
-                <div class="mono-kernel">KERNEL</div>
-                <span class="proc p1">PID 1</span><span class="proc p2">PID 42</span><span class="proc p3">PID 77</span><span class="proc p4">PID 91</span>
-                <div class="mono-rail">
-                  <span>/proc</span><span>/dev</span><span>/sys</span><span>mount</span><span>uid 0</span>
-                </div>
-              </div>
-              <div class="monolith ghost">
-                <div class="mono-kernel">KERNEL</div>
-                <div class="mono-rail"><span>/proc</span><span>/dev</span><span>/sys</span><span>mount</span><span>uid 0</span></div>
-              </div>
-              <div class="seam"></div>
-              <p class="glitch-text" data-text="ADD A DISTRIBUTED SYSTEM">ADD A DISTRIBUTED SYSTEM</p>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">A regular operating system is a government for one machine.</p>
-        <p class="cue" data-at="6">One scheduler. One page table. One namespace. One root.</p>
-        <p class="cue" data-at="13">To use eight machines, you run eight kernels — then build a distributed system above them.</p>
-        <p class="cue" data-at="21">Kubernetes, etcd, CNI, CSI, a cluster filesystem. Each with its own idea of identity, naming and failure.</p>
-      </section>
-
-      <section class="scene scene-premise" data-scene="3" data-duration="30" data-chapter="03" data-title="One logical computer">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>03</span> The premise</p>
-            <h2 class="scene-title title-reveal">One logical<br><em>computer.</em></h2>
-            <p class="scene-lead">IRIX 7 makes the multi-node case the operating system's native case: 1–128 kernel replicas, one global object space.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Shim</span> A native hardware layer: Indy, x86_64, PowerPC, cloud VirtIO.</p>
-              <p><span class="beat-mark">Core</span> One architecture-independent Wasm core with one BLAKE3 OID.</p>
-              <p><span class="beat-mark">Global</span> Objects, actors, capabilities, devices and scheduling.</p>
-              <p><span class="beat-mark">None</span> No central directory, global lock or global run queue.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular scaling</span><p>N machines = N systems + a distributed layer above.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>N machines = one system.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="node-field" aria-hidden="true">
-              <div class="node-count-row">
-                <div class="node-count"><strong data-count="1">1</strong><span>node</span></div>
-                <div class="node-count"><strong data-count="2">2</strong><span>nodes</span></div>
-                <div class="node-count"><strong data-count="8">8</strong><span>nodes</span></div>
-                <div class="node-count"><strong data-count="128">128</strong><span>replicas</span></div>
-              </div>
-              <div class="node-canvas">
-                <div class="core-orb">WASM<br><em>CORE</em></div>
-                <span class="node-dot n1"></span><span class="node-dot n2"></span><span class="node-dot n3"></span><span class="node-dot n4"></span><span class="node-dot n5"></span><span class="node-dot n6"></span><span class="node-dot n7"></span><span class="node-dot n8"></span>
-                <svg class="node-lines" viewBox="0 0 400 280" preserveAspectRatio="none">
-                  <path d="M200 140 60 50M200 140 340 50M200 140 40 150M200 140 360 150M200 140 70 240M200 140 330 240M200 140 200 20M200 140 200 260"/>
-                </svg>
-              </div>
-              <p class="node-caption">one core OID · every replica</p>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">IRIX 7 starts from a different unit: one logical computer.</p>
-        <p class="cue" data-at="7">From one node to one hundred and twenty-eight.</p>
-        <p class="cue" data-at="14">Each node is a native shim — Indy, x86, PowerPC — running the same Wasm core.</p>
-        <p class="cue" data-at="22">Objects, actors, capabilities, devices and scheduling are global. No central directory. No global lock. No global run queue.</p>
-      </section>
-
-      <section class="scene scene-objects" data-scene="4" data-duration="30" data-chapter="04" data-title="Everything is an object">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>04</span> The object model</p>
-            <h2 class="scene-title title-reveal">Everything is<br><em>an object.</em></h2>
-            <p class="scene-lead">Not “everything is a file”. Everything is a verifiable, addressable, authorisable thing.</p>
-            <div class="beats">
-              <p><span class="beat-mark">ID</span> A 32-byte BLAKE3 digest over kind, length and bytes.</p>
-              <p><span class="beat-mark">Immutable</span> Content-addressed, verified, cacheable, replicated.</p>
-              <p><span class="beat-mark">Mutable</span> A stable identity and a home-owned root.</p>
-              <p><span class="beat-mark">Kinds</span> Blob, chunk, manifest, tree, actor image, actor state, capability record, snapshot, config.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>inode + path + /dev + pid + registry key.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>one ObjectId + one home + one capability.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="object-stage" aria-hidden="true">
-              <div class="object-card tilt">
-                <div class="object-head"><span>OBJECT</span><span class="object-kind">TREE</span></div>
-                <div class="object-oid">9f2c 7a41 0d6e b3aa<br>c18d 4f70 2e99 6b31</div>
-                <div class="object-label">BLAKE3-256 · canonical</div>
-                <div class="object-line"></div>
-                <div class="object-meta"><span>kind</span><strong>directory</strong><span>home</span><strong>node 3/8</strong><span>epoch</span><strong>8</strong></div>
-              </div>
-              <span class="kind-chip k1">blob</span><span class="kind-chip k2">actor</span><span class="kind-chip k3">device</span><span class="kind-chip k4">manifest</span>
-              <div class="oid-counter"><span data-count="1000000" data-format="comma">1,000,000</span><em>OIDs in the M4 target</em></div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">Everything is an object.</p>
-        <p class="cue" data-at="6">A file. A directory. An actor image. A snapshot. A GPU.</p>
-        <p class="cue" data-at="13">Immutable objects are content-addressed: BLAKE3 over kind, length and bytes.</p>
-        <p class="cue" data-at="20">Mutable objects keep a stable identity and a home-owned root.</p>
-        <p class="cue" data-at="25">Directories are objects. Devices are objects. A capability audit record is an object.</p>
-      </section>
-
-      <section class="scene scene-capability" data-scene="5" data-duration="28" data-chapter="05" data-title="Authority is a capability">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>05</span> The authority model</p>
-            <h2 class="scene-title title-reveal">A path is a name.<br><em>Not permission.</em></h2>
-            <p class="scene-lead">IRIX 7 replaces ambient root with a signed, attenuable capability for each object.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Token</span> Object, issuer, subject, rights, home, home epoch, object epoch, root epoch, validity, signature.</p>
-              <p><span class="beat-mark">Rights</span> READ, WRITE, EXECUTE, INVOKE. They attenuate; they never grow.</p>
-              <p><span class="beat-mark">Trust</span> A threshold root: 1-of-1, 2-of-2, 3-of-5, 5-of-7. Not one key holder.</p>
-              <p><span class="beat-mark">Revocation</span> Object epochs, bounded revocation sets, short validity windows.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>uid 0 or Administrator can do almost anything.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>No ambient root. Authority is explicit and signed.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="cap-stage" aria-hidden="true">
-              <div class="cap-token tilt">
-                <div class="cap-title">CAPABILITY <span>320 B</span></div>
-                <div class="cap-row"><span>object</span><b>tree:9f2c…b31</b></div>
-                <div class="cap-row"><span>issuer</span><b>root:irix7</b></div>
-                <div class="cap-row"><span>subject</span><b>cell:motd</b></div>
-                <div class="cap-row"><span>home</span><b>node 3 · epoch 8</b></div>
-                <div class="cap-rights"><span>READ</span><span>WRITE</span><span>INVOKE</span><span class="off">EXECUTE</span></div>
-                <div class="cap-sign">ed25519 signature · 64 bytes</div>
-              </div>
-              <div class="root-cross">root</div>
-              <div class="cap-orbit"><span>attenuate</span><span>delegate</span><span>revoke</span></div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">A path is a name. It is not permission.</p>
-        <p class="cue" data-at="6">Authority is a 320-byte signed capability: object, issuer, subject, rights.</p>
-        <p class="cue" data-at="13">Home epoch, object epoch, root epoch, validity, signature.</p>
-        <p class="cue" data-at="20">No ambient root. Rights attenuate. Revocation moves the object epoch.</p>
-      </section>
-
-      <section class="scene scene-homes" data-scene="6" data-duration="32" data-chapter="06" data-title="Homes, not directories">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>06</span> Placement</p>
-            <h2 class="scene-title title-reveal">Homes,<br><em>not directories.</em></h2>
-            <p class="scene-lead">Every object has a home. Every node computes the same table. Nobody keeps the index.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Hash</span> Rendezvous placement over the confirmed membership snapshot.</p>
-              <p><span class="beat-mark">Shard</span> The set of object homes assigned to one node.</p>
-              <p><span class="beat-mark">Move</span> A lease, a new home epoch, and one MOVED retry.</p>
-              <p><span class="beat-mark">Failure</span> Cached routes and leases naming the old home are fenced.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular cluster</span><p>mount table, metadata server, or a distributed filesystem.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>rendezvous home, local shard, lease and epoch.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="home-stage" aria-hidden="true">
-              <div class="home-ring">
-                <span class="home-node h1">n0</span><span class="home-node h2">n1</span><span class="home-node h3">n2</span><span class="home-node h4">n3</span><span class="home-node h5">n4</span><span class="home-node h6">n5</span><span class="home-node h7">n6</span><span class="home-node h8">n7</span>
-                <span class="object-pip o1"></span><span class="object-pip o2"></span><span class="object-pip o3"></span><span class="object-pip o4"></span><span class="object-pip o5"></span><span class="object-pip o6"></span><span class="object-pip o7"></span><span class="object-pip o8"></span><span class="object-pip o9"></span><span class="object-pip o10"></span><span class="object-pip o11"></span><span class="object-pip o12"></span>
-                <svg viewBox="0 0 360 360" class="home-lines">
-                  <path d="M180 180 70 80M180 180 290 80M180 180 40 180M180 180 320 180M180 180 70 280M180 180 290 280M180 180 180 40M180 180 180 320"/>
-                </svg>
-                <div class="home-core">HOME</div>
-                <div class="packet"></div>
-              </div>
-              <div class="shard-card">
-                <div><span>epoch</span><b>8</b><span>members</span><b>8</b></div>
-                <div><span>objects</span><b>32</b><span>shard</span><b>4</b></div>
-                <div class="shard-bar"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-                <p>one table · every node · no directory</p>
-              </div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">Every object has a home.</p>
-        <p class="cue" data-at="6">The home is chosen by rendezvous hashing over the confirmed membership.</p>
-        <p class="cue" data-at="13">Any node computes the same table. No directory.</p>
-        <p class="cue" data-at="20">A node's shard is the set of objects whose home it is.</p>
-        <p class="cue" data-at="26">A move is a lease, a new epoch and one MOVED retry.</p>
-      </section>
-
-      <section class="scene scene-fabric" data-scene="7" data-duration="28" data-chapter="07" data-title="One asynchronous fabric">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>07</span> The fabric</p>
-            <h2 class="scene-title title-reveal">One fabric.<br><em>Local or remote.</em></h2>
-            <p class="scene-lead">The syscall, the socket, the RPC and the remote mount collapse into one invocation model.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Frame</span> Tags, streams, deadlines, dependency edges, flow control, W3C Trace Context.</p>
-              <p><span class="beat-mark">Header</span> Source, destination, home, route hints, epochs.</p>
-              <p><span class="beat-mark">Local</span> Bypasses the mesh envelope entirely.</p>
-              <p><span class="beat-mark">Remote</span> A capability invocation. A GPU is an object operation, not a fake local bus.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>syscall + socket + RPC + remote mount + message queue.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>one capability invocation, local or remote.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="fabric-stage" aria-hidden="true">
-              <div class="data-lines"><span></span><span></span></div>
-              <div class="frame-card">
-                <div class="frame-head">MESSAGE FRAME</div>
-                <div class="frame-grid">
-                  <span>tag</span><b>0x4f2</b><span>stream</span><b>7</b><span>deadline</span><b>12ms</b><span>trace</span><b>00-4bf9…</b><span>deps</span><b>3</b><span>flow</span><b>credit 64</b>
-                </div>
-              </div>
-              <div class="route-diagram">
-                <div class="route local"><span>A</span><i></i><span>B</span><em>local bypass</em></div>
-                <div class="route remote"><span>A</span><i></i><i></i><i></i><span>C</span><em>mesh · 1 hop</em></div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">Operations travel on one asynchronous fabric.</p>
-        <p class="cue" data-at="6">A MessageFrame carries tags, streams, deadlines, dependency edges, flow control and trace context.</p>
-        <p class="cue" data-at="14">Local calls bypass the mesh. Remote calls carry a MeshHeader.</p>
-        <p class="cue" data-at="21">A remote GPU is an object operation — command buffers and CAS results, not a fake local bus.</p>
-      </section>
-
-      <section class="scene scene-failure" data-scene="8" data-duration="30" data-chapter="08" data-title="Failure is a state">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>08</span> Failure</p>
-            <h2 class="scene-title title-reveal">Failure is a state.<br><em>Not a surprise.</em></h2>
-            <p class="scene-lead">The system does not wait for a quorum. It changes the epoch, fences the old home and carries on.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Lease</span> One home, one write lease, one authoritative view.</p>
-              <p><span class="beat-mark">Epoch</span> A failed node is removed with one epoch advance.</p>
-              <p><span class="beat-mark">Fence</span> Cached routes and leases naming the old home stop working.</p>
-              <p><span class="beat-mark">Truth</span> An isolated home stops committing before the root can re-home the object.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular cluster</span><p>crash = processes gone; consensus or a lock service for safety.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>epoch + lease + fence; no quorum.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="failure-stage" aria-hidden="true">
-              <div class="fail-node live">n0<div class="fail-epoch">epoch 8</div></div>
-              <div class="partition-gap"><span>partition</span></div>
-              <div class="fail-node isolated">n1<div class="fail-epoch">stale</div></div>
-              <div class="lease-bar"><i></i><span>write lease · 6s</span></div>
-              <div class="moved">MOVED<span>home epoch + 1</span></div>
-              <p class="fail-caption">the old home is fenced · the survivor continues</p>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">Failure is a state, not a surprise.</p>
-        <p class="cue" data-at="6">A mutable object has one home and one write lease.</p>
-        <p class="cue" data-at="13">A failed node is removed with one epoch advance. Routes and leases are fenced.</p>
-        <p class="cue" data-at="20">An isolated home stops committing before the root can re-home the object.</p>
-        <p class="cue" data-at="26">No quorum. A partition makes an object unavailable; it cannot make two homes authoritative.</p>
-      </section>
-
-      <section class="scene scene-compat" data-scene="9" data-duration="28" data-chapter="09" data-title="Compatibility is native">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>09</span> Compatibility</p>
-            <h2 class="scene-title title-reveal">The new core<br><em>does not run your C.</em></h2>
-            <p class="scene-lead">The Wasm core manages policy, namespace and placement. POSIX and IRIX remain native.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Native</span> POSIX.1-2024 through the clean-room relibc fork.</p>
-              <p><span class="beat-mark">Container</span> The IRIX 6.5 ABI, libc, <code>rld</code> and <code>sproc</code>.</p>
-              <p><span class="beat-mark">Probe</span> A relibc C probe boots. The o32 loader runs open, read, write, close, exit.</p>
-              <p><span class="beat-mark">Ahead</span> An actual IRIX 6.5 binary, TLS, <code>stat</code> and the full container.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular OS</span><p>rewrite the world, or emulate it in a box.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>a native compatibility container beside the new core.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="compat-stage" aria-hidden="true">
-              <div class="compat-lane native">
-                <div class="lane-head">NATIVE</div>
-                <div class="terminal">
-                  <div class="term-bar"><i></i><i></i><i></i><span>iris · n32</span></div>
-                  <pre class="term-body"><span class="t-dim">$</span> ./c-probe
-<span class="t-green">hello from the native gate</span>
-<span class="t-dim">$</span> ./o32-hello
-<span class="t-green">open read write close exit</span>
-<span class="t-dim">$</span> <span class="t-cursor"></span></pre>
-                </div>
-                <div class="lane-foot">POSIX · relibc · IRIX 6.5 container</div>
-              </div>
-              <div class="compat-lane wasm">
-                <div class="lane-head">CORE</div>
-                <div class="wasm-orb"><span>WASM</span><em>policy</em></div>
-                <div class="wasm-list"><span>namespace</span><span>placement</span><span>capabilities</span><span>scheduling</span></div>
-                <div class="lane-foot">does not interpret your binary</div>
-              </div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">The new core does not interpret your C.</p>
-        <p class="cue" data-at="6">POSIX/relibc and the IRIX 6.5 container stay native.</p>
-        <p class="cue" data-at="13">A relibc-linked C probe boots on the native gate.</p>
-        <p class="cue" data-at="20">The o32 loader runs open, read, write, close, exit. An actual IRIX 6.5 binary is still ahead.</p>
-      </section>
-
-      <section class="scene scene-indy" data-scene="10" data-duration="28" data-chapter="10" data-title="The 1994 machine">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>10</span> The machine</p>
-            <h2 class="scene-title title-reveal">The 1994<br><em>machine.</em></h2>
-            <p class="scene-lead">The first target is an SGI Indy: a MIPS R4400, 256 MB, Newport graphics, Seeq Ethernet and WD33C93 SCSI.</p>
-            <div class="beats">
-              <p><span class="beat-mark">ROM</span> Size DRAM, test every byte, bring up serial, decompress the kernel, jump.</p>
-              <p><span class="beat-mark">Kernel</span> Networking, DHCP/DNS/NTP, HTTP/HTTPS, REX3 boot log, telnet, module autoload.</p>
-              <p><span class="beat-mark">v0.1.3</span> The last shipped Indy image, 25 October 2026.</p>
-              <p><span class="beat-mark">Open</span> The real-Indy hardware gate is still a limitation, not a claim.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Regular boot</span><p>BIOS → bootloader → kernel.</p></div>
-              <div><span class="compare-label irix">IRIX 7</span><p>ROM → kernel → mesh.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="boot-stage" aria-hidden="true">
-              <svg class="boot-indy" viewBox="0 0 420 320">
-                <rect x="55" y="20" width="270" height="205" rx="14" class="indy-line"/>
-                <rect x="84" y="48" width="212" height="150" rx="5" class="screen"/>
-                <path class="indy-line" d="M126 225v20h108v-20"/>
-                <rect x="100" y="245" width="160" height="44" rx="6" class="indy-line"/>
-                <path class="indy-line" d="M118 259h44M118 269h70M236 259h8M236 269h8"/>
-              </svg>
-              <div class="bios-shell">
-                <div class="bios-screen">
-                  <p class="bios-dim">SGI ARCS · INDY IP24</p>
-                  <p>CPU : MIPS R4400 200 MHz</p>
-                  <p>Memory Test : <span class="bios-mem">262144K</span> <b>OK</b></p>
-                  <p class="bios-l4">Newport XL ... 24-bit</p>
-                  <p class="bios-l5">Seeq 8003 ... link up</p>
-                  <p class="bios-l6">ROM 520,312 / 524,288 bytes</p>
-                  <p class="bios-l7">kernel ... BOOT-READY<span class="bios-cursor"></span></p>
-                </div>
-              </div>
-              <div class="boot-log"><b>ROM</b> DRAM mapped · serial up<br><b>KERNEL</b> n32 · BOOT-READY · REX3 console<br><b>LINK</b> Seeq up · SCSI target 2 · v0.1.3</div>
-              <div class="boot-legend"><span>asm ROM</span><span>n32 kernel</span><span>REX3</span><span>SCSI</span><span>mesh</span></div>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">The first target is a 1994 SGI Indy.</p>
-        <p class="cue" data-at="6">A MIPS R4400, 256 megabytes, Newport graphics, Seeq Ethernet, WD33C93 SCSI.</p>
-        <p class="cue" data-at="13">An assembly ROM sizes DRAM, brings up serial, decompresses the kernel and jumps.</p>
-        <p class="cue" data-at="20">v0.1.3 is the last shipped Indy image. The real-Indy hardware gate is still open.</p>
-      </section>
-
-      <section class="scene scene-gates" data-scene="11" data-duration="30" data-chapter="11" data-title="Four hard gates">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>11</span> Evidence</p>
-            <h2 class="scene-title title-reveal">Four hard<br><em>gates.</em></h2>
-            <p class="scene-lead">A release is not a build that passes. A gate is hardware evidence, or a documented simulator with the same policy.</p>
-            <div class="beats">
-              <p><span class="beat-mark">M1</span> One node. No network, no quorum, no seed. Done on iris; the real-Indy limitation is recorded.</p>
-              <p><span class="beat-mark">M2</span> Two kernels. Join, homes, routes, L0 migration, fencing. Done on two real kernels.</p>
-              <p><span class="beat-mark">M3</span> Eight nodes. The first shard slice runs on two real kernels; eight-node convergence is not claimed.</p>
-              <p><span class="beat-mark">M4</span> 128 nodes. Simulator and cloud; still ahead.</p>
-            </div>
-            <div class="compare">
-              <div><span class="compare-label regular">Release</span><p>CI is green and the installer works.</p></div>
-              <div><span class="compare-label irix">Gate</span><p>the demo runs on the target hardware or a documented simulator.</p></div>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="gates-stage" aria-hidden="true">
-              <article class="gate-card g-done">
-                <div class="gate-top"><span>M1</span><svg class="hud-ring" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="15"/><circle cx="24" cy="24" r="8"/></svg></div>
-                <h3>1 node</h3><p>single-node logical computer</p><span class="gate-status">done · iris</span>
-              </article>
-              <article class="gate-card g-done">
-                <div class="gate-top"><span>M2</span><svg class="hud-ring" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="15"/><circle cx="24" cy="24" r="8"/></svg></div>
-                <h3>2 nodes</h3><p>join · homes · migration</p><span class="gate-status">done · real kernels</span>
-              </article>
-              <article class="gate-card g-active">
-                <div class="gate-top"><span>M3</span><svg class="hud-ring" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="15"/><circle cx="24" cy="24" r="8"/></svg></div>
-                <h3>8 nodes</h3><p>sharded homes · CAS</p><span class="gate-status">active · 2 real kernels</span>
-              </article>
-              <article class="gate-card g-plan">
-                <div class="gate-top"><span>M4</span><svg class="hud-ring" viewBox="0 0 48 48"><circle cx="24" cy="24" r="21"/><circle cx="24" cy="24" r="15"/><circle cx="24" cy="24" r="8"/></svg></div>
-                <h3>128 nodes</h3><p>cloud · simulator</p><span class="gate-status">ahead</span>
-              </article>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">The roadmap is four hard gates.</p>
-        <p class="cue" data-at="6">M1: one node, no network, no quorum. Done on iris; real Indy recorded as a limitation.</p>
-        <p class="cue" data-at="13">M2: two kernels. Join, epochs, homes, remote routes, L0 migration, failure fencing. Done on two real kernels.</p>
-        <p class="cue" data-at="21">M3: eight nodes. The first shard slice passes on two real kernels; eight-node convergence is not claimed.</p>
-        <p class="cue" data-at="26">M4: 128 nodes. Simulator and cloud; still ahead.</p>
-      </section>
-
-      <section class="scene scene-coda" data-scene="12" data-duration="26" data-chapter="12" data-title="The point">
-        <div class="scene-inner">
-          <div class="scene-copy">
-            <p class="scene-kicker"><span>12</span> Coda</p>
-            <h2 class="scene-title title-reveal">The network<br><em>is the computer.</em></h2>
-            <p class="scene-lead">A regular OS scales by adding a distributed system above it. IRIX 7 makes the distributed case the operating system's native case.</p>
-            <div class="beats">
-              <p><span class="beat-mark">Not</span> a promise that it is finished.</p>
-              <p><span class="beat-mark">A map</span> of what must be true before the next thing can grow.</p>
-              <p><span class="beat-mark">Open</span> the code, the tree, the plan, the gates.</p>
-            </div>
-            <div class="coda-links">
-              <a href="../tree/">The Tree of IRIX 7</a>
-              <a href="../">Documentation</a>
-              <a href="https://github.com/irix7/os">Source</a>
-            </div>
-          </div>
-          <div class="scene-visual">
-            <div class="coda-stage" aria-hidden="true">
-              <div class="assemble-word" aria-label="One computer">
-                <span style="--i:0;--x:-1.8em;--y:-1.2em;--r:-60deg">O</span><span style="--i:1;--x:1.4em;--y:1.1em;--r:45deg">N</span><span style="--i:2;--x:-.6em;--y:1.4em;--r:-110deg">E</span><span style="--i:3;--x:2.1em;--y:-.9em;--r:80deg">&nbsp;</span><span style="--i:4;--x:-2.2em;--y:.6em;--r:30deg">C</span><span style="--i:5;--x:.9em;--y:-1.4em;--r:-75deg">O</span><span style="--i:6;--x:-1.2em;--y:-.6em;--r:120deg">M</span><span style="--i:7;--x:1.8em;--y:1em;--r:-40deg">P</span><span style="--i:8;--x:-.4em;--y:-1.3em;--r:95deg">U</span><span style="--i:9;--x:2.2em;--y:.3em;--r:-130deg">T</span><span style="--i:10;--x:-1.6em;--y:1.2em;--r:60deg">E</span><span style="--i:11;--x:.6em;--y:1.4em;--r:-90deg">R</span>
-              </div>
-              <div class="end-card">
-                <p>AN IRIX 7 FILM</p>
-                <h3>The Logical Computer</h3>
-                <span>5 minutes · 12 chapters · no audio</span>
-              </div>
-              <p class="credit-line">An IRIX 7 film · built with CSS and SVG · no audio · November 2026</p>
-            </div>
-          </div>
-        </div>
-        <p class="cue" data-at="0">A regular OS scales by adding a distributed system above it.</p>
-        <p class="cue" data-at="7">IRIX 7 makes the distributed case the operating system's native case.</p>
-        <p class="cue" data-at="14">Not a promise that it is finished. A map of what must be true.</p>
-        <p class="cue" data-at="20">The tree is the living version. The code is public. The gates are open.</p>
-      </section>
-
+    <div class="backdrop" aria-hidden="true">
+      <div class="wall-grid"></div>
+      <div class="wall-light"></div>
     </div>
 
-    <div class="caption-bar" id="caption-bar" aria-live="polite" aria-atomic="true">
-      <span class="caption-kicker" id="caption-kicker">01 · COLD OPEN</span>
-      <p id="caption-text">In 1994, an SGI Indy was one computer.</p>
-    </div>
-  </main>
+    <header class="topbar">
+      <a class="brand" href="../" aria-label="IRIX 7 documentation">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M16 3 29 10.5v11L16 29 3 21.5v-11L16 3Z" />
+          <path d="M16 3v26M3 10.5l13 7.5 13-7.5M16 18v11" />
+        </svg>
+        <span class="brand-text"><span class="brand-name">IRIX 7</span><span class="brand-sub">The Logical Computer</span></span>
+      </a>
+      <nav class="top-links" aria-label="Related pages">
+        <a href="../tree/">Tree</a>
+        <a href="../">Docs</a>
+        <a href="https://github.com/irix7/os">GitHub</a>
+        <button class="top-button" data-open-transcript>Transcript</button>
+      </nav>
+    </header>
 
-  <footer class="player" aria-label="Film controls">
-    <div class="player-buttons">
-      <button class="ctrl" data-prev aria-label="Previous chapter"><svg viewBox="0 0 24 24"><path d="M6 5v14M20 5 9 12l11 7V5Z"/></svg></button>
-      <button class="ctrl play" data-play aria-label="Play"><svg class="icon-play" viewBox="0 0 24 24"><path d="M7 4.8v14.4L20 12 7 4.8Z"/></svg><svg class="icon-pause" viewBox="0 0 24 24"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg></button>
-      <button class="ctrl" data-next aria-label="Next chapter"><svg viewBox="0 0 24 24"><path d="M18 5v14M4 5l11 7L4 19V5Z"/></svg></button>
-    </div>
-    <button class="chapter-now" data-open-chapters><span id="chapter-index">01</span><span id="chapter-name">One machine. Then one computer.</span><svg viewBox="0 0 24 24"><path d="m7 10 5 5 5-5"/></svg></button>
-    <div class="scrub-wrap">
-      <div class="scrub" id="scrub" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
-        <div class="scrub-segments" id="scrub-segments"></div>
-        <div class="scrub-fill" id="scrub-fill"></div>
-        <div class="scrub-head" id="scrub-head"></div>
+    <main class="stage">
+      <div class="player-wrap" id="player-wrap">
+        <hyperframes-player id="player" src="hyperframes/index.html" muted aria-label="The Logical Computer"></hyperframes-player>
+
+        <div class="poster" id="poster">
+          <img class="poster-bg" src="assets/poster.png" alt="" />
+          <div class="poster-scrim"></div>
+          <div class="poster-copy">
+            <p class="eyebrow">A documentary about one logical computer</p>
+            <h1>The Logical<br /><em>Computer</em></h1>
+            <p class="poster-sub">A 1994 workstation. One operating system. 1–128 machines.</p>
+            <div class="poster-actions">
+              <button class="play-film" data-start>
+                <span>Play the film</span>
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 4.8v14.4L21 12 8 4.8Z" /></svg>
+              </button>
+              <button class="text-button" data-open-transcript>Read the transcript</button>
+            </div>
+            <div class="poster-meta"><span id="runtime">5 min 58 sec</span><span>12 chapters</span><span>silent · captioned</span></div>
+          </div>
+          <p class="poster-foot">IRIX 7 · built from the November 2026 plan</p>
+        </div>
       </div>
-      <div class="time-row"><span id="time-now">0:00</span><span id="time-total">5:38</span></div>
-    </div>
-    <div class="player-right">
-      <button class="ctrl" data-open-transcript aria-label="Transcript"><svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5"/></svg></button>
-      <button class="ctrl" data-fullscreen aria-label="Full screen"><svg viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
-    </div>
-  </footer>
 
-  <section class="poster" id="poster" aria-labelledby="poster-title">
-    <div class="poster-sky" aria-hidden="true"><div class="warp"></div></div>
-    <div class="poster-inner">
-      <p class="poster-kicker">IRIX 7 presents</p>
-      <h1 id="poster-title">The Logical<br><em>Computer</em></h1>
-      <p class="poster-sub">An operating system that refuses to be one machine.</p>
-      <p class="poster-copy">A 12-chapter animated documentary about objects, capabilities, homes and the 1994 Indy that started it. No audio. Captions on.</p>
-      <div class="poster-actions">
-        <button class="play-film" data-start><span>Play the film</span><svg viewBox="0 0 24 24"><path d="M8 4.8v14.4L21 12 8 4.8Z"/></svg></button>
-        <button class="text-button" data-open-transcript>Read the transcript</button>
+      <div class="mobile-caption" id="mobile-caption" aria-live="polite">
+        <span class="eyebrow" id="mobile-caption-kicker">01 · A frame on a desk</span>
+        <p id="mobile-caption-text">1994. An SGI Indy sits on a desk.</p>
       </div>
-      <div class="poster-meta"><span id="runtime">5 min 38 sec</span><span>12 chapters</span><span>1–128 nodes</span></div>
+    </main>
+
+    <footer class="controls" aria-label="Film controls">
+      <div class="ctrl-left">
+        <button class="ctrl" data-prev aria-label="Previous chapter">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5v14M20 5 9 12l11 7V5Z" /></svg>
+        </button>
+        <button class="ctrl play" data-play aria-label="Play">
+          <svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4.8v14.4L20 12 7 4.8Z" /></svg>
+          <svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" /></svg>
+        </button>
+        <button class="ctrl" data-next aria-label="Next chapter">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 5v14M4 5l11 7L4 19V5Z" /></svg>
+        </button>
+      </div>
+
+      <button class="chapter-now" data-open-chapters>
+        <span id="chapter-index">01</span>
+        <span id="chapter-name">A frame on a desk</span>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5" /></svg>
+      </button>
+
+      <div class="scrub-wrap">
+        <div class="scrub" id="scrub" role="slider" aria-label="Seek" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" tabindex="0">
+          <div class="scrub-fill" id="scrub-fill"></div>
+          <div class="scrub-head" id="scrub-head"></div>
+        </div>
+        <div class="time-row"><span id="time-now">0:00</span><span id="time-total">5:58</span></div>
+      </div>
+
+      <div class="ctrl-right">
+        <button class="ctrl" data-open-transcript aria-label="Transcript">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v16H5zM8 8h8M8 12h8M8 16h5" /></svg>
+        </button>
+        <button class="ctrl" data-fullscreen aria-label="Full screen">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>
+        </button>
+      </div>
+    </footer>
+
+    <div class="chapter-menu" id="chapter-menu" hidden>
+      <div class="chapter-box" role="dialog" aria-modal="true" aria-labelledby="chapter-menu-title">
+        <div class="chapter-head">
+          <div><p class="eyebrow">The film, in twelve parts</p><h2 id="chapter-menu-title">Chapters</h2></div>
+          <button class="close" data-close-chapters aria-label="Close chapters">×</button>
+        </div>
+        <div class="chapter-grid" id="chapter-grid"></div>
+      </div>
     </div>
-    <p class="poster-foot">Built from the IRIX 7 plan · v0.1.3 · November 2026</p>
-  </section>
 
-  <div class="chapter-menu" id="chapter-menu" hidden>
-    <div class="chapter-box" role="dialog" aria-modal="true" aria-labelledby="chapter-menu-title">
-      <div class="chapter-head"><p id="chapter-menu-title">Chapters</p><button class="close" data-close-chapters aria-label="Close chapters">×</button></div>
-      <div class="chapter-grid" id="chapter-grid"></div>
+    <aside class="transcript" id="transcript" aria-hidden="true" aria-labelledby="transcript-title">
+      <div class="transcript-head">
+        <div><p class="eyebrow">The film, in text</p><h2 id="transcript-title">Transcript</h2></div>
+        <button class="close" data-close-transcript aria-label="Close transcript">×</button>
+      </div>
+      <div class="transcript-body" id="transcript-body" tabindex="-1"></div>
+    </aside>
+
+    <div class="noscript">
+      This film needs JavaScript for its timeline. The <a href="../tree/">roadmap tree</a> and
+      <a href="../">documentation</a> are still available.
     </div>
-  </div>
 
-  <aside class="transcript" id="transcript" aria-hidden="true" aria-labelledby="transcript-title">
-    <div class="transcript-head"><div><p class="eyebrow">The film, in text</p><h2 id="transcript-title">Transcript</h2></div><button class="close" data-close-transcript aria-label="Close transcript">×</button></div>
-    <div class="transcript-body" id="transcript-body" tabindex="-1"></div>
-  </aside>
-
-  <div class="grain" aria-hidden="true"></div>
-  <div class="scanlines" aria-hidden="true"></div>
-</div>
-<div class="noscript">This film needs JavaScript for its timeline. The <a href="../tree/">roadmap tree</a> and <a href="../">documentation</a> are still available.</div>
-<script src="film.js"></script>
-</body>
+    <script src="player.js"></script>
+    <script src="film.js"></script>
+  </body>
 </html>

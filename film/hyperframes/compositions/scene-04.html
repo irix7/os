@@ -1,0 +1,162 @@
+<template>
+  <link rel="stylesheet" href="../assets/film.css" />
+  <style>
+    #root { position: absolute; inset: 0; }
+    .s4-world { position: absolute; inset: 0; transform-origin: 55% 48%; }
+    .s4-head { position: absolute; left: 104px; top: 92px; width: 680px; z-index: 9; }
+    .s4-head .display { margin-top: 22px; font-size: 112px; }
+    .s4-sub { margin-top: 24px; max-width: 540px; font-size: 25px; line-height: 1.45; color: var(--ink-soft); }
+    .s4-zone { position: absolute; left: 716px; top: 140px; width: 1100px; height: 720px; border: 1px solid rgba(23,26,36,.2); }
+    .s4-zone::before { content: ""; position: absolute; inset: 22px; background: repeating-linear-gradient(90deg, transparent 0 47px, rgba(23,26,36,.05) 47px 48px), repeating-linear-gradient(180deg, transparent 0 47px, rgba(23,26,36,.05) 47px 48px); }
+    .s4-meta { position: absolute; left: 760px; top: 160px; width: 680px; font-family: var(--mono); font-size: 12px; line-height: 1.4; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s4-meta b { color: var(--indigo); font-weight: 500; }
+    .s4-frame { position: absolute; left: 760px; top: 210px; width: 520px; z-index: 4; }
+    .s4-frame .frame-object { width: 100%; border-width: 8px; }
+    .s4-scan { position: absolute; left: 736px; top: 220px; width: 568px; height: 3px; background: var(--orange); z-index: 7; }
+    .s4-scan::after { content: ""; position: absolute; left: 0; right: 0; top: -12px; height: 24px; background: linear-gradient(180deg, transparent, rgba(232,93,42,.18), transparent); }
+    .s4-hash { position: absolute; left: 760px; top: 624px; width: 700px; z-index: 5; }
+    .s4-hash .line { font-family: var(--mono); font-size: 26px; letter-spacing: .08em; color: var(--ink); white-space: nowrap; overflow: hidden; }
+    .s4-hash .cap { margin-top: 8px; font-family: var(--mono); font-size: 13px; letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft); }
+    .s4-root { position: absolute; left: 760px; top: 704px; width: 430px; z-index: 5; }
+    .s4-root .card { position: relative; width: 100%; padding: 14px 18px; box-shadow: 8px 8px 0 rgba(23,26,36,.12); }
+    .s4-root h3 { margin: 0 0 8px; font-size: 21px; letter-spacing: -.03em; }
+    .s4-root .row { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 12px; padding: 4px 0; border-bottom: 1px solid rgba(23,26,36,.15); }
+    .s4-root .row:last-child { border-bottom: 0; }
+    .s4-root .row span { color: var(--ink-soft); }
+    .chunk { position: absolute; width: 104px; height: 74px; background: var(--paper-light); border: 2px solid var(--ink); box-shadow: 5px 5px 0 rgba(23,26,36,.12); z-index: 6; }
+    .chunk i { position: absolute; left: 6px; top: 6px; right: 6px; height: 20px; background: var(--orange); }
+    .chunk span { position: absolute; left: 6px; bottom: 5px; font-family: var(--mono); font-size: 8px; letter-spacing: .04em; color: var(--ink-soft); }
+    #s4-c2 i { background: #e8d25c; }
+    #s4-c3 i { background: #63d8c6; }
+    #s4-c4 i { background: #6bbf59; }
+    #s4-c5 i { background: #d65fa8; }
+    #s4-c6 i { background: #34378c; }
+    .s4-copies { position: absolute; left: 1490px; top: 180px; width: 250px; z-index: 4; }
+    .s4-copy { position: absolute; left: 0; width: 230px; background: var(--paper-light); border: 2px solid var(--ink); box-shadow: 7px 7px 0 rgba(23,26,36,.12); padding: 5px; }
+    .s4-copy .mini { position: relative; width: 100%; aspect-ratio: 4/3; background: #101a2e; overflow: hidden; }
+    .s4-copy .mini .fa-bars { height: 46%; }
+    .s4-copy .mini .fa-circle { width: 34%; }
+    .s4-copy .stamp { position: absolute; right: 6px; bottom: 6px; padding: 4px 6px; border-width: 2px; font-size: 9px; }
+    .s4-copy .tagline { margin-top: 5px; font-family: var(--mono); font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-soft); }
+    .s4-kinds { position: absolute; left: 104px; top: 690px; display: flex; gap: 7px; flex-wrap: wrap; width: 540px; }
+    .s4-kinds span { padding: 7px 9px; border: 1px solid var(--indigo); font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: var(--indigo); }
+    .s4-note { position: absolute; left: 104px; top: 790px; font-family: var(--mono); font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-soft); }
+    .s4-arrow { position: absolute; left: 1284px; top: 400px; width: 190px; height: 2px; background: var(--orange); transform-origin: left center; }
+    .s4-arrow::after { content: ""; position: absolute; right: -1px; top: -6px; width: 14px; height: 14px; border-top: 2px solid var(--orange); border-right: 2px solid var(--orange); transform: rotate(45deg); }
+  </style>
+
+  <div id="root" data-composition-id="scene-04" data-width="1920" data-height="1080">
+    <div class="scene paper">
+      <div class="reg tl"></div><div class="reg tr"></div><div class="reg bl"></div><div class="reg br"></div>
+      <p class="page-code" style="left:104px; top:42px">FIG. 04 / THE OBJECT</p>
+      <div class="s4-world" id="s4-world">
+        <div class="s4-zone"></div>
+        <div class="s4-head" id="s4-head">
+          <p class="eyebrow" id="s4-eyebrow"><span class="num">04</span> / OBJECTS</p>
+          <h1 class="display" id="s4-title">Everything<br />gets a name.</h1>
+          <p class="s4-sub" id="s4-sub">A file, a directory, an actor, a snapshot, a GPU: each one is an object with a name, a home and a record of who may use it.</p>
+        </div>
+
+        <div class="s4-meta" id="s4-meta"><b>OBJECT</b> / frame:0001 · directory · 4096 B · node 3 / epoch 8</div>
+
+        <div class="s4-frame" id="s4-frame">
+          <div class="frame-object bare">
+            <div class="frame-art">
+              <div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <div class="fa-circle"></div>
+              <div class="fa-cross"></div>
+              <div class="fa-top"><span>FRAME 0001</span><span>640 × 480</span></div>
+              <div class="fa-meta"><span>SGI INDY · NEWPORT</span><span>RGB · 24-BIT</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="s4-scan" id="s4-scan"></div>
+
+        <div class="s4-hash">
+          <div class="line" id="s4-hashline">9f2c7a410d6eb3aac18d4f702e996b31</div>
+          <div class="cap" id="s4-hashcap">BLAKE3-256 · KIND / LENGTH / BYTES</div>
+        </div>
+
+        <div class="s4-root" id="s4-root">
+          <div class="card">
+            <h3>Mutable root</h3>
+            <div class="row"><span>object</span><b>frame:0001</b></div>
+            <div class="row"><span>home</span><b>node 3 · epoch 8</b></div>
+            <div class="row"><span>lease</span><b>one writer</b></div>
+          </div>
+        </div>
+
+        <div class="chunk" id="s4-c1" style="left: 1240px; top: 250px"><i></i><span>9f2c 7a41</span></div>
+        <div class="chunk" id="s4-c2" style="left: 1340px; top: 300px"><i></i><span>0d6e b3aa</span></div>
+        <div class="chunk" id="s4-c3" style="left: 1390px; top: 400px"><i></i><span>c18d 4f70</span></div>
+        <div class="chunk" id="s4-c4" style="left: 1350px; top: 500px"><i></i><span>2e99 6b31</span></div>
+        <div class="chunk" id="s4-c5" style="left: 1250px; top: 550px"><i></i><span>4f70 9a11</span></div>
+        <div class="chunk" id="s4-c6" style="left: 1160px; top: 520px"><i></i><span>2e99 6b31</span></div>
+
+        <div class="s4-arrow" id="s4-arrow"></div>
+
+        <div class="s4-copies" id="s4-copies">
+          <div class="s4-copy" id="s4-copy1" style="top: 0">
+            <div class="mini"><div class="frame-art"><div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="fa-circle"></div></div></div>
+            <div class="stamp">VERIFIED</div><div class="tagline">copy · cache · verify</div>
+          </div>
+          <div class="s4-copy" id="s4-copy2" style="top: 190px">
+            <div class="mini"><div class="frame-art"><div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="fa-circle"></div></div></div>
+            <div class="stamp">VERIFIED</div><div class="tagline">any node can check it</div>
+          </div>
+          <div class="s4-copy" id="s4-copy3" style="top: 380px">
+            <div class="mini"><div class="frame-art"><div class="fa-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="fa-circle"></div></div></div>
+            <div class="stamp">VERIFIED</div><div class="tagline">content-addressed</div>
+          </div>
+        </div>
+
+        <div class="s4-kinds" id="s4-kinds">
+          <span>file</span><span>directory</span><span>actor</span><span>device</span><span>snapshot</span><span>capability</span>
+        </div>
+        <div class="s4-note" id="s4-note">ONE OBJECT ID · ONE HOME · ONE CAPABILITY</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const tl = gsap.timeline({ paused: true });
+
+    tl.fromTo("#s4-eyebrow", { opacity: 0, y: 14 }, { opacity: 1, y: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+    tl.fromTo("#s4-title", { opacity: 0, y: 50, filter: "blur(9px)" }, { opacity: 1, y: 0, filter: "blur(0px)", duration: 0.7, ease: "power4.out" }, 0.35);
+    tl.fromTo("#s4-sub", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 0.85);
+    tl.to("#s4-head", { opacity: 0, y: -18, duration: 0.4, ease: "power2.in" }, 5.8);
+
+    tl.fromTo(".s4-zone", { opacity: 0 }, { opacity: 1, duration: 0.5 }, 0.8);
+    tl.fromTo("#s4-frame", { opacity: 0, scale: 0.94, x: 30 }, { opacity: 1, scale: 1, x: 0, duration: 0.6, ease: "power3.out" }, 0.9);
+    tl.fromTo("#s4-meta", { opacity: 0, y: -10 }, { opacity: 1, y: 0, duration: 0.4 }, 1.2);
+    tl.fromTo("#s4-scan", { y: 0, opacity: 0 }, { y: 380, opacity: 1, duration: 2.2, ease: "power1.inOut" }, 1.6);
+    tl.to("#s4-scan", { opacity: 0, duration: 0.25 }, 3.8);
+    tl.fromTo("#s4-hashline", { clipPath: "inset(0 100% 0 0)" }, { clipPath: "inset(0 0% 0 0)", duration: 2.2, ease: "steps(24)" }, 1.8);
+    tl.fromTo("#s4-hashcap", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 4.0);
+
+    tl.to("#s4-world", { scale: 0.95, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 5.2);
+    tl.fromTo(".chunk", { opacity: 0, scale: 0.6, x: -120, y: -40, rotate: -8 }, { opacity: 1, scale: 1, x: 0, y: 0, rotate: 0, duration: 0.55, stagger: 0.08, ease: "power3.out" }, 5.4);
+    tl.to("#s4-c1", { x: 30, y: -20, rotate: 3, duration: 2.0, ease: "power2.inOut" }, 8.4);
+    tl.to("#s4-c2", { x: 70, y: 20, rotate: -3, duration: 2.0, ease: "power2.inOut" }, 8.5);
+    tl.to("#s4-c3", { x: 100, y: 50, rotate: 4, duration: 2.0, ease: "power2.inOut" }, 8.6);
+    tl.to("#s4-c4", { x: 110, y: 90, rotate: -4, duration: 2.0, ease: "power2.inOut" }, 8.7);
+    tl.to("#s4-c5", { x: 90, y: 120, rotate: 5, duration: 2.0, ease: "power2.inOut" }, 8.8);
+    tl.to("#s4-c6", { x: 60, y: 130, rotate: -2, duration: 2.0, ease: "power2.inOut" }, 8.9);
+
+    tl.to(".chunk", { opacity: 0, duration: 0.5, stagger: 0.05, ease: "power2.in" }, 11.6);
+    tl.fromTo("#s4-arrow", { scaleX: 0, opacity: 0 }, { scaleX: 1, opacity: 1, duration: 0.6, ease: "power2.inOut" }, 12.2);
+    tl.fromTo("#s4-copy1", { opacity: 0, x: 60, rotate: 5 }, { opacity: 1, x: 0, rotate: 2, duration: 0.5, ease: "power3.out" }, 13.0);
+    tl.fromTo("#s4-copy2", { opacity: 0, x: 60, rotate: -4 }, { opacity: 1, x: 0, rotate: -1, duration: 0.5, ease: "power3.out" }, 13.6);
+    tl.fromTo("#s4-copy3", { opacity: 0, x: 60, rotate: 4 }, { opacity: 1, x: 0, rotate: 1, duration: 0.5, ease: "power3.out" }, 14.2);
+
+    tl.fromTo("#s4-root", { opacity: 0, y: 18 }, { opacity: 1, y: 0, duration: 0.5, ease: "power3.out" }, 18.2);
+    tl.fromTo("#s4-kinds span", { opacity: 0, y: 12 }, { opacity: 1, y: 0, duration: 0.3, stagger: 0.08, ease: "power2.out" }, 19.0);
+    tl.fromTo("#s4-note", { opacity: 0 }, { opacity: 1, duration: 0.4 }, 20.2);
+
+    tl.to("#s4-world", { scale: 1.02, duration: 8, ease: "power2.inOut", overwrite: "auto" }, 21.5);
+    tl.to("#s4-copies", { y: -14, duration: 6, ease: "power2.inOut" }, 22.5);
+    tl.to("#s4-root", { y: -8, duration: 6, ease: "power2.inOut" }, 22.7);
+
+    window.__timelines["scene-04"] = tl;
+  </script>
+</template>
