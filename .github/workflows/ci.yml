@@ -93,7 +93,7 @@ jobs:
               -p erofs -p block-cache -p overlay -p hpc3 -p irix-elf -p native-abi \
               -p sys-primitives -p platform-api -p mesh-core -p mesh-join \
               -p mesh-route -p mesh-service -p mesh-sim -p mesh-transport \
-              -p mesh-migrate -p fabric -p guest-abi -p cas-core \
+              -p mesh-stream -p mesh-migrate -p fabric -p guest-abi -p cas-core \
               -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
               -p wasm-policy-host -p module-resolver -p module-trust \
