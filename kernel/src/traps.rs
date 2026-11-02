@@ -665,6 +665,68 @@ pub fn compare_write(val: u32) {
     }
 }
 
+/// Park the CPU until CP0 Count reaches `deadline`.
+///
+/// Compare is armed for the deadline, so the timer interrupt wakes the wait
+/// exactly once at the requested Count value.  The loop re-checks because a
+/// device interrupt can also end a `wait`; the deadline is never beyond half
+/// the Count range, so the wrapped comparison stays unambiguous.  This is a
+/// parking wait: the machine is idle, not spinning.
+pub(crate) fn wait_until(deadline: u32) {
+    /// Ticks kept between Count and Compare when the deadline is programmed.
+    ///
+    /// A Compare value already behind Count matches only after the 32-bit
+    /// wrap on hardware, so the final few ticks are counted down instead of
+    /// programmed.  At 33 MHz this is about 30 µs.
+    const ARM_MARGIN: u32 = 1_000;
+
+    loop {
+        let now = count_read();
+        let remaining = deadline.wrapping_sub(now);
+        if (remaining as i32) <= 0 {
+            return;
+        }
+        if remaining < ARM_MARGIN {
+            core::hint::spin_loop();
+            continue;
+        }
+        compare_write(deadline);
+        wait_from_handler();
+    }
+}
+
+/// Wait `limit` Count ticks without switching threads.
+///
+/// The legacy gate has no scheduler; this keeps its `nanosleep` a parked timer
+/// wait rather than a busy loop.
+pub fn wait_ticks(limit: u32) {
+    if limit == 0 {
+        return;
+    }
+    wait_until(count_read().wrapping_add(limit));
+}
+
+/// Execute `wait` with interrupts enabled from inside an exception handler.
+///
+/// `Status.EXL` masks interrupts and the R4000 ignores `wait` at exception
+/// level, so the handler's EXL is cleared for the instruction and restored
+/// afterwards.  An exception does not change `Status.KSU`, so a handler that
+/// arrived from user mode is still marked as user; clearing EXL alone would
+/// then fetch the kernel address in user mode and raise `AdEL`.  Kernel mode
+/// is selected for the window too, and the original word is restored after.
+/// Only the timer fast path can run in that window; it uses `$k0`/`$k1` and
+/// the same Count/Compare pair, and it does not touch the trap frame.
+fn wait_from_handler() {
+    let status = status_read();
+    status_write((status & !(STATUS_EXL | STATUS_KSU_MASK)) | STATUS_IE);
+    // SAFETY: the timer is running and Compare was just armed for a future
+    // Count value, so the instruction returns from the interrupt.
+    unsafe {
+        core::arch::asm!("wait", options(nomem, nostack));
+    }
+    status_write(status | STATUS_EXL);
+}
+
 /// Read CP0 PRId (processor identifier).
 pub fn prid_read() -> u32 {
     let v: u32;

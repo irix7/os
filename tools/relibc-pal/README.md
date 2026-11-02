@@ -8,12 +8,12 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `729bdc3bbbc9c4cb1fc2ca1ffeac92ea7d551383` |
+| Commit | `bf5fee5e29a7a5054fa3cf82f6c5916de4b45b19` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads) |
-| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep) |
+| Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..729bdc3b` and applies
+The mirror is generated with `git format-patch a36041ac..bf5fee5e` and applies
 on top of `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
@@ -71,6 +71,15 @@ the branch commit, not the patch.
     destructor list live in the Pthread record.  The default stack is 64 KiB
     because the kernel's anonymous heap is a fixed 1 MiB shared with the
     allocator.
+11. Sleep.  `nanosleep` maps to a real `SYS_NANOSLEEP` park: the kernel sleeps
+    the calling thread on a CP0 Count deadline and a cooperative peer runs
+    meanwhile.  One park lasts at most 60 s so the deadline stays inside half
+    the 32-bit Count range; the PAL re-arms with the remainder for a longer
+    interval and leaves `rmtp` untouched because there are no signals.
+    `clock_nanosleep` is implemented over the same primitive for
+    `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, converting `TIMER_ABSTIME` to a
+    relative interval; it returns the error number directly as POSIX requires,
+    and `thrd_sleep` adapts that to C11's `0`/`-1`/other-negative contract.
 
 `printf` uses the generic path and completes.
 
@@ -93,11 +102,12 @@ tools/relibc-pal/build.sh /tmp/opencode/relibc-pal-work/out
 
 The script clones `irix7-pal` if `RELIBC_SRC` is absent, refuses to build a
 different commit unless `RELIBC_COMMIT` says so, builds `librelibc.a` and
-`libcrt0.a`, compiles the C probe, the thread probe, the futex probe and the
-pthread probe, strips each ELF and pads 256 KiB `probe.raw`,
-`thread-probe.raw`, `futex-probe.raw` and `pthread-probe.raw` images.  It
-records the relibc commit in `BUILD-PROVENANCE.txt`.  An existing checkout
-needs its submodules initialised (`git submodule update --init --recursive`).
+`libcrt0.a`, compiles the C probe, the thread probe, the futex probe, the
+pthread probe and the sleep probe, strips each ELF and pads 256 KiB
+`probe.raw`, `thread-probe.raw`, `futex-probe.raw`, `pthread-probe.raw` and
+`sleep-probe.raw` images.  It records the relibc commit in
+`BUILD-PROVENANCE.txt`.  An existing checkout needs its submodules initialised
+(`git submodule update --init --recursive`).
 
 ## Run
 
@@ -148,6 +158,27 @@ user: exit syscall code=0x00000000
 kernel: userland returned to kernel console
 ```
 
+The sleep probe (`sleep-probe.raw`) expects:
+
+```text
+SLEEP-PROBE: start
+sleep: wait tid=1 limit=20ms
+SLEEP-PROBE: solo-elapsed=20ms
+thread: create by=1 tid=2 epc=0x10000040 sp=0x2001FFE0 tcb=0x20020000
+sleep: wait tid=2 limit=20ms
+sleep: park tid=2 limit=19ms
+sleep: expiry tid=2 limit=19ms elapsed=20ms
+SLEEP-PROBE: counter=1097 elapsed=42ms worker-elapsed=43ms
+SLEEP-PROBE: join-elapsed=19ms
+SLEEP-PROBE: checks=48 failures=0
+SLEEP-OK
+user: exit syscall code=0x00000000
+kernel: userland returned to kernel console
+```
+
+Timer and scheduling jitter on the emulator host changes the millisecond
+values; the checks are bounds, not fixed numbers.
+
 The probe keeps the startup checks (marker, `argc`/`argv`, `getpid`,
 `AT_PAGESZ`/`AT_ENTRY`/`AT_CLKTCK`, `$28`, `__errno_location`, `stat`,
 `fstat(999)` with `EBADF`, `stat("/missing")` with `ENOENT`) and the file
@@ -166,12 +197,19 @@ unlinked inode still readable through its descriptor, and `EEXIST`,
 
 ## Limits
 
-- Threads are cooperative: no preemption and no timer wakeup.  A thread runs
-  until it yields, blocks on a futex, retires or the image exits.  A pthread
-  program must yield or block for its peers to make progress.
+- Threads are cooperative: no preemption.  A thread runs until it yields,
+  blocks on a futex or a sleep, retires or the image exits.  A pthread
+  program must yield or block for its peers to make progress.  A sleeper is
+  resumed at the next scheduling point after its timer deadline, so a peer
+  that never yields also never sees the switch.
 - `poll`, a blocking read or write and a futex wait are bounded by the
   kernel's 100 ms poll limit; the libc re-parks a futex wait whose bounded
   expiry precedes its deadline.
+- `nanosleep` parks the calling thread on a CP0 Count deadline, so a
+  cooperative peer runs while one thread sleeps.  One park lasts at most 60 s
+  and the libc re-arms with the remainder.  With no runnable peer the kernel
+  arms Compare for the deadline and executes `wait`, so a solo sleep idles the
+  CPU instead of spinning.
 - `pthread_cancel` cannot deliver a signal, so cancellation with the target
   enabled returns `ENOSYS`.  `pthread_key_delete` removes the key from the
   calling thread's map only.  A detached thread's TCB and stack are not

@@ -37,6 +37,8 @@ pub const SYS_READ: u32 = 16;
 pub const SYS_FSTAT: u32 = 17;
 pub const SYS_STAT: u32 = 18;
 pub const SYS_READDIR: u32 = 19;
+/// `nanosleep(timespec *)`; parks the caller until the interval expires, for
+/// at most `SLEEP_LIMIT_MS` (60 s) per call.
 pub const SYS_NANOSLEEP: u32 = 20;
 pub const SYS_CHDIR: u32 = 21;
 pub const SYS_PIPE: u32 = 22;

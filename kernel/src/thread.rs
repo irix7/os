@@ -16,6 +16,12 @@
 //! deadline passes the word is compared again: a changed word resumes the
 //! waiter with `CELL_E_AGAIN`, an unchanged one with `CELL_E_TIMEDOUT`.
 //!
+//! A sleep parks the thread on a CP0 Count deadline instead of a word.  It has
+//! no waker: the deadline itself resumes the thread, either at a scheduling
+//! point or after the timer interrupt that ends a kernel wait.  A sleep never
+//! spins: with no runnable peer the kernel arms CP0 Compare for the deadline
+//! and executes `wait`.
+//!
 //! The thread pointer (`$28`) is caller-owned.  The libc allocates the 16-byte
 //! TCB and passes it to `SYS_THREAD_CREATE`; the kernel only checks that the
 //! TCB, entry and stack top are inside mapped user ranges, builds the first
@@ -43,6 +49,8 @@ enum State {
     Running,
     /// Parked on a futex word; the saved frame resumes when the wait ends.
     Blocked,
+    /// Parked on a sleep deadline; the saved frame resumes at expiry.
+    Sleeping,
     /// Exited; the slot holds the exit status until it is reused.
     Dead,
 }
@@ -56,9 +64,9 @@ struct Thread {
     wait_addr: u32,
     /// The value the waiter compared, re-checked when the deadline passes.
     wait_expected: u32,
-    /// CP0 Count value sampled when the wait began.
+    /// CP0 Count value sampled when the wait or sleep began.
     wait_start: u32,
-    /// Bounded wait in CP0 Count ticks.
+    /// Wait or sleep interval in CP0 Count ticks.
     wait_limit: u32,
     frame: TrapFrame,
 }
@@ -111,11 +119,14 @@ pub fn reset() {
     }
 }
 
-/// Resume waiters whose bounded deadline has passed.
+/// Resume parked threads whose deadline has passed.
 ///
-/// The cooperative kernel has no timer interrupt, so deadlines are applied at
-/// scheduling points: the next yield, block or exit.  A wait ended here still
-/// follows the futex contract, so the word is compared again.
+/// Deadlines are applied at scheduling points: the next yield, block or exit,
+/// and the kernel wait that follows a timer interrupt.  There is no
+/// preemption, so a parked thread still cannot run until the running thread
+/// reaches one of those points.  A futex wait ended here still follows the
+/// futex contract, so the word is compared again; a sleep has no word and
+/// resumes with `CELL_OK`.
 fn expire_waiters() {
     let now = crate::traps::count_read();
     // SAFETY: single-threaded kernel; no thread runs while this scan is in
@@ -123,9 +134,27 @@ fn expire_waiters() {
     unsafe {
         let threads = &mut *core::ptr::addr_of_mut!(THREADS);
         for slot in threads.iter_mut() {
-            if slot.state != State::Blocked || now.wrapping_sub(slot.wait_start) < slot.wait_limit {
+            if !matches!(slot.state, State::Blocked | State::Sleeping)
+                || !deadline_passed(now, slot.wait_start, slot.wait_limit)
+            {
                 continue;
             }
+            if slot.state == State::Sleeping {
+                let elapsed = now.wrapping_sub(slot.wait_start);
+                slot.frame.regs[2] = native_abi::status::CELL_OK as u64;
+                slot.frame.regs[3] = 0;
+                slot.state = State::Runnable;
+                crate::print_str("sleep: expiry tid=");
+                print_dec(slot.tid);
+                crate::print_str(" limit=");
+                print_dec(slot.wait_limit / crate::fd::TICKS_PER_MS);
+                crate::print_str("ms elapsed=");
+                print_dec(elapsed / crate::fd::TICKS_PER_MS);
+                crate::print_str("ms");
+                crate::println("");
+                continue;
+            }
+
             let changed = !crate::user::range_ok(slot.wait_addr, 4)
                 || read_word(slot.wait_addr) != slot.wait_expected;
             slot.frame.regs[2] = if changed {
@@ -165,13 +194,37 @@ fn next_runnable(from: usize) -> Option<usize> {
     None
 }
 
-fn has_blocked() -> bool {
+/// Whether `limit` ticks have passed since `start`.
+///
+/// CP0 Count is 32 bits and wraps every 130 s, so the difference between two
+/// samples is the only meaningful measure.  Every parked interval is shorter
+/// than half the range, which keeps the unsigned comparison unambiguous.
+fn deadline_passed(now: u32, start: u32, limit: u32) -> bool {
+    now.wrapping_sub(start) >= limit
+}
+
+/// The earliest deadline of any parked thread, as a CP0 Count value.
+///
+/// Every parked thread is bounded: a futex wait by the poll rule and a sleep
+/// by [`user::SLEEP_LIMIT_MS`].  The kernel can therefore always park until
+/// the nearest deadline instead of spinning when nothing is runnable.
+fn nearest_deadline() -> Option<u32> {
+    let mut nearest: Option<u32> = None;
     // SAFETY: single-threaded kernel; a plain read of the table.
     unsafe {
-        (*core::ptr::addr_of!(THREADS))
-            .iter()
-            .any(|slot| slot.state == State::Blocked)
+        for slot in (*core::ptr::addr_of!(THREADS)).iter() {
+            if !matches!(slot.state, State::Blocked | State::Sleeping) {
+                continue;
+            }
+            let deadline = slot.wait_start.wrapping_add(slot.wait_limit);
+            nearest = Some(match nearest {
+                Some(current) if (deadline.wrapping_sub(current) as i32) < 0 => deadline,
+                Some(current) => current,
+                None => deadline,
+            });
+        }
     }
+    nearest
 }
 
 fn switch_to(tf: &mut TrapFrame, from: usize, to: usize) {
@@ -300,7 +353,18 @@ pub fn futex_wait(tf: &mut TrapFrame, address: u32, expected: u32, timeout_ms: i
     let Some(to) = next_runnable(from) else {
         return bounded_wait(tf, address, expected, limit);
     };
+    park_futex(tf, from, to, address, expected, limit)
+}
 
+/// Park the running thread on `address` and resume `to`.
+fn park_futex(
+    tf: &mut TrapFrame,
+    from: usize,
+    to: usize,
+    address: u32,
+    expected: u32,
+    limit: u32,
+) -> Wait {
     crate::print_str("futex: wait tid=");
     print_dec(unsafe { (*core::ptr::addr_of!(THREADS))[from].tid });
     crate::print_str(" addr=0x");
@@ -332,13 +396,17 @@ pub fn futex_wait(tf: &mut TrapFrame, address: u32, expected: u32, timeout_ms: i
     Wait::Switched
 }
 
-/// Wait alone, with no thread that could wake this one.
+/// Wait alone, with no runnable thread that could wake this one.
 ///
 /// The poll rule applies: the wait is bounded, the word is re-read while it
-/// lasts, and a changed word is `CELL_E_AGAIN`.  No thread can run during the
-/// loop, so in practice only the clock advances.
+/// lasts, and a changed word is `CELL_E_AGAIN`.  Nothing can wake this thread
+/// early, so the kernel parks the CPU on the timer: until this wait's deadline
+/// or a sleeping peer's earlier one, whichever comes first.  If a sleeper
+/// expires first it becomes runnable, and this thread parks for the rest of
+/// its own budget and lets it run.
 fn bounded_wait(tf: &mut TrapFrame, address: u32, expected: u32, limit: u32) -> Wait {
-    let tid = unsafe { (*core::ptr::addr_of!(THREADS))[CURRENT].tid };
+    let from = unsafe { CURRENT };
+    let tid = unsafe { (*core::ptr::addr_of!(THREADS))[from].tid };
     crate::print_str("futex: no-peer tid=");
     print_dec(tid);
     crate::print_str(" addr=0x");
@@ -354,12 +422,92 @@ fn bounded_wait(tf: &mut TrapFrame, address: u32, expected: u32, limit: u32) -> 
             set_result(tf, CELL_E_AGAIN);
             return Wait::Continue;
         }
-        if crate::traps::count_read().wrapping_sub(start) >= limit {
+        let elapsed = crate::traps::count_read().wrapping_sub(start);
+        if elapsed >= limit {
             set_result(tf, CELL_E_TIMEDOUT);
             return Wait::Continue;
         }
-        core::hint::spin_loop();
+        if let Some(to) = next_runnable(from) {
+            return park_futex(tf, from, to, address, expected, limit - elapsed);
+        }
+        let own = start.wrapping_add(limit);
+        let wake = match nearest_deadline() {
+            Some(deadline) if (deadline.wrapping_sub(own) as i32) < 0 => deadline,
+            _ => own,
+        };
+        crate::traps::wait_until(wake);
     }
+}
+
+/// Park the running thread until `limit` CP0 Count ticks have passed.
+///
+/// The sleep has no waker, so the only way out is the deadline.  A runnable
+/// peer is switched to and runs until its next scheduling point, where this
+/// thread's deadline is re-checked.  With no runnable peer the kernel cannot
+/// hand the CPU to anyone, so it arms the timer for the deadline (or a parked
+/// peer's earlier one) and parks the CPU in `wait` instead of spinning.  If
+/// that peer becomes runnable first, this thread parks for the rest of its
+/// budget and switches to it.
+pub fn sleep_current(tf: &mut TrapFrame, limit: u32) -> Wait {
+    let from = unsafe { CURRENT };
+    if limit == 0 {
+        set_result(tf, native_abi::status::CELL_OK);
+        return Wait::Continue;
+    }
+
+    crate::print_str("sleep: wait tid=");
+    print_dec(unsafe { (*core::ptr::addr_of!(THREADS))[from].tid });
+    crate::print_str(" limit=");
+    print_dec(limit / crate::fd::TICKS_PER_MS);
+    crate::print_str("ms");
+    crate::println("");
+
+    let start = crate::traps::count_read();
+    loop {
+        let elapsed = crate::traps::count_read().wrapping_sub(start);
+        if elapsed >= limit {
+            set_result(tf, native_abi::status::CELL_OK);
+            return Wait::Continue;
+        }
+        if let Some(to) = next_runnable(from) {
+            return park_sleep(tf, from, to, limit - elapsed);
+        }
+        let own = start.wrapping_add(limit);
+        let wake = match nearest_deadline() {
+            Some(deadline) if (deadline.wrapping_sub(own) as i32) < 0 => deadline,
+            _ => own,
+        };
+        crate::traps::wait_until(wake);
+    }
+}
+
+/// Park the sleeping thread for `limit` more ticks and resume `to`.
+fn park_sleep(tf: &mut TrapFrame, from: usize, to: usize, limit: u32) -> Wait {
+    crate::print_str("sleep: park tid=");
+    print_dec(unsafe { (*core::ptr::addr_of!(THREADS))[from].tid });
+    crate::print_str(" limit=");
+    print_dec(limit / crate::fd::TICKS_PER_MS);
+    crate::print_str("ms");
+    crate::println("");
+
+    // SAFETY: the running thread's frame is saved before the switch.  The
+    // sleeper has no waker, so nothing writes into its slot until the
+    // deadline scan resumes it.
+    unsafe {
+        let threads = &mut *core::ptr::addr_of_mut!(THREADS);
+        threads[from].wait_addr = 0;
+        threads[from].wait_expected = 0;
+        threads[from].wait_start = crate::traps::count_read();
+        threads[from].wait_limit = limit;
+        threads[from].state = State::Sleeping;
+
+        tf.regs[2] = native_abi::status::CELL_OK as u64;
+        tf.regs[3] = 0;
+        tf.advance_epc();
+        threads[from].frame = *tf;
+    }
+    switch_to(tf, from, to);
+    Wait::Switched
 }
 
 /// Wake up to `count` threads parked on `address`.
@@ -406,9 +554,10 @@ pub fn futex_wake(address: u32, count: u32) -> SysResult<u32> {
 
 /// Retire the running thread with `status` and resume the next runnable one.
 ///
-/// With every remaining thread parked on a bounded futex wait, the kernel
-/// keeps the image alive until the nearest deadline instead of exiting under
-/// a waiter that can still be resumed by the clock.
+/// With every remaining thread parked on a bounded futex wait or a sleep, the
+/// kernel keeps the image alive until the nearest deadline instead of exiting
+/// under a thread that the clock can still resume.  That wait is a timer wait,
+/// not a spin.
 pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
     let from = unsafe { CURRENT };
     let tid = unsafe {
@@ -428,10 +577,10 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
             switch_to(tf, from, to);
             return Exit::Switched;
         }
-        if !has_blocked() {
+        let Some(deadline) = nearest_deadline() else {
             return Exit::Last;
-        }
-        core::hint::spin_loop();
+        };
+        crate::traps::wait_until(deadline);
     }
 }
 
@@ -491,6 +640,17 @@ mod tests {
         assert_eq!(MAX_THREADS, 8);
         assert_eq!(core::mem::size_of::<TrapFrame>(), 0x140);
         assert!(core::mem::size_of::<Thread>() >= core::mem::size_of::<TrapFrame>());
+    }
+
+    #[test]
+    fn deadlines_compare_across_the_count_wrap() {
+        assert!(!deadline_passed(99, 100, 2));
+        assert!(deadline_passed(102, 100, 2));
+        assert!(!deadline_passed(u32::MAX, u32::MAX - 1, 4));
+        assert!(deadline_passed(1, u32::MAX - 1, 4));
+        // The longest parked sleep stays below half the Count range.
+        let cap = crate::user::SLEEP_LIMIT_MS * crate::fd::TICKS_PER_MS;
+        assert!(cap < u32::MAX / 2);
     }
 
     #[test]

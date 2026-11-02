@@ -1557,7 +1557,7 @@ success.  `SYS_EXIT` does not return.
 | 17 | `fstat` | `fd`, `struct stat *` |
 | 18 | `stat` | `path`, `struct stat *` |
 | 19 | `readdir` | `fd`, `index`, `buf`, `len` |
-| 20 | `nanosleep` | `timespec` |
+| 20 | `nanosleep` | `timespec` (parks; at most 60 s per call) |
 | 21 | `chdir` | `path` |
 | 22 | `pipe` | `int[2]` |
 | 23 | `tcgetwinsize` | `fd`, `struct winsize *` |
@@ -1656,10 +1656,10 @@ These are bring-up boundaries, not the v1 POSIX contract.
 ### 5.9 v0 cooperative thread gate
 
 The thread calls share the flat gate and the image's address space.  They are
-cooperative: a thread runs until it yields, exits, parks on a futex, or the image exits.
-There is no timer preemption and no per-thread kernel stack; a switch happens only at a
-syscall boundary, so the syscall's kernel frames complete on the single kernel stack
-before the incoming user frame is restored.
+cooperative: a thread runs until it yields, exits, parks on a futex or a sleep, or the
+image exits.  There is no timer preemption and no per-thread kernel stack; a switch
+happens only at a syscall boundary, so the syscall's kernel frames complete on the
+single kernel stack before the incoming user frame is restored.
 
 `thread_create(entry, arg, stack_top, tcb)` returns the new thread id (2 and up; the
 main thread is 1).  `entry` must be word-aligned and mapped for execute, `stack_top`
@@ -1690,22 +1690,37 @@ wake with no waiter returns 0.  The woken threads run when the waker next yields
 exits, so the waker sees the count before either waiter resumes.  `count` is unsigned:
 a caller may pass `0xFFFF_FFFF` to wake every waiter.
 
-Every parked wait is bounded by the poll rule.  `timeout_ms` is a relative millisecond
+`nanosleep(timespec)` parks the calling thread on a CP0 Count deadline and lets a
+runnable peer run; it resumes with `CELL_OK` when the deadline passes.  The interval is
+relative: a negative field or `tv_nsec >= 1_000_000_000` is `CELL_E_INVAL`.  There are
+no signals, so the call is never interrupted and the kernel reports no remaining time.
+One park lasts at most `SLEEP_LIMIT_MS` (60 s); a caller that wants longer re-arms with
+the remainder, which the libc does.  The bound keeps every deadline shorter than half
+the 32-bit Count range, so the wrapping comparison is unambiguous.  A sleeping thread
+is resumed by the deadline scan at a scheduling point, or, when nothing else is
+runnable, by the timer: the kernel arms Compare for the deadline, executes `wait`, and
+returns once Count has passed it.  A sleep therefore never spins the machine, and the
+timer interrupt is what ends a solo wait.  `clock_nanosleep` is a libc composition of
+`clock_gettime` and this call: `TIMER_ABSTIME` is turned into a relative interval.
+
+Every futex wait is bounded by the poll rule.  `timeout_ms` is a relative millisecond
 timeout; a negative value (POSIX "no deadline") is bounded by `WAIT_LIMIT_MS` (100 ms)
 and a longer positive value is clamped to the same bound.  Timeouts are applied at
-scheduling points (yield, block or exit), because the cooperative kernel has no timer
-interrupt, and the word is read again then: a changed value resumes the waiter with
-`CELL_E_AGAIN`, an unchanged one with `CELL_E_TIMEDOUT`.  When no other thread is
-runnable no wake can arrive, so the wait is performed in the kernel for the same bound
-instead of parking.  The libc re-parks when a bounded expiry precedes a real deadline
-and when the caller asked to wait indefinitely; a wake is the normal path.
+scheduling points (yield, block or exit), and the word is read again then: a changed
+value resumes the waiter with `CELL_E_AGAIN`, an unchanged one with `CELL_E_TIMEDOUT`.
+When no other thread is runnable no wake can arrive, so the kernel parks the CPU on the
+timer until the wait's deadline or a sleeping peer's earlier deadline.  If the sleeping
+peer expires first, the waiter parks for its own remaining budget and switches to the
+peer; the futex poll bound still limits every park.  The libc re-parks when a bounded
+expiry precedes a real deadline and when the caller asked to wait indefinitely; a wake
+is the normal path.
 
 A thread exit does not abandon a parked peer.  When the last runnable thread exits
-while another thread is still parked, the kernel stays in the kernel until the parked
-thread's deadline, resumes it with its timeout result and only then reports the image
-as finished.  `SYS_EXIT` from any thread still ends every thread.
+while another thread is parked on a futex or a sleep, the kernel waits on the timer
+until the nearest deadline, resumes that thread and only then reports the image as
+finished.  `SYS_EXIT` from any thread still ends every thread.
 
-The table holds eight threads and each parked futex wait occupies one slot.  A thread
+The table holds eight threads and each parked futex wait or sleep occupies one slot.  A thread
 id is unique only while its thread is alive; dead slots are reused.  The kernel has no
 join primitive: the exit status stays in the slot until the slot is reused.  The libc
 implements `pthread_join` in userland by recording the start routine's return value in

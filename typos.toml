@@ -1,5 +1,5 @@
 [files]
-extend-exclude = ["docs/research/**", "THIRD-PARTY-NOTICES.md", "tools/std-spike/patches/**"]
+extend-exclude = ["docs/research/**", "THIRD-PARTY-NOTICES.md", "tools/std-spike/patches/**", "tools/relibc-pal/patches/**"]
 
 [default.extend-words]
 nto = "nto"
