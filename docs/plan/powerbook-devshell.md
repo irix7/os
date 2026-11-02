@@ -74,13 +74,13 @@ available in this project.
 The first version of the spec disabled the `hard-float` feature so kernel code
 would need no FPU state. The pinned nightly rejects that:
 
-```
+```text
 error: error loading target specification: target feature `hard-float` is required by the ABI but gets disabled in target spec
 ```
 
 Adding `"abi": "softfloat"` and `"rustc-abi": "softfloat"` gives:
 
-```
+```text
 error: error loading target specification: invalid PowerPC Rust-specific ABI and `cfg(target_abi)` combination:
        Rust-specific ABI: Some(Softfloat)
        cfg(target_abi): softfloat
@@ -133,7 +133,7 @@ a specific reader, which is how both branches were tested.
 
 Observed output in the shell:
 
-```
+```text
 powerpc-check: rustc 1.101.0-nightly (0abfedbc7 2026-10-02)
 powerpc-check: target /path/to/os/targets/powerpc-unknown-irix7-ppc.json
 powerpc-check: build irix7-fmt
