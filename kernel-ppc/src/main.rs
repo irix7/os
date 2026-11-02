@@ -12,7 +12,9 @@
 //! one system call round-trip.  Finally it programs the CUDA timer, takes
 //! external interrupts through the Heathrow controller at the 0x500 vector,
 //! acknowledges each one and reports the count, then identifies the ATA disk
-//! named by the Mac I/O device tree and reads one PIO sector.
+//! named by the Mac I/O device tree and reads one PIO sector.  After the
+//! module check it waits one second for a key on the selected ESCC channel;
+//! a key enters a small `ppc>` monitor, silence halts the machine.
 
 #![no_std]
 #![no_main]
@@ -24,6 +26,7 @@ mod cache;
 mod irq;
 mod mmu;
 mod module;
+mod monitor;
 mod of;
 mod pic;
 mod platform;
@@ -78,7 +81,7 @@ pub(crate) fn print_hex_bytes(bytes: &[u8]) {
     }
 }
 
-fn print_model(model: &[u8; 40]) {
+pub(crate) fn print_model(model: &[u8; 40]) {
     let mut end = model.len();
     while end > 0 && (model[end - 1] == b' ' || model[end - 1] == 0) {
         end -= 1;
@@ -124,7 +127,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         // Without the console there is nowhere to report the failure.
         None => halt(),
     };
-    serial::init(escc.channels);
+    let input = serial::init(escc.channels, escc.selected);
 
     let memory = match platform::memory(&client) {
         Some(memory) => memory,
@@ -340,6 +343,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     print_line(b"ATA-OK");
 
     let gate_disk = &sector[..16] == b"IRIX7-ATA-SIG001";
+    let mut module_state = monitor::ModuleState::Skipped;
     if gate_disk {
         match module::load(channel) {
             Ok(report) => {
@@ -351,6 +355,10 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
                 print_dec(report.length);
                 serial::write_byte(b'\n');
                 print_line(b"MODULE-OK");
+                module_state = monitor::ModuleState::Loaded {
+                    length: report.length,
+                    ticked: report.ticked,
+                };
             }
             Err(error) => {
                 error.report();
@@ -360,6 +368,33 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         }
     } else {
         print_line(b"ppc: module skipped=not-gate-disk");
+    }
+
+    let info = monitor::Info {
+        macio_base: macio.base,
+        macio_size: macio.size,
+        macio_path: macio.path,
+        console: escc.selected,
+        input,
+        memory_base: memory.base,
+        memory_size: memory.size,
+        timebase,
+        ata_model: identify.model,
+        ata_sectors: identify.sectors,
+        module: module_state,
+    };
+
+    match input {
+        None => print_line(b"ppc: monitor unavailable"),
+        Some(channel) => {
+            serial::write(b"ppc: monitor wait input=");
+            serial::write_byte(channel.letter());
+            serial::write_byte(b'\n');
+            match monitor::first_key() {
+                Some(key) => monitor::run(&info, key),
+                None => print_line(b"ppc: monitor timeout"),
+            }
+        }
     }
 
     print_line(b"ppc: halted");

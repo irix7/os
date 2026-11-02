@@ -23,6 +23,7 @@ pub struct Memory {
 
 /// A device-tree path captured for the boot log.  The buffer is fixed-size
 /// because the tree is read before the heap exists.
+#[derive(Clone, Copy)]
 pub struct Path {
     value: [u8; 96],
     length: usize,

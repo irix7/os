@@ -8,6 +8,17 @@ All notable changes to IRIX 7 are recorded here. The format follows
 
 ### Added
 
+- PowerPC G3 serial input and a boot monitor.  The ESCC receiver is enabled
+  on both channels and polled on the channel the firmware selected, with
+  channel A as the fallback when the firmware names no ESCC channel.  After
+  the module check the kernel waits one second for a key; a key enters a
+  `ppc>` prompt with `help`, `info` and `halt`, and silence prints
+  `ppc: monitor timeout` before the existing `ppc: halted`.  The `info`
+  command reports the Mac I/O selection, memory size, timebase, ATA model and
+  module status.  The QEMU gate boots a pipe chardev on channel A, sends the
+  three commands one byte at a time, and checks the prompt, echo and output;
+  the no-input boot and every existing marker remain.  See #321.
+
 - PowerPC G3 Mac I/O selection and the PMU fallback.  The kernel walks
   `/pci`, scores the Mac I/O nodes by their ESCC and disk children, and uses
   the node that has both; on the M4753 this is `mac-io@10` rather than tree
