@@ -8,7 +8,8 @@
 
 use irix7_seeq::{SeeqDevice, SEEQ_AREA};
 use smoltcp::iface::{Config, Interface, SocketSet, SocketStorage};
-use smoltcp::socket::dhcpv4;
+use smoltcp::socket::{dhcpv4, dns};
+use smoltcp::wire::{DnsQueryType, IpAddress, Ipv4Address};
 use smoltcp::time::Instant;
 use smoltcp::wire::{EthernetAddress, HardwareAddress};
 
@@ -82,15 +83,55 @@ pub extern "C" fn rom_netstage() {
         seeq,
         now(),
     );
-    let mut storage = [SocketStorage::EMPTY; 1];
+    let mut storage = [SocketStorage::EMPTY; 2];
     let mut sockets = SocketSet::new(&mut storage[..]);
     let dhcp = sockets.add(dhcpv4::Socket::new());
+    let mut queries: [Option<dns::DnsQuery>; 1] = [None];
 
     let start = now();
     loop {
         let t = now();
         iface.poll(t, seeq, &mut sockets);
         if let Some(dhcpv4::Event::Configured(config)) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
+            put_lease(&config);
+            // Apply the lease to the interface: its address and default route,
+            // so the DNS server and the origin server are reachable.
+            iface.update_ip_addrs(|addrs| {
+                addrs.clear();
+                let _ = addrs.push(smoltcp::wire::IpCidr::Ipv4(config.address));
+            });
+            if let Some(router) = config.router {
+                let _ = iface.routes_mut().add_default_ipv4_route(router);
+            }
+            match config.dns_servers.first() {
+                Some(server) => {
+                    let servers = [IpAddress::Ipv4(*server)];
+                    let [s0, s1, s2, s3] = server.octets();
+                    put("rom-net: dns server ");
+                    put_dec(s0 as u32);
+                    put(".");
+                    put_dec(s1 as u32);
+                    put(".");
+                    put_dec(s2 as u32);
+                    put(".");
+                    put_dec(s3 as u32);
+                    put("\n");
+                    let dns = sockets.add(dns::Socket::new(&servers[..], &mut queries[..]));
+                    resolve(&mut iface, seeq, &mut sockets, dns, "github.com");
+                }
+                None => put("rom-net: no dns server\n"),
+            }
+            return;
+        }
+        if (t - start).total_millis() > DHCP_TIMEOUT_MS {
+            put("rom-net: no lease\n");
+            return;
+        }
+    }
+}
+
+fn put_lease(config: &dhcpv4::Config) {
+            let [a, b, c, d] = config.address.address().octets();
             let [a, b, c, d] = config.address.address().octets();
             put("rom-net: lease ");
             put_dec(a as u32);
@@ -103,10 +144,57 @@ pub extern "C" fn rom_netstage() {
             put("/");
             put_dec(config.address.prefix_len() as u32);
             put("\n");
+}
+
+/// Resolve `name` with the DNS socket `dns` and print the first IPv4 answer.
+fn resolve(
+    iface: &mut Interface,
+    seeq: &mut SeeqDevice,
+    sockets: &mut SocketSet<'_>,
+    dns: smoltcp::iface::SocketHandle,
+    name: &str,
+) {
+    let query = match sockets.get_mut::<dns::Socket>(dns).start_query(iface.context(), name, DnsQueryType::A) {
+        Ok(q) => q,
+        Err(_) => {
+            put("rom-net: dns start failed\n");
             return;
         }
+    };
+    let start = now();
+    loop {
+        let t = now();
+        iface.poll(t, seeq, sockets);
+        match sockets.get_mut::<dns::Socket>(dns).get_query_result(query) {
+            Ok(addrs) => {
+                if let Some(IpAddress::Ipv4(a)) = addrs.first() {
+                    let [o0, o1, o2, o3] = a.octets();
+                    put("rom-net: dns ");
+                    put(name);
+                    put(" ");
+                    put_dec(o0 as u32);
+                    put(".");
+                    put_dec(o1 as u32);
+                    put(".");
+                    put_dec(o2 as u32);
+                    put(".");
+                    put_dec(o3 as u32);
+                    put("\n");
+                } else {
+                    put("rom-net: dns no answer\n");
+                }
+                return;
+            }
+            Err(dns::GetQueryResultError::Pending) => {}
+            Err(_) => {
+                put("rom-net: dns failed after ");
+                put_dec(((t - start).total_millis()) as u32);
+                put(" ms\n");
+                return;
+            }
+        }
         if (t - start).total_millis() > DHCP_TIMEOUT_MS {
-            put("rom-net: no lease\n");
+            put("rom-net: dns timeout\n");
             return;
         }
     }
