@@ -33,6 +33,8 @@ jobs:
           # explicitly for a deliberate unsigned build.
           MODULE_SIGNING_KEY: ${{ secrets.MODULE_SIGNING_KEY }}
           MODULE_SIGNING_EPOCH: ${{ vars.MODULE_SIGNING_EPOCH }}
+          # One-off: v0.1.4 ships unsigned by owner decision. Remove after this release.
+          IRIX7_RELEASE_UNSIGNED: "1"
         run: ./scripts/release/build.sh
       - name: Build the PowerPC floppy image
         run: |
