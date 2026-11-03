@@ -1042,6 +1042,24 @@ fn handle_request(services: &Services, slot: u32) {
         send_http(services, slot, &b"text/plain"[..], &response[..n]);
         return;
     }
+    // The kernel's own status block: network, interrupt counters and idle
+    // load.  `/` stays the short module liveness page.
+    if !is_post && path == b"/status" {
+        let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
+        let n = unsafe { (services.info)(0, response.as_mut_ptr(), response.len()) };
+        if n < 0 {
+            send_http_status(
+                services,
+                slot,
+                500,
+                &b"text/plain"[..],
+                &b"status failed"[..],
+            );
+        } else {
+            send_http(services, slot, &b"text/plain"[..], &response[..n as usize]);
+        }
+        return;
+    }
     if !is_post && path == b"/mesh/join" {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let (status, n) = mesh::join_response(response);

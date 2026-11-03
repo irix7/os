@@ -19,6 +19,7 @@ mod failure;
 mod fixture;
 mod homes;
 mod hub;
+mod irqgate;
 mod join;
 #[allow(dead_code)]
 mod latency;
@@ -93,6 +94,7 @@ fn run() -> Result<i32, String> {
         Action::Run if options.fault == Fault::Udp => udp_run(&options),
         Action::Run => run_and_probe(&options),
         Action::Bulk => bulk_run(&options),
+        Action::IrqGate => irqgate::run(&options),
         Action::Stream => stream_run(&options),
         Action::Shard => shard::run(&options),
         Action::Ports => ports_run(&options),
@@ -119,6 +121,7 @@ Usage:
 Commands:
   run           start both M2 nodes, probe HTTP/mesh/join/route, write evidence
   bulk          drive the #247 64 KiB bulk measurement through the bounded hub
+  irq-gate      measure hot/cold mesh latency and idle load on two joined nodes
   stream        drive the #337 control-during-bulk, cancel and reuse gate
   shard         start the M3 shard slice (two real kernels by default)
   up            start both nodes and leave them running
@@ -144,6 +147,7 @@ Options:
   --fault MODE     none (default), no-peer, wrong-authority, no-route,
                    kill-peer, partition or udp
   --keep           with run or shard, leave the nodes running
+  --rx-poll        boot with net.rx=off (the polled receive control)
   --verbose        print extra detail
 
 Workflow:
@@ -2183,7 +2187,13 @@ fn start_all_with(
         rig::reset_scratch(nodes)?;
     }
     for (node, environment) in nodes.iter().zip(environments.iter()) {
-        write_nvram(node, fixture_port, module_sha256, environment.as_ref())?;
+        write_nvram(
+            node,
+            fixture_port,
+            module_sha256,
+            environment.as_ref(),
+            options.rx_poll,
+        )?;
     }
 
     for node in nodes {

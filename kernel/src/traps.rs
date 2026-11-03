@@ -60,6 +60,10 @@ const STATUS_CP1: u32 = 0x0000_2000; // Coprocessor 1 usable (FPU)
 const STATUS_CP2: u32 = 0x0000_4000; // Coprocessor 2 usable
 const STATUS_CP3: u32 = 0x0000_8000; // Coprocessor 3 usable
 const STATUS_IM_MASK: u32 = 0x0000_ff00; // Interrupt Mask (bits 8-15)
+/// Interrupt mask bit for IP2, the HPC3 cascade (Ethernet, SCSI, IOC local 0).
+pub(crate) const STATUS_IM2: u32 = 0x0000_0400;
+/// Interrupt mask bit for IP7, the CP0 Count/Compare timer.
+pub(crate) const STATUS_IM7: u32 = 0x0000_8000;
 
 // Cause register fields.
 const CAUSE_EXC_MASK: u32 = 0x0000_007c; // Exception Code (bits 2-6)
@@ -99,7 +103,7 @@ pub(crate) fn set_user_abi(abi: UserAbi) {
 pub(crate) fn user_entry_status() -> u64 {
     let mut status = status_read();
     status &= !(STATUS_KSU_MASK | STATUS_ERL | STATUS_EXL);
-    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15);
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | STATUS_IM7;
     status as u64
 }
 
@@ -409,15 +413,21 @@ core::arch::global_asm!(
     .set mips3
     .set noat
 
-    /* General exception vector, copied to 0x8000_0180.  Timer interrupts
-       stay on the fast path; every other cause enters the full frame save. */
+    /* General exception vector, copied to 0x8000_0180.  An interrupt with IP7
+       pending stays on the timer fast path; every other cause, including an
+       external IP2, enters the full frame save.  The IP7 test is what keeps a
+       device line from acknowledging Compare: before it existed, any interrupt
+       took the timer branch, moved Compare and added a tick. */
     .section .text.trap_vector, "ax", @progbits
     .align 4
     .globl trap_vector
 trap_vector:
     mfc0    $k0, $13
-    andi    $k0, $k0, 0x7c
-    bnez    $k0, 9f
+    andi    $k1, $k0, 0x7c
+    bnez    $k1, 9f
+    nop
+    andi    $k1, $k0, 0x8000
+    beqz    $k1, 8f
     nop
 
     /* Timer: Compare = Count + 330000 (10 ms at the current iris rate). */
@@ -440,6 +450,10 @@ trap_vector:
     eret
     nop
 
+    /* Not the timer: save a full frame so the handler can name the source.
+       IP2 has no fast path because the acknowledge needs a status read. */
+8:  j       trap_entry
+    nop
 9:  j       trap_entry
     nop
     .globl trap_vector_end
@@ -736,11 +750,16 @@ pub fn wait_ticks(limit: u32) {
 /// arrived from user mode is still marked as user; clearing EXL alone would
 /// then fetch the kernel address in user mode and raise `AdEL`.  Kernel mode
 /// is selected for the window too, and the original word is restored after.
-/// Only the timer fast path can run in that window; it uses `$k0`/`$k1` and
-/// the same Count/Compare pair, and it does not touch the trap frame.
+///
+/// Only the timer fast path may run in that window.  A device interrupt would
+/// re-enter `trap_entry` and overwrite the one static `TRAP_FRAME` while this
+/// handler is still using it, so every device mask is cleared for the
+/// instruction; `IM7` stays set and wakes the wait.
 fn wait_from_handler() {
     let status = status_read();
-    status_write((status & !(STATUS_EXL | STATUS_KSU_MASK)) | STATUS_IE);
+    let parked =
+        (status & !(STATUS_EXL | STATUS_KSU_MASK | STATUS_IM_MASK)) | STATUS_IE | STATUS_IM7;
+    status_write(parked);
     // SAFETY: the timer is running and Compare was just armed for a future
     // Count value, so the instruction returns from the interrupt.
     unsafe {
@@ -864,7 +883,7 @@ pub fn badvaddr_read() -> u32 {
 pub(crate) fn thread_entry_status(saved: u64) -> u64 {
     let mut status = (saved as u32) & !STATUS_EXL;
     status &= !STATUS_KSU_MASK;
-    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15);
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | STATUS_IM7;
     status as u64
 }
 
@@ -901,6 +920,21 @@ pub(crate) fn finish_user_exit(tf: &mut TrapFrame, code: u32) {
 pub extern "C" fn trap_handler(tf: &mut TrapFrame) {
     let cause = tf.cause as u32;
     let exc_code = (cause & CAUSE_EXC_MASK) >> 2;
+
+    // External interrupt.  The assembly vector has already taken IP7 on its
+    // fast path, so an `EXC_INT` here is an external line (IP2 in practice).
+    // EPC is the interrupted instruction: do not advance it, and never touch
+    // Compare or TICKS from this path.
+    if exc_code == EXC_INT {
+        match crate::net_irq::classify(cause) {
+            crate::net_irq::Cause::External => crate::net::interrupt(),
+            // IP7 that reached the frame path means the vector's test and this
+            // decode disagree; count it instead of acknowledging a timer here.
+            crate::net_irq::Cause::Timer => crate::net_irq::note_unexpected(),
+            crate::net_irq::Cause::Spurious => crate::net_irq::note_unexpected(),
+        }
+        return;
+    }
 
     // User-mode syscall entry.  A plain `syscall` (code 0) is the provisional
     // bring-up ABI used by the static Rust shim; `syscall 0x1F7` is the native
@@ -1383,7 +1417,7 @@ pub fn run_user_abi(
     status_write(status);
     epc_write(entry);
     entryhi_write(crate::process::current_asid() & 0xFF);
-    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | (1 << 15) | STATUS_EXL;
+    status |= STATUS_KSU_USER | STATUS_UX | STATUS_IE | STATUS_IM7 | STATUS_EXL;
     status_write(status);
 
     crate::println("user: entering user mode");
@@ -1440,6 +1474,8 @@ pub fn install_vectors() {
     const GENERAL_VECTOR: *mut u8 = 0x8000_0180 as *mut u8;
     const TLB_VECTOR: *mut u8 = 0x8000_0000 as *mut u8;
     const XTLB_VECTOR: *mut u8 = 0x8000_0080 as *mut u8;
+    /// Space between the general vector and the next reserved entry.
+    const GENERAL_SLOT: usize = 0x80;
 
     let (general_src, general_len) = unsafe {
         let src = &trap_vector as *const u8;
@@ -1451,6 +1487,17 @@ pub fn install_vectors() {
         let len = (&tlb_refill_vector_end as *const u8 as usize) - (src as usize);
         (src, len)
     };
+    if general_len > GENERAL_SLOT || tlb_len > 0x80 {
+        // A truncated vector would return through the wrong instructions, so
+        // refuse the copy and keep the ROM's vectors instead of installing
+        // half of ours.
+        crate::print_str("vectors: too long (general=0x");
+        crate::print_hex32(general_len as u32);
+        crate::print_str(" tlb=0x");
+        crate::print_hex32(tlb_len as u32);
+        crate::println(")");
+        return;
+    }
 
     crate::print_str("vectors: src=0x");
     crate::print_hex32(general_src as u32);
@@ -1497,7 +1544,7 @@ pub fn init_timer() {
 
     // Enable timer interrupt (IP7 = bit 15 of Cause.IM).
     let mut status = status_read();
-    status |= STATUS_IM_MASK & (1 << 15);
+    status |= STATUS_IM7;
     status_write(status);
 }
 

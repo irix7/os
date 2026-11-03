@@ -20,10 +20,28 @@
 //! 80C03 the Seeq station-address registers read back collision counters,
 //! not the MAC, so the address has to be read from NVRAM and written into
 //! bank 0.
+//!
+//! ## Receive interrupt
+//!
+//! `SeeqDevice::new` enables `INTEOF` in the receive command and every
+//! descriptor carries `XIE`, so a good frame raises the Seeq's INT pin and
+//! the HPC3 `INTSTAT.ENET_DEV` bit.  That line reaches CPU IP2 through the
+//! IOC's local-0 mask, which [`init`] unmasks only after [`interrupt`] has
+//! passed its boot self-test.
+//!
+//! The handler is deliberately tiny: read the split HPC3 status, read the two
+//! Seeq status registers, write `CLRINT`, acknowledge the DMA status bits and
+//! set one deferred flag.  Frames are taken by [`drain`] on the idle thread.
+//! The ordering matters — `CLRINT` also marks both Seeq status registers OLD,
+//! so the chip is read first.  The Seeq's own status bit is cleared only by
+//! `CLRINT`; writing it back would clear the status while the pin is still
+//! asserted (see [`net_irq::ENET_W1C`]).
 
 use core::mem::MaybeUninit;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{compiler_fence, Ordering};
+
+use crate::net_irq;
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium};
 use smoltcp::socket::dhcpv4;
@@ -53,17 +71,45 @@ const ENET_CTRL_ACTIVE: u32 = 1 << 9;
 /// PDMA descriptor flags, from the Indy PROM `struct xd` / `struct rd`.
 const DESC_EOX: u32 = 0x8000_0000; // end of ring
 const DESC_EOP: u32 = 0x4000_0000; // end of packet
+const DESC_XIE: u32 = 0x2000_0000; // interrupt when this descriptor completes
 const DESC_ROWN: u32 = 0x0000_4000; // RX: HPC3 owns the buffer
 const DESC_COUNT_MASK: u32 = 0x3FFF;
 
 /// Original driver's receive buffer size (`MAX_RPKT` in seeq.h).
 const MAX_RPKT: u32 = 1517;
 
+/// HPC3 interrupt status (`istat0`, physical `0x1FBB_0000`).
+///
+/// SGI documents a bug: `istat0` reliably reports only bits 4:0, and
+/// `istat1` at `+0x3_000C` only bits 9:5.  A driver reads both and merges
+/// them; [`net_irq::merge_status`] is that merge.
+const HPC3_INTSTAT: *mut u32 = 0xBFBB_0000 as *mut u32;
+const HPC3_INTSTAT1: *mut u32 = 0xBFBB_000C as *mut u32;
+
+/// Ethernet receive channel reset register (HPC3 `+0x1_5014`).  Writing
+/// `CLRINT` clears every Ethernet interrupt except a receive-buffer overflow.
+const ENET_RX_RESET: *mut u32 = 0xBFB9_5014 as *mut u32;
+const ENET_RX_RESET_CLRINT: u32 = 0x02;
+
+/// Ethernet receive channel control register (HPC3 `+0x1_5004`).
+const ENET_RX_CTRL: usize = 0x1004;
+/// `HPC_RBO`: the receive channel stopped with a buffer overflow.  This is the
+/// one Ethernet interrupt that `CLRINT` cannot clear; the channel must be
+/// rebuilt.
+const ENET_CTRL_RBO: u32 = 0x0800;
+
+/// IOC2 local-0 interrupt mask (physical `0x1FBD_9884`), byte-wide.
+const IOC_L0_MASK: *mut u8 = 0xBFBD_9884 as *mut u8;
+/// IOC local 0, bit 3: the Seeq's `ENET_INT` pin.
+const IOC_L0_ETHERNET: u8 = 0x08;
+
 /// Seeq register numbers.
 const REG_MAC0: u8 = 0;
 const REG_RX_CMD: u8 = 6;
 const REG_TX_CMD: u8 = 7;
 const RX_CMD_STA_MULTI: u8 = 0xC0;
+/// Interrupt on a good end of frame (`SEQ_RC_INTEOF`).
+const RX_CMD_INT_EOF: u8 = 0x10;
 
 /// MAC slot in the Dallas NVRAM: physical `0x1FBE_04E8`, one byte per word.
 const NVRAM_MAC: *const u32 = 0xBFBE_04E8 as *const u32;
@@ -76,6 +122,15 @@ fn seeq_wr8(reg: u8, data: u8) {
     unsafe {
         write_volatile(SEEQ_BASE.add((reg as usize) << 2), data);
     }
+}
+
+/// Read one byte from a Seeq register in the selected bank.
+///
+/// Reading the RX (register 6) or TX (register 7) status register clears that
+/// register's `NEW` bit and drops the chip's `INT` pin, so the interrupt
+/// handler must do it before it writes `CLRINT`.
+fn seeq_rd8(reg: u8) -> u8 {
+    unsafe { read_volatile(SEEQ_BASE.add((reg as usize) << 2)) }
 }
 
 /// Write one 32-bit word to an HPC3 engine register.
@@ -146,6 +201,20 @@ fn configured_off() -> bool {
     }
 }
 
+/// Whether the environment asks for the polled receive path.
+///
+/// `net.rx=off` keeps the Seeq interrupt masked and the IOC's Ethernet line
+/// disabled, so the driver is exactly the `net=poll` path.  It is the A/B
+/// control for the interrupt measurement and the fallback if a real machine's
+/// acknowledge ordering turns out to differ.
+fn configured_rx_off() -> bool {
+    let mut value = [0u8; 8];
+    match crate::nvram::get("net.rx", &mut value) {
+        Some(n) => matches!(&value[..n], b"off" | b"none" | b"0"),
+        None => false,
+    }
+}
+
 /// The Seeq device as a smoltcp `Device`.
 pub struct SeeqDevice {
     mac: EthernetAddress,
@@ -173,8 +242,10 @@ impl SeeqDevice {
         for (i, b) in mac_bytes.iter().enumerate() {
             seeq_wr8(REG_MAC0.wrapping_add(i as u8), *b);
         }
-        // Station + broadcast + multicast, interrupts left to polling.
-        seeq_wr8(REG_RX_CMD, RX_CMD_STA_MULTI);
+        // Station + broadcast + multicast, and interrupt on a good end of
+        // frame.  The interrupt line is masked at the IOC until the handler
+        // has passed its boot self-test (see `init`).
+        seeq_wr8(REG_RX_CMD, RX_CMD_STA_MULTI | RX_CMD_INT_EOF);
 
         let dev = Self {
             mac: EthernetAddress::from_bytes(&mac_bytes),
@@ -221,7 +292,11 @@ impl SeeqDevice {
             let next = phys(unsafe { desc_base.add((i + 1) % RX_RING) });
             unsafe {
                 write_volatile(&mut self.rx_descs[i].addr, buf_phys[i]);
-                write_volatile(&mut self.rx_descs[i].flags, DESC_ROWN | MAX_RPKT);
+                // XIE is the HPC3-side receive interrupt: the engine raises
+                // its DMA completion when this descriptor fills.  On the Indy
+                // both that bit and the Seeq's own INT pin land on the same
+                // HPC3 ENET interrupt, so either one is enough to wake.
+                write_volatile(&mut self.rx_descs[i].flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
                 write_volatile(&mut self.rx_descs[i].next, next);
             }
         }
@@ -242,8 +317,22 @@ impl SeeqDevice {
         let buf_phys = phys(self.rx_bufs[index].as_ptr());
         unsafe {
             write_volatile(&mut self.rx_descs[index].addr, buf_phys);
-            write_volatile(&mut self.rx_descs[index].flags, DESC_ROWN | MAX_RPKT);
+            write_volatile(
+                &mut self.rx_descs[index].flags,
+                DESC_XIE | DESC_ROWN | MAX_RPKT,
+            );
         }
+    }
+
+    /// Rebuild the ring and restart the receive engine.
+    ///
+    /// This is the recovery for a source `CLRINT` cannot clear: a receive
+    /// buffer overflow leaves the HPC3 re-asserting the Seeq line until the
+    /// channel is reset.  Clearing every descriptor also drops any frame the
+    /// ring still held, which is the same loss the overflow already caused.
+    fn restart_rx(&mut self) {
+        self.rx_index = 0;
+        self.start_rx();
     }
 }
 
@@ -517,6 +606,14 @@ struct Stack {
 static mut SEEQ: *mut SeeqDevice = core::ptr::null_mut();
 static mut STACK: Option<Stack> = None;
 
+/// Register values at the last parked interrupt, for the recovery line.
+static mut PARK_STATUS: (u32, u32) = (0, 0);
+
+/// Whether the receive interrupt is unmasked (set once, after the boot test).
+static mut ARMED: bool = false;
+/// Whether the first real interrupt has been reported on the console.
+static mut FIRST_IRQ_LOGGED: bool = false;
+
 /// The live Seeq device.
 fn seeq() -> Option<&'static mut SeeqDevice> {
     // SAFETY: the pointer is written once during init() and the kernel is
@@ -553,6 +650,22 @@ pub fn init() {
     }
     let seeq = seeq().unwrap();
     seeq.start();
+
+    // Exercise the handler before the line can reach the CPU.  The self-test
+    // runs the real decision path twice: a status with no owned source, which
+    // must be counted and rejected without touching the tick, and the Ethernet
+    // bit, which must defer one wake.  Hardware registers are left alone, so
+    // this cannot consume a frame that arrived during the test.
+    if configured_rx_off() {
+        crate::println("network: rx irq disabled by environment; polling");
+    } else {
+        let armed = arm_rx_interrupt();
+        crate::println(if armed {
+            "network: rx irq armed (ip2, selftest ok)"
+        } else {
+            "network: rx irq unavailable (selftest FAILED); polling"
+        });
+    }
 
     crate::print_str("network: mac ");
     for (i, b) in seeq.mac_address().as_bytes().iter().enumerate() {
@@ -624,30 +737,280 @@ pub fn poll() {
     unsafe {
         if let (Some(stack), Some(dev)) = (STACK.as_mut(), seeq()) {
             let _ = stack.iface.poll(now, dev, &mut stack.sockets);
+            service_dhcp(stack);
+        }
+    }
+    after_frame_service();
+}
 
-            // Service the DHCP socket so renewals and rebinds are applied to
-            // the live interface rather than only handled at boot.
-            if let Some(handle) = stack.dhcp {
-                let event = stack.sockets.get_mut::<dhcpv4::Socket>(handle).poll();
-                match event {
-                    Some(dhcpv4::Event::Configured(config)) => {
-                        let ip = config.address.address();
-                        stack.ip = Some(ip);
-                        stack.dns = config.dns_servers.first().copied();
-                        irix7_netif::apply_lease(&mut stack.iface, config.address, config.router);
-                        crate::print_str("network: lease ");
-                        print_ipv4(ip);
-                        crate::println("");
-                    }
-                    Some(dhcpv4::Event::Deconfigured) => {
-                        stack.ip = None;
-                        crate::println("network: lease lost");
-                    }
-                    None => {}
+/// Thread-side bookkeeping shared by [`poll`] and [`drain`].
+///
+/// The streak is the handler's count of entries since a thread serviced
+/// frames; a poll or drain of any kind clears it.  A parked line is the one
+/// case the interrupt path could not clear, and rebuilding the ring is the
+/// documented recovery.
+fn after_frame_service() {
+    net_irq::reset_streak();
+    if net_irq::take_parked() {
+        recover_rx();
+    }
+}
+
+/// Apply DHCP renewals and rebinds to the live interface.
+fn service_dhcp(stack: &mut Stack) {
+    let Some(handle) = stack.dhcp else {
+        return;
+    };
+    match stack.sockets.get_mut::<dhcpv4::Socket>(handle).poll() {
+        Some(dhcpv4::Event::Configured(config)) => {
+            let ip = config.address.address();
+            stack.ip = Some(ip);
+            stack.dns = config.dns_servers.first().copied();
+            irix7_netif::apply_lease(&mut stack.iface, config.address, config.router);
+            crate::print_str("network: lease ");
+            print_ipv4(ip);
+            crate::println("");
+        }
+        Some(dhcpv4::Event::Deconfigured) => {
+            stack.ip = None;
+            crate::println("network: lease lost");
+        }
+        None => {}
+    }
+}
+
+/// Frames one interrupt-driven pass takes from the ring.
+///
+/// The ring holds eight descriptors, so one pass drains at most one full ring
+/// and returns to the timer, telnet and the module ticks.  A burst larger than
+/// the budget is picked up by the next wake: the Seeq line stays asserted and
+/// the handler sets the deferred flag again.
+pub const RX_DRAIN_BUDGET: usize = RX_RING;
+
+/// Take at most `limit` received frames, then run egress.
+///
+/// This is the bounded half of the interrupt path: frames copied by the hard
+/// handler are processed on the thread that owns the socket set.  `net=poll`
+/// keeps the unbounded [`poll`] path.
+pub fn drain(limit: usize) -> usize {
+    clock_tick();
+    let now = clock_now();
+    let mut taken = 0;
+    // SAFETY: single-threaded kernel; the drain runs on the idle thread.
+    unsafe {
+        if let (Some(stack), Some(dev)) = (STACK.as_mut(), seeq()) {
+            stack.iface.poll_maintenance(now);
+            while taken < limit {
+                match stack
+                    .iface
+                    .poll_ingress_single(now, dev, &mut stack.sockets)
+                {
+                    smoltcp::iface::PollIngressSingleResult::None => break,
+                    _ => taken += 1,
+                }
+            }
+            let _ = stack.iface.poll_egress(now, dev, &mut stack.sockets);
+            service_dhcp(stack);
+        }
+    }
+    // The streak counts interrupts serviced without a thread-side poll; this
+    // pass is one.
+    after_frame_service();
+    taken
+}
+
+/// Whether the Ethernet receive interrupt is unmasked.
+pub fn armed() -> bool {
+    // SAFETY: single-threaded; written once by init() after the boot test.
+    unsafe { ARMED }
+}
+
+/// Interrupt counters for the status page and the gate.
+pub fn irq_stats() -> net_irq::Stats {
+    net_irq::stats(armed())
+}
+
+/// Whether a deferred wake is waiting for the drain.
+pub fn pending() -> bool {
+    net_irq::pending()
+}
+
+/// Take the deferred-wake flag set by [`interrupt`].
+pub fn take_pending() -> bool {
+    net_irq::take_pending()
+}
+
+/// True once, on the first drain after a real Ethernet interrupt.
+///
+/// The boot self-test clears the counters, so this cannot fire from the test.
+pub fn first_irq() -> bool {
+    // SAFETY: single-threaded idle thread.
+    unsafe {
+        if FIRST_IRQ_LOGGED || net_irq::stats(false).rx == 0 {
+            return false;
+        }
+        FIRST_IRQ_LOGGED = true;
+    }
+    true
+}
+
+/// The hard interrupt handler for IP2.
+///
+/// Runs from `trap_handler` on the trap stack with `EXL` set.  It reads the
+/// split HPC3 status, acknowledges the source and sets one deferred flag.  No
+/// allocation, console output, smoltcp call or module call is permitted here;
+/// [`drain`] does the work on the idle thread.
+pub fn interrupt() {
+    service(read_intstat(), true);
+}
+
+/// Read and merge the HPC3's split interrupt-status registers.
+fn read_intstat() -> u32 {
+    // SAFETY: HPC3 registers are memory-mapped and readable at any time.
+    let (istat0, istat1) = unsafe { (read_volatile(HPC3_INTSTAT), read_volatile(HPC3_INTSTAT1)) };
+    net_irq::merge_status(istat0, istat1)
+}
+
+/// Read the receive channel control register.
+///
+/// The read has side effects in the hardware model (it clears `RBO`, mirrors
+/// the Seeq status in the low byte and lets the Seeq retry a held frame), so
+/// it is only read on the one path that has to tell an overflow from a new
+/// frame.
+fn rx_ctrl() -> u32 {
+    hpc3_rd32(RX_ENGINE, ENET_RX_CTRL)
+}
+
+/// Mask IP2 and record that the source needs the drain path to clear it.
+fn park_im2(ctrl: u32, status: u32) {
+    // SAFETY: single-threaded; interrupt context writes, the drain reads.
+    unsafe {
+        PARK_STATUS = (ctrl, status);
+    }
+    mask_im2();
+    net_irq::note_parked();
+}
+
+/// The handler's policy, with the device acknowledge optional so the boot
+/// self-test can run it without touching a device.
+fn service(status: u32, ack: bool) {
+    match net_irq::source(status) {
+        net_irq::Source::Ethernet => {
+            net_irq::note_rx();
+            if ack {
+                ack_enet(status);
+                // The Seeq pin is level-triggered.  A surviving source is a
+                // new frame (handled on the next entry) unless the receive
+                // channel stopped with an overflow, which CLRINT cannot
+                // clear: park the CPU mask so the drain can rebuild the ring.
+                let after = read_intstat();
+                let ctrl = rx_ctrl();
+                let survives = net_irq::source(after) == net_irq::Source::Ethernet;
+                if survives && ctrl & ENET_CTRL_RBO != 0 {
+                    park_im2(ctrl, after);
+                }
+                if net_irq::must_park(net_irq::bump_streak()) {
+                    park_im2(ctrl, after);
                 }
             }
         }
+        net_irq::Source::Spurious => {
+            net_irq::note_spurious();
+            // A level that survives an entry with no readable source would
+            // otherwise trap forever; the drain path re-arms after the next
+            // pass and the line is re-checked.
+            if ack && net_irq::must_park(net_irq::bump_streak()) {
+                park_im2(0, status);
+            }
+        }
     }
+}
+
+/// Acknowledge the Ethernet source in the documented order.
+fn ack_enet(status: u32) {
+    // 1. The Seeq's own status registers.  Reading RX then TX clears both NEW
+    //    bits and drops the chip's INT pin.
+    let _ = seeq_rd8(REG_RX_CMD);
+    let _ = seeq_rd8(REG_TX_CMD);
+    // 2. The HPC3 latch.  CLRINT is a write strobe on the receive channel's
+    //    reset register; it drops ENET_DEV and the IOC's Ethernet line.  It
+    //    must follow the status reads, because it also marks them OLD.
+    unsafe {
+        write_volatile(ENET_RX_RESET, ENET_RX_RESET_CLRINT);
+    }
+    // 3. The DMA status bits this pass serviced (W1C).  The device bit is
+    //    deliberately absent: CLRINT owns it, and a W1C here could clear the
+    //    status while the Seeq pin is still high (see `net_irq::ENET_W1C`).
+    let bits = net_irq::ack_bits(status);
+    if bits != 0 {
+        unsafe {
+            write_volatile(HPC3_INTSTAT, bits);
+        }
+    }
+}
+
+/// Rebuild the receive ring after the handler parked the line.
+fn recover_rx() {
+    // SAFETY: single-threaded; written by the handler, read on the drain path.
+    let (ctrl, status) = unsafe { PARK_STATUS };
+    if let Some(dev) = seeq() {
+        dev.restart_rx();
+        crate::print_str("network: rx ring reset ctrl=0x");
+        crate::print_hex32(ctrl);
+        crate::print_str(" status=0x");
+        crate::print_hex32(status);
+        crate::println("");
+    }
+    if armed() {
+        unmask_im2();
+    }
+}
+
+fn mask_im2() {
+    let status = crate::traps::status_read();
+    crate::traps::status_write(status & !crate::traps::STATUS_IM2);
+}
+
+fn unmask_im2() {
+    let status = crate::traps::status_read();
+    crate::traps::status_write(status | crate::traps::STATUS_IM2);
+}
+
+/// Run the handler's self-test, then unmask the Seeq line and CPU IP2.
+///
+/// `Status.IM2` is set only after the decision path has been exercised, so a
+/// bug in classify/ack cannot turn the timer's fast path into a storm at
+/// boot.  The IOC's local-0 Ethernet bit is the controller-side enable; both
+/// are set here and in [`recover_rx`].
+fn arm_rx_interrupt() -> bool {
+    net_irq::reset_stats();
+    let ticks_before = crate::idle::ticks();
+
+    // A status with no owned source is counted, rejected, and must leave the
+    // 10 ms tick untouched.
+    service(0, false);
+    let rejected = net_irq::stats(false).spurious == 1 && crate::idle::ticks() == ticks_before;
+
+    // The Ethernet bit defers exactly one wake.
+    service(net_irq::ENET_SOURCE, false);
+    let deferred = net_irq::take_pending();
+    let counted = net_irq::stats(false).rx == 1;
+    net_irq::reset_stats();
+
+    let ok = rejected && deferred && counted;
+    if ok {
+        // SAFETY: the IOC register is byte-wide and only this path writes it.
+        unsafe {
+            let mask = read_volatile(IOC_L0_MASK);
+            write_volatile(IOC_L0_MASK, mask | IOC_L0_ETHERNET);
+        }
+        unmask_im2();
+        // SAFETY: single-threaded boot; this is the only writer.
+        unsafe {
+            ARMED = true;
+        }
+    }
+    ok
 }
 
 /// The DHCP-assigned address, if any.
@@ -698,6 +1061,10 @@ pub unsafe fn poll_raw(
     clock_tick();
     let now = clock_now();
     let _ = (*iface).poll(now, &mut *dev, &mut *sockets);
+    // The TLS client pumps the interface through these raw pointers, so this
+    // is a thread-side service too: a long HTTPS fetch must clear the
+    // handler's undrained streak exactly like `poll` and `drain` do.
+    after_frame_service();
 }
 
 /// The Seeq station address.

@@ -33,6 +33,8 @@ traceability.
 
 - [Bounded mesh streams](mesh-streams.md) — #246.
 
+- [Seeq receive interrupt](rx-interrupt.md) — #336 and #248.
+
 - [PowerPC G3 QEMU boot](powerbook-qemu-boot.md) — #287.
 
 - [ATI Rage LT Pro](ati-rage-lt.md) — #328.

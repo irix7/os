@@ -35,6 +35,10 @@ impl<'a> Buf<'a> {
         });
     }
 
+    fn u64(&mut self, value: u64) {
+        irix7_fmt::decimal(value, &mut |b| self.push(core::slice::from_ref(&b)));
+    }
+
     fn hex8(&mut self, value: u8) {
         const HEX: &[u8; 16] = b"0123456789abcdef";
         self.push(&[HEX[(value >> 4) as usize], HEX[(value & 0xf) as usize]]);
@@ -144,6 +148,26 @@ pub fn text(dst: &mut [u8]) -> usize {
         }
         None => w.str("unsynchronised"),
     }
+    w.str("\r\nirq: rx=");
+    let irq = net::irq_stats();
+    w.u32(irq.rx);
+    w.str(" spurious=");
+    w.u32(irq.spurious);
+    w.str(" unexpected=");
+    w.u32(irq.unexpected);
+    w.str(" parked=");
+    w.u32(irq.parked);
+    w.str(" armed=");
+    w.u32(u32::from(irq.armed));
+    let load = crate::idle::load();
+    w.str("\r\nidle: passes=");
+    w.u32(load.passes);
+    w.str(" busy_us=");
+    w.u64(load.busy_us);
+    w.str(" total_us=");
+    w.u64(load.total_us);
+    w.str(" pct=");
+    w.u32(load.percent());
     w.str("\r\n");
     w.len
 }

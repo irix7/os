@@ -46,6 +46,7 @@ pub mod mesh;
 pub mod module;
 pub mod native_sys;
 pub mod net;
+pub mod net_irq;
 pub mod ntp;
 pub mod nvram;
 pub mod ping;
@@ -542,6 +543,7 @@ fn start_userland() {
 /// Idle loop: poll the resident console service, network, and telnet.
 fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
+        let entered = traps::count_read();
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {
             poll(core::ptr::null_mut());
@@ -554,7 +556,18 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
 
         // Drive the network stack, module callbacks and telnet console.
         graphics_console::flush();
-        net::poll();
+        // The Seeq receive interrupt sets one deferred flag; a wake it caused
+        // takes at most one ring here.  The unbounded poll stays the path when
+        // the timer woke the loop, so `net=poll` and boot-time service are
+        // unchanged.
+        if net::take_pending() {
+            if net::first_irq() {
+                console_println("net: rx irq first");
+            }
+            net::drain(net::RX_DRAIN_BUDGET);
+        } else {
+            net::poll();
+        }
         let module_ran = module::poll();
         telnet::poll();
         telnet::poll_local();
@@ -585,11 +598,16 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
             reboot();
         }
 
-        // Park until the next timer tick; iris releases the host core while
-        // wait is outstanding and interrupts are enabled.  A ready module
-        // socket or recent module work uses one 0.5 ms observation; the 10 ms
-        // tick remains the deadline fallback.
-        if module::tcp_ready() || module_ran || module::recently_active() {
+        // Park until the next timer tick or device interrupt.  With the Seeq
+        // receive interrupt armed a frame wakes `wait` directly, so the 0.5 ms
+        // observation would be a poll with extra host-scheduling cost and is
+        // skipped.  Without it (net=poll), a ready module socket or recent
+        // module work still uses one 0.5 ms observation, and the 10 ms tick is
+        // the deadline fallback in both cases.
+        idle::note_pass(entered);
+        if net::armed() {
+            idle::wait();
+        } else if module::any_ready() || module_ran || module::recently_active() {
             idle::wait_short();
         } else {
             idle::wait();

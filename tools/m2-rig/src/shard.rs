@@ -767,7 +767,13 @@ pub fn run(options: &Options) -> Result<i32, String> {
     let environment_options: Vec<Option<_>> = environments.into_iter().map(Some).collect();
     let mut running = Vec::new();
     for (node, environment) in nodes.iter().zip(environment_options.iter()) {
-        crate::rig::write_nvram(node, fixture.port, &module_sha_text, environment.as_ref())?;
+        crate::rig::write_nvram(
+            node,
+            fixture.port,
+            &module_sha_text,
+            environment.as_ref(),
+            options.rx_poll,
+        )?;
     }
     // Boot one kernel at a time.  The emulated serial mirror is not lossless
     // when eight guests boot and log concurrently; this is a harness pacing
