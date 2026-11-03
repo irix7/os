@@ -639,6 +639,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "irix7-seeq"
+version = "0.1.0"
+dependencies = [
+ "smoltcp",
+]
+
+[[package]]
 name = "irix7-sha256"
 version = "0.1.0"
 
@@ -659,6 +666,7 @@ dependencies = [
  "irix7-config",
  "irix7-fmt",
  "irix7-netif",
+ "irix7-seeq",
  "irix7-sha256",
  "kernel-core",
  "m1-policy-bridge",
