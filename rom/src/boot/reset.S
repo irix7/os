@@ -101,6 +101,12 @@ _start:
     bne     $v0, $zero, ram_fail
     nop
 
+    # Network stage (Rust): Seeq up, DHCP lease.  It runs on a stack at the top
+    # of the tested RAM and always returns to the kernel path below.
+    li      $sp, 0xA8A00000
+    jal     rom_netstage
+    nop
+
     # Decompress the kernel payload from PROM to physical 0x08040000 via kseg1.
     la      $a0, rom_payload_start
     lw      $a1, ROM_PAYLOAD_LEN
@@ -276,6 +282,7 @@ serial_puts:
 .end serial_puts
 
 # serial_putc -- send byte in $a0
+.globl serial_putc
 .ent serial_putc
 serial_putc:
     li      $t1, DUART_BASE

@@ -16,6 +16,8 @@ core::arch::global_asm!(include_str!("boot/memsize.S"));
 core::arch::global_asm!(include_str!("boot/memtest.S"));
 core::arch::global_asm!(include_str!("boot/payload.S"));
 
+mod netstage;
+
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {
