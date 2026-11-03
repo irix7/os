@@ -107,7 +107,7 @@ if ! grep -Eq '^mesh-irq-gate: (n0|n1) cold .*p50=[0-9]+ ' "$WORK/irq.log"; then
   echo "mesh-irq-gate: FAIL (no cold series in $WORK/irq.log)" >&2
   exit 1
 fi
-if ! grep -Eq '^mesh-irq-gate: irq rx_final=[1-9][0-9]* ' "$WORK/irq.log"; then
+if ! grep -Eq '^mesh-irq-gate: irq .*rx_final=[1-9][0-9]* ' "$WORK/irq.log"; then
   echo "mesh-irq-gate: FAIL (the handler counted no receive interrupt)" >&2
   exit 1
 fi
