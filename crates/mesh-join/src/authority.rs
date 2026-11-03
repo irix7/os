@@ -263,8 +263,10 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        for node in &failed {
-            let _ = self.table.leave(*node);
+        // One removal set is one epoch: `remove_set` advances it at most once.
+        match self.table.remove_set(&failed) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return None,
         }
         let snapshot = match self.snapshot() {
             Ok(s) => s,

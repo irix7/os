@@ -680,6 +680,27 @@ impl MembershipTable {
         Ok(set)
     }
 
+    /// Remove a set of distinct members as one change.
+    ///
+    /// Absent nodes are ignored.  The epoch advances at most once, and only
+    /// when at least one member was present, so a removal set is one epoch.
+    /// The table is unchanged on error.
+    #[cfg(feature = "confirmed")]
+    pub fn remove_set(&mut self, nodes: &[NodeId]) -> Result<bool, MembershipError> {
+        if !nodes.iter().any(|node| self.nodes.contains_key(node)) {
+            return Ok(false);
+        }
+        let epoch = self
+            .epoch
+            .checked_add(1)
+            .ok_or(MembershipError::EpochOverflow)?;
+        for node in nodes {
+            self.nodes.remove(node);
+        }
+        self.epoch = epoch;
+        Ok(true)
+    }
+
     /// Take a deterministic routing snapshot.
     ///
     /// Failed nodes are excluded; suspect nodes remain visible until the
@@ -795,6 +816,22 @@ mod tests {
         table.leave(node(2)).expect("leave");
         assert!(table.epoch() > epoch);
         assert_eq!(table.active_count(), 1);
+    }
+
+    #[test]
+    fn remove_set_advances_the_epoch_once_and_ignores_absent_nodes() {
+        let mut table = MembershipTable::single(node(1), 0);
+        table.join(node(2), 0).expect("join");
+        table.join(node(3), 0).expect("join");
+        table.join(node(4), 0).expect("join");
+        let before = table.epoch();
+        // An absent node alone changes nothing.
+        assert_eq!(table.remove_set(&[node(9)]), Ok(false));
+        assert_eq!(table.epoch(), before);
+        // Three removals in one set are one epoch, absent node included.
+        assert_eq!(table.remove_set(&[node(2), node(3), node(9)]), Ok(true));
+        assert_eq!(table.epoch(), before + 1);
+        assert_eq!(table.active_count(), 2);
     }
 
     #[test]

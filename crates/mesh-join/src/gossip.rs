@@ -985,4 +985,28 @@ mod tests {
         assert_eq!(root.stats().epoch_changes, 2);
         assert_eq!(root.stats().members_removed, 3);
     }
+
+    #[test]
+    fn authority_removal_advances_the_epoch_once_per_set() {
+        let mut root = aggregator(1);
+        let bootstrap = root.publish().expect("publish");
+        for id in 2..=5 {
+            root.ingest(
+                &summary(id, bootstrap.epoch, bootstrap.digest, 0x100 + id as u64, 1),
+                true,
+                0,
+            )
+            .expect("candidate");
+        }
+        let aggregate = root.aggregate(1).expect("aggregate").expect("change");
+        // Three members go silent; member 2 stays live.
+        let live = summary(2, aggregate.epoch, aggregate.digest, 0x102, 2);
+        assert_eq!(root.ingest(&live, true, 2_000), Ok(Ingest::Alive));
+        root.expire(mesh_service::FAIL_AFTER_MS + 1_000);
+        let before = root.authority.epoch();
+        let removal = root.authority.remove_failed().expect("removal set");
+        assert_eq!(removal.nodes.len(), 3);
+        // One change set, one epoch advance, not one per removed node.
+        assert_eq!(root.authority.epoch(), before + 1);
+    }
 }
