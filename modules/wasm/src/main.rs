@@ -18,6 +18,10 @@
 
 #![no_std]
 #![no_main]
+#![cfg_attr(
+    any(target_arch = "mips", target_arch = "mips64"),
+    feature(asm_experimental_arch)
+)]
 
 extern crate alloc;
 
@@ -69,6 +73,19 @@ static BAD: ModuleVtable = ModuleVtable {
 
 fn log(services: &Services, text: &[u8]) {
     (services.write)(text.as_ptr(), text.len());
+}
+
+fn write_hex(services: &Services, value: usize) {
+    log(services, b"0x");
+    for shift in (0..8).rev() {
+        let nibble = ((value >> (shift * 4)) & 0xf) as u8;
+        let digit = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + nibble - 10
+        };
+        log(services, &[digit]);
+    }
 }
 
 fn write_dec(services: &Services, mut value: u64) {
@@ -321,6 +338,70 @@ unsafe fn publish_bridge(policy: *mut Policy) -> bool {
     true
 }
 
+/// Guest stack: the 832 KiB kseg0 window from `0x882d_0000` to this top.  It
+/// sits between the kernel's `.bss` and the kernel's boot stack; the kernel's
+/// own boot stack peaks at about 37 KiB and stays above `GUEST_STACK_TOP`, so
+/// the two never meet.  A policy boot uses about 734 KiB (issue #272).
+const GUEST_STACK_TOP: usize = 0x883a_0000;
+
+// `wasm_call_on_stack(stack_top, entry, arg)`: switch `$sp` to `stack_top`,
+// call `entry(arg)`, switch back.  The return address and `$s0` (the old
+// stack pointer) are saved on the old stack.  The delay slot after `jalr`
+// loads the argument, so `entry` sees `$a0 = arg`.
+#[cfg(any(target_arch = "mips", target_arch = "mips64"))]
+core::arch::global_asm!(
+    ".set noreorder",
+    ".globl wasm_call_on_stack",
+    ".ent wasm_call_on_stack",
+    "wasm_call_on_stack:",
+    "addiu $sp, $sp, -32",
+    "sw $ra, 28($sp)",
+    "sw $s0, 24($sp)",
+    "move $s0, $sp",
+    "move $sp, $a0",
+    "move $t9, $a1",
+    "jalr $t9",
+    "move $a0, $a2",
+    "move $sp, $s0",
+    "lw $s0, 24($sp)",
+    "lw $ra, 28($sp)",
+    "jr $ra",
+    "addiu $sp, $sp, 32",
+    ".end wasm_call_on_stack",
+    ".set reorder",
+);
+
+#[cfg(any(target_arch = "mips", target_arch = "mips64"))]
+extern "C" {
+    fn wasm_call_on_stack(stack_top: usize, entry: extern "C" fn(usize), arg: usize);
+}
+
+/// Non-MIPS builds (the x86 CI link) have no stack switch; the call runs on the
+/// current stack.  The MIPS kernel always takes the switch above.
+#[cfg(not(any(target_arch = "mips", target_arch = "mips64")))]
+unsafe fn wasm_call_on_stack(_stack_top: usize, entry: extern "C" fn(usize), arg: usize) {
+    entry(arg);
+}
+
+/// Outcome of the guest run, written by `guest_entry` on the guest stack.
+static mut GUEST_RESULT: Result<i32, ()> = Err(());
+
+extern "C" fn guest_entry(host: usize) {
+    // Diagnostic: the guest's stack pointer, so a boot log shows the switch.
+    let marker: usize = 0;
+    let here = core::hint::black_box(&marker) as *const usize as usize;
+    if let Some(services) = services() {
+        log(services, b"wasm: guest sp=");
+        write_hex(services, here);
+        log(services, b"\n");
+    }
+    // SAFETY: `host` is the `Host` on the caller's frame, alive for the call.
+    let host = unsafe { &*(host as *const Host) };
+    let result = host.run_i32(GUEST, "run", 10_000_000).map_err(|_| ());
+    // SAFETY: single-threaded module; only this call writes the result.
+    unsafe { GUEST_RESULT = result };
+}
+
 /// # Safety
 /// `services` must point to a valid v11 kernel service table.
 #[no_mangle]
@@ -376,7 +457,12 @@ pub unsafe extern "C" fn _start(services: *const Services) -> *const ModuleVtabl
         }
     };
     let started = (services.clock_ms)();
-    let result = host.run_i32(GUEST, "run", 10_000_000);
+    // SAFETY: the guest window is reserved for this call; see GUEST_STACK_TOP.
+    unsafe {
+        wasm_call_on_stack(GUEST_STACK_TOP, guest_entry, &host as *const Host as usize);
+    }
+    // SAFETY: `guest_entry` has returned, so the result is complete.
+    let result = unsafe { GUEST_RESULT };
     let elapsed = (services.clock_ms)().saturating_sub(started);
     log(services, b"wasm: runtime=");
     write_dec(services, elapsed);
