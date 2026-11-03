@@ -60,6 +60,9 @@ SECTIONS
    * docs/adr/m3-0006-udp-transport.md).  The 1 MiB between 0x8830_0000 and the
    * module area at 0x8840_0000 is reserved and otherwise unused, so the top
    * sits just below the module area and the stack gets the whole window. */
+  // The Wasm policy guest runs on its own stack, 0x882d_0000 to 0x883a_0000
+  // (modules/wasm GUEST_STACK_TOP).  The kernel's boot stack must stay above
+  // 0x883a_0000: its own use peaks at about 37 KiB (issue #272).
   __stack_top = 0x883f0000;
 
   /* A boot stack that grows into .bss corrupts statics.  Keep a real gap. */
