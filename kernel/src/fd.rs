@@ -473,6 +473,23 @@ pub fn set_cwd(path: &[u8]) -> SysResult<()> {
     Ok(())
 }
 
+/// `fchdir(fd)`: make the directory an open descriptor names the cwd.
+///
+/// The descriptor must name a live directory; a closed descriptor is `EBADF`
+/// and any other kind is `ENOTDIR`.
+pub fn fchdir(fd: i32) -> SysResult<()> {
+    match kind(fd) {
+        Kind::Closed => Err(CELL_E_BADF),
+        Kind::Dir(node) if is_directory(node) => {
+            unsafe {
+                CWD_NODE = node;
+            }
+            Ok(())
+        }
+        _ => Err(CELL_E_NOTDIR),
+    }
+}
+
 /// The absolute path of the current directory, or `None` when it does not
 /// fit the caller's buffer.
 pub fn copy_cwd(out: &mut [u8; 64]) -> Option<usize> {

@@ -168,7 +168,7 @@ jobs:
           key: relibc-pal-${{ runner.os }}-2026.08-1-${{ hashFiles('tools/relibc-pal/build.sh', 'targets/mips3-sgi-irix7-native-n32.json', 'user/relibc-*/**') }}
       - name: Build the pinned relibc probes
         env:
-          RELIBC_COMMIT: 8a7e044f584945dbf5fdbad11fd76e16daa420b9
+          RELIBC_COMMIT: 083698215ca72eada079fa8ce95331ee4320444f
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -203,7 +203,7 @@ jobs:
             CARGO=cargo \
               tools/relibc-pal/build.sh "$out"
           fi
-          grep -q '^relibc=8a7e044f584945dbf5fdbad11fd76e16daa420b9$' \
+          grep -q '^relibc=083698215ca72eada079fa8ce95331ee4320444f$' \
             "$out/BUILD-PROVENANCE.txt"
           for probe in probe thread-probe futex-probe pthread-probe sleep-probe \
             forkexec-probe forkexec-child; do

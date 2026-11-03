@@ -218,6 +218,7 @@ fn v0_syscall_table_is_pinned_and_distinct() {
         );
     }
     assert_eq!(SYS_GETDENTS, 30);
+    assert_eq!(SYS_FCHDIR, 48);
     assert_eq!(SYS_LSEEK, 25);
     assert_eq!(SYS_UNLINK, 31);
     assert_eq!(SYS_RENAME, 32);

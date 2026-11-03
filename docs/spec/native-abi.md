@@ -1586,6 +1586,7 @@ success.  `SYS_EXIT` does not return.
 | 45 | `wait4` | `pid`, `status`, `options`, `rusage` |
 | 46 | `getppid` | — |
 | 47 | `cell_id` | `struct cell_id *` |
+| 48 | `fchdir` | `fd` |
 
 The namespace behind these calls is the in-memory ramfs: a mutable tree of
 inodes with names, sizes and permissions.  `open` takes the path, flags and

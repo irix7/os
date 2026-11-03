@@ -8,13 +8,14 @@ and a review mirror of the change.
 | Item | Value |
 |---|---|
 | Branch | `irix7-pal` |
-| Commit | `8a7e044f584945dbf5fdbad11fd76e16daa420b9` |
+| Commit | `083698215ca72eada079fa8ce95331ee4320444f` |
 | Series base | `a36041ac5201ede0c3853d548de5aa7fbfb0c708` |
-| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep, `0009` fork/exec/wait) |
+| Mirror | [`patches/`](patches/) (`0001` functional, `0002` formatting, `0003` file calls, `0004` poll and `O_NONBLOCK`, `0005` writable ramfs, `0006` futex, `0007` pthreads, `0008` sleep, `0009` fork/exec/wait, `0010` fchdir and the sync family) |
 | Probe sources | [`user/relibc-probe/probe.c`](../../user/relibc-probe/probe.c), [`user/relibc-thread-probe/probe.c`](../../user/relibc-thread-probe/probe.c), [`user/relibc-futex-probe/probe.c`](../../user/relibc-futex-probe/probe.c), [`user/relibc-pthread-probe/probe.c`](../../user/relibc-pthread-probe/probe.c), [`user/relibc-sleep-probe/probe.c`](../../user/relibc-sleep-probe/probe.c), [`user/relibc-sleep-cell-probe/probe.c`](../../user/relibc-sleep-cell-probe/probe.c), [`user/relibc-forkexec-probe/probe.c`](../../user/relibc-forkexec-probe/probe.c) and [`user/relibc-forkexec-child/probe.c`](../../user/relibc-forkexec-child/probe.c) |
 
-The mirror is generated with `git format-patch a36041ac..8a7e044f` and applies
-on top of `a36041ac`.  It exists for review; the build script pins and verifies
+`0001`-`0009` are generated with `git format-patch a36041ac..8a7e044f`; `0010` with
+`git format-patch 8a7e044f..083698215` and applies on top of `0009`.  The series
+starts at `a36041ac`.  It exists for review; the build script pins and verifies
 the branch commit, not the patch.
 
 ## What the branch changes
