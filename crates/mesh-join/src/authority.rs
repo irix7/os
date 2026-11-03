@@ -19,7 +19,7 @@ use core::fmt;
 pub use cap_engine::SigningAuthority;
 use cap_engine::{KeyError, TrustStore};
 use mesh_service::{
-    Change, FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
+    FailureDetector, MembershipError, MembershipTable, NodeState, Observe, Transition,
 };
 use sys_primitives::{NodeId, NodeKey};
 
@@ -263,19 +263,10 @@ impl AuthorityRoot {
         if failed.is_empty() {
             return None;
         }
-        let changes: alloc::vec::Vec<Change> = failed
-            .iter()
-            .copied()
-            .map(|node| Change::Remove { node })
-            .collect();
-        // `now_ns` is only used for `Change::Add` (last_seen_ns); a removal set
-        // never refreshes a record, so any value is valid here.
-        let set = match self.table.apply(&changes, 0) {
-            Ok(set) => set,
-            Err(_) => return None,
-        };
-        if !set.changed {
-            return None;
+        // One removal set is one epoch: `remove_set` advances it at most once.
+        match self.table.remove_set(&failed) {
+            Ok(true) => {}
+            Ok(false) | Err(_) => return None,
         }
         let snapshot = match self.snapshot() {
             Ok(s) => s,
