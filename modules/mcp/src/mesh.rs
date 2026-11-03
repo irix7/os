@@ -328,6 +328,22 @@ struct Mesh {
     retire_stream: Option<u32>,
 }
 
+/// Samples one probe can hold.  The array is in the module's static and slot A
+/// is close to its 512 KiB limit, so this stays at the shipped 64: the gate
+/// repeats the series and takes the median rather than growing the image.
+const LATENCY_SAMPLES: usize = 64;
+
+/// Spacing between `/mesh/latency` samples when the query names no `gap`.
+///
+/// 20 ms is the hot-link probe: it keeps the node inside the kernel's 50 ms
+/// activity window.  A gap above that window (the rig uses 250 ms) lets the
+/// node park and is the cold-path measurement: the round trip then includes
+/// the interrupt wake.
+const DEFAULT_LATENCY_GAP_MS: u32 = 20;
+/// Longest accepted inter-sample gap.  Keeps a 64-sample probe under a minute
+/// so the MCP HTTP slot is not held by a runaway query.
+const MAX_LATENCY_GAP_MS: u32 = 1_000;
+
 struct LatencyProbe {
     count: u32,
     sent: u32,
@@ -335,7 +351,10 @@ struct LatencyProbe {
     outstanding: bool,
     pending_send_ms: u32,
     next_ms: u64,
-    samples: [u64; 64],
+    /// Spacing between samples.  20 ms keeps the node in the hot window; a gap
+    /// beyond the 50 ms activity window measures the cold path.
+    gap_ms: u32,
+    samples: [u64; LATENCY_SAMPLES],
     peak_ms: u64,
 }
 
@@ -622,14 +641,16 @@ pub fn tick(services: &Services) {
 
 /// Render or start `GET /mesh/latency`, a bounded mesh round-trip probe.
 ///
-/// `?start=1&count=N` sends `N` sequential `Request/Latency` records to the
-/// current peer and records the mesh round trip.  `?status=1` returns p50/p95
-/// from the recorded samples.  The MCP HTTP phase machine is outside the
-/// measured interval.
+/// `?start=1&count=N&gap=MS` sends `N` sequential `Request/Latency` records to
+/// the current peer and records the mesh round trip.  `gap` defaults to 20 ms
+/// (hot link); a gap above the kernel's 50 ms activity window measures the
+/// cold path.  `?status=1` returns p50/p95/p99 from the recorded samples.  The
+/// MCP HTTP phase machine is outside the measured interval.
 #[inline(never)]
 pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, usize) {
     let mut start = false;
     let mut count = 32u32;
+    let mut gap_ms = DEFAULT_LATENCY_GAP_MS;
     if let Some(question) = path.iter().position(|byte| *byte == b'?') {
         for part in path[question + 1..].split(|byte| *byte == b'&') {
             if part.is_empty() {
@@ -645,6 +666,10 @@ pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u1
                     Some(parsed) => count = parsed,
                     None => return bulk_line(out, 400, "bad-request reason=count"),
                 },
+                b"gap" => match parse_u32(value) {
+                    Some(parsed) if parsed <= MAX_LATENCY_GAP_MS => gap_ms = parsed,
+                    _ => return bulk_line(out, 400, "bad-request reason=gap"),
+                },
                 _ => return bulk_line(out, 400, "bad-request reason=query"),
             }
         }
@@ -654,7 +679,7 @@ pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u1
     };
     let now = (services.clock_ms)();
     if start {
-        if !mesh.start_latency(count, now) {
+        if !mesh.start_latency(count, gap_ms, now) {
             return bulk_line(out, 409, "not-connected");
         }
         return bulk_line(out, 202, "started");
@@ -676,6 +701,8 @@ pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u1
             body.u64(probe.received as u64);
             body.str(" count=");
             body.u64(probe.count as u64);
+            body.str(" gap=");
+            body.u64(probe.gap_ms as u64);
             let mut samples = probe.samples;
             let used = (probe.received as usize).min(samples.len());
             samples[..used].sort_unstable();
@@ -684,6 +711,8 @@ pub fn latency_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u1
                 body.u64(samples[used / 2]);
                 body.str(" p95=");
                 body.u64(samples[(used * 95 / 100).min(used - 1)]);
+                body.str(" p99=");
+                body.u64(samples[(used * 99 / 100).min(used - 1)]);
                 body.str(" min=");
                 body.u64(samples[0]);
                 body.str(" max=");
@@ -819,7 +848,7 @@ pub fn bulk_response(services: &Services, path: &[u8], out: &mut [u8]) -> (u16, 
         if mesh.peer.is_none() {
             return bulk_line(out, 409, "no-peer");
         }
-        if latency > 0 && !mesh.start_latency(latency, now) {
+        if latency > 0 && !mesh.start_latency(latency, DEFAULT_LATENCY_GAP_MS, now) {
             return bulk_line(out, 409, "latency");
         }
         if !mesh.start_bulk(services, bytes, chunk, now) {
@@ -3388,11 +3417,11 @@ impl Mesh {
         self.stage_control(stream, header, frame_header, &body)
     }
 
-    fn start_latency(&mut self, count: u32, now: u64) -> bool {
+    fn start_latency(&mut self, count: u32, gap_ms: u32, now: u64) -> bool {
         if !matches!(self.phase, Phase::Connected) || self.peer.is_none() {
             return false;
         }
-        let count = count.clamp(1, 64);
+        let count = count.clamp(1, LATENCY_SAMPLES as u32);
         self.latency = Some(LatencyProbe {
             count,
             sent: 0,
@@ -3400,7 +3429,8 @@ impl Mesh {
             outstanding: false,
             pending_send_ms: 0,
             next_ms: now,
-            samples: [0; 64],
+            gap_ms: gap_ms.min(MAX_LATENCY_GAP_MS),
+            samples: [0; LATENCY_SAMPLES],
             peak_ms: 0,
         });
         true
@@ -3449,7 +3479,7 @@ impl Mesh {
         probe.received = probe.received.saturating_add(1);
         probe.outstanding = false;
         probe.peak_ms = probe.peak_ms.max(elapsed);
-        probe.next_ms = now.saturating_add(20);
+        probe.next_ms = now.saturating_add(u64::from(probe.gap_ms));
     }
 
     fn queue_window_update(

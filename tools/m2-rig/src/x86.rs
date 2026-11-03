@@ -207,7 +207,13 @@ pub fn mixed(options: &Options) -> Result<i32, String> {
         rig::mesh_environments(&nodes, rig::Fault::None, rig::Transport::Relay);
 
     // Indy node.
-    rig::write_nvram(&iris, mcp.port, &module_sha, environments[0].as_ref())?;
+    rig::write_nvram(
+        &iris,
+        mcp.port,
+        &module_sha,
+        environments[0].as_ref(),
+        options.rx_poll,
+    )?;
     let mut running = rig::start_node(options, &iris)?;
     rig::wait_ci_ready(options, &iris, crate::timing::secs(20))?;
     rig::start_cpu(options, &iris)?;

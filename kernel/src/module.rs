@@ -16,6 +16,8 @@ use smoltcp::iface::{Interface, SocketHandle, SocketSet};
 use smoltcp::socket::udp::{PacketBuffer, RecvError, SendError, Socket as UdpSocket, UdpMetadata};
 use smoltcp::storage::PacketMetadata;
 
+use crate::net_irq;
+
 /// The loadable-module ABI, shared with every module image.
 pub use module_abi::{
     ModuleArena, ModuleContext, ModuleEntry, ModuleExportBinding, ModuleHandle, ModuleInfo,
@@ -97,12 +99,82 @@ static mut TICKS: [Option<unsafe extern "C" fn(*const module_abi::Services) -> i
     MODULE_REGION_COUNT] = [None; MODULE_REGION_COUNT];
 static mut LAST_TICKS: [u64; MODULE_REGION_COUNT] = [0; MODULE_REGION_COUNT];
 
+/// Owning module region for each TCP slot, or [`net_irq::NO_OWNER`] when the
+/// socket was not created inside a module call.
+static mut SLOT_OWNER: [u8; MODULE_TCP_SLOTS] = [net_irq::NO_OWNER; MODULE_TCP_SLOTS];
+
+/// The module region whose entry or tick is currently running.
+///
+/// A socket created inside a module call is attributed to that region, so a
+/// ready socket wakes only the module that owns it instead of every loaded
+/// module.  `usize::MAX` means "no module call"; sockets created there are
+/// unowned and wake every region.
+static mut CURRENT_REGION: usize = usize::MAX;
+
+/// Run `f` with `region` as the current module.
+fn with_region<R>(region: usize, f: impl FnOnce() -> R) -> R {
+    // SAFETY: single-threaded; the nested save/restore keeps the caller's
+    // value if a module calls back into the loader.
+    let previous = unsafe { CURRENT_REGION };
+    unsafe { CURRENT_REGION = region };
+    let result = f();
+    unsafe { CURRENT_REGION = previous };
+    result
+}
+
+/// Attribute `slot` to the region that is creating it.
+fn adopt_slot(slot: u32) {
+    let slot = slot as usize;
+    if slot >= MODULE_TCP_SLOTS {
+        return;
+    }
+    // SAFETY: single-threaded; module calls run one at a time.
+    let owner = unsafe { CURRENT_REGION };
+    let tag = if owner == usize::MAX {
+        net_irq::NO_OWNER
+    } else {
+        owner as u8
+    };
+    unsafe {
+        SLOT_OWNER[slot] = tag;
+    }
+}
+
+/// Regions with a ready socket, as a bit per region.
+///
+/// The 10 ms gate still runs every region, so a region with no socket is
+/// delayed by at most one tick; a ready socket wakes its owner immediately.
+pub(crate) fn ready_regions() -> u64 {
+    let mut owners = [net_irq::NO_OWNER; MODULE_TCP_SLOTS];
+    let mut ready = [false; MODULE_TCP_SLOTS];
+    for (slot, (owner, ready_slot)) in owners.iter_mut().zip(ready.iter_mut()).enumerate() {
+        let mask = tcp_events(slot as u32);
+        *ready_slot = net_irq::slot_ready(mask);
+        // SAFETY: single-threaded; the owner table is written by adopt_slot.
+        *owner = unsafe { SLOT_OWNER[slot] };
+    }
+    net_irq::ready_regions(&owners, &ready, MODULE_REGION_COUNT)
+}
+
+/// Whether any region has a ready socket.
+pub fn any_ready() -> bool {
+    ready_regions() != 0
+}
+
 /// Drop a region's callback; used by load, unload and failed entries.
 fn clear_tick(index: usize) {
     if index < MODULE_REGION_COUNT {
         // SAFETY: single-threaded kernel; every writer is on the boot/idle path.
         unsafe {
             TICKS[index] = None;
+            // A slot cannot outlive the module that created it: a reloaded
+            // region re-adopts its sockets, and a removed region must not wake
+            // on a stale ready bit.
+            for slot in 0..MODULE_TCP_SLOTS {
+                if SLOT_OWNER[slot] == index as u8 {
+                    SLOT_OWNER[slot] = net_irq::NO_OWNER;
+                }
+            }
         }
     }
 }
@@ -174,8 +246,12 @@ pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
     // A new image replaces any previous callback in this region.
     clear_tick(index);
     let image = kernel_core::image::Image::new(slot_base(slot), slot_size(slot), "indy");
-    // SAFETY: the caller verified the image and its hash.
-    match unsafe { kernel_core::image::enter(&image, len, &mut IndyHost) } {
+    // SAFETY: the caller verified the image and its hash.  Sockets this entry
+    // creates belong to this boot slot, not to every loaded module:
+    // `ready_regions` uses the tag to wake only the owner.
+    match with_region(index, || unsafe {
+        kernel_core::image::enter(&image, len, &mut IndyHost)
+    }) {
         Ok(report) => {
             if let Some(vtable) = report.vtable() {
                 // SAFETY: the vtable lives inside the verified image, and the
@@ -192,33 +268,30 @@ pub unsafe fn call_entry(slot: Slot, len: usize) -> i32 {
     }
 }
 
-/// Whether any module TCP slot has data, a closed connection or recovered
-/// transmit space.  Used by the idle loop to shorten the next wait.
-pub fn tcp_ready() -> bool {
-    for slot in 0..MODULE_TCP_SLOTS as u32 {
-        let mask = tcp_events(slot);
-        if mask & ((1 << 0) | (1 << 1) | (1 << 2)) != 0 {
-            return true;
-        }
-    }
-    false
-}
-
-/// Last time any module tick ran, for the short-wait decision.
+/// Last time a module was woken by socket readiness, for the short-wait
+/// decision.  The 10 ms gate does not set this: a tick that only honoured the
+/// deadline is not traffic, and treating it as activity would keep an idle
+/// node on the 0.5 ms observation forever.
 static mut LAST_ACTIVITY_MS: u64 = 0;
 
-/// Whether a module did work recently enough that a short wait can catch the
-/// peer's next record.  This is a wake hint, not a work queue.
+/// Whether a module serviced a ready socket recently enough that a short wait
+/// can catch the peer's next record.  This is a wake hint, not a work queue.
 pub fn recently_active() -> bool {
     let now = crate::services::clock_ms();
     // SAFETY: single-threaded kernel.
     unsafe { now.saturating_sub(LAST_ACTIVITY_MS) < 50 }
 }
 
+/// Run the due and ready module regions.
+///
+/// Returns whether any region ran because a socket was ready, not merely
+/// because its 10 ms deadline elapsed.  The caller uses that answer to decide
+/// between the 10 ms and 0.5 ms waits, so a deadline tick must not count as
+/// activity.
 pub fn poll() -> bool {
     let now = crate::services::clock_ms();
-    let ready = tcp_ready();
-    let mut ran = false;
+    let ready = ready_regions();
+    let mut woke = false;
     for index in 0..MODULE_REGION_COUNT {
         // SAFETY: single-threaded kernel; the arrays are only written here
         // and by load/execute/unload on the same thread.
@@ -227,27 +300,30 @@ pub fn poll() -> bool {
             continue;
         };
         let last = unsafe { LAST_TICKS[index] };
-        // Readiness wakes the region immediately; the 10 ms gate remains the
-        // deadline/fallback cadence for retries, leases and heartbeats.
-        if !ready && now.saturating_sub(last) < 10 {
+        // Readiness wakes the owning region immediately; the 10 ms gate stays
+        // the deadline/fallback cadence for retries, leases and heartbeats in
+        // every region, including ones with no socket of their own.
+        let ready_region = ready & (1u64 << index) != 0;
+        let due = now.saturating_sub(last) >= 10;
+        if !due && !ready_region {
             continue;
         }
         unsafe {
             LAST_TICKS[index] = now;
         }
-        let status = unsafe { tick(&kernel_core::service::SERVICES) };
-        ran = true;
+        let status = with_region(index, || unsafe { tick(&kernel_core::service::SERVICES) });
+        woke |= ready_region;
         if status != 0 {
             clear_tick(index);
         }
     }
-    if ran {
+    if woke {
         // SAFETY: single-threaded kernel.
         unsafe {
             LAST_ACTIVITY_MS = now;
         }
     }
-    ran
+    woke
 }
 
 const REGION_SIZE: usize = ARENA_REGION_SIZE;
@@ -464,7 +540,9 @@ pub(crate) fn module_execute(
     // manager owns the opaque context for the duration of the call.
     let entry: ModuleEntry = unsafe { core::mem::transmute(entry) };
     let context = context.map_or(core::ptr::null(), |context| context as *const ModuleContext);
-    let vtable = unsafe { entry(&kernel_core::service::SERVICES, context) };
+    let vtable = with_region(2 + region, || unsafe {
+        entry(&kernel_core::service::SERVICES, context)
+    });
     module.state = MODULE_STATE_ENTERED;
     let tick_index = 2 + region;
     let status = if vtable.is_null() {
@@ -646,11 +724,19 @@ fn module_tcp() -> &'static mut module_tcp::Slots<MODULE_TCP_SLOTS, MODULE_TCP_B
 }
 
 pub(crate) fn tcp_listen(slot: u32, port: u16) -> i32 {
-    module_tcp().listen::<IndyStack>(slot, port)
+    let result = module_tcp().listen::<IndyStack>(slot, port);
+    if result == 0 {
+        adopt_slot(slot);
+    }
+    result
 }
 
 pub(crate) fn tcp_connect(slot: u32, address: u32, port: u16) -> i32 {
-    module_tcp().connect::<IndyStack>(slot, address, port)
+    let result = module_tcp().connect::<IndyStack>(slot, address, port);
+    if result == 0 {
+        adopt_slot(slot);
+    }
+    result
 }
 
 /// Level-triggered readiness for one module TCP slot.  The bits are recomputed

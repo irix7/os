@@ -37,6 +37,9 @@ pub enum Action {
     /// Start two kernels and run the #337 stream gate: control during a
     /// backpressured bulk transfer, cancel/reset and reuse.
     Stream,
+    /// Start two kernels, join them, and measure hot/cold mesh latency plus
+    /// the guest's idle load (the #336 interrupt-path gate).
+    IrqGate,
     /// Start the M3 shard slice: `--nodes` kernels, join through the direct
     /// two-node relay (or the experimental hub), shard evidence and one route.
     Shard,
@@ -71,6 +74,7 @@ impl Action {
             "run" => Self::Run,
             "bulk" => Self::Bulk,
             "stream" => Self::Stream,
+            "irq-gate" => Self::IrqGate,
             "shard" => Self::Shard,
             "up" => Self::Up,
             "down" => Self::Down,
@@ -228,6 +232,8 @@ pub struct Options {
     pub fault: Fault,
     /// Leave the nodes running after `run`.
     pub keep: bool,
+    /// Boot with `net.rx=off`: the polled receive path, for the A/B control.
+    pub rx_poll: bool,
     /// Print extra detail.
     pub verbose: bool,
 }
@@ -300,6 +306,7 @@ where
     let mut timeout = crate::timing::secs(180);
     let mut fault = Fault::None;
     let mut keep = false;
+    let mut rx_poll = false;
     let mut verbose = false;
 
     let mut iter = args.into_iter();
@@ -353,6 +360,7 @@ where
                 })?;
             }
             "--keep" => keep = true,
+            "--rx-poll" => rx_poll = true,
             "--verbose" => verbose = true,
             other if other.starts_with('-') => {
                 return Err(format!("unknown option {other}"));
@@ -402,6 +410,7 @@ where
         timeout,
         fault,
         keep,
+        rx_poll,
         verbose,
     }))
 }
@@ -975,8 +984,12 @@ pub fn write_nvram(
     fixture_port: u16,
     module_sha256: &str,
     mesh: Option<&MeshEnv>,
+    rx_poll: bool,
 ) -> Result<(), String> {
     let mut env = node.environment(fixture_port, mesh);
+    if rx_poll {
+        env.push(("net.rx".to_string(), "off".to_string()));
+    }
     for (name, value) in &mut env {
         if name == "mcp.sha256" {
             *value = module_sha256.to_string();
@@ -1703,6 +1716,7 @@ mod tests {
             timeout: crate::timing::secs(1),
             fault: Fault::None,
             keep: false,
+            rx_poll: false,
             verbose: false,
         };
         assert_eq!(options.port_base(0), 9100);
