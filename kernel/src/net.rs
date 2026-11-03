@@ -281,6 +281,15 @@ impl SeeqDevice {
         self.mac
     }
 
+    /// Raw pointer to receive descriptor `index`, taken from the ring base so
+    /// the volatile writes go through a bounds-checked element pointer rather
+    /// than a reference to one field.
+    fn rx_desc_ptr(&mut self, index: usize) -> *mut DmaDesc {
+        assert!(index < RX_RING);
+        // SAFETY: `index` is below RX_RING, the length of `rx_descs`.
+        unsafe { self.rx_descs.as_mut_ptr().add(index) }
+    }
+
     /// Build the descriptor ring and activate the RX engine.
     fn start_rx(&mut self) {
         let mut buf_phys = [0u32; RX_RING];
@@ -290,14 +299,15 @@ impl SeeqDevice {
         let desc_base = self.rx_descs.as_ptr();
         for i in 0..RX_RING {
             let next = phys(unsafe { desc_base.add((i + 1) % RX_RING) });
+            let desc = self.rx_desc_ptr(i);
             unsafe {
-                write_volatile(&mut self.rx_descs[i].addr, buf_phys[i]);
+                write_volatile(&raw mut (*desc).addr, buf_phys[i]);
                 // XIE is the HPC3-side receive interrupt: the engine raises
                 // its DMA completion when this descriptor fills.  On the Indy
                 // both that bit and the Seeq's own INT pin land on the same
                 // HPC3 ENET interrupt, so either one is enough to wake.
-                write_volatile(&mut self.rx_descs[i].flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
-                write_volatile(&mut self.rx_descs[i].next, next);
+                write_volatile(&raw mut (*desc).flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
+                write_volatile(&raw mut (*desc).next, next);
             }
         }
 
@@ -315,12 +325,10 @@ impl SeeqDevice {
     /// stopped here.
     fn rearm_rx(&mut self, index: usize) {
         let buf_phys = phys(self.rx_bufs[index].as_ptr());
+        let desc = self.rx_desc_ptr(index);
         unsafe {
-            write_volatile(&mut self.rx_descs[index].addr, buf_phys);
-            write_volatile(
-                &mut self.rx_descs[index].flags,
-                DESC_XIE | DESC_ROWN | MAX_RPKT,
-            );
+            write_volatile(&raw mut (*desc).addr, buf_phys);
+            write_volatile(&raw mut (*desc).flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
         }
     }
 
