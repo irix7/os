@@ -1,0 +1,21 @@
+[package]
+name = "netprobe"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[[bin]]
+name = "netprobe"
+path = "src/main.rs"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+
+[dependencies]
+irix7-sha256 = { path = "../crates/irix7-sha256" }
+embedded-io = { version = "0.7", default-features = false }
+embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384", "rsa"] }
+rand_core = { version = "0.6", default-features = false }
+x509-cert = { version = "0.2", default-features = false }
+smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dns", "proto-dhcpv4", "socket-dns", "socket-udp", "socket-tcp", "socket-dhcpv4"] }
