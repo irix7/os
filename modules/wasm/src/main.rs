@@ -18,7 +18,10 @@
 
 #![no_std]
 #![no_main]
-#![feature(asm_experimental_arch)]
+#![cfg_attr(
+    any(target_arch = "mips", target_arch = "mips64"),
+    feature(asm_experimental_arch)
+)]
 
 extern crate alloc;
 
@@ -345,6 +348,7 @@ const GUEST_STACK_TOP: usize = 0x883a_0000;
 // call `entry(arg)`, switch back.  The return address and `$s0` (the old
 // stack pointer) are saved on the old stack.  The delay slot after `jalr`
 // loads the argument, so `entry` sees `$a0 = arg`.
+#[cfg(any(target_arch = "mips", target_arch = "mips64"))]
 core::arch::global_asm!(
     ".set noreorder",
     ".globl wasm_call_on_stack",
