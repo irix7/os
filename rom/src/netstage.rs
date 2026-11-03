@@ -24,8 +24,27 @@ extern "C" {
 const COUNT_PER_MS: u64 = 33_000;
 /// How long DHCP may take before the stage gives up.
 const DHCP_TIMEOUT_MS: u64 = 15_000;
-/// Station address until the NVRAM read is wired in; locally administered.
-const STATION_MAC: [u8; 6] = [0x02, 0x00, 0x69, 0x12, 0x34, 0x56];
+/// Station address used when the NVRAM holds none; locally administered.  The
+/// kernel uses the same fallback (`kernel/src/net.rs`).
+const FALLBACK_MAC: [u8; 6] = [0x02, 0x00, 0x69, 0x12, 0x34, 0x56];
+/// DS1386 station address: six bytes, one per 32-bit word in the low lane.
+const NVRAM_MAC: usize = 0xBFBE_04E8;
+
+/// The station address the firmware left in NVRAM.  Each node needs its own:
+/// two nodes with one address get the same DHCP lease.
+fn station_mac() -> [u8; 6] {
+    let mut mac = [0u8; 6];
+    for (i, b) in mac.iter_mut().enumerate() {
+        // SAFETY: the DS1386 window is uncached device memory, read-only here.
+        let word = unsafe { core::ptr::read_volatile((NVRAM_MAC + 4 * i) as *const u32) };
+        *b = (word & 0xFF) as u8;
+    }
+    if mac == [0xFF; 6] || mac == [0x00; 6] {
+        FALLBACK_MAC
+    } else {
+        mac
+    }
+}
 
 /// The kernel is downloaded to kseg1 0xA8040000 (physical 0x08040000) and runs
 /// from its kseg0 alias 0x88040000.  The window ends where the heap starts.
@@ -130,7 +149,8 @@ pub extern "C" fn rom_netstage() -> u32 {
     // SAFETY: the heap window is RAM the stage owns; the cursor word lives there.
     unsafe { core::ptr::write_volatile(HEAP_CURSOR as *mut usize, HEAP_BASE) };
     put("rom-net: seeq\n");
-    let Some(dev) = SeeqDevice::new(STATION_MAC) else {
+    let mac = station_mac();
+    let Some(dev) = SeeqDevice::new(mac) else {
         put("rom-net: no seeq\n");
         return 1;
     };
@@ -144,7 +164,7 @@ pub extern "C" fn rom_netstage() -> u32 {
     seeq.start();
 
     let mut iface = Interface::new(
-        Config::new(HardwareAddress::Ethernet(EthernetAddress(STATION_MAC))),
+        Config::new(HardwareAddress::Ethernet(EthernetAddress(mac))),
         seeq,
         now(),
     );
