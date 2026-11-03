@@ -127,9 +127,10 @@ class Monitor:
 class Telnet:
     """Guest sash console over the forwarded telnet port."""
 
-    def __init__(self, port, timeout=60):
-        # The guest's telnet listener comes up with the kernel, slightly after
-        # BOOT-READY; a connection made too early is accepted by the NAT
+    def __init__(self, port, timeout=240):
+        # The ROM downloads the kernel first (M1-ADR-0002), so the guest's telnet
+        # listener can come up minutes after the gate starts.  The guest's listener
+        # comes up with the kernel, slightly after BOOT-READY; a connection made too early is accepted by the NAT
         # forwarder and then closed by the guest stack.  Retry until the sash
         # prompt actually arrives.
         deadline = time.monotonic() + timeout
