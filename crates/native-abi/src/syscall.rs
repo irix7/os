@@ -97,3 +97,6 @@ pub const SYS_WAIT4: u32 = 45;
 pub const SYS_GETPPID: u32 = 46;
 /// `cell_id(struct cell_id *)`; copy the mesh-qualified process identity.
 pub const SYS_CELL_ID: u32 = 47;
+/// `fchdir(fd)`; make the directory named by an open descriptor the cwd.
+/// `EBADF` for a closed descriptor, `ENOTDIR` for anything but a directory.
+pub const SYS_FCHDIR: u32 = 48;

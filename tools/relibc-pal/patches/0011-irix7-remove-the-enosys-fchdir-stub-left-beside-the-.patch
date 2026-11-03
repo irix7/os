@@ -1,0 +1,33 @@
+From a9b3adc45901270d2ba267ac146abee187b65ec9 Mon Sep 17 00:00:00 2001
+From: Jupiter Belic <belikh@users.noreply.github.com>
+Date: Tue, 3 Nov 2026 17:46:01 +1000
+Subject: [PATCH] irix7: remove the enosys fchdir stub left beside the native
+ mapping
+
+The previous commit added the native fchdir next to chdir but did not
+remove the enosys stub further down the trait, so the crate defined
+fchdir twice and the probe build failed with E0201.
+
+Signed-off-by: Jupiter Belic <belikh@users.noreply.github.com>
+---
+ src/platform/irix7/mod.rs | 4 ----
+ 1 file changed, 4 deletions(-)
+
+diff --git a/src/platform/irix7/mod.rs b/src/platform/irix7/mod.rs
+index e8e3f04b..c71c4db3 100644
+--- a/src/platform/irix7/mod.rs
++++ b/src/platform/irix7/mod.rs
+@@ -430,10 +430,6 @@ impl Pal for Sys {
+         unreachable!("SYS_THREAD_EXIT never returns to the caller")
+     }
+ 
+-    fn fchdir(_fildes: c_int) -> Result<()> {
+-        enosys()
+-    }
+-
+     fn fchmodat(_dirfd: c_int, _path: Option<CStr>, _mode: mode_t, _flags: c_int) -> Result<()> {
+         enosys()
+     }
+-- 
+2.55.0
+

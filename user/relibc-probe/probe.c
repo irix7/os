@@ -161,6 +161,10 @@ extern int stat(const char *, struct stat *);
 extern int fstat(int, struct stat *);
 extern int unlink(const char *);
 extern int rmdir(const char *);
+extern int fchdir(int);
+extern int fsync(int);
+extern int fdatasync(int);
+extern void sync(void);
 extern int mkdir(const char *, mode_t);
 extern int rename(const char *, const char *);
 extern int ftruncate(int, off_t);
@@ -501,6 +505,43 @@ int main(int argc, char **argv) {
           "a buffer smaller than one record is EINVAL");
     check(lseek(fd, 0, SEEK_END) == 5, "SEEK_END on a directory is the entry count");
     check(close(fd) == 0, "close the directory");
+
+    /* fchdir, fsync, fdatasync and sync: the descriptor forms of chdir and
+       the sync family.  A temporary directory gives fchdir a real target. */
+    {
+        int root = open("/", O_RDONLY | O_DIRECTORY);
+        int file = open("/hello.txt", O_RDONLY);
+        int pipefds[2];
+        int inside;
+        check(root >= 0 && file >= 0, "open the fchdir and sync descriptors");
+        check(mkdir("/fchdir.d", 0755) == 0, "mkdir the fchdir target");
+        inside = open("/fchdir.d", O_RDONLY | O_DIRECTORY);
+        check(inside >= 0, "open the fchdir target");
+        check(fchdir(inside) == 0, "fchdir into the target succeeds");
+        check(getcwd(buffer, sizeof(buffer)) != 0 && buffer[0] == '/' &&
+              buffer[1] == 'f' && buffer[2] == 'c' && buffer[9] == 0,
+              "getcwd reports the fchdir target");
+        check(fchdir(root) == 0, "fchdir back to / succeeds");
+        check(getcwd(buffer, sizeof(buffer)) != 0 && buffer[0] == '/' && buffer[1] == 0,
+              "getcwd reports / again");
+        errno = 0;
+        check(fchdir(file) == -1 && errno == ENOTDIR, "fchdir on a file is ENOTDIR");
+        errno = 0;
+        check(fchdir(999) == -1 && errno == EBADF, "fchdir on a closed fd is EBADF");
+        check(fsync(file) == 0, "fsync on a file succeeds");
+        check(fdatasync(file) == 0, "fdatasync on a file succeeds");
+        check(fsync(root) == 0, "fsync on a directory succeeds");
+        check(pipe(pipefds) == 0, "pipe for the sync checks");
+        errno = 0;
+        check(fsync(pipefds[0]) == -1 && errno == EINVAL, "fsync on a pipe is EINVAL");
+        errno = 0;
+        check(fdatasync(999) == -1 && errno == EBADF, "fdatasync on a closed fd is EBADF");
+        sync();
+        check(close(pipefds[0]) == 0 && close(pipefds[1]) == 0, "close the sync pipe");
+        check(close(inside) == 0 && close(file) == 0 && close(root) == 0,
+              "close the fchdir and sync descriptors");
+        check(rmdir("/fchdir.d") == 0, "rmdir the fchdir target");
+    }
 
     /* The readdir(3) wrapper reaches the same entries and cookies. */
     {
