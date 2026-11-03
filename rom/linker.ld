@@ -33,12 +33,6 @@ SECTIONS
     *(.rodata.*)
   }
 
-  /* ── Kernel payload: flat binary copied to RAM by the ROM ───────────── */
-  . = ALIGN(4);
-  .payload : {
-    *(.payload)
-  }
-
   /* ── MIPS ELF required sections ─────────────────────────────────────── */
   .MIPS.abiflags : {
     *(.MIPS.abiflags)

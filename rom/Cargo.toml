@@ -11,6 +11,14 @@ path = "src/main.rs"
 # links std would conflict with the no_std panic_handler).
 required-features = ["cross"]
 
+[dependencies]
+irix7-seeq = { path = "../crates/irix7-seeq" }
+smoltcp = { version = "0.13", default-features = false, features = ["medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-dhcpv4", "socket-dns", "socket-tcp", "socket-udp", "proto-dns"] }
+embedded-io = { version = "0.7", default-features = false }
+embedded-tls = { version = "0.19", default-features = false, features = ["rustpki", "p384", "rsa"] }
+rand_core = { version = "0.6", default-features = false }
+x509-cert = { version = "0.2", default-features = false }
+
 [features]
 default = []
 cross = []

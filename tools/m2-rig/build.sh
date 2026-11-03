@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-only
 #
 # Build the artefacts the two-node rig needs:
-#   <work>/irix7-rom.bin  PROM with the kernel embedded
+#   <work>/irix7-rom.bin  PROM; the kernel is downloaded at boot (M1-ADR-0002)
 #   <work>/mcp.module     fresh MCP control-plane module
 #   <work>/SHA256SUMS
 #
@@ -51,6 +51,7 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
     --features cross --target "$TARGET_JSON" -p kernel
 
 echo "m2-rig: build ROM"
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
 CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
   "$CARGO" build --release -Z build-std=core,alloc -Zjson-target-spec \
     --features cross --target "$TARGET_JSON" -p rom
