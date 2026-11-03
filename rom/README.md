@@ -17,45 +17,44 @@ provides the `no_std` panic handler; everything the ROM does is assembly.
 4. It calls `memtest.S` to test every byte of DRAM. Still stackless, still with
    nothing of its own in RAM.
 5. It initialises the SCC console (the Z85C30 in the IOC) and prints the boot banner.
-6. It LZ4-decompresses the kernel image out of PROM to `0x0804_0000` (kseg1, uncached,
-   so the bytes are in memory before the kernel runs from the cached kseg0 alias).
-7. It sets the boot flag and jumps to `0x8804_0000`.
+6. The network stage (`rom/src/netstage.rs`, `rom/src/fetch.rs`) downloads
+   `kernel-indy-latest.bin` over HTTPS to `0x0804_0000` (kseg1 `0xA804_0000`,
+   uncached).  It follows redirects from `releases/latest/download`.  It returns 0
+   once the kernel is in RAM, or 1.
+7. On 0, the stub flushes the caches and jumps to `0x8804_0000`.  On 1, it prints
+   `BOOT-NOT-READY` and halts.
 
 The kernel clears its own `.bss` on entry — the RAM test scribbled over all of DRAM
 before the kernel image was copied in.
 
-## The kernel image
+## The kernel download
 
-The kernel is compressed into the PROM image. `rom/build.rs`:
+The kernel is not in the PROM.  The ROM fetches
+`https://github.com/irix7/os/releases/latest/download/kernel-indy-latest.bin` at
+every boot (M1-ADR-0002).  The release workflow publishes that asset under a fixed
+name.  GitHub answers with a 302 to `release-assets.githubusercontent.com`, which
+the stage follows.
 
-1. reads the linked kernel ELF;
-2. extracts its `PT_LOAD` segments into a flat binary laid out at their physical
-   addresses;
-3. compresses it as an LZ4 block (RFC 7857);
-4. emits it as `.word` directives in `src/boot/payload.S` (generated; not in
-   git), which the linker places in a `.payload` section after the boot code.
+- TLS 1.3 uses the embedded roots in `rom/src/ca/`: SSL.com ECC, USERTrust ECC and
+  ISRG Root X1.  The root is chosen from the issuer of the server chain's last
+  certificate.
+- The ROM has no wall clock, so certificate validity dates are not checked.  The
+  chain signatures and the host name are.
+- The body is not hashed or signed.  The owner accepted this in M1-ADR-0002.
+- A download larger than 3 MiB fails with `download larger than the kernel window`.
+- The heap for TLS records and sockets is 768 KiB at `0x08340000`, with its cursor
+  in the heap's last word.
 
-The payload is `[4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]`.
-The stub's `lz4_decompress` reads the header, then walks the block's sequences:
-a token byte (high nibble literal length, low nibble match length minus 4), the
-literals, a two-byte little-endian distance, and the match.  Lengths of 15 or
-more continue in extra bytes worth 255 each until one is smaller.  The block ends
-when the uncompressed size has been produced; the last sequence is literals only.
-
-`ROM_PAYLOAD_LEN` is computed at link time from the section symbols, so the ROM always
-copies exactly the right number of bytes.
-
-The kernel is now about 1 MiB of text and data (the TLS client and its verifier
-dominate), which compresses to roughly 460 KiB. The PROM image is about 473 KiB,
-inside the 512 KiB PROM window but with little headroom.
+The PROM image is about 470 KiB at `opt-level=z` with one codegen unit.  At
+`opt-level=2` the ROM text alone is about 650 KiB and does not fit.
 
 ## Memory layout
 
 | Range | Use |
 |---|---|
 | `0xBFC00000` | ROM text/rodata, executed in place |
-| `0xBFC00000`+ | kernel payload (compressed or not), copied to RAM at boot |
-| `0x08040000` | kernel image (`0x88040000` kseg0) |
+| `0x08040000` | kernel image, downloaded (`0x88040000` kseg0); 3 MiB window |
+| `0x08340000` | ROM heap, 768 KiB (TLS records, sockets) |
 | `0x08300000` | kernel stack top (`0x88300000` kseg0) |
 | `0x08400000` | module load area, 2 MiB (`0x88400000` kseg0) |
 | `0x08600000` | Seeq device DMA descriptors and buffers (`0xA8600000` kseg1, uncached) |
@@ -69,27 +68,23 @@ usable DRAM.
 
 ## Build
 
-The kernel must be built first — the ROM embeds it:
+The ROM does not depend on the kernel.  Build the ROM at `opt-level=z` with one
+codegen unit, or the image is too large for the PROM window:
 
 ```bash
-# 1. the kernel
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
-  cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
-  --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
-
-# 2. the ROM, with the kernel embedded
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+# 1. the ROM
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
   cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
 
-# 3. the raw PROM image
+# 2. the raw PROM image
 python3 rom/tools/make_prom.py \
   target/mips3-sgi-irix7-n32/release/rom rom.bin
 ```
 
-`rom/tools/make_prom.py` lays the sections out by *virtual* address, not by
-concatenating them: the linker leaves an alignment gap between the boot code
-and the payload, and shifting the payload by that gap would corrupt it.
+`rom/tools/make_prom.py` lays out the `.text` and `.rodata` sections by *virtual*
+address.  It fails if they do not fit the 524,288-byte window.
 
 The raw `rom.bin` is what the PROM socket and iris `--prom` expect.
 
@@ -349,9 +344,10 @@ python3 -m unittest discover -s rom/tools -p 'test_*.py'
 - After RTC, network and MCP autoload, the kernel emits one
   `BOOT-READY v=1 boot=<id> kernel=up network=up mcp=listening` line (or a
   distinct `BOOT-NOT-READY` line with a reason).  Test tools poll this marker.
-- The kernel payload is LZ4-compressed and decompressed by the ROM stub.
-- The ROM has no network stack; the kernel owns DHCP, DNS, NTP, HTTP and HTTPS
-  (TLS 1.3), the telnet console, and the Seeq/HPC3 driver.
+- The ROM downloads the kernel at boot; see "The kernel download".
+- The ROM brings up the Seeq and takes a DHCP lease, for the download only.  The
+  kernel owns DHCP, DNS, NTP, HTTP and HTTPS (TLS 1.3), the telnet console, and
+  the Seeq/HPC3 driver after the handoff.
 - HTTPS verifies server chains against the embedded SSL.com TLS ECC Root CA 2022
   (`kernel/src/ca/`); chains that end elsewhere are rejected.
 - A CP0 Compare tick drives the network and console; idle loops park in `WAIT`.

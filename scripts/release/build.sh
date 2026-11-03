@@ -33,16 +33,17 @@ test -x "$LLVM_OBJCOPY" || {
   exit 1
 }
 
-# Kernel first: rom/build.rs embeds its linked segments.  The kernel and the
-# build-std crates inside it use opt-level z, matching the CI boot gate; the M1
-# image no longer fits the PROM at opt-level s.  Modules keep their own level.
+# The kernel and the build-std crates use opt-level z, matching the CI boot gate.
 CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
   CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
   cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target "$TARGET_JSON" -p kernel
 
-# ROM with the kernel embedded.
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+# The ROM downloads the kernel at boot; it does not embed it.  The PROM must fit
+# the 512 KiB window, so the ROM also builds at opt-level z with one codegen
+# unit (about 470 KB at this setting, against about 650 KB at opt-level 2).
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+  CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
   cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
   --features cross --target "$TARGET_JSON" -p rom
 

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """Build the PROM image from the linked ROM ELF.
 
-The ROM ELF has the boot stub in `.text` and the kernel payload in
-`.payload`, both mapped into the PROM window.  The raw PROM image is what
-the CPU sees at `0xBFC00000`, so every section has to be placed at its
-*virtual* address offset from the base -- concatenating the sections
-would silently shift the payload by any alignment gap the linker left
-between them.
+The ROM ELF has the boot stub and the network stage in `.text`, and constant
+data in `.rodata`, both mapped into the PROM window.  The raw PROM image is
+what the CPU sees at `0xBFC00000`, so every section has to be placed at its
+*virtual* address offset from the base.  Concatenating the sections would
+shift code by any alignment gap the linker left between them.
 
 Usage: make_prom.py <rom.elf> <out.bin>
 """
@@ -47,7 +46,7 @@ def main():
         sys.exit("expected a big-endian 32-bit ELF")
 
     # The sections that make up the PROM image, in virtual-address order.
-    want = (".text", ".rodata", ".payload")
+    want = (".text", ".rodata")
     picked = []
     for name, stype, flags, addr, offset, size in sections(elf):
         if name in want and size > 0:

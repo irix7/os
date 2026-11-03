@@ -8,10 +8,11 @@
  *   3. Size and map the DRAM banks (memsize.S), then test every byte
  *      (memtest.S) -- still stackless, nothing of ours lives in DRAM yet
  *   4. Initialise the DUART1B serial console (0xBFBD9830)
- *   5. Copy the kernel payload from PROM to physical 0x08040000 via its
- *      kseg1 alias 0xA8040000 (uncached, so the bytes are in memory before
- *      the kernel starts executing from the cached kseg0 alias 0x88040000)
- *   6. Jump to the kernel entry at 0x88040000
+ *   5. Network stage (Rust): DHCP, then download the kernel over HTTPS to
+ *      physical 0x08040000 through its kseg1 alias 0xA8040000 (uncached, so the
+ *      bytes are in memory before the kernel runs from kseg0 0x88040000)
+ *   6. Flush the caches and jump to the kernel entry at 0x88040000; halt with
+ *      a marker when the download fails
  *
  * Everything the machine does after step 6 lives in the kernel, including the
  * telnet console and networking.
@@ -26,7 +27,6 @@
 .set DUART_BASE,        0xBFBD9830
 
 # Kernel image destinations
-.set KERNEL_PHYS_KSEG1, 0xA8040000   /* physical 0x08040000, uncached */
 .set KERNEL_ENTRY,      0x88040000   /* kseg0 cached entry point */
 .set KERNEL_STACK_TOP,  0x883f0000   /* matches the kernel's __stack_top; the 1 MiB
                                          below the module area at 0x88400000 belongs
@@ -101,23 +101,13 @@ _start:
     bne     $v0, $zero, ram_fail
     nop
 
-    # Network stage (Rust): Seeq up, DHCP lease.  It runs on a stack at the top
-    # of the tested RAM and always returns to the kernel path below.
+    # Network stage (Rust): Seeq up, DHCP lease, kernel download.  It runs on a
+    # stack at the top of the tested RAM and returns $v0 = 0 once the kernel is
+    # in RAM.  The callee-saved $s4 (RAM size) survives the call.
     li      $sp, 0xA8A00000
     jal     rom_netstage
     nop
-
-    # Decompress the kernel payload from PROM to physical 0x08040000 via kseg1.
-    la      $a0, rom_payload_start
-    lw      $a1, ROM_PAYLOAD_LEN
-    la      $a2, KERNEL_PHYS_KSEG1
-    jal     lz4_decompress
-    nop
-    bne     $v0, $zero, lz4_fail
-    nop
-
-    la      $a0, msg_done
-    jal     serial_puts
+    bne     $v0, $zero, kernel_fail
     nop
 
     # The kernel was written through the uncached alias, but the RAM test may
@@ -175,8 +165,8 @@ ram_fail:
     b       1b
     nop
 
-lz4_fail:
-    la      $a0, msg_lz4fail
+kernel_fail:
+    la      $a0, msg_kernelfail
     jal     serial_puts
     nop
 1:
@@ -301,144 +291,6 @@ serial_putc:
 
 .end serial_putc
 
-# ------------------------------------------------------------
-# lz4_decompress -- decompress an LZ4 block payload
-#
-# Payload layout: [4 bytes magic 0x184D2204][4 bytes size, big-endian][LZ4 block]
-#
-# Input:  $a0 = src (payload), $a1 = payload length, $a2 = dst
-# Output: $v0 = 0 on success, 1 on a bad payload
-#
-# The LZ4 block itself is RFC 7857: a run of sequences, each a token byte
-# (high nibble literal length, low nibble match length minus 4), the
-# literals, a two-byte little-endian distance, and the match.  Lengths of 15
-# or more continue in extra bytes, each worth 255 until one is smaller.
-# The block ends when the uncompressed size has been produced; the last
-# sequence is literals only.
-#
-# Register use: the assembler renumbers $t0-$t3, so the temporaries live in
-# $a0-$a3, $v0 and $s5-$s7 instead.  $s4 belongs to the caller.
-# ------------------------------------------------------------
-.ent lz4_decompress
-lz4_decompress:
-    move    $s0, $a0                 # src
-    move    $s2, $a2                 # dst
-
-    # Magic, read a byte at a time so the payload need not be aligned.
-    # Big-endian: the first byte is the most significant.
-    lbu     $a0, 0($s0)
-    lbu     $a1, 1($s0)
-    lbu     $a2, 2($s0)
-    lbu     $a3, 3($s0)
-    sll     $a0, $a0, 24
-    sll     $a1, $a1, 16
-    sll     $a2, $a2, 8
-    or      $a0, $a0, $a1
-    or      $a0, $a0, $a2
-    or      $a0, $a0, $a3
-    li      $v0, 0x184D2204
-    bne     $a0, $v0, lz4_bad
-    nop
-    addiu   $s0, $s0, 4
-
-    # Uncompressed size, big-endian.
-    lbu     $a0, 0($s0)
-    lbu     $a1, 1($s0)
-    lbu     $a2, 2($s0)
-    lbu     $a3, 3($s0)
-    sll     $a0, $a0, 24
-    sll     $a1, $a1, 16
-    sll     $a2, $a2, 8
-    or      $a0, $a0, $a1
-    or      $a0, $a0, $a2
-    or      $a0, $a0, $a3
-    move    $s3, $a0                 # bytes still to produce
-    addiu   $s0, $s0, 4
-
-lz4_loop:
-    beqz    $s3, lz4_done
-    nop
-    lbu     $s5, 0($s0)             # token
-    addiu   $s0, $s0, 1
-
-    # Literal run length: the token's high nibble, 15 meaning "more follows".
-    srl     $s6, $s5, 4
-    li      $v0, 15
-    bne     $s6, $v0, lz4_lit_copy
-    nop
-lz4_lit_len:
-    lbu     $a0, 0($s0)
-    addiu   $s0, $s0, 1
-    addu    $s6, $s6, $a0
-    li      $v0, 255
-    beq     $a0, $v0, lz4_lit_len
-    nop
-lz4_lit_copy:
-    beqz    $s6, lz4_lit_done
-    nop
-lz4_lit_byte:
-    lbu     $a0, 0($s0)
-    addiu   $s0, $s0, 1
-    sb      $a0, 0($s2)
-    addiu   $s2, $s2, 1
-    addiu   $s3, $s3, -1
-    addiu   $s6, $s6, -1
-    bnez    $s6, lz4_lit_byte
-    nop
-lz4_lit_done:
-    beqz    $s3, lz4_done           # the last sequence is literals only
-    nop
-
-    # Match distance: two bytes, little-endian.  It comes before the
-    # match-length extension, so it has to be read first.
-    lbu     $a0, 0($s0)
-    lbu     $a1, 1($s0)
-    addiu   $s0, $s0, 2
-    sll     $a1, $a1, 8
-    or      $a0, $a0, $a1            # $a0 = distance back
-
-    # Match length: the token's low nibble, 15 meaning "more follows".
-    andi    $s6, $s5, 0x0F
-    li      $v0, 15
-    bne     $s6, $v0, lz4_match_have
-    nop
-lz4_match_len:
-    lbu     $a1, 0($s0)
-    addiu   $s0, $s0, 1
-    addu    $s6, $s6, $a1
-    li      $v0, 255
-    beq     $a1, $v0, lz4_match_len
-    nop
-lz4_match_have:
-    addiu   $s6, $s6, 4             # total match length
-
-    # Copy the match: the source may overlap the destination, so copy a
-    # byte at a time.
-    subu    $a1, $s2, $a0            # source = dst - distance
-lz4_match_byte:
-    lbu     $a0, 0($a1)
-    sb      $a0, 0($s2)
-    addiu   $a1, $a1, 1
-    addiu   $s2, $s2, 1
-    addiu   $s3, $s3, -1
-    addiu   $s6, $s6, -1
-    bnez    $s6, lz4_match_byte
-    nop
-
-    j       lz4_loop
-    nop
-
-lz4_done:
-    li      $v0, 0
-    jr      $ra
-    nop
-
-lz4_bad:
-    li      $v0, 1
-    jr      $ra
-    nop
-
-.end lz4_decompress
 
 # ------------------------------------------------------------
 # Data
@@ -450,14 +302,5 @@ msg_booting:
 msg_ramfail:
     .asciz "ROM: RAM TEST FAILED\r\n"
 
-msg_done:
-    .asciz "ROM: decompressed kernel to 0x88040000, jumping...\r\n"
-
-msg_lz4fail:
-    .asciz "ROM: KERNEL IMAGE DECOMPRESSION FAILED\r\n"
-
-# Length of the kernel payload in PROM (resolved at link time).
-.align 2
-.globl ROM_PAYLOAD_LEN
-ROM_PAYLOAD_LEN:
-    .word rom_payload_end - rom_payload_start
+msg_kernelfail:
+    .asciz "ROM: BOOT-NOT-READY: no kernel in RAM, halted\r\n"

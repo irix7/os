@@ -336,6 +336,8 @@ jobs:
       - name: Build ROM
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
+          # opt-level z and one codegen unit keep the downloader inside the PROM window.
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
             cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
               --features cross --target targets/mips3-sgi-irix7-n32.json -p rom

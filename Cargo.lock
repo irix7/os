@@ -1139,6 +1139,14 @@ dependencies = [
 [[package]]
 name = "rom"
 version = "0.1.0"
+dependencies = [
+ "embedded-io",
+ "embedded-tls",
+ "irix7-seeq",
+ "rand_core",
+ "smoltcp",
+ "x509-cert",
+]
 
 [[package]]
 name = "rsa"
