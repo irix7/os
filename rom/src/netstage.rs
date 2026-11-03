@@ -158,7 +158,9 @@ pub extern "C" fn rom_netstage() -> u32 {
     loop {
         let t = now();
         iface.poll(t, seeq, &mut sockets);
-        if let Some(dhcpv4::Event::Configured(config)) = sockets.get_mut::<dhcpv4::Socket>(dhcp).poll() {
+        if let Some(dhcpv4::Event::Configured(config)) =
+            sockets.get_mut::<dhcpv4::Socket>(dhcp).poll()
+        {
             put_lease(&config);
             // Apply the lease: the address and the default route, so the DNS
             // server and the origin server are reachable.
@@ -182,7 +184,8 @@ pub extern "C" fn rom_netstage() -> u32 {
                 dns,
             };
             // SAFETY: the window is RAM the ROM owns until the kernel runs.
-            let out = unsafe { core::slice::from_raw_parts_mut(KERNEL_DST as *mut u8, KERNEL_WINDOW) };
+            let out =
+                unsafe { core::slice::from_raw_parts_mut(KERNEL_DST as *mut u8, KERNEL_WINDOW) };
             match fetch::download(&mut stack, KERNEL_URL, out) {
                 Ok(n) => {
                     put("rom-net: kernel bytes ");

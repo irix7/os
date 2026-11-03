@@ -103,7 +103,8 @@ pub fn download(
         match request(stack, hop as u16, host, path, out, &mut location)? {
             Reply::Body(n) => return Ok(n),
             Reply::Redirect(len) => {
-                let next = core::str::from_utf8(&location[..len]).map_err(|_| "location not utf-8")?;
+                let next =
+                    core::str::from_utf8(&location[..len]).map_err(|_| "location not utf-8")?;
                 let mut tmp = [0u8; URL_MAX];
                 let n = if next.starts_with("https://") {
                     copy_str(&mut tmp, next)?
@@ -153,7 +154,11 @@ fn resolve(stack: &mut Stack<'_, '_>, name: &str) -> Result<Ipv4Address, &'stati
     let start = now().total_millis();
     loop {
         stack.poll();
-        match stack.sockets.get_mut::<dns::Socket>(stack.dns).get_query_result(query) {
+        match stack
+            .sockets
+            .get_mut::<dns::Socket>(stack.dns)
+            .get_query_result(query)
+        {
             Ok(addrs) => {
                 return match addrs.first() {
                     Some(IpAddress::Ipv4(a)) => Ok(*a),
@@ -253,7 +258,11 @@ fn exchange(
     append(&mut req, &mut n, path.as_bytes())?;
     append(&mut req, &mut n, b" HTTP/1.1\r\nHost: ")?;
     append(&mut req, &mut n, host.as_bytes())?;
-    append(&mut req, &mut n, b"\r\nUser-Agent: irix7-rom\r\nConnection: close\r\n\r\n")?;
+    append(
+        &mut req,
+        &mut n,
+        b"\r\nUser-Agent: irix7-rom\r\nConnection: close\r\n\r\n",
+    )?;
     tls.write_all(&req[..n]).map_err(|_| "tls write failed")?;
     tls.flush().map_err(|_| "tls flush failed")?;
 
@@ -292,7 +301,8 @@ fn exchange(
             put_dec(status as u32);
             put("\n");
             if (300..400).contains(&status) {
-                let value = header_value(headers, b"location").ok_or("redirect without location")?;
+                let value =
+                    header_value(headers, b"location").ok_or("redirect without location")?;
                 if value.len() > location.len() {
                     return Err("location too long");
                 }
@@ -380,7 +390,10 @@ impl Read for Io<'_, '_, '_> {
                         return Ok(n);
                     }
                 }
-                if matches!(sock.state(), State::Closed | State::CloseWait | State::LastAck) {
+                if matches!(
+                    sock.state(),
+                    State::Closed | State::CloseWait | State::LastAck
+                ) {
                     return Ok(0);
                 }
             }
@@ -586,7 +599,9 @@ impl TlsVerifier<Aes128GcmSha256> for PathVerifier {
 }
 
 fn find_header_end(head: &[u8]) -> Option<usize> {
-    head.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+    head.windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .map(|p| p + 4)
 }
 
 fn parse_status(head: &[u8]) -> Option<u16> {
@@ -603,7 +618,10 @@ fn header_value<'h>(head: &'h [u8], name: &[u8]) -> Option<&'h [u8]> {
         let (key, value) = line.split_at(colon);
         if key.eq_ignore_ascii_case(name) {
             let value = &value[1..];
-            let start = value.iter().position(|&b| b != b' ' && b != b'\t').unwrap_or(value.len());
+            let start = value
+                .iter()
+                .position(|&b| b != b' ' && b != b'\t')
+                .unwrap_or(value.len());
             return Some(&value[start..]);
         }
     }
