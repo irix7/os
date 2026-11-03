@@ -41,7 +41,33 @@ before a release is offered to other people.
 ## Not decided here
 
 - The network stack in the ROM: the implementation language split between assembly and
-  Rust for the Seeq driver, and the size that fits in the ROM window.
+  Rust for the Seeq driver.
+
+## Size measurement (spike, 2026-11-04)
+
+The network stack that the ROM would carry was measured with a probe that links the
+kernel's TLS 1.3 client (`embedded-tls` with `rustpki`, P-384 and RSA), its certificate
+verifier and embedded roots, its HTTP and range code, and smoltcp (TCP, UDP, DHCP and DNS).
+The probe stubs the kernel services those modules call (clock, socket set, phy device) with
+code that runs without a frame, so the protocol code stays live and linked.
+
+| Measure | Value |
+|---|---|
+| Linked text | 438 KiB |
+| Linked read-only data | 9 KiB |
+| Flat image (text, rodata, data) | 455 KB |
+| LZ4 frame of the flat image (`lz4 -9`) | 266 KB |
+
+The PROM budget is 512 KiB. The stack fits uncompressed with about 60 KiB to spare, and
+with room to spare if compressed. The Seeq driver, the ROM stub and the boot code add to
+this and are not included.
+
+Not measured: the RAM the stack needs at run time (TLS record buffers, the certificate
+buffer, the socket buffers and the stack), which the ROM must provide from its own RAM
+before any kernel structures exist. The first real ROM build will measure that.
+
+## Not decided here (continued)
+
 - Whether the kernel download replaces or sits beside the current module autoload.
 - Rollback: a bad `latest` kernel has no automatic recovery.
 
