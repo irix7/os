@@ -49,6 +49,13 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
 python3 rom/tools/make_prom.py \
   "$TARGET_DIR/$TARGET/release/rom" "$DIST/irix7-rom.bin"
 
+# The kernel alone, as the flat image the ROM downloads (M1-ADR-0002).  Its
+# first byte is the entry at 0x88040000; the ROM copies it there and jumps.
+# The name is fixed so `releases/latest/download/kernel-indy-latest.bin` always
+# resolves to the newest release, and the ROM never changes for a kernel update.
+"$LLVM_OBJCOPY" -O binary \
+  "$TARGET_DIR/$TARGET/release/kernel" "$DIST/kernel-indy-latest.bin"
+
 rom_size="$(stat -c%s "$DIST/irix7-rom.bin")"
 if [ "$rom_size" -gt 524288 ]; then
   echo "error: PROM image is $rom_size bytes, over the 524288-byte window" >&2

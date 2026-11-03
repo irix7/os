@@ -83,6 +83,7 @@ jobs:
             dist/*.module
             dist/*.conf
             dist/*.json
+            dist/kernel-indy-latest.bin
             dist/SHA256SUMS
             dist/SHA256SUMS.sig
           generate_release_notes: true
