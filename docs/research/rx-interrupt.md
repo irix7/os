@@ -57,8 +57,13 @@ kernel livelocked at about 225,000 interrupts/s.  The fix is that `ENET_W1C`
 excludes the device bit; the ack for it is `CLRINT`.
 
 The general backstop is a 64-entry undrained streak, reset by every thread-side
-`net::poll`/`drain`.  It cannot trigger on real traffic; it exists so an
-unforeseen unackable source parks the line instead of livelocking.
+frame service.  It cannot trigger on real traffic; it exists so an unforeseen
+unackable source parks the line instead of livelocking.  The TLS client pumps
+the interface through raw pointers, so `poll_raw` is a thread-side service
+too: an early version reset the streak only in `poll` and `drain`, and a long
+HTTPS boot fetch hit the backstop, masked `IM2` and rebuilt the receive ring
+with no overflow.  The boot transcript's `network: rx ring reset ctrl=0x2b0`
+line is how that was found; the final kernel reports `parked=0` and no reset.
 
 ### 2.2 Handler rules
 
@@ -106,7 +111,7 @@ bound.  Idle is about 2,010 passes in 20.0 s, one per tick, with 1 % of counted
 time in the loop body; the poll arm takes 2,657 passes because its 0.5 ms
 observation stays active.
 
-Interrupt counters moved from 430 to 2,781 across the run with
+Interrupt counters moved from 430 to 2,766 across the run with
 `spurious=0 unexpected=2 parked=0 armed=true`.
 
 An earlier run of the same gate at load average 7.8 measured hot p50 2 ms,
