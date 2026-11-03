@@ -371,8 +371,16 @@ core::arch::global_asm!(
     ".set reorder",
 );
 
+#[cfg(any(target_arch = "mips", target_arch = "mips64"))]
 extern "C" {
     fn wasm_call_on_stack(stack_top: usize, entry: extern "C" fn(usize), arg: usize);
+}
+
+/// Non-MIPS builds (the x86 CI link) have no stack switch; the call runs on the
+/// current stack.  The MIPS kernel always takes the switch above.
+#[cfg(not(any(target_arch = "mips", target_arch = "mips64")))]
+unsafe fn wasm_call_on_stack(_stack_top: usize, entry: extern "C" fn(usize), arg: usize) {
+    entry(arg);
 }
 
 /// Outcome of the guest run, written by `guest_entry` on the guest stack.
