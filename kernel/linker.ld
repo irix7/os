@@ -60,14 +60,23 @@ SECTIONS
    * docs/adr/m3-0006-udp-transport.md).  The 1 MiB between 0x8830_0000 and the
    * module area at 0x8840_0000 is reserved and otherwise unused, so the top
    * sits just below the module area and the stack gets the whole window. */
-  /* The Wasm policy guest runs on its own stack, 0x882d_0000 to 0x883a_0000
-     (modules/wasm GUEST_STACK_TOP).  The kernel's boot stack must stay above
-     0x883a_0000: its own use peaks at about 37 KiB (issue #272). */
-  __stack_top = 0x883f0000;
+  /* The Wasm policy guest runs on its own 832 KiB stack directly above .bss
+     (ADR M1-0003).  Its stack grows down from __guest_stack_top, so the
+     guest's floor is __guest_stack_base.  The kernel boot stack sits above it
+     and gets 1 MiB, with its own use peaking at about 37 KiB (issue #272). */
+  .guest_stack (NOLOAD) : {
+    . = ALIGN(0x1000);
+    __guest_stack_base = .;
+    . = . + 0x000D0000;
+    . = ALIGN(0x1000);
+    __guest_stack_top = .;
+  }
+
+  __stack_top = __guest_stack_top + 0x00100000;
 
   /* A boot stack that grows into .bss corrupts statics.  Keep a real gap. */
-  ASSERT(__bss_end < __stack_top, "kernel .bss overlaps the boot stack")
-  ASSERT(__stack_top <= 0x88400000, "kernel stack overlaps the module area")
+  ASSERT(__bss_end < __guest_stack_base, "kernel .bss overlaps the guest stack")
+  ASSERT(__stack_top <= 0x88600000, "kernel stack overlaps the Seeq DMA area")
 
   /DISCARD/ : {
     *(.MIPS.abiflags)
