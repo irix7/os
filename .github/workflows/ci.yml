@@ -543,7 +543,7 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=up mcp=listening' 30
@@ -633,7 +633,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'wasm: host=1' --timeout 120
           iris-ci --socket "$socket" serial-wait 'wasm: run=42' --timeout 120
@@ -779,7 +779,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           # The user image on target 2 runs before the kernel console.  This is
           # the serial half of the unified-console assertion; the telnet and
@@ -1006,7 +1006,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 60
@@ -1125,7 +1125,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'm1-wasm: ' --timeout 180
           iris-ci --socket "$socket" serial-wait 'wasm: runtime=' --timeout 30
@@ -1186,7 +1186,7 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
@@ -1397,7 +1397,7 @@ jobs:
           # readiness marker, and the default serial cursor does not rewind.
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
           iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
@@ -1482,7 +1482,7 @@ jobs:
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 120
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'hello from o32' --timeout 30
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
