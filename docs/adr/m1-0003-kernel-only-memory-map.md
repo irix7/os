@@ -58,3 +58,42 @@ above the ROM stack top (`0xA8A0_0000`) and is reused by the kernel after the ha
   mark.
 - The iris boot reaches `BOOT-READY` with the MCP and Wasm code linked into the kernel.
 - The M1 and M2 gates pass with no module artefact.
+
+## Migration plan
+
+The change lands as a series of PRs. Each step keeps the M1 and M2 gates green. The
+layout change (guest stack after `.bss`, boot stack top above the old module area) lands
+in the step that removes the module area, not before.
+
+Module inventory on `main` (non-test Rust lines, excluding `guest/`):
+
+| Module | Lines | Gate that depends on it |
+|---|---|---|
+| `mcp` | 8001 | M1 boot (`BOOT-READY ... mcp=listening`), M2 two-kernel gate |
+| `wasm` | 632 | M1 Wasm autoload (`wasm: run=42`) |
+| `manager` | 590 | boot autoload |
+| `logical` | 370 | logical namespace |
+| `erofs` | 423 | EROFS read path |
+| `m2-mesh`, `m2-root` | 262, 294 | M2 two-kernel gate |
+| `cache` | 228 | block cache |
+| `ports` | 291 | module TCP transport gate (8 TCP slots) |
+| `demo-dep`, `demo-root` | 65, 112 | `demo-dep: entered by runtime manager` gate |
+| `hello`, `ticker`, `block` | 82, 75, 95 | smoke tests |
+
+Sequence:
+
+1. Port the test-only modules (`hello`, `ticker`, `block`, `demo-dep`, `demo-root`) into the
+   kernel and replace their gate markers with kernel markers. Their gates keep their
+   text.
+2. Port `erofs`, `cache` and `logical`, the storage and namespace code with no network
+   dependency.
+3. Port `manager` and `ports`. `ports` owns the eight TCP slots, which the transport gate
+   measures.
+4. Port `wasm` (the probe), with its guest stack and the linker layout change in the same
+   PR as the removal of the module area.
+5. Port `mcp` and the two mesh modules (`m2-mesh`, `m2-root`). This is the largest step;
+   measure the kernel image after each sub-step.
+6. Delete the module loader, the module ABI table, the slot layout, the module artefacts
+   and the module signing checks. Re-run the M1, M2, module-transport and relibc gates.
+
+Each step records its kernel image size and the stack high-water mark.
