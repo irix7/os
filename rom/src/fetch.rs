@@ -95,27 +95,28 @@ pub fn download(
 
     for hop in 0..MAX_HOPS {
         let current = core::str::from_utf8(&target[..target_len]).map_err(|_| "url not utf-8")?;
-        let (host, path) = split_https(current).ok_or("url is not https://host/path")?;
+        let target_url = split_url(current).ok_or("url is not http(s)://host/path")?;
         put("rom-net: GET ");
-        put(host);
-        put(path);
+        put(target_url.host);
+        put(target_url.path);
         put("\n");
-        match request(stack, hop as u16, host, path, out, &mut location)? {
+        let url = target_url;
+        match request(stack, hop as u16, &url, out, &mut location)? {
             Reply::Body(n) => return Ok(n),
             Reply::Redirect(len) => {
                 let next =
                     core::str::from_utf8(&location[..len]).map_err(|_| "location not utf-8")?;
                 let mut tmp = [0u8; URL_MAX];
-                let n = if next.starts_with("https://") {
+                let n = if next.starts_with("https://") || next.starts_with("http://") {
                     copy_str(&mut tmp, next)?
                 } else if next.starts_with('/') {
-                    let prefix = "https://";
-                    let total = prefix.len() + host.len() + next.len();
+                    let prefix = if url.plain { "http://" } else { "https://" };
+                    let total = prefix.len() + url.host.len() + next.len();
                     if total > URL_MAX {
                         return Err("redirect url too long");
                     }
                     let mut n = copy_str(&mut tmp, prefix)?;
-                    n += copy_str(&mut tmp[n..], host)?;
+                    n += copy_str(&mut tmp[n..], url.host)?;
                     n += copy_str(&mut tmp[n..], next)?;
                     n
                 } else {
@@ -132,14 +133,16 @@ pub fn download(
 fn request(
     stack: &mut Stack<'_, '_>,
     hop: u16,
-    host: &str,
-    path: &str,
+    url: &Url<'_>,
     out: &mut [u8],
     location: &mut [u8],
 ) -> Result<Reply, &'static str> {
-    let ip = resolve(stack, host)?;
-    let handle = connect(stack, ip, LOCAL_PORT_BASE + hop)?;
-    let result = exchange(stack, handle, host, path, out, location);
+    let ip = match parse_ipv4(url.host) {
+        Some(ip) => ip,
+        None => resolve(stack, url.host)?,
+    };
+    let handle = connect(stack, ip, url.port, LOCAL_PORT_BASE + hop)?;
+    let result = exchange(stack, handle, url, out, location);
     cleanup(stack, handle);
     result
 }
@@ -177,6 +180,7 @@ fn resolve(stack: &mut Stack<'_, '_>, name: &str) -> Result<Ipv4Address, &'stati
 fn connect(
     stack: &mut Stack<'_, '_>,
     ip: Ipv4Address,
+    port: u16,
     local_port: u16,
 ) -> Result<SocketHandle, &'static str> {
     let rx = buffer(TCP_BUF).ok_or("out of ram")?;
@@ -184,7 +188,7 @@ fn connect(
     let handle = stack
         .sockets
         .add(TcpSocket::new(SocketBuffer::new(rx), SocketBuffer::new(tx)));
-    let remote = IpEndpoint::new(IpAddress::Ipv4(ip), 443);
+    let remote = IpEndpoint::new(IpAddress::Ipv4(ip), port);
     let started = stack
         .sockets
         .get_mut::<TcpSocket>(handle)
@@ -232,15 +236,25 @@ fn cleanup(stack: &mut Stack<'_, '_>, handle: SocketHandle) {
 fn exchange(
     stack: &mut Stack<'_, '_>,
     handle: SocketHandle,
-    host: &str,
-    path: &str,
+    url: &Url<'_>,
     out: &mut [u8],
     location: &mut [u8],
 ) -> Result<Reply, &'static str> {
+    if url.plain {
+        let mut io = Io { stack, handle };
+        put("rom-net: tcp up\n");
+        return talk(
+            &mut io,
+            |error| matches!(error, IoError::Closed),
+            url,
+            out,
+            location,
+        );
+    }
     let record_read = buffer(RECORD_READ_SIZE).ok_or("out of ram")?;
     let record_write = buffer(RECORD_WRITE_SIZE).ok_or("out of ram")?;
     let config = TlsConfig::new()
-        .with_server_name(host)
+        .with_server_name(url.host)
         .enable_rsa_signatures();
     let provider = TlsProvider {
         rng: SimpleRng::new(count() as u64),
@@ -251,20 +265,39 @@ fn exchange(
     tls.open(TlsContext::new(&config, provider))
         .map_err(|_| "tls handshake failed")?;
     put("rom-net: tls up\n");
+    talk(
+        &mut tls,
+        |error| matches!(error, TlsError::ConnectionClosed),
+        url,
+        out,
+        location,
+    )
+}
 
+/// Send the request and read the response over either transport.  `closed`
+/// names the transport's end-of-stream error, which ends the body without
+/// failing the fetch.
+fn talk<T: Read + Write>(
+    t: &mut T,
+    closed: impl Fn(&T::Error) -> bool,
+    url: &Url<'_>,
+    out: &mut [u8],
+    location: &mut [u8],
+) -> Result<Reply, &'static str> {
     let mut req = [0u8; URL_MAX + 128];
     let mut n = 0;
     append(&mut req, &mut n, b"GET ")?;
-    append(&mut req, &mut n, path.as_bytes())?;
+    append(&mut req, &mut n, url.path.as_bytes())?;
     append(&mut req, &mut n, b" HTTP/1.1\r\nHost: ")?;
-    append(&mut req, &mut n, host.as_bytes())?;
+    append(&mut req, &mut n, url.host.as_bytes())?;
     append(
         &mut req,
         &mut n,
         b"\r\nUser-Agent: irix7-rom\r\nConnection: close\r\n\r\n",
     )?;
-    tls.write_all(&req[..n]).map_err(|_| "tls write failed")?;
-    tls.flush().map_err(|_| "tls flush failed")?;
+    t.write_all(&req[..n])
+        .map_err(|_| "transport write failed")?;
+    t.flush().map_err(|_| "transport flush failed")?;
 
     let mut head = [0u8; HEAD_MAX];
     let mut head_len = 0usize;
@@ -274,12 +307,12 @@ fn exchange(
     let mut chunk = [0u8; 2048];
 
     loop {
-        let got = match tls.read(&mut chunk) {
+        let got = match t.read(&mut chunk) {
             Ok(0) => break,
             Ok(n) => n,
             // Many servers close the TCP stream without close_notify.
-            Err(TlsError::ConnectionClosed) => break,
-            Err(_) => return Err("tls read failed"),
+            Err(error) if closed(&error) => break,
+            Err(_) => return Err("transport read failed"),
         };
         let mut data = &chunk[..got];
 
@@ -642,14 +675,52 @@ fn decimal(text: &[u8]) -> Option<usize> {
     Some(value)
 }
 
-/// Split `https://host/path` into `host` and `path`.  A missing path is `/`.
-/// Ports are not supported: a `:port` suffix on the host is rejected by DNS.
-fn split_https(url: &str) -> Option<(&str, &str)> {
-    let rest = url.strip_prefix("https://")?;
-    match rest.find('/') {
-        Some(i) => Some((&rest[..i], &rest[i..])),
-        None => Some((rest, "/")),
+/// A parsed `http://` or `https://` URL.  `plain` is true for `http://`.
+pub struct Url<'a> {
+    pub plain: bool,
+    pub host: &'a str,
+    pub port: u16,
+    pub path: &'a str,
+}
+
+/// A dotted-quad host such as `192.168.0.1`, which needs no DNS lookup.
+fn parse_ipv4(host: &str) -> Option<Ipv4Address> {
+    let mut octets = [0u8; 4];
+    let mut parts = host.split('.');
+    for octet in octets.iter_mut() {
+        *octet = parts.next()?.parse().ok()?;
     }
+    if parts.next().is_some() {
+        return None;
+    }
+    Some(Ipv4Address::new(octets[0], octets[1], octets[2], octets[3]))
+}
+
+/// Split `scheme://host[:port]/path`.  A missing path is `/`.  The default port
+/// is 443 for https and 80 for http.
+fn split_url(url: &str) -> Option<Url<'_>> {
+    let (plain, rest) = match url.strip_prefix("https://") {
+        Some(rest) => (false, rest),
+        None => (true, url.strip_prefix("http://")?),
+    };
+    let (authority, path) = match rest.find('/') {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, "/"),
+    };
+    let default_port = if plain { 80 } else { 443 };
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((host, port)) => (host, port.parse::<u16>().ok()?),
+        None => (authority, default_port),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    Some(Url {
+        plain,
+        host,
+        port,
+        path,
+    })
 }
 
 fn copy_str(dst: &mut [u8], text: &str) -> Result<usize, &'static str> {

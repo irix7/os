@@ -61,8 +61,13 @@ const HEAP_CURSOR: usize = HEAP_END - 8;
 
 /// Release asset with a stable name.  `releases/latest/download` resolves to
 /// the newest release that carries it.
-const KERNEL_URL: &str =
-    "https://github.com/irix7/os/releases/latest/download/kernel-indy-latest.bin";
+///
+/// `IRIX7_KERNEL_URL` overrides it at build time, for the CI boot fixture; the
+/// release build keeps the default.
+const KERNEL_URL: &str = match option_env!("IRIX7_KERNEL_URL") {
+    Some(url) => url,
+    None => "https://github.com/irix7/os/releases/latest/download/kernel-indy-latest.bin",
+};
 
 /// Bump allocator over the stage's heap.  Blocks are never freed; the stage
 /// is short and runs once.  The cursor is a RAM word, not a static, because the
