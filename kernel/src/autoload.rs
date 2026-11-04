@@ -53,6 +53,7 @@ pub fn boot() -> Status {
         return boot_nvram(&url[..n]);
     }
 
+    crate::kstamp("autoload start");
     console_println("autoload: loading repository boot config");
     let Some(config) = crate::boot_config::fetch() else {
         return Status::Failed;
@@ -303,6 +304,7 @@ fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchRes
     };
     let ip = crate::telnet::resolve_host(host.as_bytes()).ok_or("autoload: unknown host")?;
 
+    crate::kstamp("autoload fetch");
     console_println("autoload: fetching module");
     module::clear(slot);
     let area = module::area(slot);

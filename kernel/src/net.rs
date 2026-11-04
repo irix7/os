@@ -319,6 +319,7 @@ pub fn init() {
         clock_now(),
     );
 
+    crate::kstamp("dhcp start");
     crate::print_str("network: dhcp...");
     let (lease, dhcp_handle) = dhcpv4_configure(&mut iface, &mut socket_set, seeq);
     match lease {

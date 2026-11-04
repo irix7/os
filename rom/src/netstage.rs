@@ -102,6 +102,17 @@ pub(crate) fn buffer(len: usize) -> Option<&'static mut [u8]> {
     Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
 }
 
+/// Print the raw CP0 Count with a label.  Count is 32 bits and wraps about every
+/// 130 s at 33 MHz, so the log holds raw ticks and the deltas are taken modulo
+/// 2^32.
+pub(crate) fn stamp(label: &str) {
+    put("rom-net: count=");
+    put_dec(count());
+    put(" ");
+    put(label);
+    put("\n");
+}
+
 pub(crate) fn put(text: &str) {
     for byte in text.bytes() {
         // SAFETY: serial_putc is the ROM's own routine and takes a byte in $a0.
@@ -149,6 +160,7 @@ pub extern "C" fn rom_netstage() -> u32 {
     // SAFETY: the heap window is RAM the stage owns; the cursor word lives there.
     unsafe { core::ptr::write_volatile(HEAP_CURSOR as *mut usize, HEAP_BASE) };
     put("rom-net: seeq\n");
+    stamp("start");
     let mac = station_mac();
     let Some(dev) = SeeqDevice::new(mac) else {
         put("rom-net: no seeq\n");
@@ -162,6 +174,7 @@ pub extern "C" fn rom_netstage() -> u32 {
         &mut *slot
     };
     seeq.start();
+    stamp("seeq up");
 
     let mut iface = Interface::new(
         Config::new(HardwareAddress::Ethernet(EthernetAddress(mac))),
@@ -182,6 +195,7 @@ pub extern "C" fn rom_netstage() -> u32 {
             sockets.get_mut::<dhcpv4::Socket>(dhcp).poll()
         {
             put_lease(&config);
+            stamp("lease");
             // Apply the lease: the address and the default route, so the DNS
             // server and the origin server are reachable.
             iface.update_ip_addrs(|addrs| {

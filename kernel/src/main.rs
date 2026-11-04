@@ -261,6 +261,16 @@ pub fn print_hex8(v: u8) {
     irix7_fmt::hex(u64::from(v), 2, true, &mut |b| crate::write_byte(b));
 }
 
+/// Temporary timing stamp: raw CP0 Count with a label.  Compared with the ROM's
+/// `rom-net: count=` lines, which use the same counter.
+pub fn kstamp(label: &str) {
+    print_str("kernel: count=");
+    print_hex32(crate::traps::count_read());
+    print_str(" ");
+    print_str(label);
+    print_str("\n");
+}
+
 pub fn print_hex32(v: u32) {
     irix7_fmt::hex(u64::from(v), 8, true, &mut |b| crate::write_byte(b));
 }
@@ -459,6 +469,7 @@ pub extern "C" fn _start_rust() -> ! {
     scheduler::init();
     idle::init();
 
+    kstamp("kernel up");
     console_println("kernel: up");
 
     // Bring up the display and the local text console.
@@ -632,6 +643,7 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Disabled => network_off,
         autoload::Status::Failed => false,
     };
+    kstamp("ready");
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {

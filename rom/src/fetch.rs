@@ -27,7 +27,7 @@ use smoltcp::wire::{DnsQueryType, IpAddress, IpEndpoint, Ipv4Address};
 use x509_cert::der::Decode;
 use x509_cert::Certificate as X509Certificate;
 
-use crate::netstage::{buffer, count, now, put, put_dec};
+use crate::netstage::{buffer, count, now, put, put_dec, stamp};
 
 /// Longest URL the stage follows, including the scheme.
 const URL_MAX: usize = 2048;
@@ -138,7 +138,9 @@ fn request(
     location: &mut [u8],
 ) -> Result<Reply, &'static str> {
     let ip = resolve(stack, host)?;
+    stamp("dns");
     let handle = connect(stack, ip, LOCAL_PORT_BASE + hop)?;
+    stamp("tcp up");
     let result = exchange(stack, handle, host, path, out, location);
     cleanup(stack, handle);
     result
@@ -250,7 +252,7 @@ fn exchange(
     let mut tls = TlsConnection::new(io, record_read, record_write);
     tls.open(TlsContext::new(&config, provider))
         .map_err(|_| "tls handshake failed")?;
-    put("rom-net: tls up\n");
+    stamp("tls up");
 
     let mut req = [0u8; URL_MAX + 128];
     let mut n = 0;
@@ -332,6 +334,7 @@ fn exchange(
             return Err("download shorter than content-length");
         }
     }
+    stamp("body done");
     Ok(Reply::Body(body))
 }
 
