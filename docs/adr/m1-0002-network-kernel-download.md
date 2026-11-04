@@ -71,8 +71,23 @@ before any kernel structures exist. The first real ROM build will measure that.
 - Whether the kernel download replaces or sits beside the current module autoload.
 - Rollback: a bad `latest` kernel has no automatic recovery.
 
-## Validation required before code lands
+## Validation
 
-- A boot trace from iris where the ROM fetches `kernel-indy-latest` over TLS and jumps to it.
-- A negative test: the GitHub URL unreachable halts with a clear marker, not a hang.
+Done on iris, 2026-11-04:
+
+- Boot trace: the ROM downloads `kernel-indy-latest` from `releases/latest` over TLS
+  (302 to `release-assets`, 200, 1,201,800 bytes), the kernel starts, and it reaches
+  `BOOT-READY`. The PROM is 470,862 bytes against the 524,288-byte window.
+- Negative test: the asset missing from the release halts with
+  `download did not return 200` and `BOOT-NOT-READY`. It does not hang.
+- Timing, one run, 33 MHz CP0 Count: ROM start to body done 17.6 s (first TLS
+  handshake 7.8 s, body 4.9 s). Kernel body done to `BOOT-READY` 6.0 s. Total about 24 s.
+
+Still open:
+
 - The revised M1 gate, with the offline boot removed and the network boot added.
+  The iris, mesh and relibc gates boot the ROM, so they now test the kernel in the
+  latest release, not the kernel built by the PR. This needs a decision before the
+  gate text is rewritten.
+- CI waited 120 s for `BOOT-READY` and timed out, which this run does not reproduce.
+  The waits are now 300 s (#366).
