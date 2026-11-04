@@ -23,7 +23,6 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod autoload;
-pub mod runtime_demo;
 pub mod boot_config;
 pub mod boot_protocol;
 pub mod cache;
@@ -57,6 +56,7 @@ pub mod ramfs;
 pub mod range;
 pub mod readahead;
 pub mod rtc;
+pub mod runtime_demo;
 pub mod sash;
 pub mod scheduler;
 pub mod scsi;
