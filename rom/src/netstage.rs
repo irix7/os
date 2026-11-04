@@ -47,14 +47,16 @@ fn station_mac() -> [u8; 6] {
 }
 
 /// The kernel is downloaded to kseg1 0xA8040000 (physical 0x08040000) and runs
-/// from its kseg0 alias 0x88040000.  The window ends where the heap starts.
+/// from its kseg0 alias 0x88040000.  The window ends at 0x08600000, where the
+/// Seeq DMA area starts, so the window is 5.75 MiB.
 const KERNEL_DST: usize = 0xA804_0000;
-const KERNEL_WINDOW: usize = 0x0030_0000;
+const KERNEL_WINDOW: usize = 0x005C_0000;
 /// Kseg1 heap for TLS records, TCP buffers and the certificate chain.  It sits
-/// between the kernel window and the module area at physical 0x08400000.  The
+/// above the ROM stack top (0xA8A00000), which grows down, so it does not
+/// overlap the stack.  The kernel reuses this RAM after the handoff.  The
 /// allocator keeps its cursor in the last word of the heap.
-const HEAP_BASE: usize = 0xA834_0000;
-const HEAP_END: usize = 0xA840_0000;
+const HEAP_BASE: usize = 0xA8A0_0000;
+const HEAP_END: usize = 0xA8B0_0000;
 const HEAP_CURSOR: usize = HEAP_END - 8;
 
 /// Release asset with a stable name.  `releases/latest/download` resolves to
