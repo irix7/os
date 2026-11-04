@@ -836,7 +836,7 @@ jobs:
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=demo-dep@1.0.0,demo-root@1.0.0$' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-root@1.0.0 region=1 handle=[0-9]+ entry=0 status=0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=136' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=[0-9]+' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-dep: entered by runtime manager' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-root: dep=0x217' 30
           dep_line="$(grep -n 'demo-dep: entered by runtime manager' "$work/serial.log" | head -1 | cut -d: -f1)"

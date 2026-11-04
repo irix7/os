@@ -23,6 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod autoload;
+pub mod runtime_demo;
 pub mod boot_config;
 pub mod boot_protocol;
 pub mod cache;
@@ -632,6 +633,7 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Disabled => network_off,
         autoload::Status::Failed => false,
     };
+    runtime_demo::run();
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {
