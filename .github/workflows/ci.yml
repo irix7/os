@@ -333,7 +333,22 @@ jobs:
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
             cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
               --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
+      - name: Serve this kernel to the ROM
+        # The ROM downloads the kernel over HTTP from this fixture instead of
+        # releases/latest, so the gate tests the kernel built by this PR.
+        run: |
+          set -euo pipefail
+          OBJCOPY="$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)"
+          mkdir -p "$RUNNER_TEMP/kernel-fixture"
+          "$OBJCOPY" -O binary target/mips3-sgi-irix7-n32/release/kernel \
+            "$RUNNER_TEMP/kernel-fixture/kernel-indy-latest.bin"
+          (cd "$RUNNER_TEMP/kernel-fixture" && nohup python3 -m http.server 18200 \
+            --bind 0.0.0.0 > "$RUNNER_TEMP/kernel-fixture.log" 2>&1 &)
+          sleep 2
+          curl -fsS -o /dev/null http://127.0.0.1:18200/kernel-indy-latest.bin
       - name: Build ROM
+        env:
+          IRIX7_KERNEL_URL: http://192.168.0.1:18200/kernel-indy-latest.bin
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           # opt-level z and one codegen unit keep the downloader inside the PROM window.
