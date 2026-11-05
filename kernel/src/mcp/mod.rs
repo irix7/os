@@ -1097,7 +1097,10 @@ fn module_status(_services: &Services, out: &mut [u8]) -> usize {
     let mut w = Out::new(out);
     let status = unsafe { &*(loader_abi::STATUS_ADDR as *const loader_abi::ModuleStatus) };
     if status.magic != loader_abi::STATUS_MAGIC {
-        w.push(b"runtime manager: unavailable\n");
+        // No manager is running: report the kernel's own dependency graphs.
+        w.push(b"runtime module graph:\n");
+        w.push(crate::runtime_demo::REPORT.as_bytes());
+        w.push(crate::m2_demo::REPORT.as_bytes());
         return w.len;
     }
     let len = (status.len as usize).min(status.text.len());

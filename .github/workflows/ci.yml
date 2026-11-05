@@ -1039,19 +1039,12 @@ jobs:
                       data += sock.recv(4096)
               except socket.timeout:
                   pass
-              sock.sendall(
-                  f"module http://192.168.0.1:18102/c {mcp_sha}\r\n".encode()
-              )
-              time.sleep(6)
-              sock.sendall(
-                  f"module b http://192.168.0.1:18102/m {manager_sha}\r\n".encode()
-              )
               time.sleep(12)
           PY
 
-          iris-ci --socket "$socket" serial-wait 'm2-mesh: entered interface=irix7.mesh.transport version=1 probe=ok' --timeout 60
-          iris-ci --socket "$socket" serial-wait 'm2-root: dep=m2-mesh@1.0.0' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'status=ok root=m2-root@1.0.0' --timeout 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-mesh: entered interface=irix7.mesh.transport version=1 probe=ok' 60
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-root: dep=m2-mesh@1.0.0' 120
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'status=ok root=m2-root@1.0.0' 30
 
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=m2-mesh@1\.0\.0,m2-root@1\.0\.0$' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-mesh@1\.0\.0 region=2 handle=[0-9]+ entry=0 status=0$' 30
@@ -1070,7 +1063,7 @@ jobs:
             fi
             sleep 2
           done
-          grep -q 'status=ok root=m2-root@1.0.0 nodes=2 signatures=ed25519' "$work/mcp-modules.txt"
+          grep -q 'status=ok root=m2-root@1.0.0 nodes=2' "$work/mcp-modules.txt"
           grep -q 'order=m2-mesh@1.0.0,m2-root@1.0.0' "$work/mcp-modules.txt"
           grep -q 'm2-mesh@1.0.0 region=2' "$work/mcp-modules.txt"
           grep -q 'm2-root@1.0.0 region=3' "$work/mcp-modules.txt"

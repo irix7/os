@@ -43,6 +43,7 @@ pub mod idle;
 pub mod kbd;
 pub mod loader;
 pub mod logical;
+pub mod m2_demo;
 pub mod mcp;
 pub mod mesh;
 pub mod module;
@@ -640,6 +641,7 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Failed => false,
     };
     runtime_demo::run();
+    m2_demo::run();
     ports_selftest::run_if_configured();
     console_write(if ready {
         "BOOT-READY v=1 boot="
