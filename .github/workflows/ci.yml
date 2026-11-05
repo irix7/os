@@ -1815,37 +1815,86 @@ jobs:
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
         with:
           version: v0.1.13+irix7
-      - name: Build the kernel and the slot probe
+      - name: Build the kernel and a ROM that fetches it
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           work="$RUNNER_TEMP/module-ports"
-          tools/m2-rig/build.sh "$work"
-          export CARGO_TARGET_DIR="$work/target"
-          HOST="$(rustc -vV | sed -n 's/^host: //p')"
-          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
+          mkdir -p "$work/fixture"
           CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/ports/linker.ld" \
-            cargo build --release -Z build-std=core \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target targets/mips3-sgi-irix7-n32.json -p ports-module
-          "$LLVM_OBJCOPY" -O binary \
-            "$CARGO_TARGET_DIR/mips3-sgi-irix7-n32/release/ports-module" \
-            "$work/ports.module"
-          test "$(stat -c%s "$work/ports.module")" -le 524288
+            CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
+            cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
+              --features cross --target targets/mips3-sgi-irix7-n32.json -p kernel
+          OBJCOPY="$(find "$(rustc --print sysroot)" -name llvm-objcopy | head -1)"
+          "$OBJCOPY" -O binary target/mips3-sgi-irix7-n32/release/kernel \
+            "$work/fixture/kernel-indy-latest.bin"
+          IRIX7_KERNEL_URL=http://192.168.0.1:18300/kernel-indy-latest.bin \
+          CARGO_PROFILE_RELEASE_OPT_LEVEL=z CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 \
+          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
+            cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
+              --features cross --target targets/mips3-sgi-irix7-n32.json -p rom
+          python3 rom/tools/make_prom.py \
+            target/mips3-sgi-irix7-n32/release/rom "$work/irix7-rom.bin"
+          test "$(stat -c%s "$work/irix7-rom.bin")" -le 524288
       - name: Open eight sockets at once
         run: |
           set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
           work="$RUNNER_TEMP/module-ports"
-          harness="$RUNNER_TEMP/module-ports-harness"
-          cargo build --release --manifest-path tools/m2-rig/Cargo.toml \
-            --target-dir "$harness"
-          "$harness/release/m2-rig" ports \
-            --work "$RUNNER_TEMP/module-ports-run" \
-            --rom "$work/irix7-rom.bin" --module "$work/ports.module" \
-            --iris "$(command -v iris)" --iris-ci "$(command -v iris-ci)" \
-            --base-port 10600 --timeout 240
+          run="$RUNNER_TEMP/module-ports-run"
+          rm -rf "$run" && mkdir -p "$run"
+          cd "$run"
+          # Eight echo listeners on the runner; the kernel connects to 192.168.0.1.
+          python3 - <<'PY' > echo.log 2>&1 &
+          import socket
+          import threading
+
+          def serve(port):
+              s = socket.socket()
+              s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+              s.bind(("0.0.0.0", port))
+              s.listen(4)
+              while True:
+                  c, _ = s.accept()
+                  def handle(c=c):
+                      try:
+                          while True:
+                              d = c.recv(512)
+                              if not d:
+                                  break
+                              c.sendall(d)
+                      finally:
+                          c.close()
+                  threading.Thread(target=handle, daemon=True).start()
+
+          for p in range(10600, 10608):
+              threading.Thread(target=serve, args=(p,), daemon=True).start()
+          threading.Event().wait()
+          PY
+          echo_pid=$!
+          (cd "$work/fixture" && python3 -m http.server 18300 --bind 0.0.0.0 > "$run/fixture.log" 2>&1 &)
+          printf 'banks = [32, 0, 0, 0]\nno_audio = true\n\n[machine]\nprofile = "indy_ip24"\n\n[scsi]\n' > machine.toml
+          python3 - "$run/nvram.bin" <<'PY'
+          import sys
+          env = b"ports.base=10600\0ports.count=8\0\0"
+          image = bytearray(8192)
+          image[0x10:0x10 + len(env)] = env
+          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+          open(sys.argv[1], "wb").write(image)
+          PY
+          socket="$run/iris.sock"
+          IRIS_NO_IDLE=1 iris --config "$run/machine.toml" --ci --prom "$work/irix7-rom.bin" \
+            --nvram "$run/nvram.bin" --ci-socket "$socket" --monitor-port 18885 \
+            --serial-log "$run/serial.log" >"$run/iris.out" 2>&1 &
+          pid=$!
+          cleanup() {
+            kill "$pid" "$echo_pid" 2>/dev/null || true
+            pkill -f "http.server 18300" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          iris-ci --socket "$socket" status --wait-ready 30
+          iris-ci --socket "$socket" start
+          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
+          iris-ci --socket "$socket" serial-wait 'ports: pass sockets=8' --timeout 120
       - uses: actions/upload-artifact@v4
         if: always()
         with:
