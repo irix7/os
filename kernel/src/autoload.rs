@@ -35,38 +35,26 @@ pub enum Status {
 /// the published module.  A normal Indy never needs the NVRAM override; the
 /// chip is validated and repaired at startup.
 pub fn boot() -> Status {
-    let mut local = [0u8; 160];
-    if let Some(n) = nvram::get("mcp.local", &mut local) {
-        return finish(load_local(module::Slot::A, &local[..n]));
-    }
-
-    // A network-off M1 boot does not have a repository to consult and does
-    // not need MCP.  With no local module, report Disabled rather than a
+    // A network-off M1 boot does not need MCP.  Report Disabled rather than a
     // failed autoload; the console and local policy remain usable.
     if crate::net::disabled() {
         console_println("autoload: network off; no local module");
         return Status::Disabled;
     }
-
-    let mut url = [0u8; 192];
-    if let Some(n) = nvram::get("mcp.url", &mut url) {
-        return boot_nvram(&url[..n]);
+    // MCP is kernel code now (ADR M1-0003 step 5).  Start it on the kernel's
+    // service table; its tick runs from the idle loop.
+    if crate::mcp::start(&kernel_core::service::SERVICES) {
+        console_println("autoload: mcp started in kernel");
+        Status::Loaded
+    } else {
+        console_println("autoload: mcp refused to start");
+        Status::Failed
     }
-
-    console_println("autoload: loading repository boot config");
-    let Some(config) = crate::boot_config::fetch() else {
-        return Status::Failed;
-    };
-    let Some(url) = config.url_string() else {
-        return Status::Failed;
-    };
-    finish(run(url, &config.digest()))
 }
 
-/// Load the optional slot-B wasm probe from `wasm.url` NVRAM.
-///
-/// M1 uses this to prove the runtime starts during boot without replacing the
-/// slot-A MCP module.  It is optional; a missing key is silent.
+/// Load the optional slot-B wasm probe from `wasm.url` NVRAM.  M1 uses this to
+/// prove the runtime starts during boot without replacing the slot-A MCP module.
+/// It is optional; a missing key is silent.
 pub fn boot_wasm() {
     let mut local = [0u8; 160];
     if let Some(n) = nvram::get("wasm.local", &mut local) {

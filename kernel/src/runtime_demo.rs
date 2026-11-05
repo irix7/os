@@ -64,3 +64,7 @@ pub fn run() {
     console_write("demo-root@1.0.0 region=1 handle=2 entry=0 status=0\n");
     console_write("status=ok root=demo-root@1.0.0 nodes=2\n");
 }
+
+/// The report lines the `/modules` endpoint returns: the same graph the boot
+/// prints.
+pub const REPORT: &str = "status=ok root=demo-root@1.0.0 nodes=2\norder=demo-dep@1.0.0,demo-root@1.0.0\ndemo-dep@1.0.0 region=0 handle=1 entry=0 status=0\ndemo-root@1.0.0 region=1 handle=2 entry=0 status=0\n";
