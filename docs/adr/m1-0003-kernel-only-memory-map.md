@@ -102,4 +102,17 @@ Sequence:
 6. Delete the module loader, the module ABI table, the slot layout, the module artefacts
    and the module signing checks. Re-run the M1, M2, module-transport and relibc gates.
 
+Step 6 progress:
+
+- The kernel no longer loads modules. The telnet `module` command, the sash `module`
+  records and the autoload fetch path are removed. `kernel/src/loader.rs` and the
+  region runtime in `kernel/src/module.rs` are deleted. The TCP and UDP socket slots
+  moved to `kernel/src/slots.rs`.
+- The `module_*` service entries return the `kernel-core` refusal.
+- MCP serves its service graph at `/services`. The `/modules` path is removed.
+- The `mcp.local` boot steps in CI are removed. The `logical` module build is removed.
+
+Remaining: the module area and its linker assertion, the `modules/` crates, the Wasm
+guest source, the release artefacts, and the module signing checks.
+
 Each step records its kernel image size and the stack high-water mark.

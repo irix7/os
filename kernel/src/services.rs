@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The Indy's module service platform.
+//! The Indy's platform for the service table.
 //!
 //! The service table, its argument guards and its refusals are
 //! `kernel-core::service`.  This file supplies the machine resources the Indy
 //! owns: the mirrored serial/telnet console, the CP0-count network clock, the
-//! kernel heap, the module TCP and UDP slots, the DS1386 environment, the
-//! status blocks, the REX3 shadow and SCSI.
+//! kernel heap, the TCP and UDP socket slots, the DS1386 environment, the
+//! status blocks, the REX3 shadow and SCSI.  The module entries keep their
+//! refusals from `kernel-core`.
 
 use core::alloc::Layout;
 
 use kernel_core::service::Platform;
-use module_abi::{
-    ModuleArena, ModuleContext, ModuleExportBinding, ModuleHandle, ModuleInfo, ModuleLoad,
-};
 use module_block::SECTOR;
 
 /// Milliseconds since boot from the network clock.
@@ -33,12 +31,12 @@ pub struct IndyPlatform;
 
 static PLATFORM: IndyPlatform = IndyPlatform;
 
-/// Install the platform.  Called once during boot, before the first module.
+/// Install the platform.  Called once during boot, before the first service call.
 pub fn install() {
     kernel_core::service::install(&PLATFORM);
 }
 
-/// The Indy's block service device: SCSI, with the module's target passed
+/// The Indy's block service device: SCSI, with the caller's target passed
 /// straight through.
 struct ScsiBlock;
 
@@ -56,7 +54,7 @@ impl module_block::Block for ScsiBlock {
     }
 }
 
-/// Every module target reaches the SCSI stack unchanged.
+/// Every block target reaches the SCSI stack unchanged.
 const BLOCK_STORE: module_block::Store = module_block::Store::direct();
 
 impl Platform for IndyPlatform {
@@ -78,39 +76,39 @@ impl Platform for IndyPlatform {
     }
 
     fn tcp_listen(&self, slot: u32, port: u16) -> i32 {
-        crate::module::tcp_listen(slot, port)
+        crate::slots::tcp_listen(slot, port)
     }
 
     fn tcp_state(&self, slot: u32) -> u32 {
-        crate::module::tcp_state(slot)
+        crate::slots::tcp_state(slot)
     }
 
     fn tcp_recv(&self, slot: u32, out: &mut [u8]) -> isize {
-        crate::module::tcp_recv(slot, out)
+        crate::slots::tcp_recv(slot, out)
     }
 
     fn tcp_send(&self, slot: u32, bytes: &[u8]) -> isize {
-        crate::module::tcp_send(slot, bytes)
+        crate::slots::tcp_send(slot, bytes)
     }
 
     fn tcp_close(&self, slot: u32) {
-        crate::module::tcp_close(slot);
+        crate::slots::tcp_close(slot);
     }
 
     fn tcp_abort(&self, slot: u32) {
-        crate::module::tcp_abort(slot);
+        crate::slots::tcp_abort(slot);
     }
 
     fn tcp_connect(&self, slot: u32, address: u32, port: u16) -> i32 {
-        crate::module::tcp_connect(slot, address, port)
+        crate::slots::tcp_connect(slot, address, port)
     }
 
     fn tcp_events(&self, slot: u32) -> u32 {
-        crate::module::tcp_events(slot)
+        crate::slots::tcp_events(slot)
     }
 
     fn tcp_slots(&self) -> u32 {
-        crate::module::tcp_slots()
+        crate::slots::tcp_slots()
     }
 
     fn console_read(&self, offset: u64, out: &mut [u8]) -> isize {
@@ -166,51 +164,12 @@ impl Platform for IndyPlatform {
         BLOCK_STORE.write_sector(&mut ScsiBlock, target, lba, data)
     }
 
-    fn module_arena(&self, out: &mut ModuleArena) -> i32 {
-        crate::module::module_arena(out)
-    }
-
-    fn module_load(&self, request: &ModuleLoad, out: &mut ModuleHandle) -> i32 {
-        crate::module::module_load(request, out)
-    }
-
-    fn module_execute(
-        &self,
-        handle: ModuleHandle,
-        entry_offset: u32,
-        context: Option<&ModuleContext>,
-        status: Option<&mut i32>,
-    ) -> i32 {
-        crate::module::module_execute(handle, entry_offset, context, status)
-    }
-
-    fn module_find(&self, name: &[u8], version: &[u8], out: &mut ModuleHandle) -> i32 {
-        crate::module::module_find(name, version, out)
-    }
-
-    fn module_find_export(
-        &self,
-        interface: &[u8],
-        version: u16,
-        out: &mut ModuleExportBinding,
-    ) -> i32 {
-        crate::module::module_find_export(interface, version, out)
-    }
-
-    fn module_query(&self, handle: ModuleHandle, out: &mut ModuleInfo) -> i32 {
-        crate::module::module_query(handle, out)
-    }
-
-    fn module_unload(&self, handle: ModuleHandle) -> i32 {
-        crate::module::module_unload(handle)
-    }
-
     fn udp_open(&self, slot: u32, port: u16) -> i32 {
-        crate::module::udp_open(slot, port)
+        crate::slots::udp_open(slot, port)
     }
 
     fn udp_send(&self, slot: u32, address: u32, port: u16, bytes: &[u8]) -> isize {
-        crate::module::udp_send(slot, address, port, bytes)
+        crate::slots::udp_send(slot, address, port, bytes)
     }
 
     fn udp_recv(
@@ -220,18 +179,18 @@ impl Platform for IndyPlatform {
         src_address: Option<&mut u32>,
         src_port: Option<&mut u16>,
     ) -> isize {
-        crate::module::udp_recv(slot, out, src_address, src_port)
+        crate::slots::udp_recv(slot, out, src_address, src_port)
     }
 
     fn udp_close(&self, slot: u32) {
-        crate::module::udp_close(slot);
+        crate::slots::udp_close(slot);
     }
 
     fn udp_slots(&self) -> u32 {
-        crate::module::udp_slots()
+        crate::slots::udp_slots()
     }
 
     fn udp_state(&self, slot: u32, address: Option<&mut u32>, port: Option<&mut u16>) -> i32 {
-        crate::module::udp_state(slot, address, port)
+        crate::slots::udp_state(slot, address, port)
     }
 }

@@ -191,7 +191,7 @@ pub fn execute(line: &[u8], out: &mut dyn Sink) -> Outcome {
             crate::telnet::request_reboot();
             Outcome::Handled
         }
-        b"packages" | b"modules" => {
+        b"packages" => {
             let argument = trim(argument);
             if argument.is_empty() {
                 Outcome::Deferred(Deferred::Packages)
@@ -278,7 +278,7 @@ fn packages(out: &mut dyn Sink) {
         if line.is_empty() || line[0] == b'#' || line.starts_with(b"version=") {
             continue;
         }
-        if line.starts_with(b"module ") || line.starts_with(b"userland ") {
+        if line.starts_with(b"userland ") {
             let _ = writer.write_str(core::str::from_utf8(line).unwrap_or("?"));
             let _ = writer.write_str("\r\n");
         }
@@ -288,7 +288,7 @@ fn packages(out: &mut dyn Sink) {
 /// Fetch a direct package URL into `out` and return the captured length.
 ///
 /// The package index uses raw or release-asset HTTPS URLs.  Redirects are not
-/// followed here; module records continue to use the autoload redirect path.
+/// followed here.
 fn fetch_package(url: &str, out: &mut [u8]) -> Result<usize, &'static str> {
     let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
         (true, rest)
@@ -335,7 +335,7 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
         let Some(record_name) = fields.next() else {
             continue;
         };
-        if kind != b"module" && kind != b"userland" || record_name != name {
+        if kind != b"userland" || record_name != name {
             continue;
         }
         let Some(_version) = fields.next() else {
@@ -390,19 +390,6 @@ fn install(out: &mut dyn Sink, name: &[u8]) {
             out.write(b"packages: userland written to SCSI target 2; reboot\r\n");
             return;
         }
-        match crate::autoload::load_url(url, &irix7_sha256::Sha256(digest)) {
-            Ok(0) => out.write(b"packages: module loaded\r\n"),
-            Ok(code) => {
-                let _ = write!(
-                    ResultSinkWriter { out },
-                    "packages: module status {code}\r\n"
-                );
-            }
-            Err(error) => {
-                let _ = write!(ResultSinkWriter { out }, "packages: {error}\r\n");
-            }
-        }
-        return;
     }
     out.write(b"packages: not found\r\n");
 }
@@ -421,10 +408,6 @@ fn run_userland(out: &mut dyn Sink, name: &[u8]) {
         };
         if record_name != name {
             continue;
-        }
-        if kind == b"module" {
-            out.write(b"packages: use packages install for a module\r\n");
-            return;
         }
         if kind != b"userland" {
             continue;
@@ -621,14 +604,14 @@ fn help(out: &mut dyn Sink) {
           \x20 time                 uptime and RTC time\r\n\
           \x20 hinv                 CPU, memory and network inventory\r\n\
           \x20 packages             list the GitHub package index\r\n\
-          \x20 packages install N   verify and install a module or userland\r\n\
+          \x20 packages install N   verify and install a userland image\r\n\
           \x20 packages run N       run a userland image from RAM\r\n\
           \x20 mount URL [...]      inspect EROFS over HTTPS Range\r\n\
           \x20 boot                 retry the target-2 user image\r\n\
           \x20 reboot               restart from the PROM\r\n\
           \r\n\
           kernel-only (telnet): diagnostics, scsi, http, https, ntp, ping,\r\n\
-          module, user, userelf, panic, trap, tlb and gfx.\r\n",
+          user, userelf, panic, trap, tlb and gfx.\r\n",
     );
 }
 

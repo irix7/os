@@ -41,12 +41,10 @@ pub mod heap;
 pub mod http;
 pub mod idle;
 pub mod kbd;
-pub mod loader;
 pub mod logical;
 pub mod m2_demo;
 pub mod mcp;
 pub mod mesh;
-pub mod module;
 pub mod native_sys;
 pub mod net;
 pub mod net_irq;
@@ -65,6 +63,7 @@ pub mod sash;
 pub mod scheduler;
 pub mod scsi;
 pub mod services;
+pub mod slots;
 pub mod status;
 pub mod syserr;
 pub mod telnet;
@@ -562,7 +561,7 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
             start_userland();
         }
 
-        // Drive the network stack, module callbacks and telnet console.
+        // Drive the network stack, the MCP service and the telnet console.
         graphics_console::flush();
         // The Seeq receive interrupt sets one deferred flag; a wake it caused
         // takes at most one ring here.  The unbounded poll stays the path when
@@ -576,10 +575,10 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         } else {
             net::poll();
         }
-        let module_ran = module::poll();
+        let slots_ready = slots::note_ready();
         telnet::poll();
         telnet::poll_local();
-        // Flush replies queued by the module and telnet before parking.
+        // Flush replies queued by MCP and telnet before parking.
         net::poll();
         // Report once after the first full service pass, so MCP/telnet
         // traffic and the optional Wasm probe are inside the smoke window.
@@ -609,13 +608,13 @@ fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
         // Park until the next timer tick or device interrupt.  With the Seeq
         // receive interrupt armed a frame wakes `wait` directly, so the 0.5 ms
         // observation would be a poll with extra host-scheduling cost and is
-        // skipped.  Without it (net=poll), a ready module socket or recent
-        // module work still uses one 0.5 ms observation, and the 10 ms tick is
+        // skipped.  Without it (net=poll), a ready socket slot or recent slot
+        // activity still uses one 0.5 ms observation, and the 10 ms tick is
         // the deadline fallback in both cases.
         idle::note_pass(entered);
         if net::armed() {
             idle::wait();
-        } else if module::any_ready() || module_ran || module::recently_active() {
+        } else if slots_ready || slots::recently_active() {
             idle::wait_short();
         } else {
             idle::wait();
@@ -636,7 +635,7 @@ fn announce_boot(autoload: autoload::Status) {
     let network_off = crate::net::disabled();
     let ready = match autoload {
         autoload::Status::Loaded => network_up || network_off,
-        // M1 explicitly permits a network-off boot with no module.
+        // M1 permits a network-off boot without MCP.
         autoload::Status::Disabled => network_off,
         autoload::Status::Failed => false,
     };
@@ -658,12 +657,7 @@ fn announce_boot(autoload: autoload::Status) {
         "down"
     });
     console_write(" mcp=");
-    let local_module = {
-        let mut value = [0u8; 1];
-        crate::nvram::get("mcp.local", &mut value).is_some()
-    };
     match autoload {
-        autoload::Status::Loaded if local_module => console_write("local"),
         autoload::Status::Loaded => console_write("listening"),
         autoload::Status::Disabled => console_write("disabled"),
         autoload::Status::Failed => console_write("failed"),
@@ -681,7 +675,7 @@ fn announce_boot(autoload: autoload::Status) {
         console_println(if !network_up && !network_off {
             "network-down"
         } else if autoload == autoload::Status::Disabled {
-            "no-mcp-url"
+            "mcp-disabled"
         } else {
             "autoload-failed"
         });
