@@ -1894,7 +1894,8 @@ jobs:
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
-          iris-ci --socket "$socket" serial-wait 'ports: pass sockets=8' --timeout 120
+          # The self-test prints before BOOT-READY, so check the log file, not the stream.
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$run/serial.log" 'ports: pass sockets=8' 120
       - uses: actions/upload-artifact@v4
         if: always()
         with:
