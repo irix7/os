@@ -72,6 +72,30 @@ fn local_mut() -> Option<&'static mut Local> {
 }
 
 /// Mark the live userland actor as running and take it off the run queue.
+/// Milliseconds between `logical: tick` lines.  Three lines end the demo.
+const TICK_PERIOD_MS: u64 = 1_000;
+const TICK_LIMIT: u32 = 3;
+static mut TICK_LAST_MS: u64 = 0;
+static mut TICK_COUNT: u32 = 0;
+
+/// The logical-computer heartbeat, formerly the `logical` module's tick callback.
+/// Called from the idle loop; prints one line per second for the first three.
+pub fn tick() {
+    // SAFETY: the kernel is single-threaded; the idle loop is the only caller.
+    unsafe {
+        if TICK_COUNT >= TICK_LIMIT {
+            return;
+        }
+        let now = crate::services::clock_ms();
+        if now.saturating_sub(TICK_LAST_MS) < TICK_PERIOD_MS {
+            return;
+        }
+        TICK_LAST_MS = now;
+        TICK_COUNT += 1;
+        crate::console_println(&alloc::format!("logical: tick {}", TICK_COUNT));
+    }
+}
+
 pub fn actor_enter() -> bool {
     let Some(local) = local_mut() else {
         return false;

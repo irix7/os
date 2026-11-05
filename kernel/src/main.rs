@@ -543,6 +543,7 @@ fn start_userland() {
 /// Idle loop: poll the resident console service, network, and telnet.
 fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
+        logical::tick();
         let entered = traps::count_read();
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {
