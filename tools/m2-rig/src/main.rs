@@ -162,7 +162,6 @@ fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
         ("iris", "--iris", &options.iris),
         ("iris-ci", "--iris-ci", &options.iris_ci),
         ("PROM", "--rom", &options.rom),
-        ("MCP module", "--module", &options.module),
     ] {
         if !path.is_file() {
             return Err(format!(
@@ -175,13 +174,13 @@ fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
     if rom.len() > 524_288 {
         return Err(format!("PROM is {} bytes; the window is 524288", rom.len()));
     }
-    let module = fs::read(&options.module).map_err(|error| format!("read MCP module: {error}"))?;
-    if module.len() > 524_288 {
-        return Err(format!(
-            "MCP module is {} bytes; slot A is 524288",
-            module.len()
-        ));
-    }
+    // MCP is part of the kernel now; the module artefact is optional and empty
+    // when absent, so the fixture serves nothing and the node ignores the key.
+    let module = if options.module.is_file() {
+        fs::read(&options.module).map_err(|error| format!("read MCP module: {error}"))?
+    } else {
+        Vec::new()
+    };
     let rom_sha = sha256::digest(&rom);
     let module_sha = sha256::digest(&module);
     Ok((module, rom_sha, module_sha))
