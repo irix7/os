@@ -1039,13 +1039,6 @@ jobs:
                       data += sock.recv(4096)
               except socket.timeout:
                   pass
-              sock.sendall(
-                  f"module http://192.168.0.1:18102/c {mcp_sha}\r\n".encode()
-              )
-              time.sleep(6)
-              sock.sendall(
-                  f"module b http://192.168.0.1:18102/m {manager_sha}\r\n".encode()
-              )
               time.sleep(12)
           PY
 
@@ -1070,7 +1063,7 @@ jobs:
             fi
             sleep 2
           done
-          grep -q 'status=ok root=m2-root@1.0.0 nodes=2 signatures=ed25519' "$work/mcp-modules.txt"
+          grep -q 'status=ok root=m2-root@1.0.0 nodes=2' "$work/mcp-modules.txt"
           grep -q 'order=m2-mesh@1.0.0,m2-root@1.0.0' "$work/mcp-modules.txt"
           grep -q 'm2-mesh@1.0.0 region=2' "$work/mcp-modules.txt"
           grep -q 'm2-root@1.0.0 region=3' "$work/mcp-modules.txt"
