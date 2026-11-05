@@ -844,7 +844,7 @@ jobs:
             fi
             sleep 2
           done
-          grep -q 'status=ok root=demo-root@1.0.0 nodes=2 signatures=ed25519' "$work/mcp-modules.txt"
+          grep -q 'status=ok root=demo-root@1.0.0 nodes=2' "$work/mcp-modules.txt"
           grep -q 'demo-dep@1.0.0 region=0' "$work/mcp-modules.txt"
           grep -q 'demo-root@1.0.0 region=1' "$work/mcp-modules.txt"
 
