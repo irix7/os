@@ -87,7 +87,7 @@ Sequence:
    text.
 2. Port `erofs`, `cache` and `logical`, the storage and namespace code with no network
    dependency.
-3. Port `ports`. The transport gate builds `ports.module` and runs the m2-rig `ports`
+3. Port `ports` (done: `kernel/src/ports_selftest.rs`; the module and the m2-rig subcommand are deleted). The transport gate used to build `ports.module` and run the m2-rig `ports`
    harness, which waits for `ports: pass sockets=N`. In the kernel the same test is a
    self-test that opens eight sockets against the fixture's echo listeners. It is gated by
    an NVRAM key, so ordinary boots do not run it. The rig then serves the PR's kernel and

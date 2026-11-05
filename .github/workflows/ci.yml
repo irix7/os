@@ -1960,7 +1960,6 @@ jobs:
           ticker ticker-module core 2
           block  block-module  core 2
           mcp    mcp-module    core,alloc z
-          ports  ports-module  core z
           erofs  erofs-module  core,alloc 2
           logical logical-module core,alloc 2
           cache  cache-module  core,alloc 2

@@ -52,7 +52,6 @@ pub enum Action {
     /// Probe both directions against already-running nodes.
     Probe,
     /// Boot one node running the module TCP slot probe.
-    Ports,
     /// Print the derived instance table without starting anything.
     PrintConfig,
     /// Boot one x86 QEMU guest and check the module's status page.
@@ -80,7 +79,6 @@ impl Action {
             "down" => Self::Down,
             "status" => Self::Status,
             "probe" => Self::Probe,
-            "ports" => Self::Ports,
             "print-config" => Self::PrintConfig,
             "x86-smoke" => Self::X86Smoke,
             "x86-mesh" => Self::X86Mesh,
