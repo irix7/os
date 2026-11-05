@@ -1,268 +1,49 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Boot-time module autoload from the repository boot configuration.
+//! Boot-time start of the in-kernel services.
 //!
-//! The MCP control plane is a module, so a machine that reboots must be able
-//! to bring it back without a human at the telnet console.  The kernel fetches
-//! `boot/config.conf` from the repository, reads `mcp.url` and `mcp.sha256`,
-//! then fetches the image over HTTPS, checks the digest, and runs it in place.
-//! A local test rig can override the two keys in the DS1386 environment.  A
-//! recovery or offline image can instead use `mcp.local`, a target:LBA:sectors
-//! record with the same SHA-256 digest; it is read from the local SCSI bus
-//! before the network path.
+//! The MCP control plane and the logical heartbeat are kernel code.  There is
+//! no module loader: every service is linked into the kernel image that the
+//! ROM downloads (ADR M1-0003).  This module decides which of them start at
+//! boot and reports the outcome for the BOOT-READY marker.
 
-use crate::nvram;
-use crate::{console_println, console_write, http, module, scsi, tls};
-use irix7_sha256::Sha256;
+use crate::{console_println, nvram};
 
-/// Outcome of the boot-time module autoload.
+/// Outcome of the boot-time start of the MCP service.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Status {
-    /// No `mcp.url` is configured.
+    /// The network is off, so MCP does not start.
     Disabled,
-    /// The configured image loaded and returned a zero status.
+    /// MCP started and listens.
     Loaded,
-    /// Configuration or fetch/verification failed.
+    /// MCP refused to start.
     Failed,
 }
 
-/// Load and run the configured module, if any.
-///
-/// Local NVRAM `mcp.local` wins when present: it names a SCSI target, LBA and
-/// sector count, and is used by the offline/recovery boot.  Otherwise local
-/// NVRAM `mcp.url`/`mcp.sha256` wins, because the test rig uses it to point at
-/// a temporary HTTP fixture.  Otherwise the kernel reads the repository boot
-/// configuration, which the release workflow updates with raw GitHub URLs for
-/// the published module.  A normal Indy never needs the NVRAM override; the
-/// chip is validated and repaired at startup.
+/// Start MCP in the kernel, unless the network is off.
 pub fn boot() -> Status {
-    // A network-off M1 boot does not need MCP.  Report Disabled rather than a
-    // failed autoload; the console and local policy remain usable.
+    // A network-off M1 boot does not need MCP.  The console and local policy
+    // remain usable.
     if crate::net::disabled() {
-        console_println("autoload: network off; no local module");
+        console_println("mcp: network off; not started");
         return Status::Disabled;
     }
-    // MCP is kernel code now (ADR M1-0003 step 5).  Start it on the kernel's
-    // service table; its tick runs from the idle loop.
+    // MCP runs on the kernel's service table; its tick runs from the idle loop.
     if crate::mcp::start(&kernel_core::service::SERVICES) {
-        console_println("autoload: mcp started in kernel");
+        console_println("mcp: started");
         Status::Loaded
     } else {
-        console_println("autoload: mcp refused to start");
+        console_println("mcp: refused to start");
         Status::Failed
     }
 }
 
-/// Load the optional slot-B wasm probe from `wasm.url` NVRAM.  M1 uses this to
-/// prove the runtime starts during boot without replacing the slot-A MCP module.
-/// It is optional; a missing key is silent.
+/// Run the Wasm probe when NVRAM names a Wasm source (`wasm.local` or
+/// `wasm.url`).  An unconfigured boot skips it and keeps the native namespace.
 pub fn boot_wasm() {
-    // The probe replaces the slot-B loader, but it still runs only when a Wasm
-    // source is configured.  An unconfigured boot keeps the native namespace.
     let mut local = [0u8; 160];
     let mut url = [0u8; 192];
     if nvram::get("wasm.local", &mut local).is_some() || nvram::get("wasm.url", &mut url).is_some()
     {
         crate::wasm_probe::run();
     }
-}
-
-fn write_dec(value: u64) {
-    irix7_fmt::decimal(value, &mut |b| crate::write_byte(b));
-}
-
-fn boot_nvram(url: &[u8]) -> Status {
-    let Ok(url) = core::str::from_utf8(url) else {
-        console_println("autoload: mcp.url is not UTF-8");
-        return Status::Failed;
-    };
-
-    let mut digest_buf = [0u8; 80];
-    let Some(dn) = nvram::get("mcp.sha256", &mut digest_buf) else {
-        console_println("autoload: mcp.sha256 missing");
-        return Status::Failed;
-    };
-    let Some(digest) = parse_digest(&digest_buf[..dn]) else {
-        console_println("autoload: mcp.sha256 is not 64 hex digits");
-        return Status::Failed;
-    };
-    finish(run(url, &digest))
-}
-
-/// Load a module from a local SCSI target and run it in place.
-///
-/// The NVRAM record is `<target>:<lba>:<sectors>:<sha256>`.  The image is read
-/// in 255-sector chunks because the bring-up READ(6) path cannot cross that
-/// boundary, then verified before the entry call.
-fn load_local(slot: module::Slot, record: &[u8]) -> Result<i32, &'static str> {
-    let text = core::str::from_utf8(record).map_err(|_| "autoload: local record is not UTF-8")?;
-    let mut fields = text.split(':');
-    let target = parse_u32(fields.next().ok_or("autoload: local target missing")?)?;
-    let lba = parse_u32(fields.next().ok_or("autoload: local LBA missing")?)?;
-    let sectors = parse_u32(fields.next().ok_or("autoload: local sectors missing")?)?;
-    let digest = parse_digest(
-        fields
-            .next()
-            .ok_or("autoload: local digest missing")?
-            .as_bytes(),
-    )
-    .ok_or("autoload: local digest is not 64 hex digits")?;
-    if fields.next().is_some() {
-        return Err("autoload: local record has extra fields");
-    }
-    if target >= 7 {
-        return Err("autoload: local target must be 0..6");
-    }
-    let len = (sectors as usize)
-        .checked_mul(512)
-        .ok_or("autoload: local length overflow")?;
-    if len == 0 || len > module::slot_size(slot) {
-        return Err("autoload: local image does not fit module slot");
-    }
-    if lba.checked_add(sectors).is_none() {
-        return Err("autoload: local LBA overflow");
-    }
-
-    console_println("autoload: loading local module");
-    module::clear(slot);
-    let area = module::area(slot);
-    let mut done = 0usize;
-    while done < len {
-        let count = ((len - done) / 512).min(255);
-        let start_lba = lba + (done / 512) as u32;
-        scsi::read_blocks(target as u8, start_lba, &mut area[done..done + count * 512])?;
-        done += count * 512;
-    }
-    if !Sha256::digest(&area[..len]).eq_digest(&digest) {
-        return Err("autoload: local module hash mismatch");
-    }
-    // SAFETY: the image fits and its hash matched.
-    unsafe { Ok(module::call_entry(slot, len)) }
-}
-
-fn parse_u32(text: &str) -> Result<u32, &'static str> {
-    text.parse::<u32>()
-        .map_err(|_| "autoload: local field is not a decimal integer")
-}
-
-fn finish(result: Result<i32, &'static str>) -> Status {
-    match result {
-        Ok(0) => {
-            console_println("autoload: module returned");
-            Status::Loaded
-        }
-        Ok(_) => {
-            console_println("autoload: module returned");
-            console_println("autoload: non-zero status");
-            Status::Failed
-        }
-        Err(err) => {
-            console_println("autoload: failed");
-            console_println(err);
-            Status::Failed
-        }
-    }
-}
-
-const REDIRECT_LIMIT: usize = 4;
-const REDIRECT_MAX: usize = 512;
-
-enum FetchResult {
-    Loaded(i32),
-    Redirect(crate::http::Location),
-}
-
-/// Load and run a module from an explicit URL and SHA-256 digest.
-///
-/// Used by the package index; the normal boot path uses [`boot`].
-pub fn load_url(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
-    run_slot(module::Slot::A, url, digest)
-}
-
-fn run(url: &str, digest: &Sha256) -> Result<i32, &'static str> {
-    run_slot(module::Slot::A, url, digest)
-}
-
-fn run_slot(slot: module::Slot, url: &str, digest: &Sha256) -> Result<i32, &'static str> {
-    if url.is_empty() || url.len() > REDIRECT_MAX {
-        return Err("autoload: URL too long");
-    }
-    let mut current = [0u8; REDIRECT_MAX];
-    current[..url.len()].copy_from_slice(url.as_bytes());
-    let mut current_len = url.len();
-
-    for _ in 0..=REDIRECT_LIMIT {
-        let Ok(url) = core::str::from_utf8(&current[..current_len]) else {
-            return Err("autoload: URL is not UTF-8");
-        };
-        match fetch_once(slot, url, digest)? {
-            FetchResult::Loaded(code) => return Ok(code),
-            FetchResult::Redirect(location) => {
-                let Some(target) = location.as_str() else {
-                    return Err("autoload: redirect is not UTF-8");
-                };
-                if !(target.starts_with("https://") || target.starts_with("http://")) {
-                    return Err("autoload: relative redirect");
-                }
-                if target.len() > REDIRECT_MAX {
-                    return Err("autoload: redirect too long");
-                }
-                current[..target.len()].copy_from_slice(target.as_bytes());
-                current_len = target.len();
-            }
-        }
-    }
-    Err("autoload: too many redirects")
-}
-
-fn fetch_once(slot: module::Slot, url: &str, digest: &Sha256) -> Result<FetchResult, &'static str> {
-    let (secure, rest) = if let Some(rest) = url.strip_prefix("https://") {
-        (true, rest)
-    } else if let Some(rest) = url.strip_prefix("http://") {
-        (false, rest)
-    } else {
-        (true, url)
-    };
-    let (host_port, path) = match rest.find('/') {
-        Some(i) => (&rest[..i], &rest[i..]),
-        None => (rest, "/"),
-    };
-    if host_port.is_empty() {
-        return Err("autoload: empty host");
-    }
-    let (host, port) = match host_port.rsplit_once(':') {
-        Some((host, port)) => (host, port.parse::<u16>().map_err(|_| "autoload: bad port")?),
-        None => (host_port, if secure { 443 } else { 80 }),
-    };
-    let ip = crate::telnet::resolve_host(host.as_bytes()).ok_or("autoload: unknown host")?;
-
-    console_println("autoload: fetching module");
-    module::clear(slot);
-    let area = module::area(slot);
-    let (summary, captured) = if secure {
-        tls::get_to(ip, port, host, path, area)?
-    } else {
-        http::get_to(ip, port, host, path, area)?
-    };
-
-    if matches!(summary.status, 301 | 302 | 303 | 307 | 308) {
-        let Some(location) = summary.location else {
-            return Err("autoload: redirect without Location");
-        };
-        return Ok(FetchResult::Redirect(location));
-    }
-    if summary.status != 200 {
-        return Err("autoload: HTTP status was not 200");
-    }
-    if captured != summary.body_len {
-        return Err("autoload: module did not fit");
-    }
-    if !summary.sha256.eq_digest(digest) {
-        return Err("autoload: module hash mismatch");
-    }
-    // SAFETY: the image fits and its hash matched.
-    unsafe { Ok(FetchResult::Loaded(module::call_entry(slot, captured))) }
-}
-
-fn parse_digest(hex: &[u8]) -> Option<Sha256> {
-    Sha256::from_hex(hex)
 }

@@ -997,14 +997,14 @@ fn handle_request(services: &Services, slot: u32) {
         screen_start(services, slot);
         return;
     }
-    if !is_post && path == b"/modules" {
+    if !is_post && path == b"/services" {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
-        let n = module_status(services, response);
+        let n = service_graph(response);
         send_http(services, slot, &b"text/plain"[..], &response[..n]);
         return;
     }
     // The kernel's own status block: network, interrupt counters and idle
-    // load.  `/` stays the short module liveness page.
+    // load.  `/` stays the short liveness page.
     if !is_post && path == b"/status" {
         let response = unsafe { &mut *core::ptr::addr_of_mut!(RESPONSE) };
         let n = unsafe { (services.info)(0, response.as_mut_ptr(), response.len()) };
@@ -1093,25 +1093,18 @@ fn request_line(request: &[u8]) -> (&[u8], bool) {
     (path, is_post)
 }
 
-fn module_status(_services: &Services, out: &mut [u8]) -> usize {
+/// The service graphs the kernel's own demos report.
+fn service_graph(out: &mut [u8]) -> usize {
     let mut w = Out::new(out);
-    let status = unsafe { &*(loader_abi::STATUS_ADDR as *const loader_abi::ModuleStatus) };
-    if status.magic != loader_abi::STATUS_MAGIC {
-        // No manager is running: report the kernel's own dependency graphs.
-        w.push(b"runtime module graph:\n");
-        w.push(crate::runtime_demo::REPORT.as_bytes());
-        w.push(crate::m2_demo::REPORT.as_bytes());
-        return w.len;
-    }
-    let len = (status.len as usize).min(status.text.len());
-    w.push(b"runtime module graph:\n");
-    w.push(&status.text[..len]);
+    w.push(b"runtime service graph:\n");
+    w.push(crate::runtime_demo::REPORT.as_bytes());
+    w.push(crate::m2_demo::REPORT.as_bytes());
     w.len
 }
 
 fn status_page(services: &Services, out: &mut [u8]) -> usize {
     let mut w = Out::new(out);
-    w.push(b"IRIX 7 module HTTP server\nuptime: ");
+    w.push(b"IRIX 7 MCP server\nuptime: ");
     w.u64((services.clock_ms)() / 1000);
     w.push(b" s\n");
     w.len

@@ -3,8 +3,8 @@
 //!
 //! The MIPS III general vector only knows two things about an `EXC_INT`: IP7
 //! is the CP0 timer, and every other pending bit is an external line.  This
-//! module holds the decode that the vector's Rust half, the Seeq driver and
-//! the module scheduler share.  Nothing here touches MMIO or the scheduler,
+//! file holds the decode that the vector's Rust half, the Seeq driver and
+//! the socket slots share.  Nothing here touches MMIO or the scheduler,
 //! so the policy runs on the host under `kernel/tests/net_irq.rs`.
 //!
 //! The Cause bits are the MIPS III layout: IP2 is bit 10 and IP7 is bit 15.
@@ -15,7 +15,7 @@
 //!
 //! Interrupt context may only do three things here: classify the cause,
 //! acknowledge the device, and set one deferred flag.  Frame processing,
-//! allocation, logging and module calls belong to the thread that drains.
+//! allocation and logging belong to the thread that drains.
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
@@ -108,52 +108,19 @@ pub const fn ack_bits(status: u32) -> u32 {
     status & ENET_W1C
 }
 
-/// A module TCP slot created outside any module call.
-pub const NO_OWNER: u8 = 0xFF;
-
-/// TCP readiness bits that require the owning module to run: RX data or a
-/// peer close.
+/// TCP readiness bits that need service: RX data or a peer close.
 ///
 /// `EV_TX` is deliberately excluded.  It means "a send was short and the
 /// socket has room now", which stays true until the next send: a level wake
 /// there makes an idle node spin at the short-wait cadence forever.  The
 /// peer's acknowledgment arrives as a received frame, so the receive bit
-/// already wakes the owner when transmit space actually returns.
+/// already reports readiness when transmit space actually returns.
 /// `EV_LISTEN`/`EV_ESTABLISHED` are state, not work.
 pub const WAKE_BITS: u32 = (1 << 0) | (1 << 2);
 
-/// Whether a slot's readiness mask should wake its owner.
+/// Whether a slot's readiness mask needs service.
 pub const fn slot_ready(mask: u32) -> bool {
     mask & WAKE_BITS != 0
-}
-
-/// Bit `n` set when module region `n` owns a ready slot.
-///
-/// `owners[slot]` is [`NO_OWNER`] for a socket the kernel cannot attribute to
-/// a module call.  An unowned ready slot wakes every region: the scheduler
-/// cannot know which module needs it, and staying conservative costs one
-/// extra tick rather than a stalled socket.  `regions` above 64 is clamped.
-pub fn ready_regions(owners: &[u8], ready: &[bool], regions: usize) -> u64 {
-    let regions = regions.min(64);
-    let mut mask = 0u64;
-    for (slot, &owner) in owners.iter().enumerate().take(ready.len()) {
-        if !ready[slot] {
-            continue;
-        }
-        if owner == NO_OWNER {
-            if regions == 64 {
-                mask = u64::MAX;
-            } else {
-                mask = (1u64 << regions) - 1;
-            }
-            continue;
-        }
-        let region = owner as usize;
-        if region < regions {
-            mask |= 1u64 << region;
-        }
-    }
-    mask
 }
 
 /// Backstop for an interrupt the acknowledge cannot clear.
@@ -338,31 +305,6 @@ mod tests {
         assert!(!slot_ready(1 << 1), "recovered TX must not be a level wake");
         assert!(slot_ready(1 << 0));
         assert!(slot_ready(1 << 2));
-    }
-
-    #[test]
-    fn only_the_ready_slot_owner_is_woken() {
-        let owners = [0u8, 1, NO_OWNER];
-        let ready = [true, false, false];
-        assert_eq!(ready_regions(&owners, &ready, 5), 1 << 0);
-        let owners = [0u8, 3, NO_OWNER];
-        let ready = [false, true, false];
-        assert_eq!(ready_regions(&owners, &ready, 5), 1 << 3);
-    }
-
-    #[test]
-    fn an_unowned_ready_slot_wakes_every_region() {
-        let owners = [NO_OWNER];
-        let ready = [true];
-        assert_eq!(ready_regions(&owners, &ready, 3), 0b111);
-        assert_eq!(ready_regions(&owners, &ready, 64), u64::MAX);
-    }
-
-    #[test]
-    fn an_owner_outside_the_table_is_ignored() {
-        let owners = [9u8];
-        let ready = [true];
-        assert_eq!(ready_regions(&owners, &ready, 3), 0);
     }
 
     #[test]
