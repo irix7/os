@@ -56,6 +56,7 @@ pub mod ramfs;
 pub mod range;
 pub mod readahead;
 pub mod rtc;
+pub mod runtime_demo;
 pub mod sash;
 pub mod scheduler;
 pub mod scsi;
@@ -633,6 +634,7 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Disabled => network_off,
         autoload::Status::Failed => false,
     };
+    runtime_demo::run();
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {
