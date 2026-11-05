@@ -25,7 +25,6 @@ mod join;
 mod latency;
 mod migrate;
 mod nvram;
-mod ports;
 mod probe;
 mod relay;
 mod rig;
@@ -46,7 +45,6 @@ use failure::FailureEvidence;
 use fixture::Fixture;
 use homes::HomesEvidence;
 use join::{JoinEvidence, RestartInput, RootRestartInput};
-use ports::PortsFixture;
 use probe::{ProbeError, ProbeOutcome};
 use relay::{MeshRelay, Relay};
 use rig::{
@@ -81,7 +79,7 @@ fn run() -> Result<i32, String> {
         return Ok(0);
     };
 
-    if !matches!(options.action, Action::Shard | Action::Ports) && options.nodes != 2 {
+    if !matches!(options.action, Action::Shard) && options.nodes != 2 {
         return Err("--nodes applies to the shard/ports commands; the M2 run is two-node".into());
     }
     if options.transport != Transport::Relay
@@ -97,7 +95,6 @@ fn run() -> Result<i32, String> {
         Action::IrqGate => irqgate::run(&options),
         Action::Stream => stream_run(&options),
         Action::Shard => shard::run(&options),
-        Action::Ports => ports_run(&options),
         Action::Up => up(&options),
         Action::Down => down(&options),
         Action::Status => status(&options),
@@ -362,123 +359,6 @@ fn probe_only(options: &Options) -> Result<i32, String> {
 /// work: it opens one socket per kernel slot and requires all of them to be
 /// connected at the same time.  The fixture records the echoed lines, so the
 /// pass is not taken from the guest's own claim alone.
-fn ports_run(options: &Options) -> Result<i32, String> {
-    let (module, rom_sha, module_sha) = check_prerequisites(options)?;
-    let module_sha_text = sha256::hex(&module_sha);
-    let rom_sha_text = sha256::hex(&rom_sha);
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
-    let base = options.base_port.saturating_add(2_000);
-    let ports = PortsFixture::start(base, 8)
-        .map_err(|error| format!("start ports fixture on {base}: {error}"))?;
-
-    let mut single = options.clone();
-    single.nodes = 1;
-    let nodes = derive_nodes(&single)?;
-    let environment = MeshEnv {
-        extra: Some(vec![
-            ("ports.base".into(), base.to_string()),
-            ("ports.count".into(), "8".into()),
-        ]),
-        ..MeshEnv::default()
-    };
-    let mut running = Vec::new();
-    let started = start_all_with(
-        &single,
-        &nodes,
-        &[Some(environment)],
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    );
-    if let Err(error) = started {
-        let _ = rig::stop_nodes(&single, &mut running);
-        return Err(error);
-    }
-    let boot = (|| -> Result<(), String> {
-        rig::wait_serial(&single, &mut running[0], "BOOT-READY", single.timeout)?;
-        let facts = BootFacts::from_serial(&read_serial(&nodes[0]));
-        facts.verify_identity(&nodes[0])?;
-        Ok(())
-    })();
-    if let Err(error) = boot {
-        let _ = rig::stop_nodes(&single, &mut running);
-        return Err(error);
-    }
-
-    let deadline = Instant::now() + crate::timing::secs(60);
-    let mut marker = None;
-    let mut failure = None;
-    while Instant::now() < deadline {
-        let text = read_serial(&nodes[0]);
-        if let Some(line) = text
-            .lines()
-            .find(|line| line.contains("ports: pass sockets="))
-        {
-            marker = Some(line.trim().to_string());
-            break;
-        }
-        if let Some(line) = text.lines().find(|line| line.contains("ports: fail ")) {
-            failure = Some(line.trim().to_string());
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let stop_errors = if single.keep {
-        println!(
-            "ports: keeping {} up (monitor {}); stop with `m2-rig down`",
-            nodes[0].name, nodes[0].monitor
-        );
-        Vec::new()
-    } else {
-        rig::stop_nodes(&single, &mut running)
-    };
-    let serial = read_serial(&nodes[0]);
-    let received = ports.lines();
-    let complete = ports.complete();
-    let ok = marker.is_some() && failure.is_none() && complete && stop_errors.is_empty();
-    let message = match (&marker, &failure) {
-        (_, Some(failure)) => failure.clone(),
-        (Some(marker), None) => marker.clone(),
-        (None, None) => "the probe did not report a result".into(),
-    };
-
-    let evidence_dir = options.work.join("evidence");
-    fs::create_dir_all(&evidence_dir)
-        .map_err(|error| format!("create {}: {error}", evidence_dir.display()))?;
-    let received_json = received
-        .iter()
-        .map(|line| format!("\"{line}\""))
-        .collect::<Vec<_>>()
-        .join(",");
-    let document = format!(
-        "{{\n  \"ok\": {ok},\n  \"base\": {base},\n  \"count\": {},\n  \"message\": \"{message}\",\n  \"module_sha256\": \"{module_sha_text}\",\n  \"prom_sha256\": \"{rom_sha_text}\",\n  \"received\": [{received_json}],\n  \"serial\": \"{}\"\n}}\n",
-        8,
-        nodes[0].serial_log.display()
-    );
-    fs::write(evidence_dir.join("ports.json"), document)
-        .map_err(|error| format!("write ports evidence: {error}"))?;
-    fs::write(evidence_dir.join("serial.log"), &serial)
-        .map_err(|error| format!("write ports serial: {error}"))?;
-    for error in stop_errors {
-        eprintln!("m2-rig: {error}");
-    }
-    println!(
-        "ports [{}]: {message} ({} listeners at {})",
-        if ok { "pass" } else { "FAIL" },
-        ports.count,
-        ports.base
-    );
-    println!("{}", rig::node_table(&nodes));
-    println!("evidence: {}", evidence_dir.display());
-    Ok(if ok { 0 } else { 1 })
-}
-
-/// Run the real-kernel failure or partition scenario.
-///
-/// The base M2-4 sequence has already left a cached route and a lease at the
-/// member, so the failure has something real to fence.  The rig does not
-/// inject a home, an epoch or a lease: it stops the process or the seam and
-/// then asserts the policy's own transition.
 fn run_failure_scenario(
     options: &Options,
     nodes: &[Node],

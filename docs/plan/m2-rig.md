@@ -117,7 +117,7 @@ The lifecycle commands:
 | `probe` | Probe both directions (HTTP, mesh framing, join) against running nodes and write evidence. It does not restart a node. |
 | `down` | Send `iris-ci quit` to both and wait for the processes. |
 | `run` | `up` + probe + member restart/rejoin (or the failure/partition scenario) + `down` + evidence. |
-| `ports` | Boot one node running `modules/ports`, open one socket per kernel slot, echo one line on each, and write `evidence/ports.json`. Transport prerequisite for #249; no membership traffic. |
+| `ports` | Retired. The kernel self-test (`kernel/src/ports_selftest.rs`) opens eight sockets and checks each echo; the transport gate runs it. Previously: boot one node running `modules/ports`, open one socket per kernel slot, echo one line on each, and write `evidence/ports.json`. Transport prerequisite for #249; no membership traffic. |
 | `print-config` | Print the derived instance/port table and the NVRAM keys without starting. |
 | `clean` | Remove the work directory. Stop the nodes first. |
 
