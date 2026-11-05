@@ -37,7 +37,7 @@ const HEAP_TLB_PAGES: usize = 2;
 
 pub const MAX_RANGES: usize = 12;
 
-static mut ELF_BUF: [u8; ELF_SIZE] = [0; ELF_SIZE];
+static mut ELF_PTR: *mut u8 = core::ptr::null_mut();
 
 /// Argument and environment strings for `execve`, copied out of the old address
 /// space before it is replaced.
@@ -53,7 +53,7 @@ static mut ARG_DATA: [u8; ARG_BYTES] = [0; ARG_BYTES];
 pub fn image_buffer() -> &'static mut [u8] {
     // SAFETY: sash is single-threaded; the loader and the installer never run
     // at the same time.
-    unsafe { &mut *core::ptr::addr_of_mut!(ELF_BUF) }
+    crate::bigbuf::get(core::ptr::addr_of_mut!(ELF_PTR), ELF_SIZE)
 }
 
 #[derive(Clone, Copy)]
@@ -1575,7 +1575,7 @@ pub fn prepare_exec(
     }
     // The image is in ELF_BUF; parse and copy the load plan before anything
     // else can reuse the buffer.
-    let image = unsafe { &(&*core::ptr::addr_of!(ELF_BUF))[..length] };
+    let image = &crate::bigbuf::get(core::ptr::addr_of_mut!(ELF_PTR), ELF_SIZE)[..length];
     let elf = Elf::parse(image).map_err(|_| CELL_E_NOEXEC)?;
     let abi = match elf.abi() {
         Abi::N32 => traps::UserAbi::N32,

@@ -804,13 +804,12 @@ jobs:
             'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
 
-          mcp_sha="$(sha256sum "$http/c" | awk '{print $1}')"
           manager_sha="$(sha256sum "$http/m" | awk '{print $1}')"
-          python3 - "$mcp_sha" "$manager_sha" <<'PY'
+          python3 - "$manager_sha" <<'PY'
           import socket
           import time
 
-          mcp_sha, manager_sha = __import__("sys").argv[1:3]
+          manager_sha = __import__("sys").argv[1]
           with socket.create_connection(("127.0.0.1", 2325), timeout=10) as sock:
               sock.settimeout(5)
               data = b""
@@ -819,10 +818,6 @@ jobs:
                       data += sock.recv(4096)
               except socket.timeout:
                   pass
-              sock.sendall(
-                  f"module http://192.168.0.1:18101/c {mcp_sha}\r\n".encode()
-              )
-              time.sleep(6)
               sock.sendall(
                   f"module b http://192.168.0.1:18101/m {manager_sha}\r\n".encode()
               )

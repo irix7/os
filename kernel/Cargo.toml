@@ -51,6 +51,13 @@ mesh-service = { path = "../crates/mesh-service", default-features = false }
 wasm-policy-host = { path = "../crates/wasm-policy-host" }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
+block-cache = { path = "../crates/block-cache" }
+overlay = { path = "../crates/overlay" }
+mesh-transport = { path = "../crates/mesh-transport" }
+mesh-stream = { path = "../crates/mesh-stream" }
+mesh-join = { path = "../crates/mesh-join" }
+mesh-route = { path = "../crates/mesh-route" }
+mesh-migrate = { path = "../crates/mesh-migrate" }
 embedded-tls = { version = "0.19", default-features = false, features = ["alloc", "rustpki", "p384", "rsa"] }
 rand_core = { version = "0.6", default-features = false }
 x509-cert = { version = "0.2", default-features = false }

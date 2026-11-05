@@ -23,6 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 
 pub mod allocator;
 pub mod autoload;
+pub mod bigbuf;
 pub mod boot_config;
 pub mod boot_protocol;
 pub mod cache;
@@ -42,6 +43,7 @@ pub mod idle;
 pub mod kbd;
 pub mod loader;
 pub mod logical;
+pub mod mcp;
 pub mod mesh;
 pub mod module;
 pub mod native_sys;
@@ -546,6 +548,7 @@ fn start_userland() {
 fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
         logical::tick();
+        crate::mcp::tick(&kernel_core::service::SERVICES);
         let entered = traps::count_read();
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {

@@ -29,7 +29,7 @@ pub const ROOT: u16 = 0;
 /// staged child ELF fits without a second large `.bss` allocation.
 pub const IMAGE_CAPACITY: usize = 256 * 1024;
 
-static mut IMAGE_DATA: [u8; IMAGE_CAPACITY] = [0; IMAGE_CAPACITY];
+static mut IMAGE_PTR: *mut u8 = core::ptr::null_mut();
 static mut IMAGE_LEN: usize = 0;
 
 /// The writable staging buffer behind `/bin/child`.
@@ -39,7 +39,7 @@ static mut IMAGE_LEN: usize = 0;
 pub fn image_buffer() -> &'static mut [u8] {
     // SAFETY: the console owns the machine while staging, and user code never
     // receives this pointer.  The loader copies out of it.
-    unsafe { &mut *core::ptr::addr_of_mut!(IMAGE_DATA) }
+    crate::bigbuf::get(core::ptr::addr_of_mut!(IMAGE_PTR), IMAGE_CAPACITY)
 }
 
 /// Publish the staged image length.  Longer than [`IMAGE_CAPACITY`] is refused.
@@ -65,7 +65,8 @@ pub fn image_size() -> usize {
 pub fn image_data() -> &'static [u8] {
     // SAFETY: the length is set once by the boot staging path and never exceeds
     // IMAGE_CAPACITY.
-    unsafe { &(&*core::ptr::addr_of!(IMAGE_DATA))[..IMAGE_LEN] }
+    let image_len = unsafe { IMAGE_LEN };
+    &crate::bigbuf::get(core::ptr::addr_of_mut!(IMAGE_PTR), IMAGE_CAPACITY)[..image_len]
 }
 
 /// `dirent.d_type` values used by the native ABI.
