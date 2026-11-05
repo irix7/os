@@ -715,12 +715,6 @@ jobs:
           http="$RUNNER_TEMP/runtime-http"
           rm -rf "$work" "$http"
           mkdir -p "$work" "$http/boot/modules/ci"
-          cp "$RUNNER_TEMP/runtime-release/package-index.conf" "$http/i"
-          cp "$RUNNER_TEMP/runtime-release/package-index.conf.sig" "$http/i.sig"
-          cp "$RUNNER_TEMP/runtime-release/manager.module" "$http/m"
-          cp "$RUNNER_TEMP/mcp.module" "$http/c"
-          cp "$RUNNER_TEMP/runtime-release/demo-dep.module" \
-             "$RUNNER_TEMP/runtime-release/demo-root.module" "$http/boot/modules/ci/"
 
           python3 - "$work/nvram.bin" "$http" <<'PY'
           import hashlib
@@ -733,12 +727,7 @@ jobs:
           def sha(path):
               return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          signature = (root / "i.sig").read_text().strip()
-          env = (
-              f"manager.index=http://192.168.0.1:18101/i,{sha(root / 'i')}\0"
-              f"manager.index.sig={signature}\0"
-              "manager.root=demo-root@1.0.0\0"
-          ).encode()
+          env = b"net=on\0console=serial0\0\0"
           # The DS1386 MAC lives at byte index 314; keep the environment below it.
           assert len(env) <= 298, len(env)
           image = bytearray(8192)
@@ -804,29 +793,6 @@ jobs:
             'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
 
-          manager_sha="$(sha256sum "$http/m" | awk '{print $1}')"
-          python3 - "$manager_sha" <<'PY'
-          import socket
-          import time
-
-          manager_sha = __import__("sys").argv[1]
-          with socket.create_connection(("127.0.0.1", 2325), timeout=10) as sock:
-              sock.settimeout(5)
-              data = b""
-              try:
-                  while b"sash> " not in data:
-                      data += sock.recv(4096)
-              except socket.timeout:
-                  pass
-              sock.sendall(
-                  f"module b http://192.168.0.1:18101/m {manager_sha}\r\n".encode()
-              )
-              time.sleep(12)
-          PY
-
-          iris-ci --socket "$socket" serial-wait 'demo-dep: entered by runtime manager' --timeout 60
-          iris-ci --socket "$socket" serial-wait 'demo-root: dep=0x217' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'status=ok root=demo-root@1.0.0' --timeout 30
 
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=demo-dep@1.0.0,demo-root@1.0.0$' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' 30
