@@ -51,6 +51,7 @@ mesh-service = { path = "../crates/mesh-service", default-features = false }
 wasm-policy-host = { path = "../crates/wasm-policy-host" }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
+loader-abi = { path = "../crates/loader-abi" }
 block-cache = { path = "../crates/block-cache" }
 overlay = { path = "../crates/overlay" }
 mesh-transport = { path = "../crates/mesh-transport" }

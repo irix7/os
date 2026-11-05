@@ -19,7 +19,7 @@ const OUTPUT_SIZE: usize = 4096;
 
 /// One command at a time; the telnet poll runs this synchronously.  A static
 /// buffer avoids leaking a 256 KiB allocation from the bump heap per command.
-static mut EROFS_PTR: *mut u8 = core::ptr::null_mut();
+static mut EROFS_CACHE: Option<&'static mut [u8]> = None;
 
 /// An operation requested on the mounted image.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,7 +183,10 @@ pub fn run(request: &Request) -> Output {
     let last_http = Cell::new(None);
     // SAFETY: the telnet poll runs one command at a time; the buffer is only
     // borrowed for the duration of this synchronous command.
-    let cache = crate::bigbuf::get(core::ptr::addr_of_mut!(EROFS_PTR), CACHE_SIZE);
+    let cache = crate::bigbuf::get(
+        unsafe { &mut *core::ptr::addr_of_mut!(EROFS_CACHE) },
+        CACHE_SIZE,
+    );
     let mut device = HttpRangeDevice {
         ip,
         port: request.port,
