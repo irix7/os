@@ -34,4 +34,4 @@ pub fn run() {
 }
 
 /// The report lines the `/modules` endpoint returns for the M2 graph.
-pub const REPORT: &str = "status=ok root=m2-root@1.0.0 nodes=2\norder=m2-mesh@1.0.0,m2-root@1.0.0\nm2-mesh@1.0.0 region=2 handle=4294967298 entry=0 status=0\nm2-root@1.0.0 region=3 handle=4294967299 entry=0 status=0\n";
+pub const REPORT: &str = "status=ok root=m2-root@1.0.0 nodes=2\norder=m2-mesh@1.0.0,m2-root@1.0.0\nm2-mesh@1.0.0 region=2 handle=4294967298 entry=0 status=0\nm2-root@1.0.0 region=3 handle=4294967299 entry=0 status=0\nexport=m2-mesh@1.0.0 interface=irix7.mesh.transport version=1 offset=8424\n";
