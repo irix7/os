@@ -15,8 +15,8 @@ use wasm_policy_host::Policy;
 
 use crate::console_write;
 
-/// The policy guest, generated from `modules/wasm/guest/`.
-const GUEST: &[u8] = include_bytes!("../../modules/wasm/src/guest.wasm");
+/// The policy guest, generated from `guest/wasm-policy/`.
+const GUEST: &[u8] = include_bytes!("../../guest/wasm-policy/guest.wasm");
 
 /// Guest stack size: 208 frames, 832 KiB.  A policy boot uses about 734 KiB (#272).
 const GUEST_STACK_FRAMES: usize = 208;

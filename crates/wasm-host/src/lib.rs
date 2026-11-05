@@ -824,7 +824,7 @@ mod tests {
         let engine = Engine::default();
         let module = Module::new(
             &engine,
-            include_bytes!("../../../modules/wasm/src/guest.wasm"),
+            include_bytes!("../../../guest/wasm-policy/guest.wasm"),
         )
         .expect("guest module");
         let imports: Vec<_> = module.imports().collect();

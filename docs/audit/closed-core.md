@@ -308,7 +308,7 @@ Evidence grade: harness unit tests + CI usage.
 
 What is implemented:
 
-- The probe imports only `i7host` and calls version, clock, submit, poll, cancel, cap-check, console write and yield: `modules/wasm/guest/src/lib.rs:32-60`, `:91-110`, `:220-265`.
+- The probe imports only `i7host` and calls version, clock, submit, poll, cancel, cap-check, console write and yield: `guest/wasm-policy/src/lib.rs:32-60`, `:91-110`, `:220-265`.
 - The host implements the surface: `crates/wasm-host/src/lib.rs:294-711`.
 - The guest-import test rejects any non-`i7host` import: `crates/wasm-host/src/lib.rs:822-840`.
 - The module is built under the 1.5 MiB slot-B limit and booted in CI with MCP in slot A: `ci.yml:273-289`, `:533-545`.
@@ -326,7 +326,7 @@ Evidence grade: host tests + real-kernel CI.
 
 What is implemented:
 
-- The guest chooses the namespace layout, object bytes, actor, capability rights and home, and commits the stage as one transition: `modules/wasm/guest/src/lib.rs:121-265`.
+- The guest chooses the namespace layout, object bytes, actor, capability rights and home, and commits the stage as one transition: `guest/wasm-policy/src/lib.rs:121-265`.
 - The host stages every mutation and publishes only on commit: `crates/wasm-policy-host/src/lib.rs:299-347`; `abort_leaves_no_partial_policy` passes.
 - The guest imports only `i7host`; the import test passes (`crates/wasm-host/src/lib.rs:822-840`).
 - CI checks the `m1-wasm:` evidence, distinct root, distinct actor, equal rights/home and `objects=9 actors=1 queued=1 caps=1`: `ci.yml:556-584`.
