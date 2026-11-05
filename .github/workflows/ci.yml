@@ -575,8 +575,8 @@ jobs:
               read_until(sock, b"sash> ")
               sock.sendall(b"packages\r\n")
               listing = read_until(sock, b"sash> ")
-              if b"module mcp v0.1.3" not in listing:
-                  raise SystemExit("package index did not list mcp: %r" % listing)
+              if b"userland std-hello" not in listing:
+                  raise SystemExit("package index did not list std-hello: %r" % listing)
               print("diskless package index: ok")
           PY
           iris-ci --socket "$socket" quit
