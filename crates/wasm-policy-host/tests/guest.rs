@@ -2,7 +2,7 @@
 //! Run the committed policy guest against the native policy primitives.
 //!
 //! This is the host-side reproduction of the iris slot-B boot: the guest is
-//! the same binary that `modules/wasm` embeds, and the hooks are the same
+//! the same binary that the kernel embeds, and the hooks are the same
 //! `wasm-policy-host` primitives the module supplies.
 
 use std::sync::Mutex;
@@ -231,7 +231,7 @@ fn run_policy_guest() {
     let host = Host::with_hooks(hooks).expect("host");
     let result = host
         .run_i32(
-            include_bytes!("../../../modules/wasm/src/guest.wasm"),
+            include_bytes!("../../../guest/wasm-policy/guest.wasm"),
             "run",
             10_000_000,
         )

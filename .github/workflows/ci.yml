@@ -29,7 +29,7 @@ jobs:
         run: |
           if [ -f Cargo.toml ]; then
             cargo fmt --all -- --check
-            (cd modules/wasm/guest && cargo fmt -- --check)
+            (cd guest/wasm-policy && cargo fmt -- --check)
             (cd tools/module-release && cargo fmt -- --check)
           else
             echo "No Rust workspace yet; skipping."
@@ -379,7 +379,7 @@ jobs:
           HOST="$(rustc -vV | sed -n 's/^host: //p')"
           LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
           tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
-          cmp "$RUNNER_TEMP/policy-guest.wasm" modules/wasm/src/guest.wasm
+          cmp "$RUNNER_TEMP/policy-guest.wasm" guest/wasm-policy/guest.wasm
           CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
           CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld" \
             cargo build --release -Z build-std=core,alloc \

@@ -8,8 +8,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="${1:-$ROOT/modules/wasm/src/guest.wasm}"
-CRATE="$ROOT/modules/wasm/guest"
+OUT="${1:-$ROOT/guest/wasm-policy/guest.wasm}"
+CRATE="$ROOT/guest/wasm-policy"
 
 release="$(rustc -vV | sed -n 's/^release: //p')"
 case "$release" in

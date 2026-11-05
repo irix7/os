@@ -36,8 +36,8 @@ use sys_primitives::{ActorId, NodeId};
 use wasm_host::{Host, HostHooks, PolicyHooks};
 use wasm_policy_host::Policy;
 
-/// The policy guest is generated from `guest/` and embedded here.
-const GUEST: &[u8] = include_bytes!("guest.wasm");
+/// The policy guest is generated from `guest/wasm-policy/` and embedded here.
+const GUEST: &[u8] = include_bytes!("../../../guest/wasm-policy/guest.wasm");
 
 static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
 
