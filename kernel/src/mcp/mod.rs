@@ -1680,9 +1680,10 @@ fn mcp_response(services: &Services, body: &[u8], out: &mut [u8]) -> usize {
                 }
                 Some(b"serial.read") => {
                     let total = (services.console_total)();
-                    let offset =
-                        json_u64(body, b"\"offset\"").unwrap_or(total.saturating_sub(2048));
                     let length = json_u64(body, b"\"length\"").unwrap_or(1024).min(1024) as usize;
+                    // Without an offset the tool returns the newest `length` bytes.
+                    let offset = json_u64(body, b"\"offset\"")
+                        .unwrap_or(total.saturating_sub(length as u64));
                     let mut data = [0u8; 1024];
                     let n = unsafe { (services.console_read)(offset, data.as_mut_ptr(), length) };
                     if n < 0 {
