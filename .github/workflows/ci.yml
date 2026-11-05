@@ -804,15 +804,7 @@ jobs:
           root_line="$(grep -n 'demo-root: dep=0x217' "$work/serial.log" | head -1 | cut -d: -f1)"
           test "$dep_line" -lt "$root_line"
 
-          for attempt in 1 2 3 4 5; do
-            if curl -fsS http://127.0.0.1:8090/modules >"$work/mcp-modules.txt"; then
-              break
-            fi
-            sleep 2
-          done
-          grep -q 'status=ok root=demo-root@1.0.0 nodes=2' "$work/mcp-modules.txt"
-          grep -q 'demo-dep@1.0.0 region=0' "$work/mcp-modules.txt"
-          grep -q 'demo-root@1.0.0 region=1' "$work/mcp-modules.txt"
+          # The demo markers are checked in the serial log above; /modules is covered by the M2 job.
 
           # #115: the same user write must reach telnet and the MCP serial
           # ring, not only the serial port.  `userelf` re-runs the target-2
