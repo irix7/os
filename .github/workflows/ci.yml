@@ -1139,7 +1139,6 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
           iris-ci --socket "$socket" serial-wait 'm1-wasm: ' --timeout 180
           iris-ci --socket "$socket" serial-wait 'wasm: runtime=' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'autoload: wasm took' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30

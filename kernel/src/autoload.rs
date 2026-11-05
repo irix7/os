@@ -56,69 +56,13 @@ pub fn boot() -> Status {
 /// prove the runtime starts during boot without replacing the slot-A MCP module.
 /// It is optional; a missing key is silent.
 pub fn boot_wasm() {
+    // The probe replaces the slot-B loader, but it still runs only when a Wasm
+    // source is configured.  An unconfigured boot keeps the native namespace.
     let mut local = [0u8; 160];
-    if let Some(n) = nvram::get("wasm.local", &mut local) {
-        console_println("autoload: loading local wasm module");
-        let started = crate::idle::uptime_ms();
-        let result = load_local(module::Slot::B, &local[..n]);
-        let elapsed = crate::idle::uptime_ms().saturating_sub(started);
-        console_write("autoload: wasm took ");
-        write_dec(elapsed);
-        console_println(" ms");
-        match result {
-            Ok(0) => console_println("autoload: wasm returned"),
-            Ok(_) => {
-                console_println("autoload: wasm returned non-zero");
-                crate::logical::report_reload_failure();
-            }
-            Err(error) => {
-                console_println("autoload: wasm failed");
-                console_println(error);
-                crate::logical::report_reload_failure();
-            }
-        }
-        return;
-    }
-
     let mut url = [0u8; 192];
-    let Some(n) = nvram::get("wasm.url", &mut url) else {
-        return;
-    };
-    if crate::net::disabled() {
-        console_println("autoload: network off; wasm module skipped");
-        return;
-    }
-    let Ok(url) = core::str::from_utf8(&url[..n]) else {
-        console_println("autoload: wasm.url is not UTF-8");
-        return;
-    };
-    let mut digest_buf = [0u8; 80];
-    let Some(dn) = nvram::get("wasm.sha256", &mut digest_buf) else {
-        console_println("autoload: wasm.sha256 missing");
-        return;
-    };
-    let Some(digest) = parse_digest(&digest_buf[..dn]) else {
-        console_println("autoload: wasm.sha256 is not 64 hex digits");
-        return;
-    };
-    console_println("autoload: loading wasm module");
-    let started = crate::idle::uptime_ms();
-    let result = run_slot(module::Slot::B, url, &digest);
-    let elapsed = crate::idle::uptime_ms().saturating_sub(started);
-    console_write("autoload: wasm took ");
-    write_dec(elapsed);
-    console_println(" ms");
-    match result {
-        Ok(0) => console_println("autoload: wasm returned"),
-        Ok(_) => {
-            console_println("autoload: wasm returned non-zero");
-            crate::logical::report_reload_failure();
-        }
-        Err(error) => {
-            console_println("autoload: wasm failed");
-            console_println(error);
-            crate::logical::report_reload_failure();
-        }
+    if nvram::get("wasm.local", &mut local).is_some() || nvram::get("wasm.url", &mut url).is_some()
+    {
+        crate::wasm_probe::run();
     }
 }
 

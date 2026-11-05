@@ -72,6 +72,7 @@ pub mod tlb;
 pub mod tls;
 pub mod traps;
 pub mod user;
+pub mod wasm_probe;
 
 // ---------------------------------------------------------------------------
 // Serial console driver (Z85C30 ESCC inside the IOC2).
