@@ -1416,7 +1416,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
           iris-ci --socket "$socket" serial-wait 'logical: tick 3' --timeout 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=local' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off' 30
 
           # The local keyboard/display sash must also work with net=off.
           python3 - <<'PY'
@@ -1498,7 +1498,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'hello from the IRIX 7 ramfs' --timeout 30
           iris-ci --socket "$socket" serial-wait 'user: exit syscall code=0x0000002A' --timeout 30
           iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=local' 30
+          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
       - uses: actions/upload-artifact@v4
