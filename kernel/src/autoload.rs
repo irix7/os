@@ -56,7 +56,14 @@ pub fn boot() -> Status {
 /// prove the runtime starts during boot without replacing the slot-A MCP module.
 /// It is optional; a missing key is silent.
 pub fn boot_wasm() {
-    crate::wasm_probe::run();
+    // The probe replaces the slot-B loader, but it still runs only when a Wasm
+    // source is configured.  An unconfigured boot keeps the native namespace.
+    let mut local = [0u8; 160];
+    let mut url = [0u8; 192];
+    if nvram::get("wasm.local", &mut local).is_some() || nvram::get("wasm.url", &mut url).is_some()
+    {
+        crate::wasm_probe::run();
+    }
 }
 
 fn write_dec(value: u64) {
