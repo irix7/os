@@ -710,7 +710,7 @@ jobs:
         env:
           IRIS_NO_IDLE: "1"
         run: |
-          set -euo pipefail
+          set -euxo pipefail
           work="$RUNNER_TEMP/iris-runtime-deps"
           http="$RUNNER_TEMP/runtime-http"
           rm -rf "$work" "$http"
