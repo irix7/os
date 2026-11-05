@@ -87,8 +87,14 @@ Sequence:
    text.
 2. Port `erofs`, `cache` and `logical`, the storage and namespace code with no network
    dependency.
-3. Port `manager` and `ports`. `ports` owns the eight TCP slots, which the transport gate
-   measures.
+3. Port `ports`. The transport gate builds `ports.module` and runs the m2-rig `ports`
+   harness, which waits for `ports: pass sockets=N`. In the kernel the same test is a
+   self-test that opens eight sockets against the fixture's echo listeners. It is gated by
+   an NVRAM key, so ordinary boots do not run it. The rig then serves the PR's kernel and
+   builds its ROM against that fixture, as the iris job does.
+   `manager` stays until step 5. The M2 two-kernel gate loads `m2-mesh.module` through it,
+   and the demo job loads the signed index. Those gate steps retire with the M2 port.
+   The signing checks on `mcp-modules.txt` retire with the signing removal.
 4. Port `wasm` (the probe), with its guest stack and the linker layout change in the same
    PR as the removal of the module area.
 5. Port `mcp` and the two mesh modules (`m2-mesh`, `m2-root`). This is the largest step;
