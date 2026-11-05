@@ -51,6 +51,7 @@ pub mod ntp;
 pub mod nvram;
 pub mod ping;
 pub mod platform;
+pub mod ports_selftest;
 pub mod process;
 pub mod ramfs;
 pub mod range;
@@ -635,6 +636,7 @@ fn announce_boot(autoload: autoload::Status) {
         autoload::Status::Failed => false,
     };
     runtime_demo::run();
+    ports_selftest::run_if_configured();
     console_write(if ready {
         "BOOT-READY v=1 boot="
     } else {
