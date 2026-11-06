@@ -27,8 +27,8 @@
 #   IRIS, IRIS_CI      emulator binaries (default: ../iris/target/release/...)
 #   M2_BASE_PORT       first port block (default: 16600)
 #   M2_IRQ_GATE_COMPARE 1 to also run the polled control arm
-#   M2_IRQ_GATE_BUILD  reuse an existing build directory with irix7-rom.bin and
-#                      mcp.module instead of rebuilding
+#   M2_IRQ_GATE_BUILD  reuse an existing build directory with irix7-rom.bin
+#                      instead of rebuilding
 #   M2_IRQ_GATE_BIN    reuse an existing m2-rig binary instead of rebuilding
 #   CARGO              cargo binary (default: cargo)
 
@@ -58,7 +58,7 @@ if [ -z "${M2_IRQ_GATE_BUILD:-}" ]; then
   echo "mesh-irq-gate: build artefacts in $BUILD"
   "$HERE/m2-rig/build.sh" "$BUILD"
 fi
-for artefact in irix7-rom.bin mcp.module; do
+for artefact in irix7-rom.bin; do
   if [ ! -f "$BUILD/$artefact" ]; then
     echo "mesh-irq-gate: $BUILD/$artefact is missing" >&2
     exit 2
@@ -85,7 +85,6 @@ run_arm() {
   "$BIN" irq-gate \
     --work "$WORK/$name" \
     --rom "$BUILD/irix7-rom.bin" \
-    --module "$BUILD/mcp.module" \
     --iris "$IRIS" --iris-ci "$IRIS_CI" \
     --base-port "$port" --timeout 300 "$@" 2>&1 | tee "$WORK/$name.log"
   return "${PIPESTATUS[0]}"

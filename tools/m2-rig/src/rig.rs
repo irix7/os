@@ -204,8 +204,6 @@ pub struct Options {
     pub rom: PathBuf,
     /// PROM image for iris.  Defaults to `rom`.
     pub prom: PathBuf,
-    /// Fresh MCP module image.
-    pub module: PathBuf,
     /// qemu-system-x86_64 binary.
     pub qemu: PathBuf,
     /// First monitor port block.
@@ -285,7 +283,6 @@ where
     let mut iris_ci = None;
     let mut rom = None;
     let mut prom = None;
-    let mut module = None;
     let mut qemu = None;
     let mut base_port = 9100u16;
     let mut nodes = 2u32;
@@ -308,7 +305,6 @@ where
             "--iris-ci" => iris_ci = Some(PathBuf::from(next_value(&mut iter, "--iris-ci")?)),
             "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
             "--prom" => prom = Some(PathBuf::from(next_value(&mut iter, "--prom")?)),
-            "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
             "--qemu" => qemu = Some(PathBuf::from(next_value(&mut iter, "--qemu")?)),
             "--base-port" => {
                 base_port = next_value(&mut iter, "--base-port")?
@@ -372,7 +368,6 @@ where
         .or_else(|| std::env::var_os("IRIS_CI").map(PathBuf::from))
         .unwrap_or_else(|| default_sibling(&repo, "iris-ci"));
     let rom = rom.unwrap_or_else(|| work.join("irix7-rom.bin"));
-    let module = module.unwrap_or_else(|| work.join("mcp.module"));
 
     let prom = prom.unwrap_or_else(|| rom.clone());
     Ok(Some(Options {
@@ -383,7 +378,6 @@ where
         iris_ci,
         rom,
         prom,
-        module,
         qemu: qemu.unwrap_or_else(|| PathBuf::from("qemu-system-x86_64")),
         base_port,
         nodes,
@@ -496,15 +490,8 @@ impl Node {
     ///
     /// `mesh` is `None` in the `no-peer` fault mode: no `mesh.*` key is
     /// written, so the module keeps the M1/M2-1 two-slot behaviour.
-    pub fn environment(&self, fixture_port: u16, mesh: Option<&MeshEnv>) -> Vec<(String, String)> {
-        let mut env = vec![
-            (
-                "mcp.url".into(),
-                format!("http://{}:{fixture_port}/mcp.module", self.gateway),
-            ),
-            ("mcp.sha256".into(), String::new()),
-            ("console".into(), "serial0".into()),
-        ];
+    pub fn environment(&self, mesh: Option<&MeshEnv>) -> Vec<(String, String)> {
+        let mut env = vec![("console".into(), "serial0".into())];
         if let Some(mesh) = mesh {
             let direct = mesh.direct.is_some();
             if let Some(peer) = &mesh.peer {
@@ -898,6 +885,20 @@ pub fn reset_scratch(nodes: &[Node]) -> Result<(), String> {
     Ok(())
 }
 
+/// The PROM one node boots.  `build.sh` writes `irix7-rom-n<instance>.bin` when
+/// every node fetches the kernel through its own gateway; otherwise each node
+/// boots `--rom`.
+pub fn node_prom(options: &Options, node: &Node) -> PathBuf {
+    let per_node = options
+        .prom
+        .with_file_name(format!("irix7-rom-n{}.bin", node.instance));
+    if per_node.is_file() {
+        per_node
+    } else {
+        options.prom.clone()
+    }
+}
+
 fn run_print_instance(options: &Options, instance: u32, config: &Path) -> Result<String, String> {
     let output = Command::new(&options.iris)
         .arg("--config")
@@ -961,21 +962,10 @@ pub fn subnet_hosts(cidr: &str) -> Result<(Ipv4Addr, Ipv4Addr), String> {
 }
 
 /// Write the DS1386 image for a node.
-pub fn write_nvram(
-    node: &Node,
-    fixture_port: u16,
-    module_sha256: &str,
-    mesh: Option<&MeshEnv>,
-    rx_poll: bool,
-) -> Result<(), String> {
-    let mut env = node.environment(fixture_port, mesh);
+pub fn write_nvram(node: &Node, mesh: Option<&MeshEnv>, rx_poll: bool) -> Result<(), String> {
+    let mut env = node.environment(mesh);
     if rx_poll {
         env.push(("net.rx".to_string(), "off".to_string()));
-    }
-    for (name, value) in &mut env {
-        if name == "mcp.sha256" {
-            *value = module_sha256.to_string();
-        }
     }
     let pairs: Vec<(&str, &str)> = env
         .iter()
@@ -1021,7 +1011,7 @@ pub fn start_node(options: &Options, node: &Node) -> Result<RunningNode, String>
         .arg("--port-base")
         .arg(node.port_base.to_string())
         .arg("--prom")
-        .arg(&options.prom)
+        .arg(node_prom(options, node))
         .arg("--nvram")
         .arg(node.state_dir.join("nvram.bin"))
         .arg("--ci")
@@ -1147,15 +1137,10 @@ pub fn wait_serial(
 ///
 /// A network change that costs a few hundred milliseconds and one that stalls
 /// until the guest's own deadline look identical in a marker-only transcript:
-/// the module fetch is the phase in between, so its start and end are recorded
-/// as they appear.  Without these numbers "slower" and "broken" cannot be told
-/// apart (see issues #273 and #274).
+/// the boot's phases are recorded as they appear.  Without these numbers
+/// "slower" and "broken" cannot be told apart (see issues #273 and #274).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BootTimings {
-    /// `autoload: fetching module` first appeared (the fetch began).
-    pub fetch_start_ms: Option<u64>,
-    /// `autoload: module returned` first appeared (the fetch finished).
-    pub fetch_done_ms: Option<u64>,
     /// `BOOT-READY` completed.
     pub boot_ready_ms: Option<u64>,
 }
@@ -1166,17 +1151,11 @@ impl BootTimings {
         self.boot_ready_ms.is_none()
     }
 
-    /// The module fetch's wall-clock duration, when both marks were seen.
-    pub fn fetch_ms(&self) -> Option<u64> {
-        Some(self.fetch_done_ms?.saturating_sub(self.fetch_start_ms?))
-    }
-
     /// A short human-readable form for the run log.
     pub fn describe(&self) -> String {
-        match (self.fetch_ms(), self.boot_ready_ms) {
-            (Some(fetch), Some(boot)) => format!("{boot} ms (module fetch {fetch} ms)"),
-            (None, Some(boot)) => format!("{boot} ms (no module fetch)"),
-            _ => "unrecorded".into(),
+        match self.boot_ready_ms {
+            Some(boot) => format!("{boot} ms"),
+            None => "unrecorded".into(),
         }
     }
 }
@@ -1482,18 +1461,12 @@ pub fn wait_boot(options: &Options, nodes: &mut [RunningNode]) -> Result<Vec<Boo
     let mut facts = Vec::new();
     for running in nodes.iter_mut() {
         // Poll for the readiness marker the way `wait_serial` does, stamping the
-        // boot's phases as they appear so the module fetch has a duration.
+        // boot's readiness time.
         let started = Instant::now();
         let mut timings = BootTimings::default();
         loop {
             let text = read_serial(&running.node);
             let elapsed = started.elapsed().as_millis() as u64;
-            if timings.fetch_start_ms.is_none() && text.contains("autoload: fetching module") {
-                timings.fetch_start_ms = Some(elapsed);
-            }
-            if timings.fetch_done_ms.is_none() && text.contains("autoload: module returned") {
-                timings.fetch_done_ms = Some(elapsed);
-            }
             if complete_line(&text, "BOOT-READY").is_some() {
                 timings.boot_ready_ms = Some(elapsed);
                 break;
@@ -1687,7 +1660,6 @@ mod tests {
             iris_ci: PathBuf::from("iris-ci"),
             rom: PathBuf::from("rom"),
             prom: PathBuf::from("rom"),
-            module: PathBuf::from("module"),
             qemu: PathBuf::from("qemu-system-x86_64"),
             base_port: 9100,
             nodes: 2,
@@ -1766,13 +1738,8 @@ mod tests {
         let nodes: Vec<Node> = (0..8).map(test_node).collect();
         let (environments, _) = shard_environments(&nodes, crate::shard::SHARD_OBJECT_COUNT, 1);
         assert_eq!(environments.len(), 8);
-        for (index, (node, environment)) in nodes.iter().zip(environments.iter()).enumerate() {
-            let mut pairs = node.environment(17000 + index as u16, Some(environment));
-            for (name, value) in &mut pairs {
-                if name == "mcp.sha256" {
-                    *value = "a".repeat(64);
-                }
-            }
+        for (node, environment) in nodes.iter().zip(environments.iter()) {
+            let pairs = node.environment(Some(environment));
             let pairs: Vec<(&str, &str)> = pairs
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str()))

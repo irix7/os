@@ -110,39 +110,26 @@ goal, not a reason to retain our own old versions. See
   the writes are dropped; `gfx.rs` polls `STATUS` the way the SGI diagnostics'
   `REX3WAIT(REX)` does.
 
-## Modules and the PROM budget
+## Kernel image and the PROM budget
 
-- The compressed PROM image is the fixed bootstrap. TLS stays in it: it is the transport
-  that makes module downloads trustworthy. New features go into modules, not into the
-  compressed image.
-- A module is a flat image linked at `0x88400000`, fetched over HTTPS into RAM, SHA-256
-  checked, and called through the versioned C service table.  The table's layout lives in
-  the `abi/` crate of `irix7/os-sdk`, pinned by the `v0.3.0` tag; the kernel and every module
-  link it, and compile-time assertions pin the n32 offsets.  Never hand-maintain a second
-  copy of the struct.
-  A module may return a tick callback and use the table's TCP slots; long-running
-  features (servers, the MCP control plane) belong in modules, not in the core.
-- The module area is inside the reserved low window. Never hand it to the frame allocator.
-- Boot autoload is configured by `boot/config.conf` in the repository, fetched at boot from
-  `https://raw.githubusercontent.com/irix7/os/main/boot/config.conf`. A release workflow
-  updates that file with immutable raw module URLs and SHA-256 digests. A local test rig
-  may override the same keys through the DS1386 environment (`mcp.url`, `mcp.sha256`) at
-  register offset `0x10` (one byte per 32-bit word in the low lane). A failed fetch or
-  digest records `autoload: ...`, the boot continues with a `BOOT-NOT-READY` marker,
-  and no unverified module runs. The module reads the optional
-  `mcp.token` through the ABI v7 `config_get` service and requires a bearer token on
-  `POST /mcp` when it is set. NVRAM is a hardware chip, not a distribution channel: the
-  kernel validates it at startup and rewrites a blank or corrupt environment and MAC.
+- The compressed PROM image is the fixed bootstrap. It holds the TLS stack the ROM uses to
+  fetch the kernel from GitHub.
+- The kernel image holds every service: MCP, the mesh, the Wasm policy probe and the
+  demos. There are no loadable modules and no module loader (ADR M1-0003 step 6). New
+  features link into the kernel image.
+- Services that run long, such as the MCP control plane, start from the kernel's boot
+  path and tick from the idle loop. They use the kernel's TCP slots through the service
+  table in `kernel-core::service`.
+- The NVRAM environment selects features: `wasm.policy` runs the Wasm probe, `mesh.peer`
+  enables the mesh listener, and `mcp.token` sets the bearer token that `POST /mcp`
+  requires. NVRAM is a hardware chip, not a distribution channel: the kernel validates it
+  at startup and rewrites a blank or corrupt environment and MAC.
 
 ## Cache coherency
 
 - `CP0 Config.K0 = 3`: kseg0 is **cacheable**. DMA-visible memory must be accessed through
   the kseg1 alias (uncached) or maintained explicitly. The Seeq device and its descriptors
-  and frame buffers now live at kseg1 `0xA860_0000` (physical `0x0860_0000`), immediately
-  after the 2 MiB module area.
-- Code written into RAM and executed (modules) needs a data-cache writeback and an
-  instruction-cache invalidate before the call. A compiler fence is not enough on real
-  hardware.
+  and frame buffers now live at kseg1 `0xA860_0000` (physical `0x0860_0000`).
 - The CPU framebuffer shadow lives at kseg0 `0x8870_0000` (physical `0x0870_0000`,
   3.75 MiB). It is CPU-only and part of the reserved low window; never hand it to the
   frame allocator.

@@ -12,7 +12,6 @@
 #   IRIS_CI         iris-ci binary (default: iris-ci in PATH)
 #   M2_RIG_BIN      prebuilt m2-rig (default: tools/m2-rig/target/release/m2-rig)
 #   ROM             prebuilt PROM (default: <build>/irix7-rom.bin)
-#   MODULE          prebuilt MCP module (default: <build>/mcp.module)
 #   BUILD_DIR       artefact directory (default: <repo>/target/one-computer-build)
 #   BASE_PORT       first monitor port block (default: 11000)
 #   TIMEOUT         boot deadline in seconds (default: 240)
@@ -25,7 +24,6 @@ WORK="${1:-${WORK:-$REPO/target/one-computer}}"
 BUILD="${BUILD_DIR:-$REPO/target/one-computer-build}"
 BIN="${M2_RIG_BIN:-$REPO/tools/m2-rig/target/release/m2-rig}"
 ROM="${ROM:-$BUILD/irix7-rom.bin}"
-MODULE="${MODULE:-$BUILD/mcp.module}"
 BASE_PORT="${BASE_PORT:-11000}"
 TIMEOUT="${TIMEOUT:-240}"
 CARGO="${CARGO:-cargo}"
@@ -46,15 +44,14 @@ if [ ! -x "$BIN" ]; then
   "$CARGO" build --release --manifest-path "$REPO/tools/m2-rig/Cargo.toml"
 fi
 
-if [ ! -f "$ROM" ] || [ ! -f "$MODULE" ]; then
-  echo "one-computer: building the PROM and MCP module"
+if [ ! -f "$ROM" ]; then
+  echo "one-computer: building the PROM"
   "$REPO/tools/m2-rig/build.sh" "$BUILD"
 fi
 
 exec "$BIN" demo \
   --work "$WORK" \
   --rom "$ROM" \
-  --module "$MODULE" \
   --iris "$IRIS" \
   --iris-ci "$IRIS_CI" \
   --base-port "$BASE_PORT" \

@@ -30,7 +30,6 @@ jobs:
           if [ -f Cargo.toml ]; then
             cargo fmt --all -- --check
             (cd guest/wasm-policy && cargo fmt -- --check)
-            (cd tools/module-release && cargo fmt -- --check)
           else
             echo "No Rust workspace yet; skipping."
           fi
@@ -71,8 +70,6 @@ jobs:
         run: |
           if [ -f Cargo.toml ]; then
             cargo clippy --workspace --all-targets -- -D warnings
-            cargo clippy --manifest-path tools/module-release/Cargo.toml \
-              --all-targets -- -D warnings
             cargo clippy --manifest-path tools/m2-rig/Cargo.toml \
               --all-targets -- -D warnings
           else
@@ -96,9 +93,7 @@ jobs:
               -p mesh-stream -p mesh-migrate -p fabric -p guest-abi -p cas-core \
               -p cas-store \
               -p cap-engine -p agnostic-core -p wasm-host \
-              -p wasm-policy-host -p module-resolver -p module-trust \
-              -p runtime-m2-mesh-module -p runtime-m2-root-module
-            cargo test --manifest-path tools/module-release/Cargo.toml
+              -p wasm-policy-host -p mcp
             cargo test --manifest-path tools/m2-rig/Cargo.toml
           else
             echo "No Rust workspace yet; skipping."
@@ -295,20 +290,6 @@ jobs:
           # target_os=irix7 and the unix family for the POSIX libc/std work.
           cargo build -Z build-std=core -Zjson-target-spec \
             --target targets/mips3-sgi-irix7-native-n32.json -p irix-elf -p native-abi
-      - name: Build EROFS module (flat image)
-        run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
-          HOST="$(rustc -vV | sed -n 's/^host: //p')"
-          LLVM_TOOLS="$(rustc --print sysroot)/lib/rustlib/$HOST/bin"
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/erofs/linker.ld" \
-            cargo build --release -Z build-std=core,alloc -Zjson-target-spec \
-            --target targets/mips3-sgi-irix7-n32.json -p erofs-module
-          "$LLVM_TOOLS/llvm-objcopy" -O binary \
-            target/mips3-sgi-irix7-n32/release/erofs-module erofs.module
-          size=$(stat -c%s erofs.module)
-          echo "erofs.module: $size bytes"
-          test "$size" -le 2097152
-
   boot:
     name: Boot (iris)
     runs-on: ubuntu-24.04
@@ -373,107 +354,11 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/build-o32-hello.sh "$RUNNER_TEMP/o32-hello"
-      - name: Build wasm module
+      - name: Check the Wasm policy guest
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
-          HOST="$(rustc -vV | sed -n 's/^host: //p')"
-          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
           tools/build-wasm-guest.sh "$RUNNER_TEMP/policy-guest.wasm"
           cmp "$RUNNER_TEMP/policy-guest.wasm" guest/wasm-policy/guest.wasm
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/wasm/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target targets/mips3-sgi-irix7-n32.json -p wasm-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/wasm-module "$RUNNER_TEMP/wasm.module"
-          size=$(stat -c%s "$RUNNER_TEMP/wasm.module")
-          echo "wasm.module: $size bytes"
-          test "$size" -le 1572864
-
-      - name: Build runtime manager and dependency graph
-        run: |
-          set -euo pipefail
-          export PATH="$HOME/.cargo/bin:$PATH"
-          HOST="$(rustc -vV | sed -n 's/^host: //p')"
-          LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
-          TARGET=targets/mips3-sgi-irix7-n32.json
-          WORK="$RUNNER_TEMP/runtime-build"
-          mkdir -p "$WORK" target/modules
-
-          seed="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-            trust --out "$WORK/trust.conf" --seed "$seed" --epoch 1
-
-          echo "=== manager ==="
-          IRIX7_TRUST_POLICY="$WORK/trust.conf" \
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/manager/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p runtime-manager-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/runtime-manager-module target/modules/manager.flat
-
-          echo "=== demo-dep ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-dep/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p runtime-demo-dep-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/runtime-demo-dep-module target/modules/demo-dep.flat
-
-          echo "=== demo-root ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-root/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p runtime-demo-root-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/runtime-demo-root-module target/modules/demo-root.flat
-
-          echo "=== m2-mesh ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-mesh/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p runtime-m2-mesh-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/runtime-m2-mesh-module target/modules/m2-mesh.flat
-
-          echo "=== m2-root ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-root/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p runtime-m2-root-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/runtime-m2-root-module target/modules/m2-root.flat
-
-          echo "=== current MCP ==="
-          CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-          CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
-            cargo build --release -Z build-std=core,alloc \
-              -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-              --target "$TARGET" -p mcp-module
-          "$LLVM_OBJCOPY" -O binary \
-            target/mips3-sgi-irix7-n32/release/mcp-module "$WORK/mcp.module"
-
-          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-            build --spec packages/runtime-modules.toml --out "$WORK/release" \
-              --raw-base http://192.168.0.1:18101 --release ci \
-              --key "$seed" --epoch 1
-          cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-            build --spec packages/runtime-modules.toml --out "$WORK/release-m2" \
-              --raw-base http://192.168.0.1:18102 --release ci \
-              --key "$seed" --epoch 1 --root m2-root@1.0.0
-          manager_size="$(stat -c%s "$WORK/release/manager.module")"
-          echo "manager.module: $manager_size bytes"
-          test "$manager_size" -le 262144
-          cp -r "$WORK/release" "$RUNNER_TEMP/runtime-release"
-          cp -r "$WORK/release-m2" "$RUNNER_TEMP/m2-runtime-release"
-          cp "$WORK/mcp.module" "$RUNNER_TEMP/mcp.module"
 
       - name: Build static std hello
         timeout-minutes: 20
@@ -600,22 +485,17 @@ jobs:
           [scsi]
           EOF
 
-          sha=$(sha256sum "$RUNNER_TEMP/wasm.module" | awk '{print $1}')
-          python3 - "$work/nvram.bin" "$sha" <<'PY'
+          python3 - "$work/nvram.bin" <<'PY'
           import sys
 
-          env = (f"wasm.url=http://192.168.0.1:18088/wasm.module\0"
-                 f"wasm.sha256={sys.argv[2]}\0"
-                 "console=serial0\0\0").encode()
+          env = (b"wasm.policy=on\0"
+                 b"console=serial0\0\0")
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
           open(sys.argv[1], "wb").write(image)
           PY
 
-          python3 -m http.server 18088 --bind 0.0.0.0 \
-            --directory "$RUNNER_TEMP" >"$work/http.log" 2>&1 &
-          http_pid=$!
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
@@ -625,7 +505,7 @@ jobs:
           pid=$!
           cleanup() {
             status=$?
-            kill "$pid" "$http_pid" 2>/dev/null || true
+            kill "$pid" 2>/dev/null || true
             if [ "$status" -ne 0 ]; then
               echo "--- iris output (tail)"
               tail -50 "$work/iris.out" || true
@@ -695,330 +575,6 @@ jobs:
           iris-ci --socket "$socket" quit || true
           wait "$pid" || true
 
-      - name: Boot runtime manager and dependency graph
-        env:
-          IRIS_NO_IDLE: "1"
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/iris-runtime-deps"
-          http="$RUNNER_TEMP/runtime-http"
-          rm -rf "$work" "$http"
-          mkdir -p "$work" "$http/boot/modules/ci"
-
-          python3 - "$work/nvram.bin" "$http" <<'PY'
-          import hashlib
-          import pathlib
-          import sys
-
-          work = pathlib.Path(sys.argv[1])
-          root = pathlib.Path(sys.argv[2])
-
-          def sha(path):
-              return hashlib.sha256(path.read_bytes()).hexdigest()
-
-          env = b"net=on\0console=serial0\0\0"
-          # The DS1386 MAC lives at byte index 314; keep the environment below it.
-          assert len(env) <= 298, len(env)
-          image = bytearray(8192)
-          image[0x10:0x10 + len(env)] = env
-          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          work.write_bytes(image)
-          PY
-
-          cat > "$work/machine.toml" <<'EOF'
-          banks = [32, 0, 0, 0]
-          no_audio = true
-
-          [machine]
-          profile = "indy_ip24"
-
-          [scsi]
-
-          [[port_forward]]
-          proto = "tcp"
-          host_port = 2325
-          guest_port = 23
-          bind = "localhost"
-
-          [[port_forward]]
-          proto = "tcp"
-          host_port = 8090
-          guest_port = 80
-          bind = "localhost"
-          EOF
-
-          python3 -m http.server 18101 --bind 0.0.0.0 \
-            --directory "$http" >"$work/http.log" 2>&1 &
-          http_pid=$!
-          socket="$work/iris.sock"
-          iris --config "$work/machine.toml" --ci \
-            --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --scsi2 "$RUNNER_TEMP/user-hello/hello-disk.raw" \
-            --nvram "$work/nvram.bin" \
-            --ci-socket "$socket" --monitor-port 18891 \
-            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
-          pid=$!
-          cleanup() {
-            status=$?
-            kill "$pid" "$http_pid" 2>/dev/null || true
-            if [ "$status" -ne 0 ]; then
-              echo "--- iris output (tail)"
-              tail -50 "$work/iris.out" || true
-              echo "--- serial log (tail)"
-              tail -80 "$work/serial.log" 2>/dev/null || true
-            fi
-          }
-          trap cleanup EXIT
-
-          iris-ci --socket "$socket" status --wait-ready 30
-          iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
-          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          # The user image on target 2 runs before the kernel console.  This is
-          # the serial half of the unified-console assertion; the telnet and
-          # MCP halves run below once the control plane is up.
-          iris-ci --socket "$socket" serial-wait 'hello from user' --timeout 60
-          iris-ci --socket "$socket" serial-wait \
-            'user: exit syscall code=0x0000002A' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
-
-
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=demo-dep@1.0.0,demo-root@1.0.0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-dep@1.0.0 region=0 handle=[0-9]+ entry=0 status=0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^demo-root@1.0.0 region=1 handle=[0-9]+ entry=0 status=0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'export=demo-dep@1.0.0 interface=irix7.demo.service version=1 offset=[0-9]+' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-dep: entered by runtime manager' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'demo-root: dep=0x217' 30
-          dep_line="$(grep -n 'demo-dep: entered by runtime manager' "$work/serial.log" | head -1 | cut -d: -f1)"
-          root_line="$(grep -n 'demo-root: dep=0x217' "$work/serial.log" | head -1 | cut -d: -f1)"
-          test "$dep_line" -lt "$root_line"
-
-          # The demo markers are checked in the serial log above; /modules is covered by the M2 job.
-
-          # #115: the same user write must reach telnet and the MCP serial
-          # ring, not only the serial port.  `userelf` re-runs the target-2
-          # image through the telnet console once the MCP module is resident;
-          # the ring and the telnet queue both receive that run's stdout.
-          python3 - <<'PY'
-          import json
-          import socket
-          import time
-          import urllib.request
-
-          def read_until(sock, marker, timeout):
-              sock.settimeout(timeout)
-              data = b""
-              while marker not in data:
-                  chunk = sock.recv(4096)
-                  if not chunk:
-                      break
-                  data += chunk
-              return data
-
-          sock = None
-          for attempt in range(5):
-              try:
-                  sock = socket.create_connection(("127.0.0.1", 2325), timeout=10)
-                  break
-              except OSError:
-                  if attempt == 4:
-                      raise
-                  time.sleep(2)
-          with sock:
-              read_until(sock, b"sash> ", 30)
-              sock.sendall(b"userelf\r\n")
-              telnet = read_until(
-                  sock, b"user: exit syscall code=0x0000002A", 120
-              )
-          if b"hello from user" not in telnet:
-              raise SystemExit(
-                  "telnet did not mirror user stdout: %r" % telnet[-400:]
-              )
-          if b"hello from user\r\n" not in telnet:
-              raise SystemExit(
-                  "telnet output is not CRLF-framed: %r" % telnet[-400:]
-              )
-          print("telnet console: user stdout mirrored")
-
-          body = json.dumps(
-              {
-                  "jsonrpc": "2.0",
-                  "id": 1,
-                  "method": "tools/call",
-                  "params": {"name": "serial.read", "arguments": {"length": 1024}},
-              }
-          ).encode()
-          request = urllib.request.Request(
-              "http://127.0.0.1:8090/mcp",
-              data=body,
-              headers={"Content-Type": "application/json"},
-          )
-          document = None
-          for attempt in range(3):
-              try:
-                  with urllib.request.urlopen(request, timeout=20) as response:
-                      document = json.loads(response.read())
-                  break
-              except Exception:
-                  if attempt == 2:
-                      raise
-                  time.sleep(2)
-          text = "".join(
-              part.get("text", "") for part in document["result"]["content"]
-          )
-          if "hello from user" not in text:
-              raise SystemExit(
-                  "MCP serial.read did not contain user stdout: %r" % text
-              )
-          print("MCP serial.read: user stdout visible")
-          PY
-
-          iris-ci --socket "$socket" quit
-          wait "$pid"
-
-      - name: Boot M2 runtime mesh dependency graph
-        env:
-          IRIS_NO_IDLE: "1"
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/iris-m2-runtime"
-          http="$RUNNER_TEMP/m2-runtime-http"
-          rm -rf "$work" "$http"
-          mkdir -p "$work" "$http/boot/modules/ci"
-          cp "$RUNNER_TEMP/m2-runtime-release/package-index.conf" "$http/i"
-          cp "$RUNNER_TEMP/m2-runtime-release/package-index.conf.sig" "$http/i.sig"
-          cp "$RUNNER_TEMP/m2-runtime-release/manager.module" "$http/m"
-          cp "$RUNNER_TEMP/mcp.module" "$http/c"
-          cp "$RUNNER_TEMP/m2-runtime-release/m2-mesh.module" \
-             "$RUNNER_TEMP/m2-runtime-release/m2-root.module" "$http/boot/modules/ci/"
-
-          python3 - "$work/nvram.bin" "$http" <<'PY'
-          import hashlib
-          import pathlib
-          import sys
-
-          work = pathlib.Path(sys.argv[1])
-          root = pathlib.Path(sys.argv[2])
-
-          def sha(path):
-              return hashlib.sha256(path.read_bytes()).hexdigest()
-
-          signature = (root / "i.sig").read_text().strip()
-          env = (
-              f"manager.index=http://192.168.0.1:18102/i,{sha(root / 'i')}\0"
-              f"manager.index.sig={signature}\0"
-              "manager.root=m2-root@1.0.0\0"
-          ).encode()
-          # The DS1386 MAC lives at byte index 314; keep the environment below it.
-          assert len(env) <= 298, len(env)
-          image = bytearray(8192)
-          image[0x10:0x10 + len(env)] = env
-          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          work.write_bytes(image)
-          PY
-
-          cat > "$work/machine.toml" <<'EOF'
-          banks = [32, 0, 0, 0]
-          no_audio = true
-
-          [machine]
-          profile = "indy_ip24"
-
-          [scsi]
-
-          [[port_forward]]
-          proto = "tcp"
-          host_port = 2326
-          guest_port = 23
-          bind = "localhost"
-
-          [[port_forward]]
-          proto = "tcp"
-          host_port = 8091
-          guest_port = 80
-          bind = "localhost"
-          EOF
-
-          python3 -m http.server 18102 --bind 0.0.0.0 \
-            --directory "$http" >"$work/http.log" 2>&1 &
-          http_pid=$!
-          socket="$work/iris.sock"
-          iris --config "$work/machine.toml" --ci \
-            --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --nvram "$work/nvram.bin" \
-            --ci-socket "$socket" --monitor-port 18892 \
-            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
-          pid=$!
-          cleanup() {
-            status=$?
-            kill "$pid" "$http_pid" 2>/dev/null || true
-            if [ "$status" -ne 0 ]; then
-              echo "--- iris output (tail)"
-              tail -50 "$work/iris.out" || true
-              echo "--- serial log (tail)"
-              tail -80 "$work/serial.log" 2>/dev/null || true
-            fi
-          }
-          trap cleanup EXIT
-
-          iris-ci --socket "$socket" status --wait-ready 30
-          iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
-          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 120
-          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 60
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m1: .* mesh=0/0/0 ' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1-post: mesh=0/0/0 ' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .* network=up mcp=listening mesh=single' 30
-
-          mcp_sha="$(sha256sum "$http/c" | awk '{print $1}')"
-          manager_sha="$(sha256sum "$http/m" | awk '{print $1}')"
-          python3 - "$mcp_sha" "$manager_sha" <<'PY'
-          import socket
-          import time
-
-          mcp_sha, manager_sha = __import__("sys").argv[1:3]
-          with socket.create_connection(("127.0.0.1", 2326), timeout=10) as sock:
-              sock.settimeout(5)
-              data = b""
-              try:
-                  while b"sash> " not in data:
-                      data += sock.recv(4096)
-              except socket.timeout:
-                  pass
-              time.sleep(12)
-          PY
-
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-mesh: entered interface=irix7.mesh.transport version=1 probe=ok' 60
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-root: dep=m2-mesh@1.0.0' 120
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'status=ok root=m2-root@1.0.0' 30
-
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^order=m2-mesh@1\.0\.0,m2-root@1\.0\.0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-mesh@1\.0\.0 region=2 handle=[0-9]+ entry=0 status=0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-root@1\.0\.0 region=3 handle=[0-9]+ entry=0 status=0$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^export=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 offset=[0-9]+$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" '^m2-root: dep=m2-mesh@1\.0\.0 interface=irix7\.mesh\.transport version=1 owner=0x[0-9a-f]{8}00000002 result=ok magic=0x4d324d31 len=340 max=65536 bounds=0/-1/-2$' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-mesh: entered interface=irix7.mesh.transport' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm2-root: dep=m2-mesh@1.0.0' 30
-          mesh_line="$(grep -n 'm2-mesh: entered interface=irix7.mesh.transport' "$work/serial.log" | head -1 | cut -d: -f1)"
-          root_line="$(grep -n 'm2-root: dep=m2-mesh@1.0.0' "$work/serial.log" | head -1 | cut -d: -f1)"
-          test "$mesh_line" -lt "$root_line"
-
-          for attempt in 1 2 3 4 5; do
-            if curl -fsS http://127.0.0.1:8091/services >"$work/mcp-modules.txt"; then
-              break
-            fi
-            sleep 2
-          done
-          grep -q 'status=ok root=m2-root@1.0.0 nodes=2' "$work/mcp-modules.txt"
-          grep -q 'order=m2-mesh@1.0.0,m2-root@1.0.0' "$work/mcp-modules.txt"
-          grep -q 'm2-mesh@1.0.0 region=2' "$work/mcp-modules.txt"
-          grep -q 'm2-root@1.0.0 region=3' "$work/mcp-modules.txt"
-          grep -q 'export=m2-mesh@1.0.0 interface=irix7.mesh.transport version=1' "$work/mcp-modules.txt"
-
-          iris-ci --socket "$socket" quit
-          wait "$pid"
-
       - name: Boot local slot-B Wasm with net=off
         env:
           IRIS_NO_IDLE: "1"
@@ -1037,26 +593,20 @@ jobs:
           [scsi]
           EOF
 
-          python3 - "$RUNNER_TEMP/wasm.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
-          import hashlib
+          python3 - "$work/nvram.bin" <<'PY'
           import sys
 
-          wasm = open(sys.argv[1], "rb").read()
-          padded = wasm + b"\0" * ((-len(wasm)) % 512)
-          sectors = len(padded) // 512
-          open(sys.argv[2], "wb").write(padded)
-          env = (f"wasm.local=2:0:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
-                 "net=off\0console=serial0\0\0").encode()
+          env = (b"wasm.policy=on\0"
+                 b"net=off\0console=serial0\0\0")
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[3], "wb").write(image)
+          open(sys.argv[1], "wb").write(image)
           PY
 
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --scsi2 "$work/target2.raw" \
             --nvram "$work/nvram.bin" \
             --ci-socket "$socket" --monitor-port 18891 \
             --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
@@ -1085,66 +635,6 @@ jobs:
           iris-ci --socket "$socket" quit
           wait "$pid"
 
-      - name: Boot ROM offline without a module
-        env:
-          IRIS_NO_IDLE: "1"
-        run: |
-          set -euo pipefail
-          work="$RUNNER_TEMP/iris-offline-no-module"
-          mkdir -p "$work"
-          cd "$work"
-          cat > "$work/machine.toml" <<'EOF'
-          banks = [32, 0, 0, 0]
-          no_audio = true
-
-          [machine]
-          profile = "indy_ip24"
-
-          [scsi]
-          EOF
-
-          python3 - "$work/nvram.bin" <<'PY'
-          import sys
-
-          env = b"net=off\0console=serial0\0\0"
-          image = bytearray(8192)
-          image[0x10:0x10 + len(env)] = env
-          image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[1], "wb").write(image)
-          PY
-
-          socket="$work/iris.sock"
-          iris --config "$work/machine.toml" --ci \
-            --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --nvram "$work/nvram.bin" \
-            --ci-socket "$socket" --monitor-port 18886 \
-            --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
-          pid=$!
-          cleanup() {
-            status=$?
-            kill "$pid" 2>/dev/null || true
-            if [ "$status" -ne 0 ]; then
-              echo "--- iris output (tail)"
-              tail -50 "$work/iris.out" || true
-              echo "--- serial log (tail)"
-              tail -50 "$work/serial.log" 2>/dev/null || true
-            fi
-          }
-          trap cleanup EXIT
-
-          iris-ci --socket "$socket" status --wait-ready 30
-          iris-ci --socket "$socket" start
-          iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
-          iris-ci --socket "$socket" serial-wait 'mesh=single' --timeout 10
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'm1: .*mesh=0/0/0' 30
-          "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off mcp=disabled' 30
-          iris-ci --socket "$socket" serial-wait 'userelf: read failed' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'sash> ' --timeout 30
-          iris-ci --socket "$socket" serial-wait 'm1-post: mesh=0/0/0' --timeout 30
-          iris-ci --socket "$socket" quit
-          wait "$pid"
-
       - name: Boot static std image
         env:
           IRIS_NO_IDLE: "1"
@@ -1164,22 +654,16 @@ jobs:
           EOF
 
           python3 - "$RUNNER_TEMP/std-hello/std-hello.raw" \
-            "$RUNNER_TEMP/wasm.module" "$work/target2.raw" "$work/nvram.bin" <<'PY'
-          import hashlib
+            "$work/target2.raw" "$work/nvram.bin" <<'PY'
           import sys
 
-          std = open(sys.argv[1], "rb").read()
-          wasm = open(sys.argv[2], "rb").read()
-          padded = wasm + b"\0" * ((-len(wasm)) % 512)
-          lba = len(std) // 512
-          sectors = len(padded) // 512
-          open(sys.argv[3], "wb").write(std + padded)
-          env = (f"wasm.local=2:{lba}:{sectors}:{hashlib.sha256(padded).hexdigest()}\0"
-                 "net=off\0console=serial0\0\0").encode()
+          open(sys.argv[2], "wb").write(open(sys.argv[1], "rb").read())
+          env = (b"wasm.policy=on\0"
+                 b"net=off\0console=serial0\0\0")
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[4], "wb").write(image)
+          open(sys.argv[3], "wb").write(image)
           PY
 
           socket="$work/iris.sock"
@@ -1332,7 +816,7 @@ jobs:
 
           iris-ci --socket "$socket" status --wait-ready 30
           iris-ci --socket "$socket" start
-          # The kernel M1 line and the module policy both print before the
+          # The kernel M1 line and the Wasm policy both print before the
           # readiness marker, and the default serial cursor does not rewind.
           iris-ci --socket "$socket" serial-wait 'm1: ' --timeout 30
           iris-ci --socket "$socket" serial-wait 'cap=ok' --timeout 60
@@ -1433,15 +917,10 @@ jobs:
             ${{ runner.temp }}/iris-diskless/iris.out
             ${{ runner.temp }}/iris-wasm-autoload/serial.log
             ${{ runner.temp }}/iris-wasm-autoload/iris.out
-            ${{ runner.temp }}/iris-offline-no-module/serial.log
-            ${{ runner.temp }}/iris-offline-no-module/iris.out
             ${{ runner.temp }}/iris-boot/serial.log
             ${{ runner.temp }}/iris-boot/iris.out
             ${{ runner.temp }}/iris-wasm-local/serial.log
             ${{ runner.temp }}/iris-wasm-local/iris.out
-            ${{ runner.temp }}/iris-runtime-deps/serial.log
-            ${{ runner.temp }}/iris-runtime-deps/iris.out
-            ${{ runner.temp }}/iris-runtime-deps/mcp-modules.txt
             ${{ runner.temp }}/iris-std/serial.log
             ${{ runner.temp }}/iris-std/iris.out
             ${{ runner.temp }}/iris-std-native/serial.log
@@ -1568,14 +1047,21 @@ jobs:
         with:
           version: v0.1.13+irix7
       - name: Build the two-node artefacts
+        env:
+          M2_KERNEL_PORT: "18200"
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           work="$RUNNER_TEMP/m2-build"
           tools/m2-rig/build.sh "$work"
-          sha256sum "$work/irix7-rom.bin" "$work/mcp.module" | tee "$work/SHA256SUMS"
+          sha256sum "$work/irix7-rom.bin" | tee "$work/SHA256SUMS"
           test "$(stat -c%s "$work/irix7-rom.bin")" -le 524288
-          test "$(stat -c%s "$work/mcp.module")" -le 524288
+          # Each node's PROM fetches this build's kernel through its gateway, so
+          # the gate runs the kernel this PR compiled, not releases/latest.
+          (cd "$work" && nohup python3 -m http.server 18200 --bind 0.0.0.0 \
+            > "$RUNNER_TEMP/m2-kernel-fixture.log" 2>&1 &)
+          sleep 2
+          curl -fsS -o /dev/null http://127.0.0.1:18200/kernel-indy-latest.bin
       - name: Host harness tests
         run: |
           set -euo pipefail
@@ -1606,7 +1092,6 @@ jobs:
             "$bin" run \
               --work "$work" \
               --rom "$build/irix7-rom.bin" \
-              --module "$build/mcp.module" \
               --iris "$iris_bin" --iris-ci "$iris_ci" \
               --base-port "$base" --timeout 240 \
               --transport "$transport" --fault "$fault"
@@ -1620,7 +1105,6 @@ jobs:
               if [ -d "$work" ]; then
                 "$bin" down --work "$work" \
                   --rom "$build/irix7-rom.bin" \
-                  --module "$build/mcp.module" \
                   --iris "$iris_bin" --iris-ci "$iris_ci" >/dev/null 2>&1 || true
               fi
             done
@@ -1657,7 +1141,6 @@ jobs:
           "$bin" demo \
             --work "$RUNNER_TEMP/m2-run-demo" \
             --rom "$build/irix7-rom.bin" \
-            --module "$build/mcp.module" \
             --iris "$iris_bin" --iris-ci "$iris_ci" \
             --base-port 10400 --timeout 240
       - name: Collect evidence
@@ -1702,10 +1185,11 @@ jobs:
           path: |
             ${{ runner.temp }}/m2-build/SHA256SUMS
             ${{ runner.temp }}/m2-build/irix7-rom.bin
-            ${{ runner.temp }}/m2-build/mcp.module
+            ${{ runner.temp }}/m2-build/irix7-rom-n0.bin
+            ${{ runner.temp }}/m2-build/irix7-rom-n1.bin
 
-  module-ports:
-    name: Module transport (8 TCP slots)
+  socket-slots:
+    name: Socket slots (8 TCP slots)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -1720,7 +1204,7 @@ jobs:
           rustup default nightly-2026-10-03
       - uses: Swatinem/rust-cache@v2
         with:
-          shared-key: "module-ports"
+          shared-key: "socket-slots"
       - name: Setup IRIS
         id: iris
         uses: irix7/iris/.github/actions/setup-iris@8da7ae21e558f4d5d075e5f50720fabba0a728e6
@@ -1730,7 +1214,7 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
-          work="$RUNNER_TEMP/module-ports"
+          work="$RUNNER_TEMP/socket-slots"
           mkdir -p "$work/fixture"
           CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
             CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tkernel/linker.ld" \
@@ -1750,8 +1234,8 @@ jobs:
       - name: Open eight sockets at once
         run: |
           set -euo pipefail
-          work="$RUNNER_TEMP/module-ports"
-          run="$RUNNER_TEMP/module-ports-run"
+          work="$RUNNER_TEMP/socket-slots"
+          run="$RUNNER_TEMP/socket-slots-run"
           rm -rf "$run" && mkdir -p "$run"
           cd "$run"
           # Eight echo listeners on the runner; the kernel connects to 192.168.0.1.
@@ -1810,9 +1294,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: module-ports-evidence
+          name: socket-slots-evidence
           if-no-files-found: warn
-          path: ${{ runner.temp }}/module-ports-run/evidence
+          path: ${{ runner.temp }}/socket-slots-run/evidence
 
   docs:
     name: Docs

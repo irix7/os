@@ -102,17 +102,21 @@ Sequence:
 6. Delete the module loader, the module ABI table, the slot layout, the module artefacts
    and the module signing checks. Re-run the M1, M2, module-transport and relibc gates.
 
-Step 6 progress:
+Step 6 (done):
 
-- The kernel no longer loads modules. The telnet `module` command, the sash `module`
-  records and the autoload fetch path are removed. `kernel/src/loader.rs` and the
-  region runtime in `kernel/src/module.rs` are deleted. The TCP and UDP socket slots
-  moved to `kernel/src/slots.rs`.
-- The `module_*` service entries return the `kernel-core` refusal.
-- MCP serves its service graph at `/services`. The `/modules` path is removed.
-- The `mcp.local` boot steps in CI are removed. The `logical` module build is removed.
+- The kernel loads no modules. The loader, the module ABI table and the module artefacts
+  are deleted. The socket slots live in `kernel/src/slots.rs`.
+- MCP is the `crates/mcp` crate, linked into the iris, x86 and PowerPC kernels. It serves
+  its service graph at `/services`.
+- The Wasm probe is `crates/wasm-probe` on x86, and `kernel/src/wasm_probe.rs` on iris.
+  NVRAM `wasm.policy` selects the run.
+- The PowerPC hello demo runs in `kernel-ppc/src/hello.rs`.
+- The release builds the kernel, the ROM and the x86_64 image. The package index lists userland
+  records.
 
-Remaining: the module area and its linker assertion, the `modules/` crates, the Wasm
-guest source, the release artefacts, and the module signing checks.
+Remaining: the reserved module-area region in `kernel/linker.ld` (the stack ASSERT against
+`0x8840_0000`), the `slot` mapping on PowerPC (`kernel-ppc/src/slot.rs`), and the
+`module-tcp` and `module-block` crates, which are library names for the socket and block
+services.
 
 Each step records its kernel image size and the stack high-water mark.

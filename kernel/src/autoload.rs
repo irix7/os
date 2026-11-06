@@ -40,13 +40,12 @@ pub fn boot() -> Status {
     }
 }
 
-/// Run the Wasm probe when NVRAM names a Wasm source (`wasm.local` or
-/// `wasm.url`).  An unconfigured boot skips it and keeps the native namespace.
+/// Run the Wasm policy probe when NVRAM sets `wasm.policy`.  The guest is part
+/// of the kernel image, so the key only selects the run.  An unconfigured boot
+/// skips it and keeps the native namespace.
 pub fn boot_wasm() {
-    let mut local = [0u8; 160];
-    let mut url = [0u8; 192];
-    if nvram::get("wasm.local", &mut local).is_some() || nvram::get("wasm.url", &mut url).is_some()
-    {
+    let mut policy = [0u8; 16];
+    if nvram::get("wasm.policy", &mut policy).is_some() {
         crate::wasm_probe::run();
     }
 }

@@ -108,13 +108,6 @@ name = "block-cache"
 version = "0.1.0"
 
 [[package]]
-name = "block-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
-
-[[package]]
 name = "boot-protocol-tests"
 version = "0.1.0"
 
@@ -129,14 +122,6 @@ name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd0f2584146f6f2ef48085050886acf353beff7305ebd1ae69500e27c67f64b"
-
-[[package]]
-name = "cache-module"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "module-abi",
-]
 
 [[package]]
 name = "cap-engine"
@@ -451,16 +436,6 @@ name = "erofs"
 version = "0.1.0"
 
 [[package]]
-name = "erofs-module"
-version = "0.1.0"
-dependencies = [
- "block-cache",
- "erofs",
- "module-abi",
- "overlay",
-]
-
-[[package]]
 name = "fabric"
 version = "0.1.0"
 dependencies = [
@@ -708,7 +683,6 @@ dependencies = [
 name = "kernel-test"
 version = "0.1.0"
 dependencies = [
- "loader-abi",
  "m1-policy-bridge",
 ]
 
@@ -758,26 +732,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "loader-abi"
-version = "0.1.0"
-
-[[package]]
-name = "logical-module"
-version = "0.1.0"
-dependencies = [
- "agnostic-core",
- "blake3",
- "cap-engine",
- "cas-core",
- "cas-store",
- "ed25519-dalek",
- "mesh-core",
- "mesh-service",
- "module-abi",
- "sys-primitives",
-]
-
-[[package]]
 name = "m1-policy-bridge"
 version = "0.1.0"
 
@@ -793,24 +747,6 @@ version = "0.1.0"
 dependencies = [
  "block-cache",
  "erofs",
- "mesh-core",
- "mesh-join",
- "mesh-migrate",
- "mesh-route",
- "mesh-stream",
- "mesh-transport",
- "module-abi",
- "overlay",
- "sys-primitives",
-]
-
-[[package]]
-name = "mcp-module"
-version = "0.1.0"
-dependencies = [
- "block-cache",
- "erofs",
- "loader-abi",
  "mesh-core",
  "mesh-join",
  "mesh-migrate",
@@ -911,26 +847,10 @@ name = "module-block"
 version = "0.1.0"
 
 [[package]]
-name = "module-resolver"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
- "module-trust",
- "sha2",
-]
-
-[[package]]
 name = "module-tcp"
 version = "0.1.0"
 dependencies = [
  "smoltcp",
-]
-
-[[package]]
-name = "module-trust"
-version = "0.1.0"
-dependencies = [
- "ed25519-dalek",
 ]
 
 [[package]]
@@ -1184,46 +1104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "runtime-demo-dep-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
-
-[[package]]
-name = "runtime-demo-root-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
-
-[[package]]
-name = "runtime-m2-mesh-module"
-version = "0.1.0"
-dependencies = [
- "mesh-transport",
- "module-abi",
- "sys-primitives",
-]
-
-[[package]]
-name = "runtime-m2-root-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
-
-[[package]]
-name = "runtime-manager-module"
-version = "0.1.0"
-dependencies = [
- "loader-abi",
- "module-abi",
- "module-resolver",
- "module-trust",
-]
-
-[[package]]
 name = "rustc_version"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1341,13 +1221,6 @@ name = "sys-primitives"
 version = "0.1.0"
 
 [[package]]
-name = "ticker-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
-
-[[package]]
 name = "time"
 version = "0.3.55"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1421,18 +1294,6 @@ dependencies = [
  "sys-primitives",
  "wasmi",
  "wat",
-]
-
-[[package]]
-name = "wasm-module"
-version = "0.1.0"
-dependencies = [
- "m1-policy-bridge",
- "module-abi",
- "sys-primitives",
- "wasm-host",
- "wasm-policy-host",
- "wasmi",
 ]
 
 [[package]]

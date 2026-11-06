@@ -8,7 +8,6 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::fixture::Fixture;
 use crate::homes::HomesEvidence;
 use crate::join::JoinEvidence;
 use crate::migrate::MigrateEvidence;
@@ -169,12 +168,6 @@ pub struct Evidence<'a> {
     pub rom_sha256: &'a str,
     /// PROM size in bytes.
     pub rom_size: u64,
-    /// Module path.
-    pub module: &'a Path,
-    /// Module digest.
-    pub module_sha256: &'a str,
-    /// Module size in bytes.
-    pub module_size: u64,
     /// `iris` binary path.
     pub iris: &'a Path,
     /// `iris` binary digest.
@@ -209,8 +202,6 @@ pub struct Evidence<'a> {
     pub failure: Option<&'a crate::failure::FailureEvidence>,
     /// Datagram-probe evidence, when the `udp` mode ran.
     pub udp: Option<&'a crate::udp::UdpEvidence>,
-    /// Module fixture, when the run started one.
-    pub fixture: Option<&'a Fixture>,
     /// Named relay logs.
     pub relays: &'a [(String, SharedLog)],
     /// `pass` or `fail`.
@@ -256,10 +247,6 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
             .map_err(|error| format!("write {stem}.raw: {error}"))?;
     }
 
-    if let Some(fixture) = evidence.fixture {
-        let fixture_log = fixture.lines().join("\n");
-        write_text(&directory.join("fixture.log"), &format!("{fixture_log}\n"))?;
-    }
     for (name, relay) in evidence.relays {
         let text = log_lines(relay).join("\n");
         write_text(
@@ -299,7 +286,7 @@ pub fn write(evidence: &Evidence<'_>) -> Result<PathBuf, String> {
 /// of silently attributing it to `HEAD`.
 fn render_manifest(evidence: &Evidence<'_>) -> String {
     format!(
-        "{{\n  \"schema\": \"irix7-m2-artifact-manifest-v1\",\n  \"repo\": \"{}\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"describe\": \"{}\",\n  \"dirty\": {},\n  \"artifacts\": {{\n    \"rom\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"module\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris_ci\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}}\n  }}\n}}\n",
+        "{{\n  \"schema\": \"irix7-m2-artifact-manifest-v1\",\n  \"repo\": \"{}\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"describe\": \"{}\",\n  \"dirty\": {},\n  \"artifacts\": {{\n    \"rom\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n    \"iris_ci\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}}\n  }}\n}}\n",
         json_escape(&evidence.repo.display().to_string()),
         json_escape(evidence.branch),
         json_escape(evidence.commit),
@@ -308,9 +295,6 @@ fn render_manifest(evidence: &Evidence<'_>) -> String {
         json_escape(&evidence.rom.display().to_string()),
         evidence.rom_size,
         json_escape(evidence.rom_sha256),
-        json_escape(&evidence.module.display().to_string()),
-        evidence.module_size,
-        json_escape(evidence.module_sha256),
         json_escape(&evidence.iris.display().to_string()),
         evidence.iris_size,
         json_escape(evidence.iris_sha256),
@@ -349,12 +333,6 @@ fn render_json(evidence: &Evidence<'_>) -> String {
         json_escape(evidence.rom_sha256)
     ));
     out.push_str(&format!(
-        "  \"module\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
-        json_escape(&evidence.module.display().to_string()),
-        evidence.module_size,
-        json_escape(evidence.module_sha256)
-    ));
-    out.push_str(&format!(
         "  \"iris\": {{\"path\": \"{}\", \"size\": {}, \"sha256\": \"{}\"}},\n",
         json_escape(&evidence.iris.display().to_string()),
         evidence.iris_size,
@@ -387,12 +365,11 @@ fn render_json(evidence: &Evidence<'_>) -> String {
             json_escape(&node.gateway)
         ));
         out.push_str(&format!(
-            "\"telnet_port\": {}, \"http_port\": {}, \"mesh_port\": {}, \"boot_ms\": {}, \"fetch_ms\": {}, ",
+            "\"telnet_port\": {}, \"http_port\": {}, \"mesh_port\": {}, \"boot_ms\": {}, ",
             node.telnet_port,
             node.http_port,
             node.mesh_port,
-            json_option_num(node.facts.timings.boot_ready_ms),
-            json_option_num(node.facts.timings.fetch_ms())
+            json_option_num(node.facts.timings.boot_ready_ms)
         ));
         out.push_str(&format!(
             "\"boot_ready\": {}, \"mcp\": {}, \"mesh\": {}, \"mesh_transport_listen\": {}, \"mesh_transport_pass\": {}, \"mesh_transport_disconnects\": {}, \"mesh_join_enabled\": {}, \"mesh_join_disabled\": {}, \"mesh_join_local\": {}, \"mesh_join_request\": {}, \"mesh_join_confirms\": {}, \"mesh_join_converged\": {}, \"mesh_join_acks\": {}, \"mesh_join_acks_sent\": {}, \"mesh_join_duplicate\": {}, \"mesh_join_refused\": {}, \"mesh_join_timeout\": {}, \"mesh_join_reject\": {}, \"mesh_route_enabled\": {}, \"mesh_route_disabled\": {}, \"mesh_migrate_enabled\": {}, \"mesh_migrate_disabled\": {}, \"mesh_migrate_lines\": {}, \"network_mac\": {}, \"network_ip\": {}, \"nvram\": {}",
@@ -1095,13 +1072,10 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
         evidence.dirty
     ));
     out.push_str(&format!(
-        "**PROM:** `{}`  \n**PROM bytes:** {}  \n**PROM SHA-256:** `{}`\n\n**Module:** `{}`  \n**Module bytes:** {}  \n**Module SHA-256:** `{}`\n\n**iris:** `{}`  \n**iris SHA-256:** `{}`  \n**iris-ci:** `{}`  \n**iris-ci SHA-256:** `{}`\n\n**Artifact manifest:** `manifest.json`\n\n",
+        "**PROM:** `{}`  \n**PROM bytes:** {}  \n**PROM SHA-256:** `{}`\n\n**iris:** `{}`  \n**iris SHA-256:** `{}`  \n**iris-ci:** `{}`  \n**iris-ci SHA-256:** `{}`\n\n**Artifact manifest:** `manifest.json`\n\n",
         evidence.rom.display(),
         evidence.rom_size,
         evidence.rom_sha256,
-        evidence.module.display(),
-        evidence.module_size,
-        evidence.module_sha256,
         evidence.iris.display(),
         evidence.iris_sha256,
         evidence.iris_ci.display(),
@@ -1135,23 +1109,17 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
 
     // Boot phases: a network change that costs time and one that stalls until
     // the guest's deadline read the same in a marker-only transcript, so the
-    // module fetch is timed and shown here (issues #273, #274).
+    // readiness time is shown here (issues #273, #274).
     out.push_str("## Boot timings\n\n");
-    out.push_str("| Node | Module fetch | Boot to `BOOT-READY` |\n|---|---|---|\n");
+    out.push_str("| Node | Boot to `BOOT-READY` |\n|---|---|\n");
     for node in evidence.nodes {
-        let fetch = node
-            .facts
-            .timings
-            .fetch_ms()
-            .map(|ms| format!("{ms} ms"))
-            .unwrap_or_else(|| "n/a".into());
         let boot = node
             .facts
             .timings
             .boot_ready_ms
             .map(|ms| format!("{ms} ms"))
             .unwrap_or_else(|| "n/a".into());
-        out.push_str(&format!("| {} | {} | {} |\n", node.name, fetch, boot));
+        out.push_str(&format!("| {} | {} |\n", node.name, boot));
     }
     out.push('\n');
 
@@ -1764,15 +1732,6 @@ fn render_summary(evidence: &Evidence<'_>) -> String {
             {
                 out.push_str(&format!("{}: {line}\n", node.name));
             }
-        }
-        out.push_str("```\n\n");
-    }
-
-    if let Some(fixture) = evidence.fixture {
-        out.push_str("## Module fixture\n\n```text\n");
-        for line in fixture.lines() {
-            out.push_str(&line);
-            out.push('\n');
         }
         out.push_str("```\n\n");
     }

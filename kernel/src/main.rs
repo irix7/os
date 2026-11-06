@@ -24,7 +24,6 @@ use core::ptr::{read_volatile, write_volatile};
 pub mod allocator;
 pub mod autoload;
 pub mod bigbuf;
-pub mod boot_config;
 pub mod boot_protocol;
 pub mod cache;
 pub mod capability;

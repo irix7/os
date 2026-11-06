@@ -22,5 +22,5 @@ bounded, safe reference model for tests and bring-up.
   stream-window exhaustion and recovery after a window update.
 
 The 10,000-tag figure is the fabric model's capacity. The live MCP module has an
-8-entry pending table (`PENDING_CAPACITY` in `modules/mcp/src/mesh.rs`) and is
+8-entry pending table (`PENDING_CAPACITY` in `crates/mcp/src/mesh.rs`) and is
 not claimed to hold 10,000 outstanding requests.

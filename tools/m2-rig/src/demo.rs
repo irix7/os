@@ -107,10 +107,7 @@ struct Demo {
 
 impl Demo {
     fn start(options: &Options) -> Result<Self, String> {
-        let (module, _rom_sha, module_sha) = crate::check_prerequisites(options)?;
-        let module_sha_text = crate::sha256::hex(&module_sha);
-        let fixture =
-            crate::Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+        crate::check_prerequisites(options)?;
         let nodes = crate::derive_nodes(options)?;
 
         // The clean M2 configuration plus the failure detector.  This is the
@@ -123,19 +120,11 @@ impl Demo {
         }
 
         let mut running = Vec::new();
-        crate::start_all_with(
-            options,
-            &nodes,
-            &environments,
-            fixture.port,
-            &module_sha_text,
-            &mut running,
-        )?;
+        crate::start_all_with(options, &nodes, &environments, &mut running)?;
         if let Err(error) = rig::wait_boot(options, &mut running) {
             let _ = rig::stop_nodes(options, &mut running);
             return Err(error);
         }
-        drop(fixture);
 
         let output_dir = options.work.join("demo");
         fs::create_dir_all(&output_dir)

@@ -190,7 +190,7 @@ pub fn run() {
     println!();
     println!("Notes:");
     println!("- `roundtrip` builds the `MeshHeader` and `MessageFrame` (as");
-    println!("  `modules/mcp/src/mesh.rs::queue_ping` does), encodes and decodes one record.");
+    println!("  `crates/mcp/src/mesh.rs::queue_ping` does), encodes and decodes one record.");
     println!("- `roundtrip records/s` is a codec ceiling, not a socket throughput.");
     println!(
         "- The guest is an emulated 50 MHz-class R4000; these host microseconds are a lower bound."

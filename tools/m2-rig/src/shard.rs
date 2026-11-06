@@ -22,7 +22,6 @@ use std::time::{Duration, Instant};
 
 use crate::check_prerequisites;
 use crate::evidence::json_escape;
-use crate::fixture::Fixture;
 use crate::homes;
 use crate::hub::{HubConfig, MeshHub};
 use crate::join;
@@ -751,10 +750,7 @@ pub fn run(options: &Options) -> Result<i32, String> {
                 .into(),
         );
     }
-    let (module, rom_sha, module_sha) = check_prerequisites(options)?;
-    let module_sha_text = crate::sha256::hex(&module_sha);
-    let fixture =
-        Fixture::start(module).map_err(|error| format!("start module fixture: {error}"))?;
+    let rom_sha = check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
     let mut members: Vec<String> = nodes.iter().map(Node::node_id_string).collect();
     members.sort();
@@ -767,13 +763,7 @@ pub fn run(options: &Options) -> Result<i32, String> {
     let environment_options: Vec<Option<_>> = environments.into_iter().map(Some).collect();
     let mut running = Vec::new();
     for (node, environment) in nodes.iter().zip(environment_options.iter()) {
-        crate::rig::write_nvram(
-            node,
-            fixture.port,
-            &module_sha_text,
-            environment.as_ref(),
-            options.rx_poll,
-        )?;
+        crate::rig::write_nvram(node, environment.as_ref(), options.rx_poll)?;
     }
     // Boot one kernel at a time.  The emulated serial mirror is not lossless
     // when eight guests boot and log concurrently; this is a harness pacing
@@ -810,7 +800,6 @@ pub fn run(options: &Options) -> Result<i32, String> {
         &mut running,
         &authority,
         &rom_sha,
-        &module_sha_text,
         first_member,
     );
     let stop_errors = if options.keep {
@@ -990,7 +979,6 @@ fn run_started(
     running: &mut [RunningNode],
     authority: &AuthorityKeys,
     rom_sha: &[u8; 32],
-    module_sha: &str,
     first_member: usize,
 ) -> Result<i32, String> {
     let facts = wait_boot(options, running)?;
@@ -1306,7 +1294,6 @@ fn run_started(
         "  \"rom_sha256\": \"{}\",",
         crate::sha256::hex(rom_sha)
     );
-    let _ = writeln!(json, "  \"module_sha256\": \"{}\",", module_sha);
     let _ = writeln!(
         json,
         "  \"authority_public\": \"{}\",",
@@ -1582,7 +1569,7 @@ fn run_started(
         "- The multi-member defect was a guest receive-path ordering bug: the module \
          checked its receive and heartbeat deadlines before draining bytes already queued \
          in the socket, and confirmed a join after logging the previous table.  Both are \
-         fixed in `modules/mcp/src/mesh.rs`, together with a compact M3 transcript.  The \
+         fixed in `crates/mcp/src/mesh.rs`, together with a compact M3 transcript.  The \
          kernel's module TCP receive buffer is 16 KiB (the only kernel change); the ROM \
          source is unchanged, but the embedded kernel image and PROM digest move.  The \
          hub keeps one bounded session per peer and applies backpressure instead of \
