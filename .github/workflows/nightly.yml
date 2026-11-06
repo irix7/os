@@ -49,7 +49,7 @@ jobs:
         run: ./scripts/hardware/run.sh
       - name: Upload logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nightly-hardware
           path: artifacts/hardware/
