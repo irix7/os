@@ -15,8 +15,6 @@ pub const SLOTS: usize = 8;
 /// Ring size per direction.  Sized for the module's HTTP responses.
 const BUFFER: usize = 16384;
 
-pub use module_tcp::EV_CLOSED;
-
 /// The machine's network stack, for the shared slot table.
 pub struct X86Stack;
 

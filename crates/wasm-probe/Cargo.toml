@@ -1,0 +1,22 @@
+[package]
+name = "wasm-probe"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Wasm policy probe: runs the embedded policy guest and publishes the committed policy"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+m1-policy-bridge = { path = "../m1-policy-bridge" }
+module-abi.workspace = true
+sys-primitives = { path = "../sys-primitives" }
+wasm-host = { path = "../wasm-host", default-features = false }
+wasm-policy-host = { path = "../wasm-policy-host" }
+wasmi = { version = "2.0", default-features = false, features = [
+    "deterministic",
+    "libm",
+    "prefer-btree-collections",
+    "validate",
+] }

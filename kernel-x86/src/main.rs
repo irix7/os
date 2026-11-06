@@ -5,8 +5,7 @@
 //! assembly stub in `boot.S` enters long mode with the first 4 GiB identity
 //! mapped, and this code brings up the serial console, the PVH memory map, the
 //! IDT and the PIT.  A deliberate breakpoint proves the trap path reports
-//! rather than hanging.  The module loader protocol and the service table are
-//! the shared `kernel-core`; this crate keeps the PVH boot, paging, IDT, timer,
+//! rather than hanging.  The service table is the shared `kernel-core`; this crate keeps the PVH boot, paging, IDT, timer,
 //! virtio and serial machine layer.  There is no userland yet.
 
 #![no_std]
@@ -19,16 +18,15 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 mod config;
-mod fetch;
 mod heap;
 mod idt;
 mod memory;
-mod module;
 mod net;
 mod pci;
 mod port;
 mod pvh;
 mod serial;
+mod serve;
 mod services;
 mod stack;
 mod tcp;
@@ -141,9 +139,9 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         qemu_exit(1);
     }
 
-    // The module service table and the loader protocol are shared; the
+    // The service table is shared with the other kernels; the
     // machine installs its console, clock, heap, network and block resources
-    // once, before the first module.
+    // once, before MCP and the Wasm policy start.
     services::install();
 
     idt::init();
@@ -181,7 +179,7 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         serial::write_byte(b'\n');
     }
 
-    // Exercise the block service a module uses: write and read back through
+    // Exercise the block service the control plane uses: write and read back through
     // the shared service table, not the raw driver.
     let mut pattern = [0u8; virtio_blk::SECTOR];
     for (i, byte) in pattern.iter_mut().enumerate() {
@@ -201,35 +199,23 @@ pub extern "C" fn kernel_main(start_info: u64) -> ! {
         qemu_exit(1);
     }
     print_line(&[b"x86: block service read/write ok"]);
-    // Fetch both modules, then load them.  The MCP module initialises on the boot
-    // stack, which is small and only runs its init.  The wasm policy module runs
-    // on the large stack, because the Wasm runtime is deep.
-    let mcp_bytes = fetch::image(
-        virtio_blk::disk().expect("x86: block device"),
-        "mcp",
-        fetch::MCP_URL_SECTOR,
-        module::MCP_HEADER_SECTOR,
-        fetch::SLOT_MCP,
-        module::MCP.window,
-    );
-    let wasm_bytes = fetch::image(
-        virtio_blk::disk().expect("x86: block device"),
-        "wasm",
-        fetch::WASM_URL_SECTOR,
-        module::WASM_HEADER_SECTOR,
-        fetch::SLOT_WASM,
-        module::WASM.window,
-    );
-    let mcp = module::load(&module::MCP, mcp_bytes);
-    let mut wasm = core::ptr::null();
+    // The MCP control plane and the Wasm policy are part of this image (ADR
+    // M1-0003).  The policy runs on the large stack, because the Wasm runtime is
+    // deep.  MCP starts on the boot stack and only runs its init.
+    let mut policy = false;
     stack::on_stack(&mut || {
-        wasm = module::load(&module::WASM, wasm_bytes);
+        policy = wasm_probe::start(&kernel_core::service::SERVICES);
     });
-    if wasm.is_null() {
-        print_line(&[b"x86: wasm: no vtable"]);
+    if !policy {
+        print_line(&[b"x86: wasm: policy did not commit"]);
         qemu_exit(1);
     }
-    module::serve(mcp);
+    if !mcp::start(&kernel_core::service::SERVICES, &[]) {
+        print_line(&[b"x86: mcp: refused to start"]);
+        qemu_exit(1);
+    }
+    print_line(&[b"x86: mcp started"]);
+    serve::serve();
 
     print_line(&[b"x86: deliberate fault: int3"]);
     // SAFETY: the IDT installs a handler for vector 3.

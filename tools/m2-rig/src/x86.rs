@@ -2,8 +2,7 @@
 //! The x86 machine under QEMU: one boot disk, one guest, a host HTTP check.
 //!
 //! This is the first slice of the rig's QEMU backend (docs/plan/x86-rig.md).
-//! It boots one x86 guest with the MCP and wasm modules served by host
-//! fixtures, waits for `BOOT-READY`, and fetches the module's status page
+//! It boots one x86 guest, waits for `BOOT-READY`, and fetches MCP's status page
 //! through the forwarded port.  The two-node M2 flow is built on this.
 
 use std::fs;
@@ -13,65 +12,12 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::fixture::Fixture;
 use crate::rig::{self, Node, Options};
-use crate::sha256;
 
 /// Boot disk size: 8 MiB, the same as the gate's image.
 const DISK_SECTORS: usize = 16384;
 const SECTOR: usize = 512;
-const HEADER_MAGIC: &[u8; 8] = b"IRIX7MOD";
-const MCP_HEADER_SECTOR: usize = 8;
-const MCP_URL_SECTOR: usize = 9;
-const WASM_HEADER_SECTOR: usize = 10;
-const WASM_URL_SECTOR: usize = 11;
 const CONFIG_SECTOR: usize = 100;
-
-/// Run the one-guest smoke.
-pub fn smoke(options: &Options) -> Result<i32, String> {
-    require_file(&options.rom, "kernel image (--rom)")?;
-    require_file(&options.module, "MCP module (--module)")?;
-    require_file(&options.wasm, "wasm module (--wasm)")?;
-
-    let node = derive_node(options, 0)?;
-    fs::create_dir_all(&node.state_dir)
-        .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
-    let _ = fs::remove_file(&node.serial_log);
-
-    let mcp = Fixture::start(fs::read(&options.module).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start MCP fixture: {error}"))?;
-    let wasm = Fixture::start(fs::read(&options.wasm).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start wasm fixture: {error}"))?;
-
-    let disk = node.state_dir.join("boot.img");
-    write_boot_disk(
-        &disk,
-        &["test.key=config-ok".to_string()],
-        (&mcp_module(options), mcp.port),
-        (&wasm_module(options), wasm.port),
-    )?;
-
-    let mut child = launch(options, &node, &disk)?;
-    let result = (|| -> Result<(), String> {
-        wait_boot(&node.serial_log, crate::timing::secs(90))?;
-        let response = crate::homes::fetch(&node, "/", crate::timing::secs(15))?;
-        if response.status != 200 {
-            return Err(format!("GET / returned {}", response.status));
-        }
-        println!("x86: MCP status page {} bytes", response.body.len());
-        Ok(())
-    })();
-    let _ = child.kill();
-    let _ = child.wait();
-    result?;
-    println!(
-        "x86-smoke: pass; serial log {}; fixtures {} and {}",
-        node.serial_log.display(),
-        mcp.port,
-        wasm.port
-    );
-    Ok(0)
-}
 
 /// Two x86 guests joined through the host relay: the M2 topology without the
 /// rest of the scenario.  Each node listens on 7000; the relay dials both
@@ -85,23 +31,6 @@ fn field(body: &str, key: &str) -> Option<String> {
 }
 
 /// Wait until both guests report a two-member view, returning those views.
-/// Wait until both guests log their mesh listener.
-fn wait_listen(nodes: &[&Node], timeout: Duration) -> Result<(), String> {
-    let deadline = Instant::now() + timeout;
-    loop {
-        if nodes
-            .iter()
-            .all(|node| crate::rig::read_serial(node).contains("mesh-transport: listening on port"))
-        {
-            return Ok(());
-        }
-        if Instant::now() >= deadline {
-            return Err("timed out waiting for both mesh listeners".into());
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-}
-
 fn wait_two_members(nodes: &[Node], timeout: Duration) -> Result<Vec<String>, String> {
     let deadline = Instant::now() + timeout;
     loop {
@@ -182,110 +111,10 @@ fn restart_guest(
     Ok(relay)
 }
 
-/// One Indy guest and one x86 guest joined through the relay.  This is the
-/// cross-architecture wire check: the same join, homes and route code on two
-/// machines with different ABIs.
-pub fn mixed(options: &Options) -> Result<i32, String> {
-    require_file(&options.module, "MCP module (--module)")?;
-    require_file(&options.x86_module, "x86 MCP module (--x86-module)")?;
-    require_file(&options.wasm, "wasm module (--wasm)")?;
-    let iris_nodes = rig::derive_nodes(options)?;
-    let iris = iris_nodes.first().cloned().ok_or("mixed: no iris node")?;
-    let x86 = derive_node(options, 1)?;
-    let nodes = [iris.clone(), x86.clone()];
-
-    let module_bytes = fs::read(&options.module).map_err(|e| e.to_string())?;
-    let module_sha = crate::sha256::hex(&crate::sha256::digest(&module_bytes));
-    let mcp =
-        Fixture::start(module_bytes).map_err(|error| format!("start MCP fixture: {error}"))?;
-    let x86_mcp = Fixture::start(fs::read(&options.x86_module).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start x86 MCP fixture: {error}"))?;
-    let wasm = Fixture::start(fs::read(&options.wasm).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start wasm fixture: {error}"))?;
-
-    let (environments, _authority, _wrong) =
-        rig::mesh_environments(&nodes, rig::Fault::None, rig::Transport::Relay);
-
-    // Indy node.
-    rig::write_nvram(
-        &iris,
-        mcp.port,
-        &module_sha,
-        environments[0].as_ref(),
-        options.rx_poll,
-    )?;
-    let mut running = rig::start_node(options, &iris)?;
-    rig::wait_ci_ready(options, &iris, crate::timing::secs(20))?;
-    rig::start_cpu(options, &iris)?;
-    rig::wait_serial(
-        options,
-        &mut running,
-        "BOOT-READY",
-        crate::timing::secs(120),
-    )?;
-
-    // x86 node.
-    fs::create_dir_all(&x86.state_dir)
-        .map_err(|error| format!("create {}: {error}", x86.state_dir.display()))?;
-    let mut lines = Vec::new();
-    if let Some(environment) = environments[1].as_ref() {
-        for (key, value) in x86.environment(mcp.port, Some(environment)) {
-            lines.push(format!("{key}={value}"));
-        }
-    }
-    let mcp_image = fs::read(&options.x86_module).unwrap_or_default();
-    let wasm_image = fs::read(&options.wasm).unwrap_or_default();
-    let disk = x86.state_dir.join("boot.img");
-    write_boot_disk(
-        &disk,
-        &lines,
-        (&mcp_image, x86_mcp.port),
-        (&wasm_image, wasm.port),
-    )?;
-    let mut child = launch(options, &x86, &disk)?;
-
-    let result = (|| -> Result<(), String> {
-        wait_boot(&x86.serial_log, crate::timing::secs(120))?;
-        // The Indy listener appears well after its BOOT-READY, once its
-        // userland has run.  A relay session that connects before the guest
-        // side is listening is accepted by iris and then holds the forward's
-        // single pending slot, so the member's own connection is reset behind
-        // it.  Wait for both listeners, as the shared run path does.
-        wait_listen(&[&iris, &x86], crate::timing::secs(120))?;
-        let _relay = crate::relay::MeshRelay::start(
-            (std::net::Ipv4Addr::LOCALHOST, nodes[0].mesh_port).into(),
-            (std::net::Ipv4Addr::LOCALHOST, nodes[1].mesh_port).into(),
-        )
-        .map_err(|error| format!("start mesh relay: {error}"))?;
-        let views = wait_two_members(&nodes, crate::timing::secs(120))?;
-        for view in views {
-            println!("x86-mixed: {view}");
-        }
-        Ok(())
-    })();
-
-    let _ = child.kill();
-    let _ = child.wait();
-    let stop = rig::stop_node(options, &mut running);
-    result?;
-    stop?;
-    println!("x86-mixed: Indy and x86 joined on one epoch");
-    Ok(0)
-}
-
 pub fn mesh(options: &Options) -> Result<i32, String> {
     require_file(&options.rom, "kernel image (--rom)")?;
-    require_file(&options.module, "MCP module (--module)")?;
-    require_file(&options.wasm, "wasm module (--wasm)")?;
     let nodes = [derive_node(options, 0)?, derive_node(options, 1)?];
 
-    let mcp = Fixture::start(fs::read(&options.module).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start MCP fixture: {error}"))?;
-    let wasm = Fixture::start(fs::read(&options.wasm).map_err(|e| e.to_string())?)
-        .map_err(|error| format!("start wasm fixture: {error}"))?;
-
-    let mcp_image = mcp_module(options);
-    let wasm_image = wasm_module(options);
     let (environments, _authority, _wrong) =
         rig::mesh_environments(&nodes, rig::Fault::None, rig::Transport::Relay);
     let mut children = Vec::new();
@@ -294,17 +123,15 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
             .map_err(|error| format!("create {}: {error}", node.state_dir.display()))?;
         let mut lines = Vec::new();
         if let Some(environment) = environment {
-            for (key, value) in node.environment(mcp.port, Some(environment)) {
-                lines.push(format!("{key}={value}"));
+            // MCP is linked into the image, so the `mcp.*` NVRAM keys have no reader here.
+            for (key, value) in node.environment(0, Some(environment)) {
+                if !key.starts_with("mcp.") {
+                    lines.push(format!("{key}={value}"));
+                }
             }
         }
         let disk = node.state_dir.join("boot.img");
-        write_boot_disk(
-            &disk,
-            &lines,
-            (&mcp_image, mcp.port),
-            (&wasm_image, wasm.port),
-        )?;
+        write_boot_disk(&disk, &lines)?;
         children.push((node, launch(options, node, &disk)?));
     }
 
@@ -383,14 +210,6 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
     Ok(0)
 }
 
-fn mcp_module(options: &Options) -> Vec<u8> {
-    fs::read(&options.module).unwrap_or_default()
-}
-
-fn wasm_module(options: &Options) -> Vec<u8> {
-    fs::read(&options.wasm).unwrap_or_default()
-}
-
 fn require_file(path: &Path, what: &str) -> Result<(), String> {
     if path.is_file() {
         Ok(())
@@ -427,14 +246,8 @@ fn derive_node(options: &Options, instance: u32) -> Result<Node, String> {
     })
 }
 
-/// Write the machine's boot disk: marker, configuration, module headers and
-/// the fixture URLs the guest fetches at boot.
-fn write_boot_disk(
-    path: &Path,
-    config_lines: &[String],
-    mcp: (&Vec<u8>, u16),
-    wasm: (&Vec<u8>, u16),
-) -> Result<(), String> {
+/// Write the machine's boot disk: the marker and the boot configuration.
+fn write_boot_disk(path: &Path, config_lines: &[String]) -> Result<(), String> {
     let mut disk = vec![0u8; DISK_SECTORS * SECTOR];
     disk[SECTOR..SECTOR + 17].copy_from_slice(b"IRIX7-X86-DISK-OK");
     let config: String = config_lines
@@ -450,19 +263,6 @@ fn write_boot_disk(
         ));
     }
     disk[CONFIG_SECTOR * SECTOR..][..config.len()].copy_from_slice(config);
-    let urls = [
-        (MCP_URL_SECTOR, format!("10.0.2.2:{}/mcp.module", mcp.1)),
-        (WASM_URL_SECTOR, format!("10.0.2.2:{}/mcp.module", wasm.1)),
-    ];
-    for (sector, url) in urls {
-        disk[sector * SECTOR..][..url.len()].copy_from_slice(url.as_bytes());
-    }
-    for (sector, image) in [(MCP_HEADER_SECTOR, mcp.0), (WASM_HEADER_SECTOR, wasm.0)] {
-        let header = sector * SECTOR;
-        disk[header..header + 8].copy_from_slice(HEADER_MAGIC);
-        disk[header + 8..header + 12].copy_from_slice(&(image.len() as u32).to_be_bytes());
-        disk[header + 12..header + 44].copy_from_slice(&sha256::digest(image));
-    }
     let mut file =
         fs::File::create(path).map_err(|error| format!("create {}: {error}", path.display()))?;
     file.write_all(&disk)

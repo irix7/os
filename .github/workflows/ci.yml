@@ -1524,10 +1524,6 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/x86-qemu.sh "$RUNNER_TEMP/x86-qemu"
-      - name: Check the module layout on both machines
-        run: |
-          export PATH="$HOME/.cargo/bin:$PATH"
-          tools/module-layout-check.sh "$RUNNER_TEMP/module-layout"
       - name: Run the two-guest x86 mesh
         run: |
           set -euo pipefail
@@ -1539,8 +1535,6 @@ jobs:
           "$harness/release/m2-rig" x86-mesh \
             --work "$RUNNER_TEMP/x86-mesh" \
             --rom "$work/target/x86_64-unknown-none/release/kernel-x86" \
-            --module "$work/mcp-x86.module" \
-            --wasm "$work/wasm-x86.module" \
             --base-port 12000
       - uses: actions/upload-artifact@v4
         if: always()

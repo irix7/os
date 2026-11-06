@@ -729,10 +729,12 @@ dependencies = [
  "irix7-netif",
  "irix7-sha256",
  "kernel-core",
+ "mcp",
  "module-abi",
  "module-block",
  "module-tcp",
  "smoltcp",
+ "wasm-probe",
 ]
 
 [[package]]
@@ -1451,6 +1453,18 @@ dependencies = [
  "mesh-service",
  "sys-primitives",
  "wasm-host",
+]
+
+[[package]]
+name = "wasm-probe"
+version = "0.1.0"
+dependencies = [
+ "m1-policy-bridge",
+ "module-abi",
+ "sys-primitives",
+ "wasm-host",
+ "wasm-policy-host",
+ "wasmi",
 ]
 
 [[package]]

@@ -12,7 +12,7 @@ use frame_alloc::{MemDesc, Store, KIND_RESERVED, KIND_USABLE_RAM};
 
 use crate::pvh;
 
-/// Descriptor slots: the reserved low image, the module windows and stack, and
+/// Descriptor slots: the reserved low image, the stack window, and
 /// the loader's entries.
 const MAX_DESCS: usize = 32;
 
@@ -61,15 +61,8 @@ pub fn init(start_info: u64) {
     };
     // The low memory and kernel image come first.
     reserve(0, kernel_end);
-    // Module windows and the large stack are reserved too: modules are linked
-    // and run there, and the stack is not frame memory.
-    for (base, size) in [
-        (crate::module::MCP.base, crate::module::MCP.window),
-        (crate::module::WASM.base, crate::module::WASM.window),
-        (crate::stack::BASE, crate::stack::SIZE),
-    ] {
-        reserve(base as u64, size as u64);
-    }
+    // The large stack is reserved too: it is not frame memory.
+    reserve(crate::stack::BASE as u64, crate::stack::SIZE as u64);
     for entry in entries {
         // The loader's type 1 is usable RAM; everything else is reserved.
         let kind = if entry.kind == 1 {
