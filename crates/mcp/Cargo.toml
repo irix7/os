@@ -1,0 +1,22 @@
+[package]
+name = "mcp"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "MCP control plane (HTTP, mesh and netprobe listeners) for the IRIX 7 kernels"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+module-abi.workspace = true
+block-cache = { path = "../block-cache" }
+mesh-core = { path = "../mesh-core" }
+mesh-join = { path = "../mesh-join" }
+mesh-migrate = { path = "../mesh-migrate" }
+mesh-route = { path = "../mesh-route" }
+mesh-stream = { path = "../mesh-stream" }
+mesh-transport = { path = "../mesh-transport" }
+erofs = { path = "../erofs" }
+overlay = { path = "../overlay" }
+sys-primitives = { path = "../sys-primitives" }

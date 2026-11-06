@@ -28,7 +28,10 @@ pub fn boot() -> Status {
         return Status::Disabled;
     }
     // MCP runs on the kernel's service table; its tick runs from the idle loop.
-    if crate::mcp::start(&kernel_core::service::SERVICES) {
+    if mcp::start(
+        &kernel_core::service::SERVICES,
+        &[crate::runtime_demo::REPORT, crate::m2_demo::REPORT],
+    ) {
         console_println("mcp: started");
         Status::Loaded
     } else {
