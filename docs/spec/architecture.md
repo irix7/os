@@ -1311,9 +1311,9 @@ decompression and network I/O, which is why standard EROFS is the right call.
 2. Kernel initialises traps, TLB, frame allocator, scheduler and capability table.
 3. Kernel initialises the DS1386 RTC/NVRAM, Seeq, smoltcp, DHCP (with renewals), DNS, NTP,
    ICMP and the telnet console.
-4. Kernel fetches `boot/config.conf` over HTTPS and autoloads digest-checked modules.
-5. Kernel enters the native n32 image on SCSI target 2; modules can return a tick callback
-   and serve TCP ports.
+4. Kernel starts MCP and the Wasm policy probe, both linked into the image.
+5. Kernel enters the native n32 image on SCSI target 2; MCP ticks from the idle loop and
+   serves TCP ports.
 6. The watchdog is armed; the idle loop runs.
 7. Future: the kernel fetches the boot bundle, starts the network/block/FS/init/MCP cells,
    mounts the EROFS root from R2 over HTTP Range and starts `init`, the display server,
@@ -1530,8 +1530,8 @@ The ROM has no network stack.  The kernel brings up smoltcp after the jump:
 
 1. Reset and initialise the Seeq; read the MAC from the DS1386 NVRAM.
 2. DHCP (or a static address from NVRAM), DNS and NTP.
-3. Fetch `boot/config.conf` over HTTPS/TLS 1.3 with chain verification.
-4. Fetch each module, verify its SHA-256, and call its entry through the C service table.
+3. Fetch the kernel over HTTPS/TLS 1.3 with chain verification.
+4. Start MCP and the Wasm policy probe from the kernel's boot path.
 5. Future: fetch the boot bundle and mount the EROFS root from R2 over HTTP Range.
 
 The ROM's only transport is the serial console.  The kernel's TLS root is embedded and

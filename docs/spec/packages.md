@@ -1,9 +1,14 @@
 # IRIX 7 package index
 
-**Status:** draft
+**Status:** draft; module records and the release pipeline are removed (ADR M1-0003 step 6)
 **Version:** 0.2
 **Owner:** release / SDK
-**Related:** [`modules.md`](modules.md), [`../plan/milestones.md`](../plan/milestones.md).
+**Related:** [`../plan/milestones.md`](../plan/milestones.md).
+
+The package index now lists userland records only, such as `userland std-hello`.
+`packages/index.conf` is the in-tree copy.  The sections on module records, the
+`module-release` generator and the `module-resolver` and `module-trust` crates describe
+code that no longer exists.
 
 ## 1. Purpose
 
