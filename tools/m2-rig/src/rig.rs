@@ -55,11 +55,9 @@ pub enum Action {
     /// Print the derived instance table without starting anything.
     PrintConfig,
     /// Boot one x86 QEMU guest and check the module's status page.
-    X86Smoke,
     /// Boot two x86 QEMU guests and join them through the relay.
     X86Mesh,
     /// Join one Indy guest and one x86 guest through the relay.
-    X86Mixed,
     /// Run the one-computer M2 transcript: one prompt over two real kernels.
     Demo,
     /// Remove the rig work directory.
@@ -80,9 +78,7 @@ impl Action {
             "status" => Self::Status,
             "probe" => Self::Probe,
             "print-config" => Self::PrintConfig,
-            "x86-smoke" => Self::X86Smoke,
             "x86-mesh" => Self::X86Mesh,
-            "x86-mixed" => Self::X86Mixed,
             "demo" => Self::Demo,
             "clean" => Self::Clean,
             _ => return None,
@@ -210,10 +206,6 @@ pub struct Options {
     pub prom: PathBuf,
     /// Fresh MCP module image.
     pub module: PathBuf,
-    /// x86 MCP module image for a mixed run.  `module` is the MIPS image.
-    pub x86_module: PathBuf,
-    /// Wasm module image (x86 autoload).
-    pub wasm: PathBuf,
     /// qemu-system-x86_64 binary.
     pub qemu: PathBuf,
     /// First monitor port block.
@@ -294,8 +286,6 @@ where
     let mut rom = None;
     let mut prom = None;
     let mut module = None;
-    let mut x86_module = None;
-    let mut wasm = None;
     let mut qemu = None;
     let mut base_port = 9100u16;
     let mut nodes = 2u32;
@@ -319,10 +309,6 @@ where
             "--rom" => rom = Some(PathBuf::from(next_value(&mut iter, "--rom")?)),
             "--prom" => prom = Some(PathBuf::from(next_value(&mut iter, "--prom")?)),
             "--module" => module = Some(PathBuf::from(next_value(&mut iter, "--module")?)),
-            "--x86-module" => {
-                x86_module = Some(PathBuf::from(next_value(&mut iter, "--x86-module")?))
-            }
-            "--wasm" => wasm = Some(PathBuf::from(next_value(&mut iter, "--wasm")?)),
             "--qemu" => qemu = Some(PathBuf::from(next_value(&mut iter, "--qemu")?)),
             "--base-port" => {
                 base_port = next_value(&mut iter, "--base-port")?
@@ -398,8 +384,6 @@ where
         rom,
         prom,
         module,
-        x86_module: x86_module.unwrap_or_default(),
-        wasm: wasm.unwrap_or_default(),
         qemu: qemu.unwrap_or_else(|| PathBuf::from("qemu-system-x86_64")),
         base_port,
         nodes,
@@ -1704,8 +1688,6 @@ mod tests {
             rom: PathBuf::from("rom"),
             prom: PathBuf::from("rom"),
             module: PathBuf::from("module"),
-            x86_module: PathBuf::from("module"),
-            wasm: PathBuf::new(),
             qemu: PathBuf::from("qemu-system-x86_64"),
             base_port: 9100,
             nodes: 2,

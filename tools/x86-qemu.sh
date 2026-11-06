@@ -53,67 +53,9 @@ printf 'IRIX7-X86-DISK-OK' | dd of="$DISK" bs=512 seek=1 conv=notrunc 2>/dev/nul
 # The machine's boot configuration: key=value lines in sectors 100-103.
 printf 'test.key=config-ok\n' | dd of="$DISK" bs=512 seek=100 conv=notrunc 2>/dev/null
 
-# The MCP control-plane module, linked for the x86 window, and its header on
-# sector 8: magic, big-endian length and SHA-256 (see crates/kernel-core/src/image.rs).
-MODULE_TARGET="$WORK/module-target"
-CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/mcp/linker-x86.ld -Crelocation-model=static" \
-  CARGO_TARGET_DIR="$MODULE_TARGET" \
-  "$CARGO" build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem \
-    --target x86_64-unknown-none -p mcp-module
-OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | sed -n 's/^host: //p')/bin/llvm-objcopy"
-MODULE="$WORK/mcp-x86.module"
-"$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/mcp-module" "$MODULE"
-WASM="$WORK/wasm-x86.module"
-CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-T$REPO/modules/wasm/linker-x86.ld -Crelocation-model=static" \
-  CARGO_TARGET_DIR="$MODULE_TARGET" \
-  "$CARGO" build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem \
-    --target x86_64-unknown-none -p wasm-module
-"$OBJCOPY" -O binary "$MODULE_TARGET/x86_64-unknown-none/release/wasm-module" "$WASM"
-# Autoload fixture: the host serves the module, and the guest reaches it at the
-# user-network gateway, 10.0.2.2.  Sector 9 names the URL.
-FIXTURE_DIR="$WORK/fixture"
-mkdir -p "$FIXTURE_DIR"
-cp "$MODULE" "$FIXTURE_DIR/mcp-x86.module"
-cp "$WASM" "$FIXTURE_DIR/wasm-x86.module"
-FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-(cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
-FIXTURE_PID=$!
-printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
-printf '10.0.2.2:%s/wasm-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=11 conv=notrunc 2>/dev/null
-python3 -I - "$DISK" "$MODULE" 8 <<'PY'
-import hashlib, struct, sys
-disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
-data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack(">I", len(data)) + hashlib.sha256(data).digest()
-with open(disk, "r+b") as f:
-    f.seek(header_sector * 512)
-    f.write(header)
-PY
-python3 -I - "$DISK" "$WASM" 10 <<'PY'
-import hashlib, struct, sys
-disk, module, header_sector = sys.argv[1], sys.argv[2], int(sys.argv[3])
-data = open(module, "rb").read()
-header = b"IRIX7MOD" + struct.pack(">I", len(data)) + hashlib.sha256(data).digest()
-with open(disk, "r+b") as f:
-    f.seek(header_sector * 512)
-    f.write(header)
-PY
-# Autoload fixture: the host serves the module, and the guest reaches it at the
-# user-network gateway, 10.0.2.2.  Sector 9 names the URL.
-FIXTURE_DIR="$WORK/fixture"
-mkdir -p "$FIXTURE_DIR"
-cp "$MODULE" "$FIXTURE_DIR/mcp-x86.module"
-cp "$WASM" "$FIXTURE_DIR/wasm-x86.module"
-FIXTURE_PORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-(cd "$FIXTURE_DIR" && exec python3 -m http.server "$FIXTURE_PORT" --bind 127.0.0.1) >/dev/null 2>&1 &
-FIXTURE_PID=$!
-printf '10.0.2.2:%s/mcp-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=9 conv=notrunc 2>/dev/null
-printf '10.0.2.2:%s/wasm-x86.module' "$FIXTURE_PORT" | dd of="$DISK" bs=512 seek=11 conv=notrunc 2>/dev/null
 rm -f "$SERIAL"
 
-# The guest serves the MCP module on port 80.  Forward a free host port to it,
+# The guest serves MCP on port 80.  Forward a free host port to it,
 # so the gate can probe the HTTP server while the machine is running.
 HTTP_PORT="${X86_HTTP_PORT:-$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')}"
 set +e
@@ -132,7 +74,7 @@ timeout 150 "$QEMU" \
   -device virtio-blk-pci,drive=disk0,disable-modern=on &
 QEMU_PID=$!
 
-# Wait for the module to start listening, then probe until it answers.
+# Wait for MCP to start listening, then probe until it answers.
 deadline=$((SECONDS + 90))
 until grep -qF "mcp: listening on port 80" "$SERIAL" 2>/dev/null \
   || [ "$SECONDS" -ge "$deadline" ] || ! kill -0 "$QEMU_PID" 2>/dev/null; do
@@ -146,7 +88,6 @@ for _ in $(seq 1 60); do
 done
 wait "$QEMU_PID"
 status=$?
-kill "$FIXTURE_PID" 2>/dev/null || true
 set -e
 
 echo "x86-qemu: http probe: ${http_status:-no response}"
@@ -180,15 +121,10 @@ markers=(
   "x86: blk write readback ok"
   "x86: config test.key=config-ok"
   "x86: block service read/write ok"
-  "x86: autoload mcp fetched "
-  "x86: autoload mcp sha256 ok"
-  "x86: autoload wasm fetched "
-  "x86: autoload wasm sha256 ok"
-  "mcp: entry status=0"
-  "wasm: entry status=0"
   "wasm: run=42"
   "m1-wasm: "
-  "x86: module serving"
+  "x86: services serving"
+  "x86: mcp started"
   "mcp: listening on port 80"
   "x86: deliberate fault: int3"
   "x86: exception vector=3 (breakpoint)"
@@ -196,7 +132,7 @@ markers=(
 )
 case "$http_status" in
   HTTP/1.*) ;;
-  *) echo "x86-qemu: the module did not answer on port 80" >&2; exit 1 ;;
+  *) echo "x86-qemu: MCP did not answer on port 80" >&2; exit 1 ;;
 esac
 for marker in "${markers[@]}"; do
   if ! grep -qF -- "$marker" "$SERIAL"; then
