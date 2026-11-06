@@ -39,7 +39,7 @@ jobs:
         run: ./scripts/hardware/run.sh
       - name: Upload logs and captures
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: hardware-${{ inputs.machine }}-${{ inputs.suite }}
           path: artifacts/hardware/
