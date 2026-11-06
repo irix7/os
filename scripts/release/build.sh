@@ -52,6 +52,7 @@ python3 rom/tools/make_prom.py \
 
 # The kernel alone, as the flat image the ROM downloads (M1-ADR-0002).  Its
 # first byte is the entry at 0x88040000; the ROM copies it there and jumps.
+# The kernel carries every service; there are no loadable modules.
 # The name is fixed so `releases/latest/download/kernel-indy-latest.bin` always
 # resolves to the newest release, and the ROM never changes for a kernel update.
 "$LLVM_OBJCOPY" -O binary \
@@ -75,107 +76,8 @@ CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS="-Clink-arg=-Tkernel-x86/linker.ld -C
 cp "$TARGET_DIR/$X86_TARGET/release/kernel-x86" "$DIST/irix7-x86_64.elf"
 echo "x86_64 image: $(stat -c%s "$DIST/irix7-x86_64.elf") bytes"
 
-# The MCP control plane is a flat kernel module.  It must link at opt-level z,
-# matching tools/m2-rig/build.sh: at the profile default it overflows slot A.
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-  --target "$TARGET_JSON" -p mcp-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/mcp-module" "$DIST/mcp.module"
-
-module_sha="$(sha256sum "$DIST/mcp.module" | awk '{print $1}')"
-raw_base="${RAW_BASE:-https://raw.githubusercontent.com/${GITHUB_REPOSITORY:-irix7/os}/main}"
-
-# Runtime manager and the signed dependency graphs (demo and M2 mesh). The
-# manager image is limited to the first 256 KiB of slot B; the arena regions
-# follow it.
-runtime_dir="$DIST/runtime"
-mkdir -p "$runtime_dir" "$TARGET_DIR/modules"
-sign_key="${MODULE_SIGNING_KEY:-}"
-sign_epoch="${MODULE_SIGNING_EPOCH:-1}"
-trust_policy="$runtime_dir/release-trust.conf"
-sign_args=()
-if [ -n "$sign_key" ]; then
-  cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-    trust --out "$trust_policy" --seed "$sign_key" --epoch "$sign_epoch"
-  sign_args=(--key "$sign_key" --epoch "$sign_epoch")
-elif [ "${IRIX7_RELEASE_UNSIGNED:-0}" = "1" ]; then
-  echo "warning: building an explicitly unsigned runtime release"
-  cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-    trust --out "$trust_policy" --epoch "$sign_epoch" --unsigned
-  sign_args=(--allow-unsigned)
-else
-  echo "error: MODULE_SIGNING_KEY is required; set IRIX7_RELEASE_UNSIGNED=1 only for an explicitly unsigned build" >&2
-  exit 1
-fi
-
-IRIX7_TRUST_POLICY="$trust_policy" \
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/manager/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p runtime-manager-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/runtime-manager-module" "$TARGET_DIR/modules/manager.flat"
-
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-dep/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p runtime-demo-dep-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/runtime-demo-dep-module" "$TARGET_DIR/modules/demo-dep.flat"
-
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/demo-root/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p runtime-demo-root-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/runtime-demo-root-module" "$TARGET_DIR/modules/demo-root.flat"
-
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-mesh/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p runtime-m2-mesh-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/runtime-m2-mesh-module" "$TARGET_DIR/modules/m2-mesh.flat"
-
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/m2-root/linker.ld" \
-  cargo build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p runtime-m2-root-module
-"$LLVM_OBJCOPY" -O binary \
-  "$TARGET_DIR/$TARGET/release/runtime-m2-root-module" "$TARGET_DIR/modules/m2-root.flat"
-
-cargo run --quiet --manifest-path tools/module-release/Cargo.toml -- \
-  build --spec packages/runtime-modules.toml --out "$runtime_dir" \
-    --target-dir "$TARGET_DIR" --raw-base "$raw_base" --release "$VERSION" \
-    "${sign_args[@]}"
-
-manager_sha="$(sha256sum "$runtime_dir/manager.module" | awk '{print $1}')"
-runtime_index_sha="$(sha256sum "$runtime_dir/package-index.conf" | awk '{print $1}')"
-manager_size="$(stat -c%s "$runtime_dir/manager.module")"
-if [ "$manager_size" -gt 262144 ]; then
-  echo "error: manager.module is $manager_size bytes, over the 262144-byte slot-B region" >&2
-  exit 1
-fi
-
-cat > "$DIST/boot-config.conf" <<CONF
-# Generated by scripts/release/build.sh for $VERSION.
-version=1
-release=$VERSION
-rom.url=https://github.com/${GITHUB_REPOSITORY:-irix7/os}/releases/download/$VERSION/irix7-rom.bin
-mcp.url=$raw_base/boot/modules/$VERSION/mcp.module
-mcp.sha256=$module_sha
-CONF
-
 # One manifest, one entry per machine.  The Indy entry carries the ROM and the
-# signed runtime graph; the x86_64 entry carries the machine image and its
+# kernel; the x86_64 entry carries the machine image and its
 # stage, so a consumer can tell what is actually runnable on each target.
 cat > "$DIST/manifest.json" <<MANIFEST
 {
@@ -189,10 +91,7 @@ cat > "$DIST/manifest.json" <<MANIFEST
       "kernel_abi": "n32",
       "rom_abi": "o32",
       "rom_sha256": "$(sha256sum "$DIST/irix7-rom.bin" | awk '{print $1}')",
-      "mcp_sha256": "$module_sha",
-      "manager_sha256": "$manager_sha",
-      "runtime_index_sha256": "$runtime_index_sha",
-      "runtime_signatures": "$([ "${IRIX7_RELEASE_UNSIGNED:-0}" = "1" ] && echo unsigned || echo ed25519)"
+      "kernel_sha256": "$(sha256sum "$DIST/kernel-indy-latest.bin" | awk '{print $1}')"
     },
     "x86_64": {
       "arch": "x86_64",
@@ -207,6 +106,3 @@ MANIFEST
 echo
 echo "Artefacts in $DIST:"
 ls -lh "$DIST"
-echo
-echo "Runtime artefacts in $runtime_dir:"
-ls -lh "$runtime_dir"
