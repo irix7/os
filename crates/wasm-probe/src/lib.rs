@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! Slot-B Wasm core probe that runs the M1 local policy.
+//! The M1 Wasm policy probe (ADR M1-0003 step 4).
 //!
 //! The embedded guest owns the policy: it chooses the local namespace layout,
 //! object contents, actor identity, capability rights and the order of every
-//! validation.  This module supplies the native primitives behind the
-//! `i7host` surface: a staged CAS/namespace, the actor directory and run
-//! queue, a generation-checked capability table, the clock and the console.
-//! It does not let the guest read the kernel service table or an ambient
-//! pointer.
+//! validation.  This crate supplies the native primitives behind the `i7host`
+//! surface: a staged CAS/namespace, the actor directory and run queue, a
+//! generation-checked capability table, the clock and the console.  It does not
+//! let the guest read the kernel service table or an ambient pointer.
 //!
-//! On success the guest prints `wasm: host=1` and
-//! `m1-wasm: root=... actor=... cap=ok rights=35 home=...`; this module prints
+//! A kernel calls [`run`] with a [`Platform`].  The iris kernel and the x86
+//! machine both use it.  On success the guest prints `wasm: host=1` and
+//! `m1-wasm: root=... actor=... cap=ok rights=35 home=...`; this crate prints
 //! `wasm: run=42` and publishes the committed policy pointer at the reserved
-//! bridge page. A guest trap or a non-42 result aborts the stage, so no partial
-//! object, actor or capability is published. The kernel adopts the committed
-//! root, actor, capability rights and home after this entry returns.
+//! bridge page.  A guest trap or a non-42 result aborts the stage, so no partial
+//! object, actor or capability is published.  The kernel adopts the committed
+//! root, actor, capability rights and home after `run` returns.
 
 #![no_std]
+
 extern crate alloc;
 
 use alloc::boxed::Box;
@@ -32,14 +33,36 @@ use wasm_policy_host::Policy;
 /// The policy guest is generated from `guest/wasm-policy/` and embedded here.
 const GUEST: &[u8] = include_bytes!("../../../guest/wasm-policy/guest.wasm");
 
-static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
-
-fn log(services: &Services, text: &[u8]) {
-    (services.write)(text.as_ptr(), text.len());
+/// What a kernel supplies to the probe.
+pub trait Platform {
+    /// Write bytes to the console.  The guest's log lines are ASCII.
+    fn console_write(&self, bytes: &[u8]);
+    /// Milliseconds since boot.
+    fn clock_ms(&self) -> u64;
+    /// The local node identity, or `None` when the kernel has none.
+    fn node_id(&self) -> Option<NodeId>;
+    /// Run `entry(arg)` on a stack large enough for the Wasm runtime.  Returns
+    /// `false` when no stack is available, and then `entry` does not run.
+    fn on_guest_stack(&self, entry: extern "C" fn(usize), arg: usize) -> bool;
 }
 
-fn write_hex(services: &Services, value: usize) {
-    log(services, b"0x");
+/// The platform in use for the current run.  Set once by [`run`], before any
+/// host callback, on the single kernel thread.
+static mut PLATFORM: Option<&'static dyn Platform> = None;
+
+fn platform() -> Option<&'static dyn Platform> {
+    // SAFETY: written once by `run` before any callback, and read only here.
+    unsafe { *core::ptr::addr_of!(PLATFORM) }
+}
+
+fn log(bytes: &[u8]) {
+    if let Some(platform) = platform() {
+        platform.console_write(bytes);
+    }
+}
+
+fn write_hex(value: usize) {
+    log(b"0x");
     for shift in (0..8).rev() {
         let nibble = ((value >> (shift * 4)) & 0xf) as u8;
         let digit = if nibble < 10 {
@@ -47,55 +70,37 @@ fn write_hex(services: &Services, value: usize) {
         } else {
             b'a' + nibble - 10
         };
-        log(services, &[digit]);
+        log(&[digit]);
     }
 }
 
-fn write_dec(services: &Services, mut value: u64) {
+fn write_dec(mut value: u64) {
     let mut buf = [0u8; 20];
-    let mut len = 0;
-    if value == 0 {
-        (services.write)(b"0".as_ptr(), 1);
-        return;
-    }
-    while value > 0 && len < buf.len() {
+    let mut len = buf.len();
+    loop {
+        len -= 1;
         buf[len] = b'0' + (value % 10) as u8;
         value /= 10;
-        len += 1;
+        if value == 0 {
+            break;
+        }
     }
-    while len > 0 {
-        len -= 1;
-        (services.write)(&buf[len], 1);
-    }
-}
-
-fn services() -> Option<&'static Services> {
-    let ptr = SERVICES.load(Ordering::Acquire);
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: the table lives for the kernel lifetime.
-        Some(unsafe { &*ptr })
-    }
+    log(&buf[len..]);
 }
 
 fn kernel_clock_ms() -> u64 {
-    services()
-        .map(|services| (services.clock_ms)())
-        .unwrap_or(0)
+    platform().map_or(0, |platform| platform.clock_ms())
 }
 
 fn kernel_console_write(bytes: &[u8]) {
-    if let Some(services) = services() {
-        (services.write)(bytes.as_ptr(), bytes.len());
-    }
+    log(bytes);
 }
 
 fn policy(context: usize) -> Option<&'static mut Policy> {
     if context == 0 {
         return None;
     }
-    // SAFETY: the module owns this allocation for its lifetime and all host
+    // SAFETY: the probe owns this allocation for its lifetime and all host
     // callbacks are synchronous on the single kernel thread.
     Some(unsafe { &mut *(context as *mut Policy) })
 }
@@ -308,37 +313,27 @@ extern "C" fn guest_entry(host: usize) {
     // Diagnostic: the guest's stack pointer, so a boot log shows the switch.
     let marker: usize = 0;
     let here = core::hint::black_box(&marker) as *const usize as usize;
-    if let Some(services) = services() {
-        log(services, b"wasm: guest sp=");
-        write_hex(services, here);
-        log(services, b"\n");
-    }
+    log(b"wasm: guest sp=");
+    write_hex(here);
+    log(b"\n");
     // SAFETY: `host` is the `Host` on the caller's frame, alive for the call.
     let host = unsafe { &*(host as *const Host) };
     let result = host.run_i32(GUEST, "run", 10_000_000).map_err(|_| ());
-    // SAFETY: single-threaded module; only this call writes the result.
+    // SAFETY: single-threaded kernel; only this call writes the result.
     unsafe { GUEST_RESULT = result };
 }
 
-/// Run the policy guest on the caller's stack and publish the committed policy.
-///
-/// The caller runs this on a stack large enough for the Wasm runtime.
-/// Returns `false` when the policy did not run or commit.
-pub fn start(services: &'static Services) -> bool {
-    if services.version < 11 {
-        log(services, b"wasm: ABI too old\n");
-        return false;
-    }
-    SERVICES.store(
-        services as *const Services as *mut Services,
-        Ordering::Release,
-    );
-    let Some(node) = node_id(services) else {
-        log(services, b"wasm: no local node\n");
+/// Run the policy guest and publish the committed policy.  Returns `false` when
+/// the policy did not run or commit; the kernel then reports a failed reload.
+pub fn run(platform_impl: &'static dyn Platform) -> bool {
+    // SAFETY: the single kernel thread sets the platform before any callback.
+    unsafe { *core::ptr::addr_of_mut!(PLATFORM) = Some(platform_impl) };
+    let Some(node) = platform_impl.node_id() else {
+        log(b"wasm: no local node\n");
         return false;
     };
 
-    let policy = Box::into_raw(Box::new(Policy::new(node, (services.clock_ms)())));
+    let policy = Box::into_raw(Box::new(Policy::new(node, platform_impl.clock_ms())));
     let hooks = HostHooks {
         clock_ms: kernel_clock_ms,
         console_write: kernel_console_write,
@@ -366,52 +361,114 @@ pub fn start(services: &'static Services) -> bool {
     let host = match Host::with_hooks(hooks) {
         Ok(host) => host,
         Err(_) => {
-            // SAFETY: the allocation is owned by this module and not published.
+            // SAFETY: the allocation is owned here and not published.
             unsafe { (*policy).abort() };
-            log(services, b"wasm: host setup failed\n");
+            log(b"wasm: host setup failed\n");
             return false;
         }
     };
-    let started = (services.clock_ms)();
-    guest_entry(&host as *const Host as usize);
+    let started = platform_impl.clock_ms();
+    if !platform_impl.on_guest_stack(guest_entry, &host as *const Host as usize) {
+        // SAFETY: the allocation is owned here and not published.
+        unsafe { (*policy).abort() };
+        log(b"wasm: no guest stack\n");
+        return false;
+    }
     // SAFETY: `guest_entry` has returned, so the result is complete.
     let result = unsafe { GUEST_RESULT };
-    let elapsed = (services.clock_ms)().saturating_sub(started);
-    log(services, b"wasm: runtime=");
-    write_dec(services, elapsed);
-    log(services, b" ms\n");
+    let elapsed = platform_impl.clock_ms().saturating_sub(started);
+    log(b"wasm: runtime=");
+    write_dec(elapsed);
+    log(b" ms\n");
     match result {
         Ok(42) => {
-            // SAFETY: the module owns this allocation; guest callbacks are done.
+            // SAFETY: the allocation is owned here; guest callbacks are done.
             if !unsafe { (*policy).is_committed() } {
-                // SAFETY: the module owns this allocation and the guest has returned.
+                // SAFETY: as above.
                 unsafe { (*policy).abort() };
-                log(services, b"wasm: policy not committed\n");
+                log(b"wasm: policy not committed\n");
                 return false;
             }
+            // SAFETY: as above.
             if !unsafe { publish_bridge(policy) } {
-                log(services, b"wasm: bridge failed\n");
+                log(b"wasm: bridge failed\n");
                 return false;
             }
-            log(services, b"wasm: run=42\n");
+            log(b"wasm: run=42\n");
             true
         }
         Ok(_) => {
-            // SAFETY: the module owns this allocation and the guest has returned.
+            // SAFETY: as above.
             unsafe { (*policy).abort() };
-            log(services, b"wasm: wrong result\n");
+            log(b"wasm: wrong result\n");
             false
         }
         Err(_) => {
-            // SAFETY: the module owns this allocation and the guest has returned.
+            // SAFETY: as above.
             unsafe { (*policy).abort() };
-            log(services, b"wasm: run failed\n");
+            log(b"wasm: run failed\n");
             false
         }
     }
 }
 
-fn node_id(services: &Services) -> Option<NodeId> {
+/// The service table of a kernel that exposes one, such as the x86 machine.
+/// The table is installed by [`start`] before the run.
+static SERVICES: AtomicPtr<Services> = AtomicPtr::new(null_mut());
+
+/// Adapter from the shared service table.  Its methods read [`SERVICES`].
+pub struct ServicePlatform;
+
+/// The service-table platform.
+pub static SERVICE_PLATFORM: ServicePlatform = ServicePlatform;
+
+fn services() -> Option<&'static Services> {
+    let ptr = SERVICES.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        // SAFETY: the table lives for the kernel lifetime.
+        Some(unsafe { &*ptr })
+    }
+}
+
+impl Platform for ServicePlatform {
+    fn console_write(&self, bytes: &[u8]) {
+        if let Some(services) = services() {
+            (services.write)(bytes.as_ptr(), bytes.len());
+        }
+    }
+
+    fn clock_ms(&self) -> u64 {
+        services().map_or(0, |services| (services.clock_ms)())
+    }
+
+    fn node_id(&self) -> Option<NodeId> {
+        node_id_from_info(services()?)
+    }
+
+    fn on_guest_stack(&self, entry: extern "C" fn(usize), arg: usize) -> bool {
+        // The caller runs the probe on its large stack already.
+        entry(arg);
+        true
+    }
+}
+
+/// Run the probe on a kernel service table.  The table must be version 11 or
+/// later.  The caller runs this on a stack large enough for the Wasm runtime.
+pub fn start(services: &'static Services) -> bool {
+    if services.version < 11 {
+        (services.write)(b"wasm: ABI too old\n".as_ptr(), 18);
+        return false;
+    }
+    SERVICES.store(
+        services as *const Services as *mut Services,
+        Ordering::Release,
+    );
+    run(&SERVICE_PLATFORM)
+}
+
+fn node_id_from_info(services: &Services) -> Option<NodeId> {
     let mut text = [0u8; 256];
     // SAFETY: the service writes at most `text.len()` bytes into the buffer and
     // returns the number of bytes written.

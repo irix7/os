@@ -52,6 +52,7 @@ wasm-policy-host = { path = "../crates/wasm-policy-host" }
 platform-api = { path = "../crates/platform-api" }
 sys-primitives = { path = "../crates/sys-primitives" }
 wasm-host = { path = "../crates/wasm-host", default-features = false }
+wasm-probe = { path = "../crates/wasm-probe" }
 mcp = { path = "../crates/mcp" }
 block-cache = { path = "../crates/block-cache" }
 overlay = { path = "../crates/overlay" }
