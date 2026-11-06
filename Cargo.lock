@@ -662,6 +662,7 @@ dependencies = [
  "tcp-slots",
  "wasm-host",
  "wasm-policy-host",
+ "wasm-probe",
  "x509-cert",
 ]
 
