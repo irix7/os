@@ -108,6 +108,10 @@ name = "block-cache"
 version = "0.1.0"
 
 [[package]]
+name = "block-store"
+version = "0.1.0"
+
+[[package]]
 name = "boot-protocol-tests"
 version = "0.1.0"
 
@@ -623,6 +627,7 @@ version = "0.1.0"
 dependencies = [
  "agnostic-core",
  "block-cache",
+ "block-store",
  "boot-protocol-tests",
  "cas-core",
  "cas-store",
@@ -648,14 +653,13 @@ dependencies = [
  "mesh-stream",
  "mesh-transport",
  "module-abi",
- "module-block",
- "module-tcp",
  "native-abi",
  "overlay",
  "platform-api",
  "rand_core",
  "smoltcp",
  "sys-primitives",
+ "tcp-slots",
  "wasm-host",
  "wasm-policy-host",
  "x509-cert",
@@ -690,6 +694,7 @@ dependencies = [
 name = "kernel-x86"
 version = "0.1.0"
 dependencies = [
+ "block-store",
  "frame-alloc",
  "irix7-config",
  "irix7-fmt",
@@ -698,9 +703,8 @@ dependencies = [
  "kernel-core",
  "mcp",
  "module-abi",
- "module-block",
- "module-tcp",
  "smoltcp",
+ "tcp-slots",
  "wasm-probe",
 ]
 
@@ -841,17 +845,6 @@ dependencies = [
 name = "module-abi"
 version = "0.1.0"
 source = "git+https://github.com/irix7/os-sdk?tag=v0.11.0#47546a72dc24bb93b1dd31ca05c2f18aa3b866d0"
-
-[[package]]
-name = "module-block"
-version = "0.1.0"
-
-[[package]]
-name = "module-tcp"
-version = "0.1.0"
-dependencies = [
- "smoltcp",
-]
 
 [[package]]
 name = "native-abi"
@@ -1219,6 +1212,13 @@ dependencies = [
 [[package]]
 name = "sys-primitives"
 version = "0.1.0"
+
+[[package]]
+name = "tcp-slots"
+version = "0.1.0"
+dependencies = [
+ "smoltcp",
+]
 
 [[package]]
 name = "time"

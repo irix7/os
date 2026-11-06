@@ -2,13 +2,13 @@
 //! Module TCP slots on the x86_64 machine.
 //!
 //! The slot table, its bounds and its event policy are the shared
-//! `module-tcp` crate, which the Indy kernel also uses.  This file supplies the
+//! `tcp-slots` crate, which the Indy kernel also uses.  This file supplies the
 //! machine's stack: one static table and the two `Stack` accessors.
 
 use smoltcp::iface::{Interface, SocketSet};
 
 use crate::net;
-use module_tcp::Slots;
+use tcp_slots::Slots;
 
 /// Module TCP slots.  Matches the Indy kernel's policy.
 pub const SLOTS: usize = 8;
@@ -18,7 +18,7 @@ const BUFFER: usize = 16384;
 /// The machine's network stack, for the shared slot table.
 pub struct X86Stack;
 
-impl module_tcp::Stack for X86Stack {
+impl tcp_slots::Stack for X86Stack {
     fn with_sockets<R>(f: impl FnOnce(&mut SocketSet<'static>) -> R) -> Option<R> {
         net::with_sockets(f)
     }

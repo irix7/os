@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/frame-alloc", "crates/guest-abi", "crates/irix7-sha256", "crates/irix7-fmt", "crates/kernel-core", "crates/module-tcp", "crates/irix7-config", "crates/module-block", "crates/irix7-netif", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-join", "crates/mesh-route", "crates/mesh-migrate", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-stream", "crates/mesh-transport", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "rom", "kernel-x86", "kernel-ppc", "tools/ppc-xcoff", "crates/irix7-seeq", "crates/mcp", "crates/wasm-probe"]
+members = ["crates/agnostic-core", "crates/block-cache", "crates/boot-protocol-tests", "crates/cap-engine", "crates/cas-core", "crates/cas-store", "crates/erofs", "crates/fabric", "crates/frame-alloc", "crates/guest-abi", "crates/irix7-sha256", "crates/irix7-fmt", "crates/kernel-core", "crates/tcp-slots", "crates/irix7-config", "crates/block-store", "crates/irix7-netif", "crates/hpc3", "crates/irix-elf", "crates/irix7-libc", "crates/m1-policy-bridge", "crates/mesh-core", "crates/mesh-join", "crates/mesh-route", "crates/mesh-migrate", "crates/mesh-service", "crates/mesh-sim", "crates/mesh-stream", "crates/mesh-transport", "crates/native-abi", "crates/overlay", "crates/platform-api", "crates/sys-primitives", "crates/wasm-host", "crates/wasm-policy-host", "kernel", "kernel-test", "rom", "kernel-x86", "kernel-ppc", "tools/ppc-xcoff", "crates/irix7-seeq", "crates/mcp", "crates/wasm-probe"]
 # The target-only kernel, ROM and flat modules cannot link as host binaries.
 # Plain `cargo build`/`cargo test` therefore means the host-testable crates;
 # the cross and release jobs select kernel/ROM/module packages explicitly.
@@ -29,9 +29,9 @@ default-members = [
   "crates/irix7-sha256",
   "crates/irix7-fmt",
   "crates/kernel-core",
-  "crates/module-tcp",
+  "crates/tcp-slots",
   "crates/irix7-config",
-  "crates/module-block",
+  "crates/block-store",
   "crates/irix7-netif",
   "crates/guest-abi",
   "crates/cas-core",

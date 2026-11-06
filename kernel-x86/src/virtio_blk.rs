@@ -93,7 +93,7 @@ pub fn probe() -> Option<Disk> {
     })
 }
 
-impl module_block::Block for Disk {
+impl block_store::Block for Disk {
     fn read_sector(
         &mut self,
         _target: u8,

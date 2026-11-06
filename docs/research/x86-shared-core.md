@@ -58,12 +58,12 @@ Removed duplicated paths:
   16, and the kernel did not check the magic. It is now the canonical header,
   validated by `parse_header`. The gate and the `m2-rig` disk writer changed
   in the same commit.
-- `module-block` and `module-tcp` gained safe slice entry points, so the
+- `block-store` and `tcp-slots` gained safe slice entry points, so the
   machine adapters no longer pass raw module pointers through the kernel.
 
-The module TCP slot table was already shared (`module-tcp`); the mesh
+The module TCP slot table was already shared (`tcp-slots`); the mesh
 transport was already shared (`mesh-transport`, `mesh-core`, `mesh-service` and
-the M2 modules). Neither is forked on x86. The per-machine `module_tcp::Stack`
+the M2 modules). Neither is forked on x86. The per-machine `tcp_slots::Stack`
 adapter remains, because it is the stack accessor, not duplicated policy.
 
 ## What remains architecture-specific
@@ -97,7 +97,7 @@ adapter remains, because it is the stack accessor, not duplicated policy.
 
 Run on the branch:
 
-- `cargo test -p kernel-core -p module-tcp -p module-block -p kernel`: pass,
+- `cargo test -p kernel-core -p tcp-slots -p block-store -p kernel`: pass,
   including the six `kernel-core` image tests and the host service-table test.
 - `cargo clippy -p kernel-core --all-targets -- -D warnings`: clean.
 - `cargo fmt --all -- --check`: clean.

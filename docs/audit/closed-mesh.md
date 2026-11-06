@@ -289,7 +289,7 @@ What is implemented:
 
 - ABI 14 `tcp_events(slot)` returns a level-triggered mask recomputed from the
   live socket: RX, TX-space, CLOSED, LISTEN and ESTABLISHED
-  (`crates/module-tcp/src/lib.rs:167-188`). There is no event queue.
+  (`crates/tcp-slots/src/lib.rs:167-188`). There is no event queue.
 - `module::poll` checks every slot, runs ticks immediately when a slot is
   ready, and otherwise keeps the 10 ms gate
   (`kernel/src/module.rs:221-273`).
@@ -403,7 +403,7 @@ process failure rather than the technical one.
 ### 4.2 "Event-driven" is hot-path readiness polling
 
 `tcp_events` is a level-triggered mask recomputed from the socket
-(`crates/module-tcp/src/lib.rs:167-188`). `module::poll` calls it for every slot
+(`crates/tcp-slots/src/lib.rs:167-188`). `module::poll` calls it for every slot
 on every idle-loop pass (`kernel/src/module.rs:221-273`). There is no event
 queue, no interrupt and no async primitive. The idle loop shortens its wait to
 0.5 ms only while a socket is ready or a module worked in the last 50 ms

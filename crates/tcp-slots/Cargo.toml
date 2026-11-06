@@ -1,6 +1,6 @@
 [package]
 license = "GPL-3.0-only"
-name = "module-tcp"
+name = "tcp-slots"
 version = "0.1.0"
 edition = "2021"
 description = "Module TCP slot table shared by the IRIX 7 kernels"
