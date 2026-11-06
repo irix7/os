@@ -601,13 +601,12 @@ jobs:
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[3], "wb").write(image)
+          open(sys.argv[1], "wb").write(image)
           PY
 
           socket="$work/iris.sock"
           iris --config "$work/machine.toml" --ci \
             --prom "$RUNNER_TEMP/irix7-rom.bin" \
-            --scsi2 "$work/target2.raw" \
             --nvram "$work/nvram.bin" \
             --ci-socket "$socket" --monitor-port 18891 \
             --serial-log "$work/serial.log" >"$work/iris.out" 2>&1 &
@@ -664,7 +663,7 @@ jobs:
           image = bytearray(8192)
           image[0x10:0x10 + len(env)] = env
           image[314:320] = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
-          open(sys.argv[4], "wb").write(image)
+          open(sys.argv[3], "wb").write(image)
           PY
 
           socket="$work/iris.sock"
