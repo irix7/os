@@ -3,8 +3,7 @@
 //!
 //! OpenBIOS leaves a hashed page table and a one-to-one mapping behind.  The
 //! kernel replaces both with block address translations: the image and its
-//! stack, the low exception vectors, the Mac I/O register window and the
-//! reserved slot.  SDR1 is then pointed at a zeroed table and the TLB is
+//! stack, the low exception vectors and the Mac I/O register window.  SDR1 is then pointed at a zeroed table and the TLB is
 //! invalidated, so an address outside those blocks has no translation at all.
 //!
 //! BAT block sizes on the 750 are a multiple of 128 KiB: the 11-bit BL field
@@ -84,11 +83,10 @@ static EMPTY_HASH: EmptyHash = EmptyHash { table: [0; 16384] };
 ///
 /// IBAT0/DBAT0 cover the image, including `.bss` and the boot stack.  IBAT1
 /// covers the 128 KiB vector page.  DBAT1 covers the Mac I/O window, guarded
-/// and cache-inhibited.  IBAT2/DBAT2 cover the reserved slot, cacheable so the
-/// loader can copy and hash into it directly.  DBAT3 covers the display
+/// and cache-inhibited.  DBAT3 covers the display
 /// aperture, guarded and cache-inhibited, when the firmware left one.  The
 /// remaining slots are cleared: a firmware BAT must not survive the switch.
-pub fn install(image: Bat, io: Bat, slot: Bat, framebuffer: Option<Bat>) {
+pub fn install(image: Bat, io: Bat, framebuffer: Option<Bat>) {
     let vectors = Bat {
         base: 0,
         size: BLOCK_128K,
@@ -96,11 +94,11 @@ pub fn install(image: Bat, io: Bat, slot: Bat, framebuffer: Option<Bat>) {
     unsafe {
         write_ibat(0, image.upper(), image.lower(0));
         write_ibat(1, vectors.upper(), vectors.lower(0));
-        write_ibat(2, slot.upper(), slot.lower(0));
+        write_ibat(2, 0, 0);
         write_ibat(3, 0, 0);
         write_dbat(0, image.upper(), image.lower(0));
         write_dbat(1, io.upper(), io.lower(WIMG_IO));
-        write_dbat(2, slot.upper(), slot.lower(0));
+        write_dbat(2, 0, 0);
         match framebuffer {
             Some(framebuffer) => write_dbat(3, framebuffer.upper(), framebuffer.lower(WIMG_FB)),
             None => write_dbat(3, 0, 0),
@@ -118,7 +116,7 @@ pub fn install(image: Bat, io: Bat, slot: Bat, framebuffer: Option<Bat>) {
 /// covers every firmware entry the kernel could otherwise keep using.
 ///
 /// Returns the table address, for the boot log.
-pub fn activate(image: Bat, io: Bat, slot: Bat, framebuffer: Option<Bat>) -> u32 {
+pub fn activate(image: Bat, io: Bat, framebuffer: Option<Bat>) -> u32 {
     let table = addr_of!(EMPTY_HASH) as u32;
     // SAFETY: SDR1 and tlbie are privileged; the image BAT and the vector BAT
     // are already installed, so this code keeps executing through them.
@@ -127,7 +125,6 @@ pub fn activate(image: Bat, io: Bat, slot: Bat, framebuffer: Option<Bat>) -> u32
     }
     invalidate(image);
     invalidate(io);
-    invalidate(slot);
     if let Some(framebuffer) = framebuffer {
         invalidate(framebuffer);
     }
