@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-//! The PowerPC G3 machine's module service platform.
+//! The PowerPC G3 machine's service platform.
 //!
 //! The service table, its guards and its refusals are shared in `kernel-core`.
 //! This machine has console output, the decrementer clock and fixed
@@ -16,7 +16,7 @@ pub struct PpcPlatform;
 
 static PLATFORM: PpcPlatform = PpcPlatform;
 
-/// Install the platform.  Called once during boot, before the module entry.
+/// Install the platform.  Called once during boot, before the hello demo.
 pub fn install() {
     kernel_core::service::install(&PLATFORM);
 }
@@ -32,7 +32,7 @@ impl Platform for PpcPlatform {
     }
 
     /// Fixed information blocks.  Query 0 is the machine description the
-    /// module writes through `write`; the others name the absent network and
+    /// demo writes through `write`; the others name the absent network and
     /// reserved memory.
     fn info(&self, which: u32, out: &mut [u8]) -> isize {
         let text: &[u8] = match which {

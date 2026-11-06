@@ -24,12 +24,12 @@ const WAIT_MS: u32 = 1000;
 /// then refused as too long instead of being matched in truncated form.
 const LINE_CAPACITY: usize = 32;
 
-/// What the module check did, for the `info` command.
-pub enum ModuleState {
-    /// The disk was not the gate disk, so no module was loaded.
+/// What the hello demo did, for the `info` command.
+pub enum HelloState {
+    /// The disk was not the gate disk, so the demo did not run.
     Skipped,
-    /// The image was verified, entered and its vtable accepted.
-    Loaded { length: u32, ticked: bool },
+    /// The demo ran.
+    Ran { ticked: bool },
 }
 
 /// The machine facts the monitor reports.  The boot values are collected
@@ -47,7 +47,7 @@ pub struct Info {
     pub timebase: u32,
     pub ata_model: [u8; 40],
     pub ata_sectors: u64,
-    pub module: ModuleState,
+    pub hello: HelloState,
 }
 
 /// Poll the input channel for a first key, bounded by one second.
@@ -185,13 +185,11 @@ fn print_info(info: &Info) {
     print_dec64(info.ata_sectors);
     serial::write_byte(b'\n');
 
-    match info.module {
-        ModuleState::Skipped => print_line(b"monitor: module skipped=not-gate-disk"),
-        ModuleState::Loaded { length, ticked } => {
-            serial::write(b"monitor: module status=0 tick=");
+    match info.hello {
+        HelloState::Skipped => print_line(b"monitor: hello skipped=not-gate-disk"),
+        HelloState::Ran { ticked } => {
+            serial::write(b"monitor: hello status=0 tick=");
             print_dec(u32::from(ticked));
-            serial::write(b" length=");
-            print_dec(length);
             serial::write_byte(b'\n');
         }
     }

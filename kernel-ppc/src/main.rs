@@ -27,15 +27,14 @@ use core::panic::PanicInfo;
 
 mod adb;
 mod ata;
-mod cache;
 mod console;
 mod cuda;
 mod fb;
 mod font;
+mod hello;
 mod irq;
 mod keyboard;
 mod mmu;
-mod module;
 mod monitor;
 mod of;
 mod pic;
@@ -44,6 +43,7 @@ mod pmu;
 mod probe;
 mod serial;
 mod services;
+mod slot;
 mod timer;
 mod trap;
 mod via;
@@ -205,11 +205,11 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
-    let slot_end = module::SLOT_BASE + module::SLOT_SIZE as u32;
+    let slot_end = slot::SLOT_BASE + slot::SLOT_SIZE as u32;
     match memory.base.checked_add(memory.size) {
         Some(end) if end >= slot_end => {}
         _ => {
-            print_line(b"ppc: memory does not cover the module slot");
+            print_line(b"ppc: memory does not cover the reserved slot");
             print_line(b"ppc: halted");
             halt();
         }
@@ -243,14 +243,14 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         core::ptr::addr_of!(__kernel_end) as u32,
     );
     let io = mmu::cover(macio.base, io_end);
-    let module_slot = mmu::cover(module::SLOT_BASE, slot_end);
+    let slot = mmu::cover(slot::SLOT_BASE, slot_end);
     let framebuffer = framebuffer_bat(display.as_ref());
 
     // The vectors must be in place before the firmware mapping goes away.
     trap::install();
     timer::prepare(timebase);
-    mmu::install(image, io, module_slot, framebuffer);
-    let sdr1 = mmu::activate(image, io, module_slot, framebuffer);
+    mmu::install(image, io, slot, framebuffer);
+    let sdr1 = mmu::activate(image, io, slot, framebuffer);
 
     console::write(b"ppc: mmu enabled sdr1=");
     print_hex(sdr1);
@@ -260,7 +260,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     console::write(b"ppc: mmu io wimg=");
     print_hex(mmu::WIMG_IO);
     console::write_byte(b'\n');
-    print_range(b"ppc: mmu module", module_slot.base, module_slot.size);
+    print_range(b"ppc: mmu slot", slot.base, slot.size);
     if let Some(framebuffer) = framebuffer {
         print_range(b"ppc: mmu fb", framebuffer.base, framebuffer.size);
         console::write(b"ppc: mmu fb wimg=");
@@ -505,31 +505,18 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     }
 
     let gate_disk = &sector[..16] == b"IRIX7-ATA-SIG001";
-    let mut module_state = monitor::ModuleState::Skipped;
+    let mut hello_state = monitor::HelloState::Skipped;
     if gate_disk {
-        match module::load(channel) {
-            Ok(report) => {
-                console::write(b"ppc: module status=");
-                print_dec(report.status as u32);
-                console::write(b" tick=");
-                print_dec(u32::from(report.ticked));
-                console::write(b" length=");
-                print_dec(report.length);
-                console::write_byte(b'\n');
-                print_line(b"MODULE-OK");
-                module_state = monitor::ModuleState::Loaded {
-                    length: report.length,
-                    ticked: report.ticked,
-                };
-            }
-            Err(error) => {
-                error.report();
-                print_line(b"ppc: halted");
-                halt();
-            }
-        }
+        let report = hello::run();
+        console::write(b"ppc: hello status=0 tick=");
+        print_dec(u32::from(report.ticked));
+        console::write_byte(b'\n');
+        print_line(b"HELLO-OK");
+        hello_state = monitor::HelloState::Ran {
+            ticked: report.ticked,
+        };
     } else {
-        print_line(b"ppc: module skipped=not-gate-disk");
+        print_line(b"ppc: hello skipped=not-gate-disk");
     }
 
     let info = monitor::Info {
@@ -543,7 +530,7 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         timebase,
         ata_model: identify.model,
         ata_sectors: identify.sectors,
-        module: module_state,
+        hello: hello_state,
     };
 
     match input {
