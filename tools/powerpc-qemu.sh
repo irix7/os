@@ -228,7 +228,6 @@ markers=(
   "ppc: mmu image base=0x"
   "ppc: mmu io base=0x"
   "ppc: mmu io wimg=0x28"
-  "ppc: mmu slot base=0x1800000 size=2097152"
   "ppc: mmu fb base=0x"
   "ppc: mmu fb wimg=0x28"
   "ppc: display path=/pci"

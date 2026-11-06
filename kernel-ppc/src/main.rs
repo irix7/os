@@ -43,7 +43,6 @@ mod pmu;
 mod probe;
 mod serial;
 mod services;
-mod slot;
 mod timer;
 mod trap;
 mod via;
@@ -205,15 +204,6 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
             halt();
         }
     };
-    let slot_end = slot::SLOT_BASE + slot::SLOT_SIZE as u32;
-    match memory.base.checked_add(memory.size) {
-        Some(end) if end >= slot_end => {}
-        _ => {
-            print_line(b"ppc: memory does not cover the reserved slot");
-            print_line(b"ppc: halted");
-            halt();
-        }
-    }
     let timebase = match platform::timebase(&client) {
         Some(timebase) => timebase,
         None => {
@@ -243,14 +233,13 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
         core::ptr::addr_of!(__kernel_end) as u32,
     );
     let io = mmu::cover(macio.base, io_end);
-    let slot = mmu::cover(slot::SLOT_BASE, slot_end);
     let framebuffer = framebuffer_bat(display.as_ref());
 
     // The vectors must be in place before the firmware mapping goes away.
     trap::install();
     timer::prepare(timebase);
-    mmu::install(image, io, slot, framebuffer);
-    let sdr1 = mmu::activate(image, io, slot, framebuffer);
+    mmu::install(image, io, framebuffer);
+    let sdr1 = mmu::activate(image, io, framebuffer);
 
     console::write(b"ppc: mmu enabled sdr1=");
     print_hex(sdr1);
@@ -260,7 +249,6 @@ pub extern "C" fn kernel_main(of_client: u32) -> ! {
     console::write(b"ppc: mmu io wimg=");
     print_hex(mmu::WIMG_IO);
     console::write_byte(b'\n');
-    print_range(b"ppc: mmu slot", slot.base, slot.size);
     if let Some(framebuffer) = framebuffer {
         print_range(b"ppc: mmu fb", framebuffer.base, framebuffer.size);
         console::write(b"ppc: mmu fb wimg=");
