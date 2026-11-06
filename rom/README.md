@@ -56,7 +56,6 @@ The PROM image is about 470 KiB at `opt-level=z` with one codegen unit.  At
 | `0x08040000` | kernel image, downloaded (`0x88040000` kseg0); 3 MiB window |
 | `0x08340000` | ROM heap, 768 KiB (TLS records, sockets) |
 | `0x08300000` | kernel stack top (`0x88300000` kseg0) |
-| `0x08400000` | module load area, 2 MiB (`0x88400000` kseg0) |
 | `0x08600000` | Seeq device DMA descriptors and buffers (`0xA8600000` kseg1, uncached) |
 | `0x08700000` | framebuffer shadow, 1280×1024 BGR (`0x88700000` kseg0, CPU-only) |
 | `0x08B00000` | first frame allocator page |
@@ -167,7 +166,6 @@ Commands:
 | `echo <text>` | echo the argument |
 | `ntp <host>[:port]` | set the wall clock from NTP |
 | `ping <host>` | ICMP echo (three requests) |
-| `module [https://]<host>:<port><path> <sha256>` | fetch, verify and run a RAM module |
 | `http <host>:<port><path> [sha256] [range=start-end]` | fetch over HTTP, optionally verify or range |
 | `https <host>:<port><path> [sha256]` | fetch over TLS 1.3, optionally verify (no range) |
 | `boot` | retry the target-2 userland image |
@@ -177,70 +175,25 @@ Commands:
 so a fetched image can be checked against the build host.  The clock is advanced from
 CP0 Count; the console and idle loops execute `WAIT`, which lets iris park the vCPU.
 
-## Loadable modules
+## Kernel services
 
-The compressed PROM image is a bootstrap, not the place for every feature. Code
-that is not needed to boot can be a **module**: a flat image linked at
-`0x88400000` (in the reserved low window, above the kernel stack), downloaded
-into RAM, SHA-256 checked, and called through a versioned C service table.
-The table's layout is the shared `module-abi` crate in `irix7/os-sdk`'s
-`abi/` directory, pinned by the `v0.2.1` tag and linked by the kernel and every
-module.
+MCP and the Wasm policy are part of the kernel image. The kernel calls MCP's tick
+from the idle loop at most every 10 ms. MCP listens on guest port 80 and answers one
+request per connection. The kernel's TCP slots alternate, so back-to-back clients do not
+hit the close handshake.
 
-TLS stays in the core: it is the transport that makes module downloads
-trustworthy. `module` uses HTTPS unless the argument starts with `http://`, and
-the image is only executed after its digest matches. Any new feature should be a
-module, not a larger PROM image.
+### Boot configuration
 
-Modules use ABI version 3: the entry returns a `ModuleVtable` with a status and
-an optional `tick` callback, which the kernel calls from the idle loop at most
-every 10 ms. The service table adds `alloc` (the kernel heap, never freed),
-`poll` (drive the network stack), and two TCP slots with listen/state/recv/send/
-close/abort. `modules/hello` is the one-shot reference; `modules/ticker` is the
-periodic reference; `modules/mcp` is the TCP reference: it listens on guest
-port 80, answers one request per connection with its uptime, and alternates its
-two slots so back-to-back clients do not hit the close handshake.
-
-Build a module and serve the flat image (swap `hello` for `ticker` for the
-periodic example):
-
-```bash
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/hello/linker.ld" \
-  cargo build --release -Z build-std=core -Zjson-target-spec \
-  --target targets/mips3-sgi-irix7-n32.json -p hello-module
-
-$(rustc --print sysroot)/lib/rustlib/$(rustc --print host)/bin/llvm-objcopy \
-  -O binary target/mips3-sgi-irix7-n32/release/hello-module hello.module
-```
-
-Then in the console (with `hello.module` on the HTTP server; the explicit
-`http://` is only for the local test rig):
+The kernel reads its boot selections from the DS1386 environment at register offset `0x10`
+(the RTC registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane. The
+keys are `wasm.policy` (runs the Wasm policy probe), `mesh.peer` (enables the mesh
+listener) and `mcp.token` (the bearer token `POST /mcp` requires when set). For the iris rig,
+stop the emulator and write the strings into `nvram.bin` at offset `0x10`:
 
 ```text
-module http://10.1.1.3:18080/hello.module <sha256 of hello.module>
-hello from a downloaded module
-module: returned 0
-```
-
-Without the scheme the command uses HTTPS, which is the normal module path.
-
-### Boot autoload
-
-The kernel reads `mcp.url` and `mcp.sha256` from the DS1386 PROM environment after DHCP
-and DNS, before the boot handoff. The environment starts at register offset `0x10` (the RTC
-registers occupy `0x00`–`0x0F`), one byte per 32-bit word in the low lane. For the iris
-rig, stop the emulator and write both strings into `nvram.bin` at offset `0x10`:
-
-```text
-mcp.url=http://10.1.1.3:18080/mcp.module
-mcp.sha256=<64 hex digits of mcp.module>
+wasm.policy=on
 mcp.token=<shared secret>          (optional; requires Authorization: Bearer)
 ```
-
-On the next boot the serial log shows `autoload: fetching module`, the module prints
-`mcp: listening on port 80`, and the MCP endpoint is live without telnet. A missing or
-wrong digest prints `autoload: ...` and the boot continues with a
-`BOOT-NOT-READY` marker.
 
 ### Screen capture
 
@@ -254,7 +207,7 @@ the full BMP URL.
 `rom/tools/mcp-smoke.py` drives the JSON-RPC surface, including the module's
 `block.read` and EROFS `fs.*` tools; see [MCP smoke test](#mcp-smoke-test) below
 for the command and the checks.
-The loader zeroes the module area before the download, so a module's `.bss`
+The kernel zeroes its own `.bss` at boot, so an unset static starts at zero.
 starts at zero; it flushes the data cache and invalidates the instruction cache
 before the entry call.
 

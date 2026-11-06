@@ -21,8 +21,8 @@ jobs:
       - name: Host build
         run: |
           if [ -f Cargo.toml ]; then
-            # The default members exclude the target-only kernel/ROM/flat
-            # modules, which cannot link as host binaries.
+            # The default members exclude the target-only kernel and ROM,
+            # which cannot link as host binaries.
             cargo build
           else
             echo "No Rust workspace yet; skipping."
