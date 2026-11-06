@@ -1077,7 +1077,7 @@ PowerPC kernels implement `Platform` and no longer carry their own service
 tables. The x86 loader gains the vtable bounds check it lacked, and the x86
 disk header becomes the canonical big-endian format used by the PowerPC
 machine. `tools/x86-qemu.sh` and `tools/powerpc-qemu.sh` pass; the MIPS release
-image links; `cargo test -p kernel-core -p module-tcp -p module-block -p kernel`
+image links; `cargo test -p kernel-core -p tcp-slots -p block-store -p kernel`
 passes. See `docs/research/x86-shared-core.md` for the evidence and the exact
 remaining split.
 

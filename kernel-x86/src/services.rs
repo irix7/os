@@ -12,8 +12,8 @@
 
 use core::alloc::Layout;
 
+use block_store::SECTOR;
 use kernel_core::service::Platform;
-use module_block::SECTOR;
 
 use crate::{config, net, serial, tcp, timer, virtio_blk};
 
@@ -116,8 +116,8 @@ impl Platform for X86Platform {
     /// The block service exposes only the epoch store, at target 3, mapped to
     /// a reserved region of the machine's disk.
     fn block_read(&self, target: u8, lba: u32, out: &mut [u8; SECTOR]) -> i32 {
-        const STORE: module_block::Store =
-            module_block::Store::mapped(3, crate::virtio_blk::STORE_OFFSET);
+        const STORE: block_store::Store =
+            block_store::Store::mapped(3, crate::virtio_blk::STORE_OFFSET);
         let Some(disk) = virtio_blk::disk() else {
             return -1;
         };
@@ -125,8 +125,8 @@ impl Platform for X86Platform {
     }
 
     fn block_write(&self, target: u8, lba: u32, data: &[u8; SECTOR]) -> i32 {
-        const STORE: module_block::Store =
-            module_block::Store::mapped(3, crate::virtio_blk::STORE_OFFSET);
+        const STORE: block_store::Store =
+            block_store::Store::mapped(3, crate::virtio_blk::STORE_OFFSET);
         let Some(disk) = virtio_blk::disk() else {
             return -1;
         };

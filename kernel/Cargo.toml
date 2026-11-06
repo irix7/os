@@ -30,14 +30,14 @@ erofs-debug = ["dep:erofs"]
 boot-protocol-tests = { path = "../crates/boot-protocol-tests" }
 irix7-fmt = { path = "../crates/irix7-fmt" }
 irix7-config = { path = "../crates/irix7-config" }
-module-block = { path = "../crates/module-block" }
+block-store = { path = "../crates/block-store" }
 irix7-netif = { path = "../crates/irix7-netif" }
 irix7-seeq = { path = "../crates/irix7-seeq" }
 agnostic-core = { path = "../crates/agnostic-core" }
 kernel-core = { path = "../crates/kernel-core" }
 frame-alloc = { path = "../crates/frame-alloc" }
 irix7-sha256 = { path = "../crates/irix7-sha256" }
-module-tcp = { path = "../crates/module-tcp" }
+tcp-slots = { path = "../crates/tcp-slots" }
 cas-core = { path = "../crates/cas-core" }
 cas-store = { path = "../crates/cas-store" }
 embedded-io = { version = "0.7", default-features = false }

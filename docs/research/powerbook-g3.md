@@ -61,7 +61,7 @@ machine.
 
 - `crates/mesh-*`: the mesh protocol, join, routes and transport are
   endian-neutral and already shared.
-- `crates/module-tcp`, `irix7-netif`, `frame-alloc`, `irix7-fmt`,
+- `crates/tcp-slots`, `irix7-netif`, `frame-alloc`, `irix7-fmt`,
   `irix7-sha256`: no architecture assumptions.
 - The module ABI's layout: 32-bit pointers and big-endian fields. The
   `target_pointer_width = "32"` layout assertions are about size and order, and

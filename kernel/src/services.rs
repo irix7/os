@@ -10,8 +10,8 @@
 
 use core::alloc::Layout;
 
+use block_store::SECTOR;
 use kernel_core::service::Platform;
-use module_block::SECTOR;
 
 /// Milliseconds since boot from the network clock.
 ///
@@ -40,7 +40,7 @@ pub fn install() {
 /// straight through.
 struct ScsiBlock;
 
-impl module_block::Block for ScsiBlock {
+impl block_store::Block for ScsiBlock {
     fn read_sector(&mut self, target: u8, sector: u64, out: &mut [u8; SECTOR]) -> bool {
         u32::try_from(sector)
             .map(|lba| crate::scsi::read_sector(target, lba, out).is_ok())
@@ -55,7 +55,7 @@ impl module_block::Block for ScsiBlock {
 }
 
 /// Every block target reaches the SCSI stack unchanged.
-const BLOCK_STORE: module_block::Store = module_block::Store::direct();
+const BLOCK_STORE: block_store::Store = block_store::Store::direct();
 
 impl Platform for IndyPlatform {
     fn write(&self, bytes: &[u8]) {

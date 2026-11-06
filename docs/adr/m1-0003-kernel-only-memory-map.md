@@ -116,7 +116,7 @@ Step 6 (done):
 
 Remaining: the reserved module-area region in `kernel/linker.ld` (the stack ASSERT against
 `0x8840_0000`), the `slot` mapping on PowerPC (`kernel-ppc/src/slot.rs`), and the
-`module-tcp` and `module-block` crates, which are library names for the socket and block
+`tcp-slots` and `block-store` crates, which are library names for the socket and block
 services.
 
 Each step records its kernel image size and the stack high-water mark.

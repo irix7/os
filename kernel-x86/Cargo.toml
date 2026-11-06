@@ -8,9 +8,9 @@ description = "IRIX 7 x86_64 machine: boot path, traps and devices"
 [dependencies]
 irix7-fmt = { path = "../crates/irix7-fmt" }
 irix7-config = { path = "../crates/irix7-config" }
-module-block = { path = "../crates/module-block" }
+block-store = { path = "../crates/block-store" }
 irix7-netif = { path = "../crates/irix7-netif" }
-module-tcp = { path = "../crates/module-tcp" }
+tcp-slots = { path = "../crates/tcp-slots" }
 frame-alloc = { path = "../crates/frame-alloc" }
 module-abi.workspace = true
 mcp = { path = "../crates/mcp" }
