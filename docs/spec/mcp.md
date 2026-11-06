@@ -17,9 +17,9 @@ security posture. It does not define the agent's policy or the client implementa
 
 ## 1.1 Current prototype
 
-`modules/mcp` is loaded over HTTPS into the module area and is the first slice of the
-control plane.  It is **kernel-space code in the shared kernel address space**, packaged as
-a loadable image; “module” is not a privilege boundary.  It implements:
+MCP is the first slice of the control plane.  It is **kernel-space code in the shared
+kernel address space**: the `crates/mcp` crate, linked into the kernel image (ADR M1-0003).
+It implements:
 
 - `POST /mcp` with JSON-RPC 2.0 `initialize` (echoing the client's `protocolVersion`,
   default `2026-07-28`), `ping`, `tools/list` and `tools/call`;
@@ -34,9 +34,8 @@ a loadable image; “module” is not a privilege boundary.  It implements:
 - `GET /` as a plain status page;
 - guest port 80, forwarded to host `8088` by the iris rig.
 
-The module is loaded automatically at boot from `boot/config.conf` in the repository; a
-local test rig may override `mcp.url` and `mcp.sha256` in the NVRAM environment. The
-control plane therefore survives `system.reset` without a telnet step.  When `mcp.token`
+MCP starts at boot from the kernel's boot path, with no telnet step.  The control plane
+therefore survives `system.reset`.  When `mcp.token`
 is present in the NVRAM environment, `POST /mcp` requires `Authorization: Bearer <token>`
 and returns HTTP 401 with `WWW-Authenticate: Bearer` otherwise. `GET /` stays open as the human status page. `shell.exec` accepts `echo`, `uname`, `uptime`, `status`, `net`, `mem`, `time`, `help`,
 `reboot` and `poweroff`; `screen.capture` returns an `image/png` thumbnail and the full

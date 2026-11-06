@@ -347,8 +347,7 @@ malformed stream returns `InvalidCompressedData`.
 The decoder is behind the default `lz4` feature.  The kernel's HTTP EROFS
 command depends on the crate with `default-features = false` to stay inside the
 512 KiB PROM window; it rejects compressed inodes with `UnsupportedLayout`.
-The loadable `modules/erofs` and `modules/mcp` images enable `lz4` and decode
-the compressed fixtures.
+The EROFS reader enables `lz4` and decodes the compressed fixtures.
 
 A read that crosses a pcluster boundary maps and decodes each pcluster in turn.
 The reader does not cache decompressed data; the caller's block cache still
@@ -486,8 +485,8 @@ fixture-sized images; a large image over HTTPS needs the streaming digest
 first.  Reusing the TLS record buffers across range requests and a persistent
 session are the follow-ups; neither changes the on-disk path.
 
-The disk filesystem path is a loadable module, not a kernel command.  The
-`modules/erofs` module mounts an EROFS image at LBA 0 of SCSI target 2, reads
+The disk filesystem path is kernel code, not a kernel command.  The EROFS reader
+mounts an EROFS image at LBA 0 of SCSI target 2, reads
 `/etc/motd` and prints it through the console service.  It uses the ABI 10+
 `block_read` service, `block-cache`'s LRU (64 x 4 KiB, 256 KiB), its own global
 allocator over the kernel `alloc` service, and the same EROFS reader.  The flat
