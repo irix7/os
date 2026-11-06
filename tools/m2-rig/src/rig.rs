@@ -885,6 +885,20 @@ pub fn reset_scratch(nodes: &[Node]) -> Result<(), String> {
     Ok(())
 }
 
+/// The PROM one node boots.  `build.sh` writes `irix7-rom-n<instance>.bin` when
+/// every node fetches the kernel through its own gateway; otherwise each node
+/// boots `--rom`.
+pub fn node_prom(options: &Options, node: &Node) -> PathBuf {
+    let per_node = options
+        .prom
+        .with_file_name(format!("irix7-rom-n{}.bin", node.instance));
+    if per_node.is_file() {
+        per_node
+    } else {
+        options.prom.clone()
+    }
+}
+
 fn run_print_instance(options: &Options, instance: u32, config: &Path) -> Result<String, String> {
     let output = Command::new(&options.iris)
         .arg("--config")
@@ -997,7 +1011,7 @@ pub fn start_node(options: &Options, node: &Node) -> Result<RunningNode, String>
         .arg("--port-base")
         .arg(node.port_base.to_string())
         .arg("--prom")
-        .arg(&options.prom)
+        .arg(node_prom(options, node))
         .arg("--nvram")
         .arg(node.state_dir.join("nvram.bin"))
         .arg("--ci")

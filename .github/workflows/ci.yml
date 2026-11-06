@@ -1048,6 +1048,8 @@ jobs:
         with:
           version: v0.1.13+irix7
       - name: Build the two-node artefacts
+        env:
+          M2_KERNEL_PORT: "18200"
         run: |
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
@@ -1055,6 +1057,12 @@ jobs:
           tools/m2-rig/build.sh "$work"
           sha256sum "$work/irix7-rom.bin" | tee "$work/SHA256SUMS"
           test "$(stat -c%s "$work/irix7-rom.bin")" -le 524288
+          # Each node's PROM fetches this build's kernel through its gateway, so
+          # the gate runs the kernel this PR compiled, not releases/latest.
+          (cd "$work" && nohup python3 -m http.server 18200 --bind 0.0.0.0 \
+            > "$RUNNER_TEMP/m2-kernel-fixture.log" 2>&1 &)
+          sleep 2
+          curl -fsS -o /dev/null http://127.0.0.1:18200/kernel-indy-latest.bin
       - name: Host harness tests
         run: |
           set -euo pipefail
@@ -1178,6 +1186,8 @@ jobs:
           path: |
             ${{ runner.temp }}/m2-build/SHA256SUMS
             ${{ runner.temp }}/m2-build/irix7-rom.bin
+            ${{ runner.temp }}/m2-build/irix7-rom-n0.bin
+            ${{ runner.temp }}/m2-build/irix7-rom-n1.bin
 
   socket-slots:
     name: Socket slots (8 TCP slots)
