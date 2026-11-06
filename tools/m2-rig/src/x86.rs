@@ -124,7 +124,7 @@ pub fn mesh(options: &Options) -> Result<i32, String> {
         let mut lines = Vec::new();
         if let Some(environment) = environment {
             // MCP is linked into the image, so the `mcp.*` NVRAM keys have no reader here.
-            for (key, value) in node.environment(0, Some(environment)) {
+            for (key, value) in node.environment(Some(environment)) {
                 if !key.starts_with("mcp.") {
                     lines.push(format!("{key}={value}"));
                 }

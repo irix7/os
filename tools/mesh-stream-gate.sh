@@ -140,7 +140,6 @@ RUN_ARGS=(
   stream
   --work "$WORK/run"
   --rom "$BUILD/irix7-rom.bin"
-  --module "$BUILD/mcp.module"
   --iris "$IRIS_BIN"
   --iris-ci "$IRIS_CI_BIN"
   --base-port "$BASE_PORT"

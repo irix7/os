@@ -31,8 +31,8 @@ document (and its ADR) in the same commit.
 |---|---|---|
 | `frames` | `mesh-transport`, `mesh-join`, `mesh-route`, `mesh-migrate` encoders | Exact bytes, not estimates. |
 | `codec` | `encode_record` / `decode_record` | Median of five timed batches; each batch cycles 64 payloads so the optimiser cannot elide a copy. |
-| `net` | real TCP sockets on loopback | `tick10` reproduces `kernel/src/idle.rs` (10 ms) and `modules/mcp/src/mesh.rs` (`READ_CHUNK = 1024`, `READS_PER_TICK = 8`). `hub` reproduces `tools/m2-rig/src/hub.rs` (128-byte chunks, 2 ms sleeps). |
-| `http` | a server shaped like `modules/mcp/src/main.rs` | `Connection: close`, one request per connection, one listening slot, and the `Arm -> WaitRequest -> WaitClose -> Closing -> Arm` phase machine at 10 ms. |
+| `net` | real TCP sockets on loopback | `tick10` reproduces `kernel/src/idle.rs` (10 ms) and `crates/mcp/src/mesh.rs` (`READ_CHUNK = 1024`, `READS_PER_TICK = 8`). `hub` reproduces `tools/m2-rig/src/hub.rs` (128-byte chunks, 2 ms sleeps). |
+| `http` | a server shaped like `crates/mcp/src/lib.rs` | `Connection: close`, one request per connection, one listening slot, and the `Arm -> WaitRequest -> WaitClose -> Closing -> Arm` phase machine at 10 ms. |
 
 ## Limits
 

@@ -3,7 +3,7 @@
 //!
 //! The shipped MCP module answers `HTTP/1.0` with `Connection: close`, one
 //! request per connection, and re-arms a single listening slot afterwards
-//! (`modules/mcp/src/main.rs`).  This section measures what that costs on a
+//! (`crates/mcp/src/lib.rs`).  This section measures what that costs on a
 //! host loopback and models the module's 10 ms phase machine in `tick` mode.
 
 use std::io::{Read, Write};
@@ -368,7 +368,7 @@ pub fn run() {
 
     println!();
     println!("Notes:");
-    println!("- `close-per-request` is `modules/mcp/src/main.rs`: HTTP/1.0, `Connection: close`,");
+    println!("- `close-per-request` is `crates/mcp/src/lib.rs`: HTTP/1.0, `Connection: close`,");
     println!("  one request per connection, one listening slot re-armed after the close.");
     println!("- `close + 10 ms tick` additionally runs the module phase machine");
     println!("  (`Arm -> WaitRequest -> WaitClose -> Closing -> Arm`) at the 10 ms kernel tick.");

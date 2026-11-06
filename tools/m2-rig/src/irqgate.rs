@@ -385,20 +385,11 @@ fn to_json(evidence: &GateEvidence) -> String {
 
 /// Run the gate.
 pub fn run(options: &Options) -> Result<i32, String> {
-    let (module, _rom_sha, module_sha) = crate::check_prerequisites(options)?;
-    let module_sha_text = crate::sha256::hex(&module_sha);
-    let fixture =
-        crate::Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    crate::check_prerequisites(options)?;
     let nodes = rig::derive_nodes(options)?;
 
     let mut running = Vec::new();
-    crate::start_all(
-        options,
-        &nodes,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    )?;
+    crate::start_all(options, &nodes, &mut running)?;
     let facts = match rig::wait_boot(options, &mut running) {
         Ok(facts) => facts,
         Err(error) => {
@@ -406,7 +397,6 @@ pub fn run(options: &Options) -> Result<i32, String> {
             return Err(error);
         }
     };
-    drop(fixture);
 
     let result = measure(options, &nodes);
     let errors = rig::stop_nodes(options, &mut running);

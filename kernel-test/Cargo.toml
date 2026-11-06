@@ -8,7 +8,6 @@ license = "GPL-3.0-only"
 path = "src/lib.rs"
 
 [dev-dependencies]
-loader-abi = { path = "../crates/loader-abi" }
 m1-policy-bridge = { path = "../crates/m1-policy-bridge" }
 
 # Profile is inherited from the workspace root.

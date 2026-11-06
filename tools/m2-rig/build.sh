@@ -3,13 +3,12 @@
 #
 # Build the artefacts the two-node rig needs:
 #   <work>/irix7-rom.bin  PROM; the kernel is downloaded at boot (M1-ADR-0002)
-#   <work>/mcp.module     fresh MCP control-plane module
 #   <work>/SHA256SUMS
 #
 # The kernel and ROM are cross-built with the pinned nightly and the repository
-# target spec.  The module is a flat image, so llvm-objcopy strips the ELF
-# container.  `CARGO_TARGET_DIR` is kept inside the work directory by default so
-# the rig does not disturb a developer's main target directory.
+# target spec.  MCP is linked into the kernel, so there is no separate module
+# image.  `CARGO_TARGET_DIR` is kept inside the work directory by default so the
+# rig does not disturb a developer's main target directory.
 #
 # Usage:
 #   tools/m2-rig/build.sh [WORK_DIR]
@@ -65,33 +64,11 @@ if [ "$rom_size" -gt 524288 ]; then
 fi
 echo "m2-rig: PROM $rom_size bytes"
 
-echo "m2-rig: build MCP module"
-HOST="$(rustc -vV | sed -n 's/^host: //p')"
-LLVM_OBJCOPY="$(rustc --print sysroot)/lib/rustlib/$HOST/bin/llvm-objcopy"
-if [ ! -x "$LLVM_OBJCOPY" ]; then
-  echo "m2-rig: llvm-objcopy not found at $LLVM_OBJCOPY" >&2
-  exit 1
-fi
-CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
-CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Tmodules/mcp/linker.ld" \
-  "$CARGO" build --release -Z build-std=core,alloc \
-    -Z build-std-features=compiler-builtins-mem -Zjson-target-spec \
-    --target "$TARGET_JSON" -p mcp-module
-"$LLVM_OBJCOPY" -O binary \
-  "$CARGO_TARGET_DIR/$TARGET/release/mcp-module" "$WORK/mcp.module"
-module_size="$(stat -c%s "$WORK/mcp.module")"
-if [ "$module_size" -gt 524288 ]; then
-  echo "m2-rig: module is $module_size bytes, over the 512 KiB slot A" >&2
-  exit 1
-fi
-echo "m2-rig: module $module_size bytes"
-
 (
   cd "$WORK"
-  sha256sum irix7-rom.bin mcp.module >SHA256SUMS
+  sha256sum irix7-rom.bin >SHA256SUMS
   cat SHA256SUMS
 )
-
 # Record the build provenance next to the artefacts.  A feature branch or an
 # uncommitted edit must be visible: a bare `HEAD` is not a reproducible claim.
 commit="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -107,6 +84,5 @@ fi
   echo "dirty=$dirty"
   echo "rustc=$(rustc -vV | sed -n '1p')"
   echo "rom=$(stat -c%s "$WORK/irix7-rom.bin") bytes"
-  echo "module=$(stat -c%s "$WORK/mcp.module") bytes"
 } >"$WORK/BUILD-PROVENANCE.txt"
 cat "$WORK/BUILD-PROVENANCE.txt"

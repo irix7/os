@@ -182,7 +182,7 @@ impl NonBlockingReader {
                     }
                     if self.decoder.next_record().expect("decoder").is_some() {
                         // One record per tick is the M2-2 note in
-                        // modules/mcp/src/mesh.rs; the module drains the rest
+                        // crates/mcp/src/mesh.rs; the module drains the rest
                         // on the next tick.  Keep the same shape.
                         return Ok(true);
                     }

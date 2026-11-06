@@ -8,9 +8,8 @@
 //!
 //! A dead DS1386 battery makes the SRAM read as `0xFF`.  `init` validates the
 //! environment and MAC at boot and writes a minimal default environment when
-//! the chip is blank or corrupt.  This is an actual battery-backed chip on an
-//! Indy, not a release distribution channel: boot-time module URLs live in
-//! `boot/config.conf` in the repository.
+//! the chip is blank or corrupt.  The chip is battery-backed hardware on an
+//! Indy and holds the boot selections (`wasm.policy`, `mesh.peer`, `mcp.token`).
 
 const NVRAM_BASE: usize = 0xBFBE_0000;
 const ENV_START: usize = 0x10;

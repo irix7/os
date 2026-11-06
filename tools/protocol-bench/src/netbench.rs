@@ -23,7 +23,7 @@ use crate::proto::{ping_request, ping_response, write_record, NonBlockingReader,
 
 /// Module tick cadence: `kernel/src/idle.rs` (`INTERVAL = 330_000` at 33 MHz).
 const TICK: Duration = Duration::from_millis(10);
-/// Module reads per tick: `modules/mcp/src/mesh.rs` `READS_PER_TICK`.
+/// Module reads per tick: `crates/mcp/src/mesh.rs` `READS_PER_TICK`.
 const READS_PER_TICK: usize = 8;
 /// Hub writer chunk and sleep: `tools/m2-rig/src/hub.rs` `connect`.
 const HUB_CHUNK: usize = 128;
@@ -359,7 +359,7 @@ pub fn run() {
     println!(
         "- `blocking` is the floor this host can reach with a real TCP socket and the real codec."
     );
-    println!("- `10 ms tick` reproduces `kernel/src/idle.rs` (10 ms timer) and `modules/mcp/src/mesh.rs`");
+    println!("- `10 ms tick` reproduces `kernel/src/idle.rs` (10 ms timer) and `crates/mcp/src/mesh.rs`");
     println!("  (1024-byte read chunk, 8 reads per tick, one flush per tick) on both ends.");
     println!(
         "- The relay is `tools/m2-rig/src/relay.rs`: two TCP connections, 8 KiB pumps, nodelay."

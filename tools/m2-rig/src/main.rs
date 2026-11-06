@@ -3,8 +3,7 @@
 //!
 //! The rig starts two independent `iris` processes, each with its own state
 //! directory, NVRAM, MAC, NAT subnet, CI socket, monitor and serial log.  It
-//! serves a freshly built MCP module over a local HTTP fixture, waits for both
-//! kernels to print `BOOT-READY`, and then drives each kernel's HTTP client
+//! waits for both kernels to print `BOOT-READY`, and then drives each kernel's HTTP client
 //! through a Rust TCP relay to the other kernel's MCP status page.  Every run
 //! writes a self-contained evidence bundle under `<work>/evidence`.
 //!
@@ -16,7 +15,6 @@ mod bulk;
 mod demo;
 mod evidence;
 mod failure;
-mod fixture;
 mod homes;
 mod hub;
 mod irqgate;
@@ -42,7 +40,6 @@ use std::time::{Duration, Instant};
 
 use evidence::{Evidence, MeshNodeProbe, MeshProbeEvidence, NodeEvidence, ProbeEvidence};
 use failure::FailureEvidence;
-use fixture::Fixture;
 use homes::HomesEvidence;
 use join::{JoinEvidence, RestartInput, RootRestartInput};
 use probe::{ProbeError, ProbeOutcome};
@@ -56,9 +53,6 @@ use rig::{
 fn probe_timeout() -> Duration {
     crate::timing::secs(25)
 }
-
-/// Module bytes, PROM digest and module digest.
-type Prerequisites = (Vec<u8>, [u8; 32], [u8; 32]);
 
 /// Probe results and the relays that carried them.
 type ProbeSet = (Vec<ProbeEvidence>, Vec<(String, Relay)>);
@@ -133,7 +127,6 @@ Options:
   --iris PATH      iris binary (default: $IRIS or ../iris/target/release/iris)
   --iris-ci PATH   iris-ci binary (default: $IRIS_CI or ../iris/target/release/iris-ci)
   --rom PATH       PROM image (default: <work>/irix7-rom.bin)
-  --module PATH    fresh MCP module (default: <work>/mcp.module)
   --base-port N    first monitor port block (default: 9100)
   --nodes N        shard kernels, 2..=8; ports always uses one (default: 2)
   --hub            shard: use the experimental multi-node host link switch
@@ -155,7 +148,7 @@ Workflow:
     );
 }
 
-fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
+fn check_prerequisites(options: &Options) -> Result<[u8; 32], String> {
     for (label, option, path) in [
         ("iris", "--iris", &options.iris),
         ("iris-ci", "--iris-ci", &options.iris_ci),
@@ -172,20 +165,11 @@ fn check_prerequisites(options: &Options) -> Result<Prerequisites, String> {
     if rom.len() > 524_288 {
         return Err(format!("PROM is {} bytes; the window is 524288", rom.len()));
     }
-    // MCP is part of the kernel now; the module artefact is optional and empty
-    // when absent, so the fixture serves nothing and the node ignores the key.
-    let module = if options.module.is_file() {
-        fs::read(&options.module).map_err(|error| format!("read MCP module: {error}"))?
-    } else {
-        Vec::new()
-    };
-    let rom_sha = sha256::digest(&rom);
-    let module_sha = sha256::digest(&module);
-    Ok((module, rom_sha, module_sha))
+    Ok(sha256::digest(&rom))
 }
 
 fn up(options: &Options) -> Result<i32, String> {
-    let (fixture, running, facts) = bring_up(options)?;
+    let (running, facts) = bring_up(options)?;
     println!("two nodes are up");
     println!("{}", rig::node_table(&nodes_of(&running)));
     for (node, fact) in running.iter().zip(facts.iter()) {
@@ -195,11 +179,7 @@ fn up(options: &Options) -> Result<i32, String> {
             fact.boot_ready.as_deref().unwrap_or("no BOOT-READY")
         );
     }
-    println!(
-        "module was served during boot from 127.0.0.1:{}; serial logs under {}",
-        fixture.port,
-        options.work.display()
-    );
+    println!("serial logs under {}", options.work.display());
     println!("status: m2-rig status --work {}", options.work.display());
     println!("stop with: m2-rig down --work {}", options.work.display());
     Ok(0)
@@ -336,7 +316,6 @@ fn probe_only(options: &Options) -> Result<i32, String> {
         Some(&join),
         Some(&homes),
         route.as_ref(),
-        None,
         None,
         None,
         None,
@@ -574,19 +553,10 @@ fn print_migration_result(migration: &migrate::MigrateEvidence) {
 }
 
 fn bulk_run(options: &Options) -> Result<i32, String> {
-    let (_module, rom_sha, module_sha) = check_prerequisites(options)?;
-    let module = fs::read(&options.module).map_err(|error| format!("read module: {error}"))?;
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let rom_sha = check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
     let mut running = Vec::new();
-    let module_sha_text = sha256::hex(&module_sha);
-    start_all(
-        options,
-        &nodes,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    )?;
+    start_all(options, &nodes, &mut running)?;
     let result = (|| -> Result<bulk::BulkEvidence, String> {
         let _facts = wait_boot(options, &mut running)?;
         // `BOOT-READY` is printed when the module entry returns; the mesh
@@ -686,11 +656,10 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\n  \"action\": \"bulk\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"module_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
+        "{{\n  \"action\": \"bulk\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
         evidence::json_escape(&branch),
         commit,
         sha256::hex(&rom_sha),
-        module_sha_text,
         evidence.ok,
         evidence::json_escape(&evidence.message)
     ));
@@ -762,19 +731,10 @@ fn bulk_run(options: &Options) -> Result<i32, String> {
 }
 
 fn stream_run(options: &Options) -> Result<i32, String> {
-    let (_module, rom_sha, module_sha) = check_prerequisites(options)?;
-    let module = fs::read(&options.module).map_err(|error| format!("read module: {error}"))?;
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    let rom_sha = check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
     let mut running = Vec::new();
-    let module_sha_text = sha256::hex(&module_sha);
-    start_all(
-        options,
-        &nodes,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    )?;
+    start_all(options, &nodes, &mut running)?;
     let result = (|| -> Result<bulk::StreamEvidence, String> {
         let _facts = wait_boot(options, &mut running)?;
         std::thread::sleep(crate::timing::secs(10));
@@ -832,11 +792,10 @@ fn stream_run(options: &Options) -> Result<i32, String> {
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
     let mut json = String::new();
     json.push_str(&format!(
-        "{{\n  \"action\": \"stream\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"module_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
+        "{{\n  \"action\": \"stream\",\n  \"branch\": \"{}\",\n  \"commit\": \"{}\",\n  \"rom_sha256\": \"{}\",\n  \"ok\": {},\n  \"message\": \"{}\",\n  \"baseline\": ",
         evidence::json_escape(&branch),
         commit,
         sha256::hex(&rom_sha),
-        module_sha_text,
         evidence.ok,
         evidence::json_escape(&evidence.message)
     ));
@@ -911,21 +870,13 @@ fn latency_json(evidence: &crate::latency::LatencyEvidence) -> String {
 }
 
 fn run_and_probe(options: &Options) -> Result<i32, String> {
-    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
-    let module_sha_text = sha256::hex(&module_sha);
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
 
     let mut running = Vec::new();
     let mut facts;
     let mut bring_up_error = None;
-    if let Err(error) = start_all(
-        options,
-        &nodes,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    ) {
+    if let Err(error) = start_all(options, &nodes, &mut running) {
         bring_up_error = Some(error);
     }
     if bring_up_error.is_none() {
@@ -1324,7 +1275,6 @@ fn run_and_probe(options: &Options) -> Result<i32, String> {
         latency_evidence.as_ref(),
         bulk_evidence.as_ref(),
         failure_evidence.as_ref(),
-        Some(&fixture),
         None,
         "run",
         verdict,
@@ -2033,28 +1983,17 @@ fn print_join_result(join: &JoinEvidence) {
 fn start_all(
     options: &Options,
     nodes: &[Node],
-    fixture_port: u16,
-    module_sha256: &str,
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
     let (environments, _authority, _wrong) =
         mesh_environments(nodes, options.fault, options.transport);
-    start_all_with(
-        options,
-        nodes,
-        &environments,
-        fixture_port,
-        module_sha256,
-        running,
-    )
+    start_all_with(options, nodes, &environments, running)
 }
 
 fn start_all_with(
     options: &Options,
     nodes: &[Node],
     environments: &[Option<MeshEnv>],
-    fixture_port: u16,
-    module_sha256: &str,
     running: &mut Vec<RunningNode>,
 ) -> Result<(), String> {
     if environments.len() != nodes.len() {
@@ -2064,13 +2003,7 @@ fn start_all_with(
         rig::reset_scratch(nodes)?;
     }
     for (node, environment) in nodes.iter().zip(environments.iter()) {
-        write_nvram(
-            node,
-            fixture_port,
-            module_sha256,
-            environment.as_ref(),
-            options.rx_poll,
-        )?;
+        write_nvram(node, environment.as_ref(), options.rx_poll)?;
     }
 
     for node in nodes {
@@ -2095,19 +2028,11 @@ fn start_all_with(
     Ok(())
 }
 
-fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFacts>), String> {
-    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
-    let module_sha_text = sha256::hex(&module_sha);
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+fn bring_up(options: &Options) -> Result<(Vec<RunningNode>, Vec<BootFacts>), String> {
+    check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
     let mut running = Vec::new();
-    start_all(
-        options,
-        &nodes,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    )?;
+    start_all(options, &nodes, &mut running)?;
     let facts = match wait_boot(options, &mut running) {
         Ok(facts) => facts,
         Err(error) => {
@@ -2115,7 +2040,7 @@ fn bring_up(options: &Options) -> Result<(Fixture, Vec<RunningNode>, Vec<BootFac
             return Err(error);
         }
     };
-    Ok((fixture, running, facts))
+    Ok((running, facts))
 }
 
 /// Let the last control-plane connection close, then run the two-way probe.
@@ -2455,9 +2380,6 @@ fn print_config(options: &Options) -> Result<i32, String> {
     let nodes = derive_nodes(options)?;
     println!("{}", rig::node_table(&nodes));
     println!("fault={}", options.fault.as_str());
-    let module_sha = fs::read(&options.module)
-        .map(|bytes| sha256::hex(&sha256::digest(&bytes)))
-        .unwrap_or_else(|_| "<module sha256>".into());
     let (environments, authority, wrong) =
         mesh_environments(&nodes, options.fault, options.transport);
     println!("authority={}", nodes[0].node_id_string());
@@ -2467,13 +2389,9 @@ fn print_config(options: &Options) -> Result<i32, String> {
     }
     for (node, environment) in nodes.iter().zip(environments.iter()) {
         println!("env {}:", node.name);
-        let mut env = node.environment(0, environment.as_ref());
+        let mut env = node.environment(environment.as_ref());
         for (name, value) in &mut env {
-            if name == "mcp.sha256" {
-                *value = module_sha.clone();
-            }
             let shown = match name.as_str() {
-                "mcp.url" => format!("http://{}:<fixture>/mcp.module", node.gateway),
                 "mesh.key" => "<32-byte lab seed, root only>".into(),
                 _ => value.clone(),
             };
@@ -2556,9 +2474,7 @@ fn wait_udp_markers(options: &Options, nodes: &[RunningNode]) -> Result<(), Stri
 /// back across the same relay.  No inbound port forward is involved: the only
 /// path is each node's own outbound datagram socket and its NAT mapping.
 fn udp_run(options: &Options) -> Result<i32, String> {
-    let (module, _rom_sha, module_sha) = check_prerequisites(options)?;
-    let module_sha_text = sha256::hex(&module_sha);
-    let fixture = Fixture::start(module).map_err(|error| format!("start fixture: {error}"))?;
+    check_prerequisites(options)?;
     let nodes = derive_nodes(options)?;
 
     let mut relay = udp::UdpRelay::start().map_err(|error| format!("start UDP relay: {error}"))?;
@@ -2566,14 +2482,7 @@ fn udp_run(options: &Options) -> Result<i32, String> {
 
     let environments = rig::udp_environments(&nodes, relay.port);
     let mut running = Vec::new();
-    start_all_with(
-        options,
-        &nodes,
-        &environments,
-        fixture.port,
-        &module_sha_text,
-        &mut running,
-    )?;
+    start_all_with(options, &nodes, &environments, &mut running)?;
 
     let facts = match wait_boot(options, &mut running) {
         Ok(facts) => facts,
@@ -2647,7 +2556,6 @@ fn udp_run(options: &Options) -> Result<i32, String> {
         None,
         None,
         None,
-        Some(&fixture),
         Some(&udp_evidence),
         "run",
         if ok { "pass" } else { "fail" },
@@ -2694,7 +2602,6 @@ fn write_evidence(
     latency: Option<&latency::LatencyEvidence>,
     bulk: Option<&bulk::BulkEvidence>,
     failure: Option<&FailureEvidence>,
-    fixture: Option<&Fixture>,
     udp: Option<&udp::UdpEvidence>,
     action: &str,
     verdict: &str,
@@ -2712,7 +2619,6 @@ fn write_evidence(
         })
         .collect();
     let (rom_size, rom_sha) = artifact(&options.rom, "PROM")?;
-    let (module_size, module_sha) = artifact(&options.module, "module")?;
     let (iris_size, iris_sha) = artifact(&options.iris, "iris")?;
     let (iris_ci_size, iris_ci_sha) = artifact(&options.iris_ci, "iris-ci")?;
     let branch = git(&options.repo, &["rev-parse", "--abbrev-ref", "HEAD"]);
@@ -2744,9 +2650,6 @@ fn write_evidence(
         rom: &options.rom,
         rom_sha256: &rom_sha,
         rom_size,
-        module: &options.module,
-        module_sha256: &module_sha,
-        module_size,
         iris: &options.iris,
         iris_sha256: &iris_sha,
         iris_size,
@@ -2763,7 +2666,6 @@ fn write_evidence(
         latency,
         bulk,
         failure,
-        fixture,
         udp,
         relays: &relay_logs,
         verdict,
