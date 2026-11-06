@@ -11,7 +11,6 @@
 - [Hardware and compatibility architecture](spec/architecture.md)
 - [Boot protocol](spec/boot-protocol.md)
 - [IRIX ELF loader contract](spec/elf.md)
-- [Loadable kernel modules](spec/modules.md)
 - [Package index](spec/packages.md)
 - [MCP control plane](spec/mcp.md)
 - [Native POSIX API baseline](spec/posix.md)
