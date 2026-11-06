@@ -43,7 +43,7 @@ pub mod idle;
 pub mod kbd;
 pub mod logical;
 pub mod m2_demo;
-pub mod mcp;
+
 pub mod mesh;
 pub mod native_sys;
 pub mod net;
@@ -549,7 +549,7 @@ fn start_userland() {
 fn idle_loop(console_poll: Option<extern "C" fn(*mut ())>) -> ! {
     loop {
         logical::tick();
-        crate::mcp::tick(&kernel_core::service::SERVICES);
+        mcp::tick(&kernel_core::service::SERVICES);
         let entered = traps::count_read();
         // Drive the resident console service when the ROM provided one.
         if let Some(poll) = console_poll {

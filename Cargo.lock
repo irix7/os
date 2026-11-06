@@ -654,6 +654,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "agnostic-core",
+ "block-cache",
  "boot-protocol-tests",
  "cas-core",
  "cas-store",
@@ -670,16 +671,24 @@ dependencies = [
  "irix7-sha256",
  "kernel-core",
  "m1-policy-bridge",
+ "mcp",
  "mesh-core",
+ "mesh-join",
+ "mesh-migrate",
+ "mesh-route",
  "mesh-service",
+ "mesh-stream",
+ "mesh-transport",
  "module-abi",
  "module-block",
  "module-tcp",
  "native-abi",
+ "overlay",
  "platform-api",
  "rand_core",
  "smoltcp",
  "sys-primitives",
+ "wasm-host",
  "wasm-policy-host",
  "x509-cert",
 ]
@@ -782,6 +791,23 @@ name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
+
+[[package]]
+name = "mcp"
+version = "0.1.0"
+dependencies = [
+ "block-cache",
+ "erofs",
+ "mesh-core",
+ "mesh-join",
+ "mesh-migrate",
+ "mesh-route",
+ "mesh-stream",
+ "mesh-transport",
+ "module-abi",
+ "overlay",
+ "sys-primitives",
+]
 
 [[package]]
 name = "mcp-module"
@@ -1046,13 +1072,6 @@ name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
-
-[[package]]
-name = "ports-module"
-version = "0.1.0"
-dependencies = [
- "module-abi",
-]
 
 [[package]]
 name = "powerfmt"

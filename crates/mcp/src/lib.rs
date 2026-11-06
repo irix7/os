@@ -15,13 +15,17 @@
 //! surface computed from the confirmed membership snapshot.  See `mesh.rs` for
 //! the transport state machine and the listen-only deviation from M2-ADR-0002.
 
+#![no_std]
+
 mod mesh;
 mod netprobe;
 
 extern crate alloc;
 
-use core::alloc::{GlobalAlloc, Layout};
-use core::ptr::{self, null_mut};
+/// Service-graph reports from the host kernel, printed by `status`.
+static mut REPORTS: &[&str] = &[];
+
+use core::ptr;
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 use alloc::string::String;
@@ -515,13 +519,16 @@ static mut LISTEN_FAIL_LOGGED: bool = false;
 static mut TOKEN: [u8; 64] = [0; 64];
 static mut TOKEN_LEN: usize = 0;
 
-/// Module entry.
+/// Start the control plane on a kernel service table.
 ///
-/// # Safety
-/// `services` must point to a valid service table supplied by the kernel.
-pub fn start(services: &'static Services) -> bool {
+/// `reports` are extra lines for the service graph; a kernel passes its own
+/// demo reports, and a kernel without demos passes an empty slice.
+pub fn start(services: &'static Services, reports: &'static [&'static str]) -> bool {
     if services.version < 10 {
         return false;
+    }
+    unsafe {
+        REPORTS = reports;
     }
     SERVICES.store(
         services as *const Services as *mut Services,
@@ -1093,12 +1100,15 @@ fn request_line(request: &[u8]) -> (&[u8], bool) {
     (path, is_post)
 }
 
-/// The service graphs the kernel's own demos report.
+/// The service graph reports the host kernel supplied to `start`.
 fn service_graph(out: &mut [u8]) -> usize {
     let mut w = Out::new(out);
     w.push(b"runtime service graph:\n");
-    w.push(crate::runtime_demo::REPORT.as_bytes());
-    w.push(crate::m2_demo::REPORT.as_bytes());
+    // SAFETY: written once by `start` before the listeners run.
+    let reports = unsafe { *core::ptr::addr_of!(REPORTS) };
+    for report in reports {
+        w.push(report.as_bytes());
+    }
     w.len
 }
 
