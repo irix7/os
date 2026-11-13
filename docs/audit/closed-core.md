@@ -56,7 +56,7 @@ I did not run `iris` or QEMU for this audit. Real-kernel evidence is the CI `Boo
 | 1 | M0 — Toolchain unblocked | partial | medium | Reopen #1: fix default Nix shell or document rustup path; record LLVM-only decision against ADR-0018 |
 | 2 | M1 — Single-node logical computer | implemented | high | #2/#16: real-Indy evidence; separate the M1 bridge claim from resident policy |
 | 33 | M1: boot-protocol conformance tests | partial | high | Reopen #33: wire tests to the kernel parser; fix BootInfo endianness and map walking |
-| 43 | docs: add install/getting-started guide | partial | low | Update `docs/install.md` run and status sections |
+| 43 | docs: add install/getting-started guide | partial | low | Update `docs/installation/install.md` run and status sections |
 | 115 | console: unify kernel and user output | implemented | low | Add automated telnet/MCP assertion for user stdout |
 | 116 | boot: emit a machine-readable READY marker | implemented | low | Make `boot=` monotonic or document RTC-second reuse |
 | 117 | kernel: fix TLB teardown and refill after user mode | implemented | low | Add the `user` then `tlb` regression to CI |
@@ -86,8 +86,8 @@ What is implemented:
 What is missing or divergent:
 
 1. **The GCC backend was never delivered.** The issue body asks to "Make build-std and the GCC backend work reliably". The closure comment records the backend as blocked, and the tree still says:
-   - `docs/spec/architecture.md:274`: "`rustc_codegen_gcc` (libgccjit from §3.1) — **primary**".
-   - `docs/toolchain.md:166`: "`rustc_codegen_gcc` is not available; the LLVM backend is the only code generator."
+   - `docs/internals/architecture.md:274`: "`rustc_codegen_gcc` (libgccjit from §3.1) — **primary**".
+   - `docs/installation/toolchain.md:166`: "`rustc_codegen_gcc` is not available; the LLVM backend is the only code generator."
 
    There is no `rustc_codegen_gcc`, libgccjit or GCC-backend build path in the tree. The spec and the toolchain document contradict each other.
 
@@ -126,7 +126,7 @@ What is implemented:
 
 What limits the claim:
 
-- **The gate is iris-only.** `docs/plan/milestones.md:35` says "M1 and M2 must run on real kernels." The issue records the hardware limitation instead: `docs/plan/milestones.md:150-160`, `CHANGELOG.md:236-240`. `#16` (hardware lab) is still open. No real SCC, Seeq DMA, SCSI, REX3 or DS1386 timing/cache behaviour has been validated.
+- **The gate is iris-only.** `docs/project/milestones.md:35` says "M1 and M2 must run on real kernels." The issue records the hardware limitation instead: `docs/project/milestones.md:150-160`, `CHANGELOG.md:236-240`. `#16` (hardware lab) is still open. No real SCC, Seeq DMA, SCSI, REX3 or DS1386 timing/cache behaviour has been validated.
 - **`mesh=0/0/0` is not a packet measurement.** `kernel/src/mesh.rs:41-74` says no transport calls `note_frame`; the boot self-test increments the counters and resets them. The marker therefore proves the kernel's own counter baseline, not that a module did not emit a mesh frame. After the M2 transport moved into `modules/mcp`, the kernel counters no longer cover that module.
 - **The "complete logical computer" is a bring-up policy, not a resident core.** The Wasm policy is a slot-B module behind a fixed bridge; the kernel remains the live authority for its own root and capability table (see #213).
 
@@ -144,10 +144,10 @@ What is implemented:
 
 Why this is not conformance:
 
-1. **Neither side uses the crate.** `kernel/Cargo.toml` and `rom/Cargo.toml` do not depend on `boot-protocol-tests`; the ROM emits no `BootInfo` at all (`docs/spec/boot-protocol.md:69-71`, `rom/src/boot/reset.S`), and the kernel has a private parser.
-2. **The private kernel parser reads little-endian.** `kernel/src/main.rs:330` uses `u32::from_le_bytes` for the magic and `:336` for `size`; the spec says the magic is "`0x49374249` (`"I7BI"` big-endian)" (`docs/spec/boot-protocol.md:75`). A spec-conformant image would be rejected.
+1. **Neither side uses the crate.** `kernel/Cargo.toml` and `rom/Cargo.toml` do not depend on `boot-protocol-tests`; the ROM emits no `BootInfo` at all (`docs/internals/boot-protocol.md:69-71`, `rom/src/boot/reset.S`), and the kernel has a private parser.
+2. **The private kernel parser reads little-endian.** `kernel/src/main.rs:330` uses `u32::from_le_bytes` for the magic and `:336` for `size`; the spec says the magic is "`0x49374249` (`"I7BI"` big-endian)" (`docs/internals/boot-protocol.md:75`). A spec-conformant image would be rejected.
 3. **The map walk indexes the 256-byte struct with an absolute kseg0 address.** `kernel/src/main.rs:370-404` computes `kseg0_map = map_phys + 0x8000_0000` and then indexes `info[kseg0_map as usize + off]`. `info` is `&[u8; 256]`, so any non-zero map address is out of bounds and panics. The path is dead today only because the ROM passes `$a0 = 0`.
-4. **The kernel validates only magic, size and checksum.** `kernel/src/main.rs:329-349` checks those three; it does not check `version_major`, `mem_map_entry_size`, `mem_map_count`, overlap, `cmdline`/`r2_url` termination or the image digests. The spec requires all eight checks in order (`docs/spec/boot-protocol.md:183-198`), and says failure halts rather than silently falling back.
+4. **The kernel validates only magic, size and checksum.** `kernel/src/main.rs:329-349` checks those three; it does not check `version_major`, `mem_map_entry_size`, `mem_map_count`, overlap, `cmdline`/`r2_url` termination or the image digests. The spec requires all eight checks in order (`docs/internals/boot-protocol.md:183-198`), and says failure halts rather than silently falling back.
 5. **The test validator does not test every acceptance case.** It rejects bad magic, version, checksum, map count and kernel-outside-RAM (`crates/boot-protocol-tests/src/lib.rs:234-330`), but there is no bad-size test, no bad `mem_map_entry_size` test and no overlapping-region test. The `Overlap` error is used for containment, not overlap.
 
 Evidence grade: host unit tests only; the live consumer is untested and non-conformant.
@@ -158,14 +158,14 @@ Evidence grade: host unit tests only; the live consumer is untested and non-conf
 
 What is implemented:
 
-- `docs/install.md` exists, is linked from `docs/README.md:22` and `docs/SUMMARY.md:4`, and the Docs workflow builds the book (`.github/workflows/docs.yml`).
+- `docs/installation/install.md` exists, is linked from `docs/README.md:22` and `docs/SUMMARY.md:4`, and the Docs workflow builds the book (`.github/workflows/docs.yml`).
 - The build and test commands match the CI commands.
 
 What is broken or stale:
 
-- The guide's only emulator instruction is `scripts/rig/task-rig.sh start <item>` (`docs/install.md:69-73`). `scripts/rig` does not exist; `ls scripts/rig` returns "No such file or directory". The same non-existent path is repeated at `docs/spec/architecture.md:310` and `:1872`.
-- The guide says `nix develop` is the supported environment (`docs/install.md:27-33`), but that shell is a stable nixpkgs Rust with no `rust-src` and cannot run the documented `-Z build-std` command (see #1).
-- The status table still says `M2 — Kernel core | In progress` (`docs/install.md:108-110`), although M2 closed on 2026-10-27 and the tree has M2/M3 evidence.
+- The guide's only emulator instruction is `scripts/rig/task-rig.sh start <item>` (`docs/installation/install.md:69-73`). `scripts/rig` does not exist; `ls scripts/rig` returns "No such file or directory". The same non-existent path is repeated at `docs/internals/architecture.md:310` and `:1872`.
+- The guide says `nix develop` is the supported environment (`docs/installation/install.md:27-33`), but that shell is a stable nixpkgs Rust with no `rust-src` and cannot run the documented `-Z build-std` command (see #1).
+- The status table still says `M2 — Kernel core | In progress` (`docs/installation/install.md:108-110`), although M2 closed on 2026-10-27 and the tree has M2/M3 evidence.
 
 Evidence grade: docs only; Docs CI green, but the run path is not executable as written.
 
@@ -179,7 +179,7 @@ What is implemented:
 - Native user `write(fd=1, ...)` reaches that path: `kernel/src/user.rs:587-607`.
 - MCP `serial.read` reads the same ring through the service table: `kernel/src/module.rs:969-975`, `modules/mcp/src/main.rs:1695-1701`.
 - Telnet output is queued outside the socket borrow and CRLF-expanded once: `kernel/src/telnet.rs:371-403`.
-- The routing rules are documented: `docs/spec/console.md:18-48`.
+- The routing rules are documented: `docs/using/console.md:18-48`.
 
 What is not proven in CI:
 
@@ -281,7 +281,7 @@ Resolution (2026-11-03):
   a real REX3 has no readback path, so on hardware the probe has to be checked
   on the monitor and only the register half is automated. iris also queues
   64 K commands, so it cannot reproduce the 32-entry FIFO's dropped or stalled
-  writes; see `docs/plan/testing.md` section 5.
+  writes; see `docs/project/testing.md` section 5.
 
 ### #119 — ci: replace sleep-based guest startup with readiness polling and cleanup
 
@@ -346,11 +346,11 @@ What is implemented:
 
 - The M1 gate is asserted in CI: `BOOT-READY network=off mcp=disabled`, `m1:`/`m1-post` zero counters, the Wasm policy evidence, target-2, POSIX/std, native hello and o32: `ci.yml:442-451`, `:533-545`, `:940-1007`, `:1011-1144`, `:1146-1303`.
 - CI run `40244974653` is green, with `Boot (iris)` passing.
-- The real-Indy limitation is recorded in `CHANGELOG.md:236-240` and the milestone plan (`docs/plan/milestones.md:153-158`).
+- The real-Indy limitation is recorded in `CHANGELOG.md:236-240` and the milestone plan (`docs/project/milestones.md:153-158`).
 
 Why the risk is high:
 
-- The issue allows a recorded limitation, but the plan's hard gate says M1 and M2 must run on real kernels (`docs/plan/milestones.md:35`). The gate is a serial-log assertion against iris, not a hardware run.
+- The issue allows a recorded limitation, but the plan's hard gate says M1 and M2 must run on real kernels (`docs/project/milestones.md:35`). The gate is a serial-log assertion against iris, not a hardware run.
 - The gate depends on #213's live-policy claim. #213 is partial in this audit (see below). The final M1 gate therefore certifies a narrower bridge than the issue title suggests.
 
 Evidence grade: real-kernel CI (iris) only.
@@ -385,7 +385,7 @@ What is implemented:
 
 - Both the local-SCSI and network paths time the slot-B load and print `autoload: wasm took <n> ms`: `kernel/src/autoload.rs:70-89`, `:112-130`.
 - The module prints `wasm: runtime=<n> ms`: `modules/wasm/src/main.rs:492-497`.
-- The numbers and the "observation, not a gate" decision are recorded in `docs/plan/testing.md:214-222`.
+- The numbers and the "observation, not a gate" decision are recorded in `docs/project/testing.md:214-222`.
 
 This is an observation, not a gate, exactly as the issue says. No code gap.
 
@@ -425,7 +425,7 @@ What is implemented:
 Residual risks:
 
 - `#272` is still open: nothing bounds native stack depth. The fix moves the floor; it does not detect a deeper future guest.
-- Stale documentation still says the stack top is `0x8830_0000`: `docs/spec/modules.md:91`, `docs/spec/userland-services.md:98`. That is the value that caused the overflow.
+- Stale documentation still says the stack top is `0x8830_0000`: `docs/spec/modules.md:91`, `docs/programming/userland-services.md:98`. That is the value that caused the overflow.
 
 Evidence grade: real-kernel CI.
 
@@ -444,10 +444,10 @@ The other six were read against the mesh report; this report's verdicts stand. T
 
 The boot protocol is the most serious foundation gap in this set.
 
-- `docs/spec/boot-protocol.md:68-71` says the contract is checked by compile-time assertions "in both codebases". Neither the ROM nor the kernel links the assertion crate.
+- `docs/internals/boot-protocol.md:68-71` says the contract is checked by compile-time assertions "in both codebases". Neither the ROM nor the kernel links the assertion crate.
 - The kernel's parser reads little-endian (`kernel/src/main.rs:330,336,342`), so it would reject a spec-conformant big-endian `BootInfo`.
 - The map walk indexes a 256-byte array with an absolute kseg0 address (`kernel/src/main.rs:370-404`), which is an out-of-bounds panic on any non-empty map.
-- The kernel checks 3 of the 8 required validation steps (`kernel/src/main.rs:329-349` versus `docs/spec/boot-protocol.md:183-198`).
+- The kernel checks 3 of the 8 required validation steps (`kernel/src/main.rs:329-349` versus `docs/internals/boot-protocol.md:183-198`).
 - The nine tests in `crates/boot-protocol-tests` pass, but they test a third implementation, not the kernel's.
 
 This is a latent failure: the ROM passes `$a0 = 0`, so the code path is dead. It becomes a boot failure as soon as a loader emits `BootInfo`, which the spec says is the intended next step.
@@ -460,7 +460,7 @@ This is a latent failure: the ROM passes `$a0 = 0`, so the code path is dead. It
 - The kernel does not import the guest capability into its capability table; `authorize` on the bridge is the only check for the guest path.
 - A failed reload drops the previous bridge before fetching the replacement (`kernel/src/module.rs:149-159`), contrary to #213's "failed guest leaves the previous live policy unchanged".
 
-The result is a **live read path**, not a live kernel policy object graph. That is a valid M1 slice, but it must not be described as resident policy authority. The plan defers the resident core to Phase 5 (`docs/plan/milestones.md:150-153`), and #213 should say so in its own acceptance text.
+The result is a **live read path**, not a live kernel policy object graph. That is a valid M1 slice, but it must not be described as resident policy authority. The plan defers the resident core to Phase 5 (`docs/project/milestones.md:150-153`), and #213 should say so in its own acceptance text.
 
 ### 4.3 The M1 bridge and the module arena overlap
 
@@ -475,11 +475,11 @@ The fix is either to reserve region 4 for the bridge, move the bridge into its o
 
 ### 4.4 Real hardware is still absent from the M1/M2 foundation
 
-`docs/plan/milestones.md:35` says "M1 and M2 must run on real kernels." The M1 issue permits a recorded limitation and records it in `CHANGELOG.md:236-240` and `#16`. `#16` is open; both Indys are uncharacterised. Every M1 core claim — SCC, Seeq DMA, SCSI, REX3, DS1386 timing/cache — is iris-only. This is the largest evidence gap in the closed set; it is recorded honestly, but it means M1 is not a hardware gate.
+`docs/project/milestones.md:35` says "M1 and M2 must run on real kernels." The M1 issue permits a recorded limitation and records it in `CHANGELOG.md:236-240` and `#16`. `#16` is open; both Indys are uncharacterised. Every M1 core claim — SCC, Seeq DMA, SCSI, REX3, DS1386 timing/cache — is iris-only. This is the largest evidence gap in the closed set; it is recorded honestly, but it means M1 is not a hardware gate.
 
 ### 4.5 The documented Nix devshell cannot build the kernel
 
-`flake.nix:26-31` uses nixpkgs `rustc`/`cargo`, not rustup. `rust-toolchain.toml` is ignored by that toolchain. `nix develop --command cargo build -Z build-std…` fails with "the option `Z` is only accepted on the nightly compiler", and the sysroot has no `rust-src`. The install guide tells a new user to use this shell (`docs/install.md:27-33`), so the documented path and the actual M0 gate diverge.
+`flake.nix:26-31` uses nixpkgs `rustc`/`cargo`, not rustup. `rust-toolchain.toml` is ignored by that toolchain. `nix develop --command cargo build -Z build-std…` fails with "the option `Z` is only accepted on the nightly compiler", and the sysroot has no `rust-src`. The install guide tells a new user to use this shell (`docs/installation/install.md:27-33`), so the documented path and the actual M0 gate diverge.
 
 ### 4.6 The M1 zero-mesh counter is now a constant
 
@@ -493,8 +493,8 @@ Resolved on 2026-11-03: the self-test now reads the engine's registers and `tool
 
 ### 4.8 Documentation drift around the stack
 
-- Stack top: `docs/spec/modules.md:91` and `docs/spec/userland-services.md:98` still say `0x8830_0000`; the fix is `0x883f_0000` (`kernel/linker.ld:63`).
-- Install status: `docs/install.md:108-110` says M2 is in progress; M2 is closed.
+- Stack top: `docs/spec/modules.md:91` and `docs/programming/userland-services.md:98` still say `0x8830_0000`; the fix is `0x883f_0000` (`kernel/linker.ld:63`).
+- Install status: `docs/installation/install.md:108-110` says M2 is in progress; M2 is closed.
 
 These are low-risk but they mislead the next bring-up.
 
@@ -510,13 +510,13 @@ Ranked by foundation risk.
 
 4. **Close the real-hardware gap in #16.** The plan's hard gate says M1 and M2 must run on real kernels. At minimum, record a dated M1 boot on an Indy with SCC/Seeq/SCSI/REX3 output; until then, keep every M1/M2 claim labelled iris-only. #2/#206 should carry the wording change.
 
-5. **Reopen #1 and fix the default devshell or document the rustup path.** The Nix shell must either use rustup with `rust-toolchain.toml`/`rust-src` or stop claiming to be the canonical cross toolchain. Update `docs/install.md` to the working command. Record the LLVM-only decision against ADR-0018 and `docs/spec/architecture.md:274`, or revive the GCC backend.
+5. **Reopen #1 and fix the default devshell or document the rustup path.** The Nix shell must either use rustup with `rust-toolchain.toml`/`rust-src` or stop claiming to be the canonical cross toolchain. Update `docs/installation/install.md` to the working command. Record the LLVM-only decision against ADR-0018 and `docs/internals/architecture.md:274`, or revive the GCC backend.
 
-6. ~~**Reopen #118 and test the framebuffer, not the shadow.**~~ Done: engine register readback, a 1024-command FIFO burst, and `tools/rex3-gate.py`, which reads the probe back from iris's REX3 framebuffer and requires the colour-index fault to fail the same check. The real-Indy readback limit is recorded in `docs/plan/testing.md` section 5.
+6. ~~**Reopen #118 and test the framebuffer, not the shadow.**~~ Done: engine register readback, a 1024-command FIFO burst, and `tools/rex3-gate.py`, which reads the probe back from iris's REX3 framebuffer and requires the colour-index fault to fail the same check. The real-Indy readback limit is recorded in `docs/project/testing.md` section 5.
 
 7. **Update #43's install guide.** Replace `scripts/rig/task-rig.sh` with the actual `iris`/`iris-ci` commands, update the status table (M2 closed), and fix the `nix develop` instruction. Link the real CI boot commands from `.github/workflows/ci.yml`.
 
-8. **Update #271's stale stack-top references.** `docs/spec/modules.md:91` and `docs/spec/userland-services.md:98` still document the value that caused the overflow. Add the `#272` stack-depth guard to the same follow-up.
+8. **Update #271's stale stack-top references.** `docs/spec/modules.md:91` and `docs/programming/userland-services.md:98` still document the value that caused the overflow. Add the `#272` stack-depth guard to the same follow-up.
 
 9. **Make #116's `boot=` field monotonic.** Use a boot counter or combine the RTC second with a reset cause; the current field can repeat within a second. This is low risk but cheap to fix.
 

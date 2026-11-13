@@ -47,7 +47,7 @@ Consequences:
   table, a 1 MiB 256 KiB-page heap, and a four-page stack.  It is single-threaded and
   has no process table, threads/TLS, `posix_spawn`, signals, termios or sockets.
 - Do not present the bring-up shim as the final libc, or the provisional syscalls as
-  the native capability ABI.  `docs/spec/native-abi.md` and `docs/spec/native-libc.md`
+  the native capability ABI.  `docs/programming/native-abi.md` and `docs/programming/native-libc.md`
   are the contracts; `docs/research/std-hello-bringup.md` records the bring-up.
 - The Stage 0 CPU/MMU gate is in place: user mode uses the correct `Status.KSU`
   and `UX` bits, the XTLB vector is installed, user pages are cacheable and
@@ -70,7 +70,7 @@ installer formats, libc/POSIX shims, display/device interfaces, configuration an
 Only safety/security invariants, explicit external standards/hardware requirements, and
 the M1/M2/M3 marker evidence are preserved. External IRIX/POSIX compatibility is a product
 goal, not a reason to retain our own old versions. See
-[`docs/spec/pre-release.md`](docs/spec/pre-release.md).
+[`docs/administration/pre-release.md`](docs/administration/pre-release.md).
 
 ## Other standing requirements
 

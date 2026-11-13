@@ -6,13 +6,13 @@
 **Layout source:** [`crates/native-abi`](../../crates/native-abi/README.md) — the
 cell-side types land in M9; this document is normative for the kernel ABI until then.
 
-**Related:** [`architecture.md`](architecture.md) §2 (D1–D32), §4, §5, §6 and §17.4;
+**Related:** [`architecture.md`](../internals/architecture.md) §2 (D1–D32), §4, §5, §6 and §17.4;
 [`native-libc.md`](native-libc.md) (the C ABI above this contract);
 [`posix.md`](posix.md) (the source API); [`elf.md`](elf.md) (the IRIX compatibility
 loader, not the native loader); [`driver-interface.md`](driver-interface.md)
-(`ctl`/`data`/`status` and `posix_devctl`); [`modules.md`](modules.md) (the separate
-kernel-module ABI); [`../plan/interfaces.md`](../plan/interfaces.md) (interface register);
-[`../plan/milestones.md`](../plan/milestones.md) M9 and M9.5;
+(`ctl`/`data`/`status` and `posix_devctl`); [`modules.md`](../spec/modules.md) (the separate
+kernel-module ABI); [`../plan/interfaces.md`](interfaces.md) (interface register);
+[`../plan/milestones.md`](../project/milestones.md) M9 and M9.5;
 [`../research/rust-std-irix7.md`](../research/rust-std-irix7.md) §3, §5.4, §7.2–§7.5 and
 §9.3; [`../research/rust-std-build-spike.md`](../research/rust-std-build-spike.md);
 ADR-0011 (native capability substrate) and ADR-0021 (native Rust `std`).
@@ -48,7 +48,7 @@ invocation encoding** that the libc consumes.
 |---|---|
 | The IRIX 6.5 syscall ABI, number space, `errno`, `struct stat`, `sproc`, `syssgi` | [`elf.md`](elf.md) and the compatibility container (architecture §6) |
 | The native libc C ABI, POSIX profile, `errno` values and public structs | [`native-libc.md`](native-libc.md) |
-| The kernel-module service table and flat image ABI | [`modules.md`](modules.md) |
+| The kernel-module service table and flat image ABI | [`modules.md`](../spec/modules.md) |
 | A memory-isolation guarantee | This document states the SAS limits in §2.3; hardware isolation is future work |
 | A frozen ABI or a working implementation | §10 and the status note above |
 
@@ -1752,7 +1752,7 @@ retires.  Preemption is a later slice.
 ### 5.10 v0 process gate, cells and mesh identity
 
 IRIX 7 is one logical computer of 1–128 replicas with a global object space, a global
-namespace and a global actor directory ([`system.md`](system.md)).  The native process
+namespace and a global actor directory ([`system.md`](../internals/system.md)).  The native process
 is **one cell with a Unix personality** (D3): `fork` clones the cell, `exec` replaces
 its image, file descriptors are capability handles exposed as fds, and `wait` consumes
 the child's exit event.
@@ -2637,20 +2637,20 @@ is a silent change; each should be resolved in a follow-up edit or ADR.
 
 | # | Document | Existing statement | This draft | Recommended resolution |
 |---:|---|---|---|---|
-| 1 | [`architecture.md`](architecture.md) §5.3 | The call surface uses `abi_stable` (candidate) or `repr(C)` | The kernel boundary is `repr(C)`; `abi_stable` is not used for handles or invocations | Keep `abi_stable` for cell-to-cell Rust protocols only; amend §5.3 |
-| 2 | [`architecture.md`](architecture.md) §5.4 | "File descriptor: a capability handle in the process's table" | The fd table is libc state; the kernel has no native fd table | Clarify that "the process's table" is the libc's; amend §5.4 |
-| 3 | [`architecture.md`](architecture.md) §5.5 | "The libc is a cell; it can be updated independently" | The v0.1 libc is static per cell | State that a shared libc cell is post-v1 |
-| 4 | [`architecture.md`](architecture.md) §5.4 and [`../plan/milestones.md`](../plan/milestones.md) M9 | `fork` clones the cell; M9 demonstrates `fork`/`exec` | General `fork` is not implementable in kseg0 SAS; M9 uses `posix_spawn`/`exec` | Amend M9's criterion; keep `fork` as the mapped-cell goal |
-| 5 | [`architecture.md`](architecture.md) §4.2 / D17 | Drivers are "de-privileged cells, not ring-3 processes" | Cells run in kernel mode; de-privileged means authority-limited, not less CPU privilege | Define the term in §4.2; amend the table note |
+| 1 | [`architecture.md`](../internals/architecture.md) §5.3 | The call surface uses `abi_stable` (candidate) or `repr(C)` | The kernel boundary is `repr(C)`; `abi_stable` is not used for handles or invocations | Keep `abi_stable` for cell-to-cell Rust protocols only; amend §5.3 |
+| 2 | [`architecture.md`](../internals/architecture.md) §5.4 | "File descriptor: a capability handle in the process's table" | The fd table is libc state; the kernel has no native fd table | Clarify that "the process's table" is the libc's; amend §5.4 |
+| 3 | [`architecture.md`](../internals/architecture.md) §5.5 | "The libc is a cell; it can be updated independently" | The v0.1 libc is static per cell | State that a shared libc cell is post-v1 |
+| 4 | [`architecture.md`](../internals/architecture.md) §5.4 and [`../plan/milestones.md`](../project/milestones.md) M9 | `fork` clones the cell; M9 demonstrates `fork`/`exec` | General `fork` is not implementable in kseg0 SAS; M9 uses `posix_spawn`/`exec` | Amend M9's criterion; keep `fork` as the mapped-cell goal |
+| 5 | [`architecture.md`](../internals/architecture.md) §4.2 / D17 | Drivers are "de-privileged cells, not ring-3 processes" | Cells run in kernel mode; de-privileged means authority-limited, not less CPU privilege | Define the term in §4.2; amend the table note |
 | 6 | [`native-libc.md`](native-libc.md) §4.6 | "Native code does not execute the IRIX `syscall` instruction" | Native code executes `syscall 0x1F7`, a different code with a different convention | Reword to "does not use the IRIX syscall convention or numbers" |
 | 7 | [`native-libc.md`](native-libc.md) §4.6 | "The libc is the only component that performs capability invocations" | Any cell may invoke; the libc is the POSIX path | Reword to "the libc is the only POSIX component" |
 | 8 | [`native-libc.md`](native-libc.md) §4.5 / §9 | The `CellStart` layout is open | §3 fixes the v0.1 layout | Update the cross-reference; keep the libc out of the layout |
 | 9 | [`native-libc.md`](native-libc.md) §5.1 / §4.7 | `fork` is in the v1 profile | `fork` returns `ENOSYS` until mapped cells | Mark `fork` deferred in the libc profile |
 | 10 | [`elf.md`](elf.md) §2 / §7 | The loader rejects `ET_REL`; it is the IRIX compatibility contract | The native cell loader needs `ET_REL` | Keep `elf.md` compat-only; write a separate native cell parser |
 | 11 | [`posix.md`](posix.md) §9.2 | A cell has a "user MMU context" | M9 cells are kernel-mode SAS | Amend to "kernel-mode SAS in M9; user MMU context when cells are mapped" |
-| 12 | [`architecture.md`](architecture.md) §17.4 | Open: invocation encoding, `abi_stable` vs `repr(C)`, `fork`, guard pages, SAS risk, raw MMIO | This draft answers encoding/`abi_stable`/`fork`/guard pages; raw MMIO remains a driver policy | Record the answers; leave raw MMIO to the driver spec |
-| 13 | [`architecture.md`](architecture.md) §5.2 | The object list omits `Thread` | `Thread` is a separate object | Add `Thread` to §5.2 or accept this draft as the extension |
-| 14 | [`architecture.md`](architecture.md) §5.2 | `Namespace` is optional and the default process has a global namespace | Every cell has a `Namespace` handle; it may be empty | Clarify that the handle always exists; the authority may be empty |
+| 12 | [`architecture.md`](../internals/architecture.md) §17.4 | Open: invocation encoding, `abi_stable` vs `repr(C)`, `fork`, guard pages, SAS risk, raw MMIO | This draft answers encoding/`abi_stable`/`fork`/guard pages; raw MMIO remains a driver policy | Record the answers; leave raw MMIO to the driver spec |
+| 13 | [`architecture.md`](../internals/architecture.md) §5.2 | The object list omits `Thread` | `Thread` is a separate object | Add `Thread` to §5.2 or accept this draft as the extension |
+| 14 | [`architecture.md`](../internals/architecture.md) §5.2 | `Namespace` is optional and the default process has a global namespace | Every cell has a `Namespace` handle; it may be empty | Clarify that the handle always exists; the authority may be empty |
 | 15 | [`native-libc.md`](native-libc.md) §4.7 | The loader provides "one guard page" below the stack | kseg0 SAS has no guard page; the loader leaves a 4 KiB gap that is not a VMAR but cannot fault | Document that `pthread_attr_getguardsize` is advisory; stack-overflow detection is M9.5/mapped cells |
 | 16 | [`native-libc.md`](native-libc.md) §4.5 | `_start` reads `argc`/`argv`/`envp`/`auxv` from the System V stack | `CellStart` carries them; the libc may build the stack shape for a C runtime | Make `CellStart` authoritative; the libc constructs the stack if needed |
 
@@ -2661,7 +2661,7 @@ The first changes the M9 demo; the second is a wording fix in the libc spec.
 
 ## 12. References
 
-- [`architecture.md`](architecture.md) — D1–D32, §4 (architecture), §5 (native ABI),
+- [`architecture.md`](../internals/architecture.md) — D1–D32, §4 (architecture), §5 (native ABI),
   §6 (compatibility container), §17.4 (kernel/ABI open questions).
 - [`native-libc.md`](native-libc.md) — the n32 C ABI, POSIX profile, `errno`, TLS,
   startup and capability enforcement above this contract.
@@ -2669,9 +2669,9 @@ The first changes the M9 demo; the second is a wording fix in the libc spec.
 - [`elf.md`](elf.md) — the IRIX compatibility ELF loader (not the native loader).
 - [`driver-interface.md`](driver-interface.md) — `ctl`/`data`/`status`, `posix_devctl`
   and the device-class payloads.
-- [`modules.md`](modules.md) — the separate kernel-module service table.
-- [`../plan/interfaces.md`](../plan/interfaces.md) — interface register and statuses.
-- [`../plan/milestones.md`](../plan/milestones.md) — M9 and M9.5.
+- [`modules.md`](../spec/modules.md) — the separate kernel-module service table.
+- [`../plan/interfaces.md`](interfaces.md) — interface register and statuses.
+- [`../plan/milestones.md`](../project/milestones.md) — M9 and M9.5.
 - [`../research/rust-std-irix7.md`](../research/rust-std-irix7.md) — the target matrix,
   §5.4 capability enforcement, §7.2–§7.5 the PAL and cell runtime, §9.3 the PR sequence.
 - [`../research/rust-std-build-spike.md`](../research/rust-std-build-spike.md) — the

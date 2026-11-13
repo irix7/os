@@ -19,7 +19,7 @@
 //! dependencies.  It is an in-memory namespace, not a VFS: permissions,
 //! timestamps, symbolic links and renaming are outside its contract.
 //!
-//! See [`docs/spec/overlay.md`](https://github.com/irix7/os/blob/main/docs/spec/overlay.md).
+//! See [`docs/internals/overlay.md`](https://github.com/irix7/os/blob/main/docs/internals/overlay.md).
 
 #![no_std]
 #![deny(unsafe_code)]

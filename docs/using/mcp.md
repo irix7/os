@@ -3,7 +3,7 @@
 **Status:** draft
 **Version:** 1.0
 **Owner:** infra
-**Related:** [`architecture.md`](architecture.md) §14, [`../plan/milestones.md`](../plan/milestones.md) M3.
+**Related:** [`architecture.md`](../internals/architecture.md) §14, [`../plan/milestones.md`](../project/milestones.md) M3.
 
 ## 1. Purpose
 

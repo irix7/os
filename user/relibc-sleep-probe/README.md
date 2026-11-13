@@ -2,7 +2,7 @@
 
 `probe.c` is linked against the relibc IRIX 7 PAL and exercises
 `nanosleep` and `clock_nanosleep` through the kernel's parked-sleep gate from
-`docs/spec/native-abi.md` §5.9.  It reuses the fixed 256 KiB image slot and
+`docs/programming/native-abi.md` §5.9.  It reuses the fixed 256 KiB image slot and
 linker script of [`../relibc-probe`](../relibc-probe).
 
 The probe prints `SLEEP-PROBE: start`, and `SLEEP-OK` only when every check

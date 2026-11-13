@@ -4,7 +4,7 @@
 **Version:** 0.1
 **Owner:** compatibility
 **Implementation:** [`crates/irix-elf`](../../crates/irix-elf)
-**Related:** [`architecture.md`](architecture.md) §6, [`../plan/milestones.md`](../plan/milestones.md) M5.
+**Related:** [`architecture.md`](../internals/architecture.md) §6, [`../plan/milestones.md`](../project/milestones.md) M5.
 
 ## 1. Scope
 

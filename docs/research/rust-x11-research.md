@@ -1247,8 +1247,8 @@ custom target. Practical consequences for the server:
 - IRIX 6.2 technical report (X11R6) — <http://www.sgistuff.net/software/irixintro/documents/irix6.2TR.html>.
 - NetBSD/sgimips — <https://www.netbsd.org/ports/sgimips/>; `newport(4)` —
   <https://man.netbsd.org/sgimips/newport.4>.
-- IRIX 7 project constraints — `/mnt/europa/os/docs/map.md`,
-  `docs/spec/architecture.md`, `targets/mips3-sgi-irix7-n32.json`.
+- IRIX 7 project constraints — `/mnt/europa/os/docs/introduction/map.md`,
+  `docs/internals/architecture.md`, `targets/mips3-sgi-irix7-n32.json`.
 
 ### 9.6 Measurement notes
 

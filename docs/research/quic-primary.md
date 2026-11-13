@@ -13,7 +13,7 @@ race-free transmit ring are still open.
 **Question.** Should QUIC replace TCP as the primary network protocol of IRIX 7, and if so,
 what exactly moves, what stays, and what would have to be true for it to fit an SGI Indy?
 **Basis.** `origin/main` at `41f3f24` (2026-10-27), including the pre-release policy
-([`docs/spec/pre-release.md`](../spec/pre-release.md)) and the wire-efficiency study
+([`docs/administration/pre-release.md`](../administration/pre-release.md)) and the wire-efficiency study
 ([`wire-efficiency.md`](wire-efficiency.md)). Measurements marked **[M]** were taken on the
 host described in Appendix A; **[C]** is read from the tree at that commit; **[D]** is
 derived arithmetic; **[H]** is an unverified hypothesis.
@@ -143,8 +143,8 @@ the PROM, or the removal of POSIX TCP.**
 | `Invoke` | 656 B | [C] + **[M]** |
 | Module ABI | v0.7.0 / ABI **12**, `Services` 0x70 bytes | [C] `docs/spec/modules.md` §4, `os-sdk` tag `v0.7.0` |
 | Module allocator | bump allocator, **no free** | [C] `modules/mcp/src/main.rs:67-79`, `kernel/src/heap.rs` |
-| CPU | R4400, MIPS III, big-endian, 16 KiB I/D L1, 1 MiB L2; Indy models at 50/75/100 MHz, later R4400/R5000 variants faster. Published 200 MHz MIPS32 crypto numbers are used only as an upper bound, not as an Indy clock. | [C] `docs/research/indy-hardware.md`, `docs/spec/architecture.md` |
-| RAM | 32–256 MiB depending on profile; the m2-rig uses 64 MiB (`banks = [64, 0, 0, 0]`) | [C] `docs/spec/architecture.md`, `tools/m2-rig/src/rig.rs:680` |
+| CPU | R4400, MIPS III, big-endian, 16 KiB I/D L1, 1 MiB L2; Indy models at 50/75/100 MHz, later R4400/R5000 variants faster. Published 200 MHz MIPS32 crypto numbers are used only as an upper bound, not as an Indy clock. | [C] `docs/research/indy-hardware.md`, `docs/internals/architecture.md` |
+| RAM | 32–256 MiB depending on profile; the m2-rig uses 64 MiB (`banks = [64, 0, 0, 0]`) | [C] `docs/internals/architecture.md`, `tools/m2-rig/src/rig.rs:680` |
 | NIC | Seeq 80C03, 10 Mbit, HPC3 PDMA | [C] `kernel/src/net.rs`, `docs/research/indy-hardware.md` |
 | Kernel UDP | smoltcp `socket-udp` compiled; used by DNS/NTP | [C] `kernel/Cargo.toml`, `kernel/src/dns.rs:8`, `kernel/src/ntp.rs:13` |
 | Module UDP | **none at the study's commit**; ABI 16 adds the `udp_*` services and eight kernel slots (`M3-ADR-0006`, 2026-10-29) | [C] `kernel/src/module.rs`, `docs/adr/m3-0006-udp-transport.md` |
@@ -664,7 +664,7 @@ The first fetch stays TCP+TLS for three reasons:
 2. TLS is the boot trust anchor; replacing it with plain HTTP would require a signed config
    and a new anti-rollback story (a separate ADR).
 3. The product spec names HTTPS URLs and SHA-256 as the distribution contract
-   (`docs/spec/system.md` §6); changing that is a product decision, not a transport detail.
+   (`docs/internals/system.md` §6); changing that is a product decision, not a transport detail.
 
 **Slim-PROM option (separate ADR).** The kernel TLS client dominates the ~1 MiB kernel
 text (the ROM README says the TLS client and verifier dominate); removing it is expected to
@@ -771,7 +771,7 @@ an authority.
   DHCP renewal, NAT rebinding, interface change.
 - **IRIX actor/home migration** — the actor moves to another node; the old home drains, the
   new home takes over. Open QUIC streams are node-local resources and do **not** migrate
-  with the actor (`docs/spec/system.md` §8). The migration stream transfers state; the old
+  with the actor (`docs/internals/system.md` §8). The migration stream transfers state; the old
   streams are reset; the new home opens new streams.
 
 Conflating these would be a design error. Say so in the ADR.
@@ -1199,8 +1199,8 @@ and dates from crates.io/GitHub on the same date.
 
 ### Project sources
 
-22. `docs/spec/pre-release.md`, `docs/spec/system.md`, `docs/spec/modules.md`,
-    `docs/spec/mcp.md`, `docs/spec/native-abi.md`, `docs/spec/boot-protocol.md` at
+22. `docs/administration/pre-release.md`, `docs/internals/system.md`, `docs/spec/modules.md`,
+    `docs/using/mcp.md`, `docs/programming/native-abi.md`, `docs/internals/boot-protocol.md` at
     `41f3f24`.
 23. `docs/research/wire-efficiency.md` (the wire study), `docs/adr/m2-0002-transport.md`,
     `m2-0003-authority.md`, `m2-0008-failure-fence.md`, `m2-0009-actor-migration.md`,

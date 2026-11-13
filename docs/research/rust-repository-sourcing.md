@@ -3,7 +3,7 @@
 **Status:** research report; not an ADR
 **Date:** 2026-10-25
 **Scope:** which existing Rust repositories and crates IRIX 7 can reuse, fork or borrow design from; licence compatibility with GPL-3.0-only; target portability to n32 MIPS III, 32-bit, big-endian, 32–256 MiB, `no_std` kernel and a thread-less bring-up userland.
-**Related:** [`../plan/milestones.md`](../plan/milestones.md), [`../spec/system.md`](../spec/system.md), [`../spec/architecture.md`](../spec/architecture.md), [`../spec/native-libc.md`](../spec/native-libc.md), [`../spec/erofs.md`](../spec/erofs.md), [`rust-fs-research.md`](rust-fs-research.md), [`rust-x11-research.md`](rust-x11-research.md), [`native-window-system-research.md`](native-window-system-research.md), [`rust-std-irix7.md`](rust-std-irix7.md).
+**Related:** [`../plan/milestones.md`](../project/milestones.md), [`../spec/system.md`](../internals/system.md), [`../spec/architecture.md`](../internals/architecture.md), [`../spec/native-libc.md`](../programming/native-libc.md), [`../spec/erofs.md`](../internals/erofs.md), [`rust-fs-research.md`](rust-fs-research.md), [`rust-x11-research.md`](rust-x11-research.md), [`native-window-system-research.md`](native-window-system-research.md), [`rust-std-irix7.md`](rust-std-irix7.md).
 
 ---
 
@@ -11,7 +11,7 @@
 
 ### 1.1 What was read
 
-The plan set (`docs/plan/*.md`), the architecture and interface specifications (`docs/spec/system.md`, `architecture.md`, `boot-protocol.md`, `elf.md`, `modules.md`, `packages.md`, `mcp.md`, `posix.md`, `native-abi.md`, `native-libc.md`, `driver-interface.md`, `erofs.md`, and the supporting `userland-services.md`, `console.md`, `overlay.md` and `mcp-apps.md`), the existing research reports, `README.md`, `Cargo.toml`, and `docs/map.md` were read before the search. The component map in §3 is derived from those documents and from the actual workspace members, not from the marketing pages of the candidate projects.
+The plan set (`docs/plan/*.md`), the architecture and interface specifications (`docs/internals/system.md`, `architecture.md`, `boot-protocol.md`, `elf.md`, `modules.md`, `packages.md`, `mcp.md`, `posix.md`, `native-abi.md`, `native-libc.md`, `driver-interface.md`, `erofs.md`, and the supporting `userland-services.md`, `console.md`, `overlay.md` and `mcp-apps.md`), the existing research reports, `README.md`, `Cargo.toml`, and `docs/introduction/map.md` were read before the search. The component map in §3 is derived from those documents and from the actual workspace members, not from the marketing pages of the candidate projects.
 
 ### 1.2 How candidates were checked
 
@@ -34,7 +34,7 @@ A permissive licence is not a provenance certificate. The project’s clean-room
 
 ### 1.4 Issue mapping used in this report
 
-At retrieval time the public repository has epics, not granular open tasks, for most of this work. The mapping below is used throughout; phase numbers are from `docs/plan/milestones.md`.
+At retrieval time the public repository has epics, not granular open tasks, for most of this work. The mapping below is used throughout; phase numbers are from `docs/project/milestones.md`.
 
 | Issue | Meaning | Phase / gate |
 |---|---|---|
@@ -748,10 +748,10 @@ Ranking counts the open epics/gates where the candidate is on the critical path,
 
 ### 10.1 Project documents
 
-- `docs/plan/milestones.md`, `testing.md`, `release.md`, `security.md`, `hardware-lab.md`, `interfaces.md`, `risks.md`, `github.md`, `community.md`, `cost.md`, `legal.md`.
-- `docs/spec/system.md`, `architecture.md`, `boot-protocol.md`, `elf.md`, `modules.md`, `packages.md`, `mcp.md`, `posix.md`, `native-abi.md`, `native-libc.md`, `driver-interface.md`, `erofs.md`, `userland-services.md`, `console.md`, `overlay.md`, `mcp-apps.md`.
+- `docs/project/milestones.md`, `testing.md`, `release.md`, `security.md`, `hardware-lab.md`, `interfaces.md`, `risks.md`, `github.md`, `community.md`, `cost.md`, `legal.md`.
+- `docs/internals/system.md`, `architecture.md`, `boot-protocol.md`, `elf.md`, `modules.md`, `packages.md`, `mcp.md`, `posix.md`, `native-abi.md`, `native-libc.md`, `driver-interface.md`, `erofs.md`, `userland-services.md`, `console.md`, `overlay.md`, `mcp-apps.md`.
 - `docs/research/rust-fs-research.md`, `erofs-big-endian-research.md`, `rust-x11-research.md`, `native-window-system-research.md`, `rust-os-design-research.md`, `plan9-rust-research.md`, `rust-std-irix7.md`, `rust-std-build-spike.md`, `std-hello-bringup.md`, `relibc-n32-bringup.md`, `compressed-ram.md`, `indy-hardware.md`.
-- `README.md`, `Cargo.toml`, `docs/map.md`, `docs/plan/interfaces.md`.
+- `README.md`, `Cargo.toml`, `docs/introduction/map.md`, `docs/programming/interfaces.md`.
 
 ### 10.2 Candidate repositories and crates
 

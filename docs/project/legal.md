@@ -2,7 +2,7 @@
 
 **Status:** living document
 **Licence:** GPL-3.0 (ADR-0012)
-**Related:** [`../LICENCE`](../../LICENCE), [`github.md`](github.md) §3, [`security.md`](security.md).
+**Related:** [`../LICENCE`](../../LICENCE), [`github.md`](github.md) §3, [`security.md`](../administration/security.md).
 
 ## 1. Licence
 

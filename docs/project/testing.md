@@ -2,7 +2,7 @@
 
 **Status:** living document
 **Principle:** tests are the specification's executable half. Benchmarks inform; they do not gate.
-**Related:** [`milestones.md`](milestones.md), [`../spec/system.md`](../spec/system.md), [`hardware-lab.md`](hardware-lab.md), [`release.md`](release.md).
+**Related:** [`milestones.md`](milestones.md), [`../spec/system.md`](../internals/system.md), [`hardware-lab.md`](hardware-lab.md), [`release.md`](../administration/release.md).
 
 ## 0. Mesh gates (current)
 

@@ -3,7 +3,7 @@
 //!
 //! These are model tests, not a live-module capacity claim. The MCP module's
 //! pending table is deliberately much smaller (`PENDING_CAPACITY` in
-//! `crates/mcp/src/mesh.rs`); see `docs/plan/testing.md` §0.
+//! `crates/mcp/src/mesh.rs`); see `docs/project/testing.md` §0.
 
 use std::collections::BTreeSet;
 

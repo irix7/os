@@ -22,11 +22,11 @@ node, without an application-level remote-mount or RPC protocol.
 
 > **The Tree of IRIX 7** — [irix7.github.io/os/tree](https://irix7.github.io/os/tree/)
 > is the living roadmap. The implementation plan is in
-> [`docs/plan/milestones.md`](docs/plan/milestones.md).
+> [`docs/project/milestones.md`](docs/project/milestones.md).
 >
 > **The Logical Computer** — [a 12-chapter documentary](https://irix7.github.io/os/film/)
 > follows one frame from a 1994 Indy through the system and back. Its notes and
-> chapter list are in [`docs/documentary.md`](docs/documentary.md).
+> chapter list are in [`docs/project/documentary.md`](docs/project/documentary.md).
 
 ## Architecture
 
@@ -78,9 +78,9 @@ The architecture does not throw away the current system:
   bare-metal GPU stack.
 
 The normative system specification is
-[`docs/spec/system.md`](docs/spec/system.md). The native architecture and
+[`docs/internals/system.md`](docs/internals/system.md). The native architecture and
 compatibility layer remain in
-[`docs/spec/architecture.md`](docs/spec/architecture.md).
+[`docs/internals/architecture.md`](docs/internals/architecture.md).
 
 ## Current status
 
@@ -155,10 +155,10 @@ while the native PAL, error channel, TLS and `stat` ABI remain open.
 
 ## Plans and documentation
 
-- [Milestone plan](docs/plan/milestones.md) — phases, 1/2/8/128 gates, rollback.
-- [System architecture](docs/spec/system.md) — the logical computer.
-- [Install guide](docs/install.md), [testing](docs/plan/testing.md),
-  [interfaces](docs/plan/interfaces.md), [risks](docs/plan/risks.md).
+- [Milestone plan](docs/project/milestones.md) — phases, 1/2/8/128 gates, rollback.
+- [System architecture](docs/internals/system.md) — the logical computer.
+- [Install guide](docs/installation/install.md), [testing](docs/project/testing.md),
+  [interfaces](docs/programming/interfaces.md), [risks](docs/project/risks.md).
 - [Research](docs/research/) — the evidence base, including the Wasm/mesh
   system design and the native bring-up reports.
 

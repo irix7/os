@@ -3,8 +3,8 @@
 **Status:** implemented for the measurement streams; limited
 **Date:** 2026-10-27
 **Issue:** <https://github.com/irix7/os/issues/246>
-**Related:** [M2-ADR-0002](../adr/m2-0002-transport.md),
-[M2-ADR-0010](../adr/m2-0010-direct-peer-transport.md),
+**Related:** [M2-ADR-0002](m2-0002-transport.md),
+[M2-ADR-0010](m2-0010-direct-peer-transport.md),
 [`../research/mesh-streams.md`](../research/mesh-streams.md)
 
 ## Context

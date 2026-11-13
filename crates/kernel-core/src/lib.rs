@@ -7,7 +7,7 @@
 //! and live here.
 //!
 //! This is the first slice of the boundary described in
-//! [`docs/plan/x86.md`].  It covers:
+//! [`docs/hardware/x86.md`].  It covers:
 //!
 //! * [`service`] — the one [`module_abi::Services`] table, its argument guards,
 //!   refusals and the [`service::Platform`] trait a machine implements.
@@ -16,7 +16,7 @@
 //! module window layout, cache maintenance and the tick loop.  Those are
 //! machine resources, not policy.
 //!
-//! [`docs/plan/x86.md`]: https://github.com/irix7/os/blob/main/docs/plan/x86.md
+//! [`docs/hardware/x86.md`]: https://github.com/irix7/os/blob/main/docs/hardware/x86.md
 
 #![no_std]
 #![deny(missing_docs)]

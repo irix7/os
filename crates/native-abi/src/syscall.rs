@@ -115,3 +115,17 @@ pub const SYS_SIGACTION: u32 = 51;
 pub const SYS_SETPGID: u32 = 52;
 /// `getpgid(pid)`; zero names the caller.
 pub const SYS_GETPGID: u32 = 53;
+/// `openat(dirfd, path, flags, mode)`; `dirfd` is `AT_FDCWD` or an open
+/// directory descriptor.
+pub const SYS_OPENAT: u32 = 54;
+/// `fstatat(dirfd, path, stat_block, flags)`; `flags` is 0 or
+/// `AT_SYMLINK_NOFOLLOW` (there are no symlinks, so it has no effect).
+pub const SYS_FSTATAT: u32 = 55;
+/// `mkdirat(dirfd, path, mode)`.
+pub const SYS_MKDIRAT: u32 = 56;
+/// `unlinkat(dirfd, path, flags)`; `flags` is 0 or `AT_REMOVEDIR`.
+pub const SYS_UNLINKAT: u32 = 57;
+/// `renameat2(olddirfd, oldpath, rename_at *, flags)`; the third argument is
+/// a 12-byte block `{ new_dirfd: u32, new_path: u32, _pad: u32 }`, matching
+/// `io_at`'s out-of-band layout for a flat gate with four registers.
+pub const SYS_RENAMEAT2: u32 = 58;

@@ -405,7 +405,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - A one-entry software TLB-refill vector maps a private kernel test page through
   kuseg and returns through `eret`; the telnet `tlb` command exercises it.  A
   general page-table refill and user-mode versions remain open.
-- The draft native capability ABI: [`docs/spec/native-abi.md`](docs/spec/native-abi.md)
+- The draft native capability ABI: [`docs/programming/native-abi.md`](docs/programming/native-abi.md)
   fixes the cell execution model, the 160-byte `CellStart` structure and its validation
   rules, the 64-bit handle and rights model, the object and invocation tables, the
   `syscall 0x1F7` gate and register convention, cell lifecycle, threads, TLS, signals,
@@ -422,12 +422,12 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The hosted native target `targets/mips3-sgi-irix7-native-n32.json` (`target_os =
   "irix7"`, Unix family) for the POSIX.1-2024 libc and Rust `std`.  It is separate from
   the kernel/module target and is exercised by a `core`/`build-std` CI probe.
-- The draft native libc ABI contract: [`docs/spec/native-libc.md`](docs/spec/native-libc.md)
+- The draft native libc ABI contract: [`docs/programming/native-libc.md`](docs/programming/native-libc.md)
   fixes the two-target split (native `target_os = "irix7"` vs IRIX 6.5 compat
   `target_os = "irix"`), the POSIX.1-2024 base profile, the selected XSI subset and the
   documented extension list, and the n32 ABI obligations for symbols, types, layouts,
   `errno`, TLS, startup, capability entry, cancellation, `fork` and loading.  The
-  machine-readable surface is [`docs/spec/native-libc-symbols.json`](docs/spec/native-libc-symbols.json)
+  machine-readable surface is [`docs/programming/native-libc-symbols.json`](docs/programming/native-libc-symbols.json)
   (642 entries, 526 promised for v1), and
   [`tools/std-abi-surface.py`](tools/std-abi-surface.py) audits the `libc::` names Rust
   `std` actually references.  The tool is warning-only in CI until the profile is accepted;
@@ -435,7 +435,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - The native libc API baseline is now POSIX.1-2024 (SUSv5 core) plus a documented XSI
   subset, not the IRIX 6.5 libc surface.  The IRIX 6.5 compatibility container keeps its
   legacy ABI; the native profile, ABI obligations and Rust `std` consequences are in
-  [`docs/spec/posix.md`](docs/spec/posix.md).
+  [`docs/programming/posix.md`](docs/programming/posix.md).
 - `crates/irix-elf`: the first M5 dependency, a `no_std` parser and load-plan
   view for IRIX o32 and n32 ELF images.  It decodes the ELF32 big-endian MIPS
   file header, all 32-byte program headers, the MIPS ABI in `e_flags`, the
@@ -450,7 +450,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   permissions; it performs no mapping, dynamic linking or relocation.  The
   crate has no unsafe code, no allocation and no external dependencies, and
   fifty-six host tests build synthetic images rather than committing a real
-  IRIX binary.  The contract is in `docs/spec/elf.md`.
+  IRIX binary.  The contract is in `docs/programming/elf.md`.
 
 - A panic screen: the handler prints the panic message and source location, CP0 Cause,
   EPC, Status and BadVAddr, the stack pointer and return address, and eight raw stack
@@ -708,7 +708,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
   RAM and network state.
 - `rom/tools/smoke.py`: starts iris, releases the CPU, waits for DHCP and drives the
   telnet console.
-- Advanced architecture specification (`docs/spec/architecture.md`), including the D1–D31
+- Advanced architecture specification (`docs/internals/architecture.md`), including the D1–D31
   decision register, hybrid SAS/MMU isolation, the native capability ABI, the IRIX
   compatibility container, R2-first boot, EROFS root, X11, the native display server and the
   in-OS MCP control plane.
@@ -774,7 +774,7 @@ All notable changes to IRIX 7 are recorded here. The format follows
 - CI and release scripts build the kernel and ROM from the same target; the ROM build
   passes `rom/linker.ld`.
 - README links the architecture spec and the plan.
-- `docs/map.md` records the advanced decisions and the research index.
+- `docs/introduction/map.md` records the advanced decisions and the research index.
 - CI cross-build job (`.github/workflows/ci.yml`) is now the M0 gate: `continue-on-error`
   removed, pinned nightly + `rust-src`, host `cc`, `rust-lld`, `-Zjson-target-spec`, and
   `Swatinem/rust-cache` (`m0-cross`).

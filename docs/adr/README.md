@@ -1,16 +1,8 @@
 # Architecture decision records — working series
 
-**Status:** living index
-**Scope:** the toolchain decision that unblocked M0, the decisions M2 needed for join,
-transport, route-cache, migration and failure, and the first M3 shard and multi-member
-decisions.
+This index is a living document. It covers the toolchain decision that unblocked M0 (the cross-build and first-boot milestone), the decisions M2 (the two-node milestone gate) needed for join, transport, route caching, migration and failure, and the first M3 (the eight-node milestone gate) decisions on sharded homes and multi-member membership. Project terms such as home, epoch and iris are defined in the [glossary](../introduction/glossary.md).
 
-The project's main ADR series is numbered from **ADR-0021** onward for the architecture
-decisions D1–D31 in [`../spec/architecture.md`](../spec/architecture.md) §2.2; see
-[`../plan/risks.md`](../plan/risks.md) §4. The decisions below are deliberately
-prefixed (**M0-ADR**, **M2-ADR**, **M3-ADR**) so they can be reviewed as a group without
-claiming a permanent number. When a decision is promoted to the main series it keeps its
-title and gains the next free global number.
+The project's main ADR series starts at **ADR-0021** and covers the architecture decisions D1–D31 listed in [`docs/internals/architecture.md`](../internals/architecture.md) §2.2; [`docs/project/risks.md`](../project/risks.md) §4 explains the numbering. The records below carry a milestone prefix (**M0-ADR**, **M2-ADR**, **M3-ADR**) so they can be reviewed as a group before they claim a permanent number. When a record is promoted to the main series it keeps its title and takes the next free global number.
 
 | ADR | Decision | Status |
 |---|---|---|
@@ -29,24 +21,17 @@ title and gains the next free global number.
 | [M1-ADR-0002](m1-0002-network-kernel-download.md) | ROM downloads the kernel from GitHub; kernel leaves the PROM; no integrity check (accepted risk) | Accepted, limited |
 | [M3-ADR-0002](m3-0002-multi-node-hub.md) | Bounded multi-member host hub, guest receive-path ordering and real multi-kernel convergence | Accepted for this slice, limited |
 
-The practical M2 runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md); the M3 first-slice
-runbook is [`../plan/m3-rig.md`](../plan/m3-rig.md). The harness is
-[`tools/m2-rig`](../../tools/m2-rig/README.md).
+The M2 runbook is [`docs/project/m2-rig.md`](../project/m2-rig.md) and the M3 first-slice runbook is [`docs/project/m3-rig.md`](../project/m3-rig.md). Both run on the [`tools/m2-rig`](../../tools/m2-rig/README.md) harness.
 
 ## Template
 
-Use the template in [`../plan/risks.md`](../plan/risks.md) §5. Every ADR records context,
-decision, consequences, alternatives and evidence. A decision without evidence is a
-proposal, not an ADR.
+Use the template in [`docs/project/risks.md`](../project/risks.md) §5. Every ADR records context, decision, consequences, alternatives and evidence. A record with no evidence is filed as a proposal and is not accepted as an ADR.
 
-- [M2-ADR-0010 — direct peer transport](m2-0010-direct-peer-transport.md)
+Further records in this series:
 
-- [M2-ADR-0011 — one prompt over the M2 object and actor surfaces](m2-0011-one-computer-console.md)
-
-- [M3-ADR-0003 — bounded mesh streams](m3-0003-multiplexed-streams.md)
-
-- [M3-ADR-0004 — readiness-driven module I/O](m3-0004-event-driven-io.md)
-
-- [M3-ADR-0005 — eight module TCP slots](m3-0005-multi-connection-transport.md)
-
-- [M3-ADR-0006 — module UDP services and the two-kernel datagram gate](m3-0006-udp-transport.md)
+- [M2-ADR-0010: direct peer transport](m2-0010-direct-peer-transport.md)
+- [M2-ADR-0011: one prompt over the M2 object and actor surfaces](m2-0011-one-computer-console.md)
+- [M3-ADR-0003: bounded mesh streams](m3-0003-multiplexed-streams.md)
+- [M3-ADR-0004: readiness-driven module I/O](m3-0004-event-driven-io.md)
+- [M3-ADR-0005: eight module TCP slots](m3-0005-multi-connection-transport.md)
+- [M3-ADR-0006: module UDP services and the two-kernel datagram gate](m3-0006-udp-transport.md)

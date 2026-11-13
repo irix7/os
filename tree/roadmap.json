@@ -12,7 +12,7 @@
       "The Tree is its living roadmap. The roots are the Indy baseline and the first gates, the trunk is the mesh, and the branches are the native compatibility, display, runtime and scale-out tracks.",
       "Nothing here is a date. It is a map of what must be true before the next thing can grow."
     ],
-    "note": "Grown from docs/plan/milestones.md. Statuses sync from the IRIX 7 Roadmap project.",
+    "note": "Grown from docs/project/milestones.md. Statuses sync from the IRIX 7 Roadmap project.",
     "site": "https://irix7.github.io/os/tree/",
     "project": "https://github.com/orgs/irix7/projects/2"
   },

@@ -8,13 +8,13 @@
 //!
 //! It is deliberately **not** an implementation and not a frozen ABI yet:
 //!
-//! - values marked “open” in [`docs/spec/native-libc.md`][spec] are provisional;
+//! - values marked “open” in [`docs/programming/native-libc.md`][spec] are provisional;
 //! - the C oracle and the `native-abi` layout assertions still have to review
 //!   every field and constant;
 //! - the crate contains no `extern` functions, no syscalls, no libc and no
 //!   allocation.
 //!
-//! [spec]: https://github.com/irix7/os/blob/main/docs/spec/native-libc.md
+//! [spec]: https://github.com/irix7/os/blob/main/docs/programming/native-libc.md
 //!
 //! The target is n32: 32-bit pointers and `long`, 64-bit `off_t`, `ino_t`,
 //! `dev_t`, `time_t` and `blkcnt_t`, big-endian.  All structs are `repr(C)`

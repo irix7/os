@@ -8,7 +8,7 @@ compatibility, display, runtime and scale-out tracks reaching towards v1.0.
 [Open The Tree of IRIX 7](https://irix7.github.io/os/tree/)
 
 It is generated from a single [`roadmap.json`](https://github.com/irix7/os/blob/main/tree/roadmap.json)
-file, which follows the [milestone plan](plan/milestones.md). Click any node for
+file, which follows the [milestone plan](milestones.md). Click any node for
 the demo, acceptance criteria, dependencies, estimate and risks; use the search
 to jump to a gate or track, or the rail along the bottom to move between M0 and
 M10.

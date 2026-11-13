@@ -3,7 +3,7 @@
 **Layer:** spec (ADR-0015: layered spec, similarity-screen verification)
 **Status:** proposed advanced architecture; decision-complete for v1, with the open questions in §17
 **Licence:** GPL-3.0 (ADR-0012), see `LICENCE`
-**Related:** `docs/map.md` (project map); `github.com/irix7/project` (toolchain + ADRs 0001–0020); `github.com/irix7/os` (this repo, planned)
+**Related:** `docs/introduction/map.md` (project map); `github.com/irix7/project` (toolchain + ADRs 0001–0020); `github.com/irix7/os` (this repo, planned)
 **Research inputs:** [`../research/`](../research/) — the hardware, X11, native-window, filesystem, Plan 9 and EROFS reports
 
 > **Architecture note (2026-10-25):** the primary system architecture is
@@ -169,7 +169,7 @@ All governing decisions apply. The numbered, dated ADRs live in
 | 0015 | Layered spec, similarity screen | This document's verification |
 | 0016 | Assembly replacement ROM replaces the factory PROM; n32/MIPS III from the PROM window into the n32 kernel | Boot path |
 | 0017 | Modern equivalents as references | Research method |
-| 0018 | GCC backend primary, LLVM parallel — **amended to LLVM-only** by [M0-ADR-0001](adr/m0-0001-llvm-only.md) | Codegen |
+| 0018 | GCC backend primary, LLVM parallel — **amended to LLVM-only** by [M0-ADR-0001](../adr/m0-0001-llvm-only.md) | Codegen |
 | 0019 | IRIX fork on `rust-lang/gcc` | GCC 17 trunk + libgccjit |
 | 0020 | Rebuild ladder | Recompile vs reconstruct |
 | 0021 | Native Rust std is load-bearing; its libc baseline is POSIX.1-2024 | Target/product split and std plan |
@@ -283,7 +283,7 @@ for the POSIX-2024 libc and Rust `std`, and is not used by the kernel.
 Current status: LLVM codegen and `-Z build-std` for n32 are **proven**; the assembly ROM
 boots from the PROM image, and the kernel runs DHCP/NTP/HTTP under iris.  There is no
 `rustc_codegen_gcc` build path; ADR-0018's GCC-primary ordering is amended by
-[M0-ADR-0001](adr/m0-0001-llvm-only.md).  The IRIX patch series in `irix7/gcc` remains
+[M0-ADR-0001](../adr/m0-0001-llvm-only.md).  The IRIX patch series in `irix7/gcc` remains
 the system toolchain for the compatibility container, not the Rust backend.
 
 Prior art on Rust IRIX targets (issue #41 research): `danifunker/rust-irixlibstd`
@@ -569,13 +569,13 @@ carries the global `Job`/actor identity, home and epochs, and the Unix `pid` is 
 personality view.  It is not a global process directory: a remote spawn, exec or wait
 is a capability invocation routed to the cell's home.  The gate, the `cell_id` record
 and the deliberate local limits are in
-[`native-abi.md` §5.10](native-abi.md#510-v0-process-gate-cells-and-mesh-identity).
+[`native-abi.md` §5.10](../programming/native-abi.md#510-v0-process-gate-cells-and-mesh-identity).
 
 ### 5.5 Unix-shaped libc
 
 The native libc is a separate library from the IRIX libc. Its normative API baseline is
 **POSIX.1-2024** (the core of Single UNIX Specification, Version 5 (2024)), plus a
-documented XSI subset; the profile and ABI obligations are in [`posix.md`](posix.md).
+documented XSI subset; the profile and ABI obligations are in [`posix.md`](../programming/posix.md).
 The IRIX 6.5 compatibility libc is a different source contract and keeps the IRIX ABI
 unchanged.  POSIX defines the source API, not the n32 binary layout, symbol versions,
 TLS model or syscall numbers; IRIX 7 owns and versions those.
@@ -672,7 +672,7 @@ parser and load-plan view for ELF32 big-endian MIPS images. It validates the fil
 the program-header table and every file and memory range, then exposes the `PT_LOAD`
 segments, `PT_INTERP` path and `PT_DYNAMIC` header without mapping anything. The loader
 contract, including the o32/n32 `e_flags` classification and the deliberate omission of
-dynamic linking, is fixed in [`elf.md`](elf.md).
+dynamic linking, is fixed in [`elf.md`](../programming/elf.md).
 
 ### 6.3 ABI details
 
@@ -1898,7 +1898,7 @@ planning aid, not a legal opinion.
 - ADR-0001–0020 live in `irix7/project/docs/adr/`.
 - The new decisions D1–D31 should become ADR-0022 onward (or a single "advanced
   architecture" ADR set); ADR-0021 is the native Rust std decision.
-- This spec is the normative architecture for the advanced phase; `docs/map.md` is the
+- This spec is the normative architecture for the advanced phase; `docs/introduction/map.md` is the
   project map.
 - The research reports are preserved in `docs/research/` for traceability.
 
@@ -2001,7 +2001,7 @@ corresponding implementation phase.
 - Audit log and approval flow (future; v1 has none).
 - The exact granularity of the MCP device/MMIO tools (typed operations vs raw register access); v1 exposes both under full root.
 - The `-Z build-std` host-toolchain glue; the pinned nightly and its `rust-src` component
-  are the remaining drift risk ([M0-ADR-0001](adr/m0-0001-llvm-only.md)).
+  are the remaining drift risk ([M0-ADR-0001](../adr/m0-0001-llvm-only.md)).
 - Benchmark suite: what to track (boot time, block throughput, X11 latency, audio
   glitches) even though it does not gate.
 

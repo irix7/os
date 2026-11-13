@@ -1,7 +1,7 @@
 # IRIX 7 — Project Plan
 
 **Status:** living document
-**Purpose:** turn the system architecture in [`../spec/system.md`](../spec/system.md) and the hardware/compatibility layers in [`../spec/architecture.md`](../spec/architecture.md) into an executable plan.
+**Purpose:** turn the system architecture in [`../spec/system.md`](../internals/system.md) and the hardware/compatibility layers in [`../spec/architecture.md`](../internals/architecture.md) into an executable plan.
 **Scope:** the project operating system around the technical system: milestones, GitHub, risks, interfaces, hardware, testing, security, release, legal, community and cost.
 
 The system architecture answers *what* IRIX 7 is; the hardware/compatibility spec covers the native layers. This directory answers *how the project gets built, tracked and shipped*.
@@ -14,15 +14,15 @@ The system architecture answers *what* IRIX 7 is; the hardware/compatibility spe
 | [`m2-rig.md`](m2-rig.md) | **M2 runbook:** two independent iris kernels, the host relay path, readiness, the two-way probe and the M2-1 handoff. |
 | [`github.md`](github.md) | Organisation, repositories, Projects v2, labels, templates, automation, Actions, security and every free GitHub feature we use. |
 | [`risks.md`](risks.md) | The risk register, decision backlog and review process. |
-| [`interfaces.md`](interfaces.md) | Index of interface specifications and their status. |
+| [`interfaces.md`](../programming/interfaces.md) | Index of interface specifications and their status. |
 | [`hardware-lab.md`](hardware-lab.md) | The two real Indys, the rig, spares, safety and hardware-in-the-loop testing. |
 | [`testing.md`](testing.md) | Test pyramid, corpus, CI, fuzzing, conformance and benchmarks. |
-| [`security.md`](security.md) | Threat model, trust boundaries, MCP development/production modes, supply chain and disclosure. |
-| [`release.md`](release.md) | Versioning, channels, artefacts, image pipeline, signing, A/B, rollback and support. |
-| [`x86.md`](x86.md) | The x86_64 machine: boot path, device set, the boundary being built behind it, and the first slice's limits. |
+| [`security.md`](../administration/security.md) | Threat model, trust boundaries, MCP development/production modes, supply chain and disclosure. |
+| [`release.md`](../administration/release.md) | Versioning, channels, artefacts, image pipeline, signing, A/B, rollback and support. |
+| [`x86.md`](../hardware/x86.md) | The x86_64 machine: boot path, device set, the boundary being built behind it, and the first slice's limits. |
 | [`x86-rig.md`](x86-rig.md) | The QEMU backend for the two-node rig: launch, boot disk, identity, console and restart. |
-| [`powerbook-devshell.md`](powerbook-devshell.md) | The PowerBook G3 (PowerPC 750) cross shell, target spec, build check and what the machine layer still needs. |
-| [`powerpc-module-slice.md`](powerpc-module-slice.md) | The PowerPC G3 module slot, ATA disk layout, verified flat-image loader and QEMU gate. |
+| [`powerbook-devshell.md`](../hardware/powerbook-devshell.md) | The PowerBook G3 (PowerPC 750) cross shell, target spec, build check and what the machine layer still needs. |
+| [`powerpc-module-slice.md`](../hardware/powerpc-module-slice.md) | The PowerPC G3 module slot, ATA disk layout, verified flat-image loader and QEMU gate. |
 | [`legal.md`](legal.md) | GPL-3.0, clean-room, provenance, DCO, trademarks and privacy. |
 | [`community.md`](community.md) | Contributing, governance, maintainers, communication and recognition. |
 | [`cost.md`](cost.md) | Free tiers, quotas, budget and scaling. |

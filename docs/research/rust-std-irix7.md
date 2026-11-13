@@ -119,7 +119,7 @@ provided as documented extensions or patched in `std` (§5.1.3).
   userland, or ADR-0018 must be amended to make LLVM primary for userland and
   keep GCC as the parallel/portability backend. This is the highest-risk
   unresolved question (§10.1).
-- **ADR-0016** is incorrectly summarised in `docs/spec/architecture.md` §2.1, and the
+- **ADR-0016** is incorrectly summarised in `docs/internals/architecture.md` §2.1, and the
   repository’s current assembly ROM supersedes both readings. This is a
   documentation-hygiene issue, not a `std` dependency; `std` is not linked into
   the ROM or kernel (§11).
@@ -138,8 +138,8 @@ implements the POSIX.1-2024 base `std` expects plus a documented extension list,
 while the kernel and modules remain `no_std`.
 
 **Status update (2026-10-24):** the decision is no longer only a proposal.  D32 in
-[`docs/spec/architecture.md`](../../docs/spec/architecture.md) adopts POSIX.1-2024 as the
-native libc API baseline, and [`docs/spec/posix.md`](../../docs/spec/posix.md) records the
+[`docs/internals/architecture.md`](../internals/architecture.md) adopts POSIX.1-2024 as the
+native libc API baseline, and [`docs/programming/posix.md`](../programming/posix.md) records the
 profile and ABI obligations.  This report remains the evidence base and the std-specific
 implementation plan.
 
@@ -162,7 +162,7 @@ For that program, `std` must provide `std::io`, `std::fs`, `std::net`,
 is itself a new interface, not the IRIX 6.5 libc. The architecture is explicit
 that “the native libc is a separate library from the IRIX libc” and that it
 presents the familiar surface with capability invocations underneath
-(`docs/spec/architecture.md` §5.5, lines 536–549). `std` sits on that libc.
+(`docs/internals/architecture.md` §5.5, lines 536–549). `std` sits on that libc.
 
 This is the product that is load-bearing because the native desktop, the MCP
 cell, the network/FS clients and ordinary user applications are Rust. Without
@@ -173,7 +173,7 @@ cannot be a daily driver.
 ### 1.2 IRIX 6.5 compatibility `std` (separate, not load-bearing)
 
 The compatibility container runs IRIX 6.5 o32/n32 binaries unchanged
-(`docs/spec/architecture.md` §6.1). Those binaries use the IRIX 6.5 syscall
+(`docs/internals/architecture.md` §6.1). Those binaries use the IRIX 6.5 syscall
 numbers, the IRIX 6.5 libc ABI and the IRIX 6.5 ELF/`rld` conventions. A Rust
 target that emits those binaries is a **hosted IRIX 6.5 target**, with
 `target_os = "irix"` and the IRIX 6.5 ABI. It can run `ripgrep` or `tokio` on a
@@ -184,7 +184,7 @@ It cannot define the native OS ABI. Its `struct stat`, `dirent`, `sockaddr_in6`,
 `pthread_*`, `errno` location, syscall numbers and trap convention are IRIX
 6.5’s, not IRIX 7’s. Using it as the native target would freeze the native OS
 into 1990s POSIX and defeat D2 (“Native ABI is new; IRIX lives only in the
-compatibility container”, `docs/spec/architecture.md` line 172).
+compatibility container”, `docs/internals/architecture.md` line 172).
 
 ### 1.3 Kernel/module `std` (not a product)
 
@@ -503,11 +503,11 @@ Points to decide before committing it:
 - **Floating point**: the kernel target uses `+soft-float`. If native user code
   uses hardware FP, the kernel must save and restore FP state per task; the
   architecture currently says the FPU is disabled at boot
-  (`docs/spec/boot-protocol.md` §2). Keep `+soft-float` for v1 and treat
+  (`docs/internals/boot-protocol.md` §2). Keep `+soft-float` for v1 and treat
   hardware FP as a separate kernel/ABI decision, not a `std` decision.
 - **Dynamic linking**: `false` for the first static cell; `true` if the native
   libc becomes a shared cell/library. The architecture says the libc is a cell
-  that can be updated independently (`docs/spec/architecture.md` §5.5), which
+  that can be updated independently (`docs/internals/architecture.md` §5.5), which
   points at a shared library eventually; start static (ADR-0007’s static-first
   principle) and make the loader support shared libc later.
 - **CRT**: a cell is a `#![no_main]` object with an SDK entry macro that calls
@@ -977,7 +977,7 @@ item is POSIX.1-2024 base or XSI as noted; the extension list is §5.1.3.
 
 | Symbol/contract | Required by | Notes |
 |---|---|---|
-| `clock_gettime` with `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, `clock_getres`, `clock_nanosleep`, `nanosleep`, `timer_create`/`timer_settime`/`timer_gettime`/`timer_getoverrun`/`timer_delete`; `gettimeofday` (extension; removed in Issue 8) | `std::time`, `std::thread` | `Instant` uses `CLOCK_MONOTONIC`; the kernel already has a monotonic timebase (`docs/spec/architecture.md` §8.4); `gettimeofday` is only for legacy crates |
+| `clock_gettime` with `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, `clock_getres`, `clock_nanosleep`, `nanosleep`, `timer_create`/`timer_settime`/`timer_gettime`/`timer_getoverrun`/`timer_delete`; `gettimeofday` (extension; removed in Issue 8) | `std::time`, `std::thread` | `Instant` uses `CLOCK_MONOTONIC`; the kernel already has a monotonic timebase (`docs/internals/architecture.md` §8.4); `gettimeofday` is only for legacy crates |
 | `environ`, `getenv`, `setenv`, `unsetenv`, `putenv`, `argv`/`argc`, `sysconf` (including `_SC_NPROCESSORS_ONLN`, `_SC_HOST_NAME_MAX`), `confstr`, `pathconf`/`fpathconf` | `std::env`, `std::thread`, `std::net` | The cell loader supplies argv/env; the libc exposes `environ`; `_SC_NPROCESSORS_ONLN`/`_SC_HOST_NAME_MAX` are POSIX-2024, so no IRIX-style hostname patch |
 | `__errno_location` (or a target-specific `__errno` link name), `strerror`, `strerror_r` | `std::io::Error` | Pick one and keep it stable; `std`’s default is `__errno_location` (`library/std/src/sys/io/error/unix.rs` lines 22–36) |
 | `dlopen`, `dlsym`, `dlerror`, `dlclose`, `dladdr` (new); `RTLD_DEFAULT`/`RTLD_NEXT`, `dl_iterate_phdr` (extensions) | crates, backtrace, plugins | POSIX-2024 has the dynamic loader and `dladdr`; `RTLD_DEFAULT`/`RTLD_NEXT` and `dl_iterate_phdr` are the ELF/glibc extensions |
@@ -991,7 +991,7 @@ system, authority is a handle, not a name (D11). The native libc is where the
 two meet:
 
 - `open(path)` resolves in the cell’s namespace — by default the global
-  IRIX-like namespace, optionally a private one (`docs/spec/architecture.md`
+  IRIX-like namespace, optionally a private one (`docs/internals/architecture.md`
   §5.2) — and returns a `File` capability wrapped as an fd; a path does not
   grant authority.
 - `socket()` returns a `Socket` capability; `connect` requires the network
@@ -1010,7 +1010,7 @@ handle on every use.
 
 Do not add `syssgi`, `sproc`, `arenal`, `procntl`, IRIX `ioctl` numbers or IRIX
 `stat` layouts to the native libc. Those belong to the compat container
-(`docs/spec/architecture.md` §6.3). A native program that needs them is a legacy
+(`docs/internals/architecture.md` §6.3). A native program that needs them is a legacy
 program and should run in the container. Keeping them out of the native libc is
 what keeps the native ABI clean and makes the `std` port small.
 
@@ -1427,7 +1427,7 @@ the crate’s whole dependency tree.
 
 The native-world applications are not hypothetical: the architecture’s MCP
 cell, display server, network/FS clients and desktop are all Rust
-(`docs/spec/architecture.md` §4.3, §13, §14). Without `std`, each one would
+(`docs/internals/architecture.md` §4.3, §13, §14). Without `std`, each one would
 reimplement the same operating-system layer in `no_std`, and the ecosystem
 crates in the table would be unavailable.
 
@@ -1558,11 +1558,11 @@ and conventions. The rule is the same as `module-abi`: one source of truth.
 **Contents:**
 
 1. `docs/research/rust-std-irix7.md` — this report (evidence).
-2. `docs/spec/native-libc.md` (new draft) — the §5.3 contract: signatures,
+2. `docs/programming/native-libc.md` (new draft) — the §5.3 contract: signatures,
    types, error semantics, the POSIX.1-2024 profile, the extension list,
    “v1 / optional / never”, and the capability enforcement rules. Owner:
    kernel/compat; status draft. This fills the interface already listed as
-   planned in `docs/plan/interfaces.md`.
+   planned in `docs/programming/interfaces.md`.
 3. An ADR PR in `irix7/project/docs/adr/` (ADR-0021, “native IRIX 7 std”) —
    the decision: native `std` is load-bearing; compat `std` is separate; target
    split; no `std` in kernel/modules; the native libc is designed for `std`;
@@ -1673,8 +1673,8 @@ crate’s cfg work. `tempfile` can use `mkstemp`; `terminal_size` can use
 
 M5 and M9 are not done. There is no native libc, no cell loader, no native
 process model and no userland syscalls. The native ABI spec
-(`docs/spec/native-abi.md`) and native libc spec (`docs/spec/native-libc.md`)
-are still planned; `docs/plan/interfaces.md` lists both. `std` cannot run until
+(`docs/programming/native-abi.md`) and native libc spec (`docs/programming/native-libc.md`)
+are still planned; `docs/programming/interfaces.md` lists both. `std` cannot run until
 M9. The report’s plan is deliberately staged so that the first PR is docs, the
 second compiles `std` against declarations, and only the third runs it. Do not
 claim `std` works before a cell runs the conformance suite.
@@ -1820,7 +1820,7 @@ read for this report. The local §2.1 table is a summary, not the ADR text.
 | 0013 | Reimplement everything; factory PROM; Rust PROM a stretch goal | The current assembly ROM is a later development; `std` is not in the ROM. | No change |
 | 0014 | Harness-enforced clean-room | Native `libc`/`std` are clean-room; compat bindings are private. | **Clarify** |
 | 0015 | Layered spec + similarity screen | The native ABI spec is the clean-room artefact; the compat bindings are not published. | **Clarify** |
-| 0016 | o32 ECOFF bootstrap into n32 kernel | The actual ADR text says o32/ECOFF; `docs/spec/architecture.md` §2.1 says “Rust ROM replaces the factory PROM”. The current ROM is an assembly stub at `0xBFC00000` (`AGENTS.md`, `docs/spec/boot-protocol.md` §2). `std` is not linked into either. | **Documentation fix**, not a `std` change |
+| 0016 | o32 ECOFF bootstrap into n32 kernel | The actual ADR text says o32/ECOFF; `docs/internals/architecture.md` §2.1 says “Rust ROM replaces the factory PROM”. The current ROM is an assembly stub at `0xBFC00000` (`AGENTS.md`, `docs/internals/boot-protocol.md` §2). `std` is not linked into either. | **Documentation fix**, not a `std` change |
 | 0017 | Modern open-source equivalents as references | The prior art is a reference, not copied code | No change |
 | 0018 | GCC backend primary, LLVM parallel; MIPS unverified | `std` must be validated on GCC, or the ADR must be amended for userland | **Potential change**; §10.1 |
 | 0019 | IRIX GCC fork on `rust-lang/gcc` 17 | Same as 0018 | **Potential change** |
@@ -1829,10 +1829,10 @@ read for this report. The local §2.1 table is a summary, not the ADR text.
 **ADR-0016 note.** The external ADR is
 `https://github.com/irix7/project/blob/main/docs/adr/0016-o32-ecoff-bootstrap.md`;
 its text says the Indy’s ARCS PROM is o32/ECOFF and the bootstrap is o32. The
-local `docs/spec/architecture.md` §2.1 summarises it as “Rust ROM replaces the
+local `docs/internals/architecture.md` §2.1 summarises it as “Rust ROM replaces the
 factory PROM; n32/MIPS III from the PROM window into the n32 kernel”, which is
 not the same decision. The repository’s current ROM is a pure MIPS III assembly
-stub executed from `0xBFC00000` (`AGENTS.md`; `docs/spec/boot-protocol.md` §2),
+stub executed from `0xBFC00000` (`AGENTS.md`; `docs/internals/boot-protocol.md` §2),
 which supersedes both readings in practice. This should be corrected in a
 separate docs PR. It does not affect `std`: the ROM and kernel are `no_std`, and
 `std` is not a boot dependency.
@@ -1865,11 +1865,11 @@ Only the decisions with a `std` implication are listed; the rest are neutral.
 
 **Net result:** D2–D4, D9, D11–D13, D17 and D30 already imply the recommended
 split. POSIX.1-2024 is now recorded as **D32** in
-[`docs/spec/architecture.md`](../../docs/spec/architecture.md): the native
+[`docs/internals/architecture.md`](../internals/architecture.md): the native
 libc's API baseline is POSIX.1-2024/SUSv5, while the IRIX 6.5 compatibility
 container keeps its legacy ABI.  D2 makes the native ABI new, and D4 makes the
 libc Unix-shaped over capabilities.  The profile and ABI obligations are in
-[`docs/spec/posix.md`](../../docs/spec/posix.md); this report supplies the
+[`docs/programming/posix.md`](../programming/posix.md); this report supplies the
 evidence and the detailed std plan.  POSIX.1-2024 is the
 chosen **source API** for that libc, not a replacement for the native binary ABI
 or for the IRIX 6.5 compat container. The only governing-record changes are
@@ -2106,16 +2106,16 @@ All paths are relative to the pinned sysroot’s `lib/rustlib/src/rust/`:
 ### 13.3 Local repository
 
 - `AGENTS.md` (ROM, modules, cache, PROM budget)
-- `docs/spec/architecture.md` §2.1 (ADRs), §2.2 (D1–D31), §3.2–3.3, §4.2–4.4,
+- `docs/internals/architecture.md` §2.1 (ADRs), §2.2 (D1–D31), §3.2–3.3, §4.2–4.4,
   §5.4–5.7, §6.1–6.4, §8.4–8.6, §10.2, §15.3
-- `docs/spec/boot-protocol.md` §2 (handoff, CPU state)
+- `docs/internals/boot-protocol.md` §2 (handoff, CPU state)
 - `docs/spec/modules.md` §3–§6 (module area, ABI, SDK)
-- `docs/plan/milestones.md` M0, M5, M9
-- `docs/plan/interfaces.md` (native ABI/native libc planned)
-- `docs/plan/risks.md` R6, R17
-- `docs/plan/testing.md` (test pyramid, CI)
-- `docs/plan/security.md` (trust boundaries)
-- `docs/toolchain.md` (current one-target/no-std description)
+- `docs/project/milestones.md` M0, M5, M9
+- `docs/programming/interfaces.md` (native ABI/native libc planned)
+- `docs/project/risks.md` R6, R17
+- `docs/project/testing.md` (test pyramid, CI)
+- `docs/administration/security.md` (trust boundaries)
+- `docs/installation/toolchain.md` (current one-target/no-std description)
 - `targets/mips3-sgi-irix7-n32.json`
 - `Cargo.toml`, `Cargo.lock`
 - `kernel/Cargo.toml`, `kernel/src/main.rs`, `kernel/src/module.rs`

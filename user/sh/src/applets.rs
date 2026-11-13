@@ -106,7 +106,7 @@ fn cat(args: Args) -> i32 {
     let mut status = 0;
     for &path in &args[1..] {
         // SAFETY: `path` is NUL-terminated.
-        let fd = unsafe { libc::open(path, libc::O_RDONLY) };
+        let fd = unsafe { libc::open(path, libc::O_RDONLY, 0) };
         if fd < 0 {
             perror("cat", arg(path));
             status = 1;
@@ -426,7 +426,7 @@ fn wc(args: Args) -> i32 {
     let mut status = 0;
     for &path in &args[1..] {
         // SAFETY: `path` is NUL-terminated.
-        let fd = unsafe { libc::open(path, libc::O_RDONLY) };
+        let fd = unsafe { libc::open(path, libc::O_RDONLY, 0) };
         if fd < 0 || !count(fd, &mut out, arg(path)) {
             out.flush();
             perror("wc", arg(path));

@@ -10,4 +10,4 @@ It deliberately does **not** own threads, stacks, TLS sessions, sockets, file
 descriptors, a general actor scheduler or a persistent directory. A migrated
 actor resumes at a message boundary; node-local resources are not migrated.
 
-See `docs/adr/m2-0009-actor-migration.md` and `docs/plan/m2-rig.md`.
+See `docs/adr/m2-0009-actor-migration.md` and `docs/project/m2-rig.md`.

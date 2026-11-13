@@ -24,7 +24,7 @@ Create ~/.config/irix7/lab.env with:
   INDY_MCP_URL=http://indy-a.lab:7801/mcp
   MCP_TOKEN=<the bearer token>
 
-See docs/plan/hardware-lab.md for the rig, serial and power setup.
+See docs/project/hardware-lab.md for the rig, serial and power setup.
 EOF
   exit 1
 fi

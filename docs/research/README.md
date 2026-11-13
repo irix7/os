@@ -1,7 +1,7 @@
 # Research index
 
 These reports are the evidence base for the advanced architecture. They are research input,
-not ADRs; the decisions are in [`../spec/architecture.md`](../spec/architecture.md) §2.2.
+not ADRs; the decisions are in [`../spec/architecture.md`](../internals/architecture.md) §2.2.
 
 | Report | What it answers |
 |---|---|

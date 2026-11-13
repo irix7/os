@@ -3,7 +3,7 @@
 **Status:** living document
 **Scope:** versioning, channels, artefacts, image pipeline, signing, A/B updates, rollback,
 support and release checklists.
-**Related:** [`milestones.md`](milestones.md), [`../spec/system.md`](../spec/system.md), [`github.md`](github.md) §13, [`testing.md`](testing.md) §8, [`security.md`](security.md).
+**Related:** [`milestones.md`](../project/milestones.md), [`../spec/system.md`](../internals/system.md), [`github.md`](../project/github.md) §13, [`testing.md`](../project/testing.md) §8, [`security.md`](security.md).
 
 ## 1. Versioning
 

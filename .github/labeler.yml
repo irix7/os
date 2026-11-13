@@ -64,7 +64,7 @@
   - changed-files:
       - any-glob-to-any-file:
           - "SECURITY.md"
-          - "docs/plan/security.md"
+          - "docs/administration/security.md"
 
 "area/clean-room":
   - changed-files:

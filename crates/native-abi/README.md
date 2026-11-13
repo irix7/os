@@ -11,7 +11,7 @@ deliberately:
 - **provisional v0** until the C oracle and the ABI review freeze every field
   and constant.
 
-The source specification is [`docs/spec/native-libc.md`][spec].  In particular,
+The source specification is [`docs/programming/native-libc.md`][spec].  In particular,
 the `stat` size, `dirent` `NAME_MAX`, signal context and several numeric
 constants are marked open there; this crate pins the recommended defaults so
 changes are visible and testable.
@@ -21,7 +21,7 @@ this crate at compile time; see [`tools/std-spike`](../../tools/std-spike) and
 [`docs/research/rust-std-build-spike.md`](../../docs/research/rust-std-build-spike.md)
 §10.
 
-[spec]: https://github.com/irix7/os/blob/main/docs/spec/native-libc.md
+[spec]: https://github.com/irix7/os/blob/main/docs/programming/native-libc.md
 
 ## Use
 

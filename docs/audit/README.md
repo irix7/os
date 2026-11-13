@@ -50,7 +50,7 @@ table keeps the audited 39 so the verdicts remain traceable.
 | 2 | M1 — Single-node logical computer | core | implemented | high | Real-Indy evidence under #16; do not call the bridge resident policy |
 | 3 | M2 — Two-node join and migration | mesh | partial | high | Root-failure recovery and epoch-store provisioning remain |
 | 33 | M1: boot-protocol conformance tests (BootInfo layout + CRC32C) | core | partial | high | Reopened #33: tests are not linked to the live parser; endianness and map walk are wrong |
-| 43 | docs: add install/getting-started guide | core | partial | low | Update `docs/install.md` run/status sections |
+| 43 | docs: add install/getting-started guide | core | partial | low | Update `docs/installation/install.md` run/status sections |
 | 115 | console: unify kernel and user output across serial, telnet and MCP telemetry | core | implemented | low | Add the automated telnet/MCP assertion for user stdout |
 | 116 | boot: emit a machine-readable READY marker | core | implemented | low | Make `boot=` monotonic or document RTC-second reuse |
 | 117 | kernel: fix TLB teardown and refill after user mode | core | implemented | low | Add the user-then-TLB regression to CI |

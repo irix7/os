@@ -4,8 +4,8 @@
 **Date:** 2026-10-27
 **Deciders:** M2-3, for review at the M2 gate
 **Related:** [M2-ADR-0005](m2-0005-join-epoch.md), [M2-ADR-0002](m2-0002-transport.md),
-[`../spec/system.md`](../spec/system.md) §5, [`../plan/milestones.md`](../plan/milestones.md) §2,
-[`../plan/m2-rig.md`](../plan/m2-rig.md)
+[`../spec/system.md`](../internals/system.md) §5, [`../plan/milestones.md`](../project/milestones.md) §2,
+[`../plan/m2-rig.md`](../project/m2-rig.md)
 
 ## Context
 

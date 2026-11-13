@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Native IRIX 7 n32 C types and public layouts.
 //!
-//! These are the provisional v0 layouts from `docs/spec/native-libc.md` §4.1.
+//! These are the provisional v0 layouts from `docs/programming/native-libc.md` §4.1.
 //! The C oracle and the layout review will freeze them; they are not yet a
 //! shipped ABI.
 
@@ -97,6 +97,15 @@ pub struct pollfd {
     pub fd: c_int,
     pub events: c_short,
     pub revents: c_short,
+}
+
+/// Out-of-band third argument for `renameat2`: 12 bytes, 4-aligned.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct rename_at {
+    pub new_dirfd: u32,
+    pub new_path: u32,
+    pub flags: u32,
 }
 
 /// The v0 `pread`/`pwrite` argument block: 16 bytes, 8-byte aligned.

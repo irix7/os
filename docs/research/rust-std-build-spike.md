@@ -15,7 +15,7 @@ local patched `libc`, and leave a reproducible patch set.
 **Toolchain:** `nightly-2026-10-03`; `rustc 1.101.0-nightly (0abfedbc7
 2026-10-02)`; `cargo 1.101.0-nightly (f3865b2a4 2026-09-29)`; LLVM 23.1.1.
 **Companions:** [`rust-std-irix7.md`](rust-std-irix7.md) (the product decision and
-the API contract analysis) and [`../spec/native-libc.md`](../spec/native-libc.md)
+the API contract analysis) and [`../spec/native-libc.md`](../programming/native-libc.md)
 (the native ABI specification).
 
 ---
@@ -133,7 +133,7 @@ assertions, is a **compile-only** platform module:
 | constants | 304 |
 | `extern "C"` declarations | 201 |
 
-It follows [`native-libc.md`](../spec/native-libc.md) §4.1 for the type widths
+It follows [`native-libc.md`](../programming/native-libc.md) §4.1 for the type widths
 (`size_t`/`ssize_t` 32-bit, `off_t`/`ino_t`/`dev_t`/`time_t` 64-bit, `long`
 32-bit) and the public struct list `std` touches. Notable choices:
 
@@ -286,7 +286,7 @@ trusting an incremental one.
 - The required `std` changes are a target entry in `build.rs`, an
   `os::irix7` re-export module and six small cfg arms — not a 34-file patch.
 - The POSIX-2024-shaped libc surface in
-  [`native-libc.md`](../spec/native-libc.md) §5 is close enough to compile
+  [`native-libc.md`](../programming/native-libc.md) §5 is close enough to compile
   `std`: the only platform types the shared Unix declarations still needed were
   the ordinary C ones (`tm`, `lconv`, `Dl_info`, `wchar_t`, `sem_t`); the rest
   are defined once in `libc`'s `src/unix/mod.rs`.

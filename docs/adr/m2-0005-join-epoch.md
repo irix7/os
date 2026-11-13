@@ -4,8 +4,8 @@
 **Date:** 2026-10-26
 **Deciders:** M2-2, for review at the M2 gate
 **Related:** [M2-ADR-0001](m2-0001-two-node-rig.md), [M2-ADR-0002](m2-0002-transport.md),
-[M2-ADR-0003](m2-0003-authority.md), [`../spec/system.md`](../spec/system.md) §5 and §9,
-[`../plan/milestones.md`](../plan/milestones.md) §2, [`../plan/m2-rig.md`](../plan/m2-rig.md)
+[M2-ADR-0003](m2-0003-authority.md), [`../spec/system.md`](../internals/system.md) §5 and §9,
+[`../plan/milestones.md`](../project/milestones.md) §2, [`../plan/m2-rig.md`](../project/m2-rig.md)
 
 ## Context
 

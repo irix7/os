@@ -6,7 +6,7 @@ This is a **name-level** audit.  It walks the pinned Rust `std` sources, follows
 the module tree that would be compiled for a native `target_os = "irix7"` target
 (`target_family = "unix"`, n32, big-endian) and collects every `libc::`
 reference it finds.  It then compares those names with the machine-readable
-manifest in `docs/spec/native-libc-symbols.json`.
+manifest in `docs/programming/native-libc-symbols.json`.
 
 It is not an ABI checker.  It does not compile anything, does not expand macros
 beyond `cfg_select!`, does not evaluate `cfg!()` in expressions, and does not
@@ -28,7 +28,7 @@ import sys
 SCHEMA = "irix7-native-libc-symbols"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-DEFAULT_MANIFEST = os.path.join(REPO_ROOT, "docs", "spec", "native-libc-symbols.json")
+DEFAULT_MANIFEST = os.path.join(REPO_ROOT, "docs", "programming", "native-libc-symbols.json")
 
 # The cfg model of the native target, from the std research report section 3.2.
 # These are the only values the audit claims to know.  Anything else is
@@ -798,7 +798,7 @@ def print_text(report: dict) -> None:
         print()
     print(
         "Note: name-level audit only.  It does not check signatures, layouts, errno\n"
-        "values or runtime semantics.  See docs/spec/native-libc.md section 9."
+        "values or runtime semantics.  See docs/programming/native-libc.md section 9."
     )
 
 
@@ -827,7 +827,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="std-abi-surface.py",
         description=(
             "Audit the native IRIX 7 libc names referenced by Rust std against "
-            "docs/spec/native-libc-symbols.json.  Read-only and name-level."
+            "docs/programming/native-libc-symbols.json.  Read-only and name-level."
         ),
         epilog=(
             "Exit status is 0 unless --strict is given and a name referenced by std "

@@ -5,7 +5,7 @@ the Seeq receive interrupt is now enabled and `Status.IM2` is unmasked after a
 boot self-test.  The readiness mask and the 10 ms deadline fallback remain.
 **Date:** 2026-10-27, amended 2026-11-03
 **Issue:** <https://github.com/irix7/os/issues/248>
-**Related:** [M2-ADR-0002](../adr/m2-0002-transport.md), ABI 14 `tcp_events`,
+**Related:** [M2-ADR-0002](m2-0002-transport.md), ABI 14 `tcp_events`,
 [#336](https://github.com/irix7/os/issues/336)
 
 ## Context

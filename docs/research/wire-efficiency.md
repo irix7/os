@@ -2,7 +2,7 @@
 > internal contracts. Ignore every compatibility, version-negotiation, dual-stack,
 > old-peer or migration recommendation in this study. The next wire design is **v1**;
 > replace the unshipped M2/M3 formats freely where it improves efficiency. See
-> [`docs/spec/pre-release.md`](../spec/pre-release.md).
+> [`docs/administration/pre-release.md`](../administration/pre-release.md).
 
 # Wire efficiency: IRIX 7 custom protocols, transport paths and a v2 design space
 
@@ -117,7 +117,7 @@ programme.
 - `kernel/src/module.rs`, `net.rs`, `http.rs`, `tls.rs`, `idle.rs`, `autoload.rs`.
 - `tools/m2-rig/src/{relay,hub,shard,rig}.rs`.
 - CI: `.github/workflows/ci.yml` mesh/module gates, and the M1/M2/M3 evidence contracts in
-  `docs/plan/m2-rig.md` and `docs/plan/m3-rig.md`.
+  `docs/project/m2-rig.md` and `docs/project/m3-rig.md`.
 
 ### 2.2 How the measurements were made
 
@@ -1187,4 +1187,4 @@ body are outside both).
 - `kernel/src/{module,net,http,tls,idle,autoload}.rs` — services, device, client, timer.
 - `tools/m2-rig/src/{relay,hub,shard,rig}.rs` — host paths.
 - `docs/adr/m2-0002-transport.md`, `m2-0003-authority.md`, `m3-0001-shard-slice.md`.
-- `docs/plan/m2-rig.md`, `docs/plan/m3-rig.md` — evidence contracts.
+- `docs/project/m2-rig.md`, `docs/project/m3-rig.md` — evidence contracts.

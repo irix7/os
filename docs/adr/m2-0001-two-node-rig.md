@@ -4,7 +4,7 @@
 **Date:** 2026-10-26
 **Deciders:** M2-0, for review at the M2 gate
 **Related:** [M2-ADR-0002](m2-0002-transport.md), [M2-ADR-0003](m2-0003-authority.md),
-[`../plan/m2-rig.md`](../plan/m2-rig.md), [`tools/m2-rig`](../../tools/m2-rig/README.md)
+[`../plan/m2-rig.md`](../project/m2-rig.md), [`tools/m2-rig`](../../tools/m2-rig/README.md)
 
 ## Context
 
@@ -166,7 +166,7 @@ lands, the relay is the supported path.
 
 ## Evidence
 
-The harness is `tools/m2-rig`; the runbook is [`../plan/m2-rig.md`](../plan/m2-rig.md).
+The harness is `tools/m2-rig`; the runbook is [`../plan/m2-rig.md`](../project/m2-rig.md).
 A successful `run` produced:
 
 ```text

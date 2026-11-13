@@ -4,7 +4,7 @@
 **Date:** 2026-10-27
 **Issue:** <https://github.com/irix7/os/issues/247>
 **Predecessor:** [wire-efficiency study](wire-efficiency.md) (#243) and the
-[pre-release policy](../spec/pre-release.md).
+[pre-release policy](../administration/pre-release.md).
 
 This note records what changed for #247, the measured host model, the real
 two-kernel transfer, and the limits that remain.  It does not claim the full

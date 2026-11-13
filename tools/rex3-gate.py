@@ -29,7 +29,7 @@ Hardware versus iris (recorded, not worked around):
   accepts the whole burst and reports a FIFO level of 0.  The gate therefore
   proves the driver *waits while the engine is busy* (``busy_polls > 0``) and
   that the queue drains; it cannot prove the absence of drops on hardware,
-  because iris never drops.  See ``docs/plan/testing.md`` section 5.
+  because iris never drops.  See ``docs/project/testing.md`` section 5.
 * **Framebuffer readback.**  iris exposes the framebuffer through the monitor
   (``rex fbdump``); a real Indy has no readback path at all.  On hardware the
   same probe must be checked with a screen grab (camera or video capture) and

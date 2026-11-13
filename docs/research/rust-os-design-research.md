@@ -8,7 +8,7 @@
 
 **Method:** Each decision area states the decision question, enumerates the viable options (not only the obvious one), gives reasons for and against each with citations to primary sources (papers, project documentation, source repositories, blog posts), then recommends an option and states the justification and the residual risks. Citations are inline as URLs; a consolidated source list is in Appendix A. Where a claim rests on project documentation that this report could not re-fetch at time of writing, the project is named so the claim can be checked.
 
-**A note on the evidence base:** the strongest primary sources for this report are the Asterinas/Ostd paper (USENIX ATC 2025, arXiv:2506.03876), the Theseus OS book and repository, the seL4 reference manual and verification literature, the Fuchsia/Zircon object-model documentation, the two independent Rust-on-IRIX ports (`danifunker/rust-irixlibstd` and `atomchild411/rust-irix`), the smoltcp documentation, and the Git LFS specification and GitHub API documentation. The IRIX 7 project's own `docs/spec/architecture.md` and `docs/map.md` already encode several decisions; this report tests them against alternatives rather than restating them.
+**A note on the evidence base:** the strongest primary sources for this report are the Asterinas/Ostd paper (USENIX ATC 2025, arXiv:2506.03876), the Theseus OS book and repository, the seL4 reference manual and verification literature, the Fuchsia/Zircon object-model documentation, the two independent Rust-on-IRIX ports (`danifunker/rust-irixlibstd` and `atomchild411/rust-irix`), the smoltcp documentation, and the Git LFS specification and GitHub API documentation. The IRIX 7 project's own `docs/internals/architecture.md` and `docs/introduction/map.md` already encode several decisions; this report tests them against alternatives rather than restating them.
 
 ---
 
@@ -73,7 +73,7 @@ A small privileged kernel provides address spaces, threads, IPC, and capability 
 
 **Cons.**
 
-- IPC and address-space-switch overhead on a 1990s MIPS CPU with a small TLB is exactly the wrong place to spend cycles. Redox's own documentation and community discussion acknowledge the performance cost of userspace drivers; the IRIX 7 spec already rejects this route for that reason (`docs/spec/architecture.md` §10).
+- IPC and address-space-switch overhead on a 1990s MIPS CPU with a small TLB is exactly the wrong place to spend cycles. Redox's own documentation and community discussion acknowledge the performance cost of userspace drivers; the IRIX 7 spec already rejects this route for that reason (`docs/internals/architecture.md` §10).
 - The compat container would become a userspace server issuing IPC for every legacy syscall — a per-syscall round trip on top of an already-slow emulated Indy.
 - Bootstrapping a server graph from the SGI PROM is materially more complex than booting one image.
 - A microkernel does not by itself give a small TCB unless the kernel is verified; seL4's kernel is C and its proofs do not transfer to Rust (https://sel4.systems/Verification/).
@@ -185,7 +185,7 @@ The OS is a set of cells (≈ crates) with fine-grained, language-enforced state
 | **Framekernel (Asterinas/Ostd)** | **`unsafe` confinement + safe APIs** | **None** | **~14% published** | **Good (ABI layer is safe Rust)** | **Research-grade but real** | **Recommended (trust)** |
 | **Cytokernel/cells (Theseus)** | **Language + cell namespace** | **None** | **Small** | **Good (modular services)** | **Research-grade** | **Recommended (modularity)** |
 
-**Recommendation A.1.** A **framekernel realised as a cell-structured monolithic kernel**: Theseus-style cells ≈ crates for modularity and runtime composition, Asterinas-style privileged framework for the `unsafe`/TCB boundary, and a single kernel image in a single address space for deployment. This is the combination already sketched in the project's `docs/spec/architecture.md` §3, and the research supports it: it keeps the monolithic performance and IRIX semantics while obtaining the smallest published Rust TCB and a credible live-evolution story.
+**Recommendation A.1.** A **framekernel realised as a cell-structured monolithic kernel**: Theseus-style cells ≈ crates for modularity and runtime composition, Asterinas-style privileged framework for the `unsafe`/TCB boundary, and a single kernel image in a single address space for deployment. This is the combination already sketched in the project's `docs/internals/architecture.md` §3, and the research supports it: it keeps the monolithic performance and IRIX semantics while obtaining the smallest published Rust TCB and a credible live-evolution story.
 
 **Open questions and risks.**
 
@@ -537,7 +537,7 @@ A crate providing `StableAbi` types, `#[repr(C)]`-plus-layout-checked structs, `
 **Pros.**
 
 - Purpose-built for the problem: it checks layouts at load time and provides stable equivalents of `Vec`, `String`, `Option`, `Result`, and trait objects.
-- Already cleared by the project's GPL-3.0 licence gate (`docs/map.md`: MIT OR Apache-2.0, compatible).
+- Already cleared by the project's GPL-3.0 licence gate (`docs/introduction/map.md`: MIT OR Apache-2.0, compatible).
 - Actively used for Rust plugin systems; reduces hand-written marshalling.
 - Works with `no_std` (with `alloc`), which the kernel needs.
 
@@ -691,7 +691,7 @@ The container implements the IRIX syscall ABI, ELF/ECOFF loader, and SGI libc su
 - Cheapest per-syscall path: a trap into the kernel, a table lookup, a translation to an invocation, and a return. No IPC, no second context switch. On an Indy this matters.
 - The container is Rust and can be held to `#![forbid(unsafe_code)]`, staying outside the TCB (Section E).
 - Direct access to the process model, VMAR/VMO, and job objects: `fork`, `exec`, `mmap`, and sproc semantics can be implemented natively rather than emulated over a narrower host ABI.
-- This is the architecture the project spec already selects (`docs/spec/architecture.md` §5), and it follows the Wine/Darling lesson that syscall-level translation is far cheaper than full emulation.
+- This is the architecture the project spec already selects (`docs/internals/architecture.md` §5), and it follows the Wine/Darling lesson that syscall-level translation is far cheaper than full emulation.
 
 **Cons.**
 
@@ -784,7 +784,7 @@ Translate legacy MIPS binaries to native instructions at load time or run them u
 
 **Decision question.** In what order should the legacy stack be built: syscall ABI first, then loader, then libc — or another order; and where does each layer live?
 
-The project's `docs/map.md` fixes the order as **syscall ABI → loader → libc**. This is the right order, and the research explains why.
+The project's `docs/introduction/map.md` fixes the order as **syscall ABI → loader → libc**. This is the right order, and the research explains why.
 
 **Syscall ABI first.** The trap decoder is the narrowest, most testable seam: it takes registers and memory from a legacy process and produces a typed request. Until it exists, nothing can be observed. The o32/n32 conventions are documented (see C.3) and can be validated against the oracle with tiny hand-written assembly programs.
 
@@ -1160,7 +1160,7 @@ All memory starts as untyped capabilities; kernel objects (frames, page tables, 
 
 **Design.** A `Frame` describes one physical page: physical address, reference count, flags (allocated, mapped, sensitive, DMA-able), and an owner/segment link. A `Segment` describes a contiguous run of frames with a base address and length. The frame allocator hands out frames; the segment allocator hands out runs. Reference counts are incremented on mapping/share and decremented on unmap/drop; zero triggers return to the allocator.
 
-**Invariants to enforce (adapted from Asterinas, `docs/spec/architecture.md` §3.3).**
+**Invariants to enforce (adapted from Asterinas, `docs/internals/architecture.md` §3.3).**
 
 1. A newly allocated frame/segment originates from currently unused memory.
 2. Kernel-mode CPU state cannot be tampered with by clients.
@@ -1888,7 +1888,7 @@ For Phase 2 (the running kernel), once a clock exists (RTC or authenticated time
 
 **Pros.**
 
-- GCC has first-class, decades-old support for `mips-sgi-irix6.5` and for MIPS III/IV with o32/n32/n64; it is the compiler the IRIX ecosystem actually used. The project's fork is `rust-lang/gcc` with GCC 17 trunk + libgccjit (ADR-0019), and the IRIX patch series applies (per `docs/spec/architecture.md` §2.1).
+- GCC has first-class, decades-old support for `mips-sgi-irix6.5` and for MIPS III/IV with o32/n32/n64; it is the compiler the IRIX ecosystem actually used. The project's fork is `rust-lang/gcc` with GCC 17 trunk + libgccjit (ADR-0019), and the IRIX patch series applies (per `docs/internals/architecture.md` §2.1).
 - GCC's MIPS backend handles the o32 + MIPS III combination that LLVM reportedly cannot (`-mabi=32 -march=mips3` is routine for GCC), removing the "o32 implies MIPS II" restriction on the primary path.
 - The IRIX ABI details (calling conventions, GP-relative addressing, `-mno-abicalls`, small-data sections) are GCC's native territory.
 - The project has already proven codegen for both custom targets with this path (per the spec's status table).
@@ -1978,7 +1978,7 @@ Use stock rustc with custom target JSON for `mips2-sgi-irix7-o32` and `mips3-sgi
 
 **Options.**
 
-- **G3-i — `-Z build-std=core,alloc,compiler_builtins`**: builds the standard crates for the custom target. Pros: required for a custom target; lets the project patch `core`/`alloc` (e.g. for MIPS atomics); enables `panic_immediate_abort` and size tuning. Cons: needs `rust-src`, nightly, and a host toolchain that can build the target; slower builds; the project reports host-toolchain glue is a blocker (`docs/spec/architecture.md` §2.2).
+- **G3-i — `-Z build-std=core,alloc,compiler_builtins`**: builds the standard crates for the custom target. Pros: required for a custom target; lets the project patch `core`/`alloc` (e.g. for MIPS atomics); enables `panic_immediate_abort` and size tuning. Cons: needs `rust-src`, nightly, and a host toolchain that can build the target; slower builds; the project reports host-toolchain glue is a blocker (`docs/internals/architecture.md` §2.2).
 - **G3-ii — Prebuilt `std` from a rustc fork**: `atomchild411/rust-irix` builds `std` in-tree. Pros: no `build-std` friction; `std` available. Cons: fork maintenance; the kernel does not want `std` anyway.
 - **G3-iii — `core` only, vendored**: copy `core` sources. Pros: no nightly dependency; cons: unmaintainable, licence/provenance noise.
 
@@ -2832,7 +2832,7 @@ A clean-room XFS implementation that starts read-only (mount, read, lookup, exte
 
 ### IRIX 7 project sources (internal)
 
-- `README.md`, `docs/map.md`, `docs/spec/architecture.md`.
+- `README.md`, `docs/introduction/map.md`, `docs/internals/architecture.md`.
 - ADR-0008 to ADR-0020 as referenced in those documents (hosted at `github.com/irix7/project/docs/adr/`).
 - `targets/mips3-sgi-irix7-n32.json`, `targets/mips2-sgi-irix7-o32.json`.
 

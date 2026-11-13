@@ -129,7 +129,7 @@ because every console fragment flushes the graphics console.
   [`relibc-probe`](../../user/relibc-probe/probe.c) is the relibc-linked
   counterpart; see [`relibc-pal-bringup.md`](relibc-pal-bringup.md).
 - The native gate is the v0 flat form in
-  [`../spec/native-abi.md`](../spec/native-abi.md) §5.8. The capability
+  [`../spec/native-abi.md`](../programming/native-abi.md) §5.8. The capability
   invocation encoding is not implemented; the gate will be replaced, not
   versioned alongside it.
 - `fcntl` and `signal` are no-op successes (`CELL_OK`); the bring-up has no
