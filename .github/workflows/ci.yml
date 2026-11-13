@@ -220,7 +220,7 @@ jobs:
             "$RUNNER_TEMP/relibc-pal/out" \
             "$RUNNER_TEMP/relibc-rig/irix7-rom.bin" \
             "$RUNNER_TEMP/relibc-boot"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: relibc-probes
@@ -907,7 +907,7 @@ jobs:
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$work/serial.log" 'BOOT-READY .*network=off' 30
           iris-ci --socket "$socket" quit
           wait "$pid"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: iris-boot
@@ -963,7 +963,7 @@ jobs:
         run: |
           export PATH="$HOME/.cargo/bin:$PATH"
           tools/powerpc-floppy.sh "$RUNNER_TEMP/irix7-powerpc-floppy.img"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: powerpc-qemu
@@ -1015,7 +1015,7 @@ jobs:
             --work "$RUNNER_TEMP/x86-mesh" \
             --rom "$work/target/x86_64-unknown-none/release/kernel-x86" \
             --base-port 12000
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: x86-qemu
@@ -1171,13 +1171,13 @@ jobs:
           done
           cp "$RUNNER_TEMP/m2-build/SHA256SUMS" "$out/"
           find "$out" -type f | sort
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mesh-real-evidence
           if-no-files-found: warn
           path: ${{ runner.temp }}/m2-evidence
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: mesh-real-artifacts
@@ -1291,7 +1291,7 @@ jobs:
           iris-ci --socket "$socket" serial-wait 'BOOT-READY' --timeout 300
           # The self-test prints before BOOT-READY, so check the log file, not the stream.
           "$GITHUB_WORKSPACE/tools/wait-serial-log.sh" "$run/serial.log" 'ports: pass sockets=8' 120
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: socket-slots-evidence
