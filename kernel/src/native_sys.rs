@@ -14,9 +14,11 @@
 use native_abi::syscall::{
     SYS_CELL_ID, SYS_CHDIR, SYS_CLOCK_GETTIME, SYS_CLOSE, SYS_DUP, SYS_DUP2, SYS_EXECVE, SYS_EXIT,
     SYS_FCHDIR, SYS_FCNTL, SYS_FORK, SYS_FSTAT, SYS_FTRUNCATE, SYS_FUTEX_WAIT, SYS_FUTEX_WAKE,
-    SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPID, SYS_GETPPID, SYS_LSEEK, SYS_MKDIR,
+    SYS_GETCWD, SYS_GETDENTS, SYS_GETENTROPY, SYS_GETPGID, SYS_GETPID, SYS_GETPPID, SYS_IOCTL,
+    SYS_KILL, SYS_LSEEK, SYS_MKDIR,
     SYS_MMAP, SYS_MPROTECT, SYS_MUNMAP, SYS_NANOSLEEP, SYS_OPEN, SYS_PIPE, SYS_PIPE2, SYS_POLL,
-    SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SIGNAL, SYS_STAT,
+    SYS_PREAD, SYS_PWRITE, SYS_READ, SYS_READDIR, SYS_RENAME, SYS_RMDIR, SYS_SETPGID,
+    SYS_SIGACTION, SYS_SIGNAL, SYS_STAT,
     SYS_TCGETWINSIZE, SYS_TCSETWINSIZE, SYS_THREAD_CREATE, SYS_THREAD_EXIT, SYS_TRUNCATE,
     SYS_UNLINK, SYS_WAIT4, SYS_WAITPID, SYS_WRITE, SYS_YIELD,
 };
@@ -35,7 +37,44 @@ pub enum Gate {
 }
 
 /// Dispatch one native gate invocation.
+///
+/// The console line discipline runs first, so a signal character typed while
+/// a program computes is seen at its next call.  A fatal signal posted to the
+/// running cell is applied after the call, when its frame can be replaced.
 pub fn dispatch(tf: &mut TrapFrame) -> Gate {
+    crate::tty::pump();
+    let gate = call(tf);
+    if crate::process::deliver_pending(tf) {
+        Gate::Resume
+    } else {
+        gate
+    }
+}
+
+/// Re-run the gate later for a blocking descriptor that is not ready.
+///
+/// `EPC` is left on the gate instruction, so the caller repeats the call when
+/// it next runs.  Another thread or cell gets the CPU if one is runnable;
+/// otherwise the CPU parks for one slice.  A pending signal ends the wait with
+/// `EINTR` so the epilogue can apply it.
+fn restart(tf: &mut TrapFrame) -> Gate {
+    if crate::process::signal_pending() {
+        tf.regs[2] = native_abi::status::CELL_E_INTR as u64;
+        tf.regs[3] = 0;
+        return Gate::Continue;
+    }
+    // Both yield paths advance the outgoing EPC by one instruction.  Step
+    // back first so the saved frame resumes at the gate.
+    tf.epc = tf.epc.wrapping_sub(4);
+    if crate::thread::yield_current(tf) || crate::process::yield_current(tf) {
+        return Gate::Resume;
+    }
+    tf.epc = tf.epc.wrapping_add(4);
+    crate::traps::wait_until(crate::traps::count_read().wrapping_add(crate::fd::WAIT_SLICE_TICKS));
+    Gate::Resume
+}
+
+fn call(tf: &mut TrapFrame) -> Gate {
     let number = tf.arg(2);
     let a0 = tf.arg(4);
     let a1 = tf.arg(5);
@@ -149,9 +188,29 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         };
     }
 
+    if number == SYS_READ || number == SYS_WRITE {
+        let result = if number == SYS_READ {
+            crate::user::read_fd_once(a0, a1, a2)
+        } else {
+            crate::user::write_fd(a0, a1, a2)
+        };
+        if result == Err(crate::syserr::CELL_E_AGAIN) && !crate::fd::nonblocking(a0 as i32) {
+            return restart(tf);
+        }
+        match result {
+            Ok(count) => {
+                tf.regs[2] = native_abi::status::CELL_OK as u64;
+                tf.regs[3] = count as u64;
+            }
+            Err(status) => {
+                tf.regs[2] = status as u64;
+                tf.regs[3] = 0;
+            }
+        }
+        return Gate::Continue;
+    }
+
     let result: SysResult<u64> = match number {
-        SYS_WRITE => crate::user::write_fd(a0, a1, a2).map(|count| count as u64),
-        SYS_READ => crate::user::read_fd(a0, a1, a2).map(|count| count as u64),
         SYS_MMAP => crate::user::mmap(a1).map(|address| address as u64),
         SYS_MUNMAP | SYS_MPROTECT => Ok(0),
         SYS_OPEN => crate::user::open_path(a0, a1, a2).map(|fd| fd as u64),
@@ -192,6 +251,11 @@ pub fn dispatch(tf: &mut TrapFrame) -> Gate {
         SYS_SIGNAL => Ok(0),
         SYS_THREAD_CREATE => crate::thread::create(tf.status, a0, a1, a2, a3).map(|tid| tid as u64),
         SYS_FUTEX_WAKE => crate::thread::futex_wake(a0, a1).map(|woken| woken as u64),
+        SYS_IOCTL => crate::user::ioctl_user(a0, a1, a2).map(|()| 0),
+        SYS_KILL => crate::process::kill(a0 as i32, a1).map(|()| 0),
+        SYS_SIGACTION => crate::user::sigaction_user(a0, a1, a2).map(|()| 0),
+        SYS_SETPGID => crate::process::setpgid(a0, a1).map(|()| 0),
+        SYS_GETPGID => crate::process::getpgid(a0).map(|pgid| pgid as u64),
         _ => Err(CELL_E_NOSYS),
     };
 

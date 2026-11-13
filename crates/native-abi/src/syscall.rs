@@ -4,10 +4,10 @@
 //! This is the v0 flat syscall surface used by the C probe and the relibc PAL.
 //! It is deliberately not the IRIX 6.5 number space: the gate instruction
 //! (`syscall 0x1F7`) selects this ABI, and the capability method encoding in
-//! `docs/spec/native-abi.md` §4 will replace the flat calls without reusing
+//! `docs/programming/native-abi.md` §4 will replace the flat calls without reusing
 //! these numbers.
 //!
-//! The numbers are pinned by the v0 table in `docs/spec/native-abi.md` §5.8.
+//! The numbers are pinned by the v0 table in `docs/programming/native-abi.md` §5.8.
 //! `SYS_GETDENTS` and `SYS_LSEEK` carry the directory cookie; `SYS_READDIR`
 //! stays as the one-name wrapper the static `std` shim uses.
 
@@ -100,3 +100,18 @@ pub const SYS_CELL_ID: u32 = 47;
 /// `fchdir(fd)`; make the directory named by an open descriptor the cwd.
 /// `EBADF` for a closed descriptor, `ENOTDIR` for anything but a directory.
 pub const SYS_FCHDIR: u32 = 48;
+/// `ioctl(fd, request, arg)`; the terminal requests on a console descriptor:
+/// `TCGETS`, `TCSETS`, `TCSETSW`, `TCSETSF`, `TIOCGWINSZ`, `TIOCSWINSZ`,
+/// `TIOCGPGRP` and `TIOCSPGRP`.  Anything else is `ENOTTY`.
+pub const SYS_IOCTL: u32 = 49;
+/// `kill(pid, sig)`; `pid > 0` names a process, `0` the caller's group,
+/// `-1` every process but the caller and `< -1` the group `-pid`.  Signal 0
+/// only checks that a target exists.
+pub const SYS_KILL: u32 = 50;
+/// `sigaction(sig, const uint32_t *disposition, uint32_t *old)`; a disposition
+/// is `SIG_DFL` (0) or `SIG_IGN` (1).  A handler address is `ENOSYS` in v0.
+pub const SYS_SIGACTION: u32 = 51;
+/// `setpgid(pid, pgid)`; zero names the caller and the target's own pid.
+pub const SYS_SETPGID: u32 = 52;
+/// `getpgid(pid)`; zero names the caller.
+pub const SYS_GETPGID: u32 = 53;

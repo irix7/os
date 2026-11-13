@@ -1,0 +1,23 @@
+[package]
+name = "irix7-sh"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+publish = false
+
+[lib]
+name = "irix7_sh"
+path = "src/lib.rs"
+# The image build asks for a staticlib with `cargo rustc --crate-type`; the
+# default rlib keeps `cargo test` on the host free of a panic handler.
+
+[workspace]
+
+[dependencies]
+native-abi = { path = "../../crates/native-abi" }
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = true
+codegen-units = 1

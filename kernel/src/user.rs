@@ -794,7 +794,7 @@ pub fn run_image(image: &[u8]) {
         return;
     }
     let arguments: [&[u8]; 1] = [b"hello\0"];
-    let environment: [&[u8]; 2] = [b"HOME=/\0", b"PATH=/\0"];
+    let environment: [&[u8]; 2] = [b"HOME=/\0", b"PATH=/bin\0"];
     let Some((user_sp, argc, argv, envp, auxv)) =
         space.build_initial_stack(plan.entry(), &arguments, &environment)
     else {
@@ -1106,6 +1106,100 @@ pub fn tcsetwinsize_user(fd: u32, address: u32) -> SysResult<()> {
     crate::fd::set_winsize(fd as i32, &value)
 }
 
+/// `ioctl(fd, request, arg)`: the terminal requests on a console descriptor.
+pub fn ioctl_user(fd: u32, request: u32, argument: u32) -> SysResult<()> {
+    use native_abi::{
+        termios, TCGETS, TCSETS, TCSETSF, TCSETSW, TIOCGPGRP, TIOCGWINSZ, TIOCSPGRP, TIOCSWINSZ,
+    };
+
+    match crate::fd::kind(fd as i32) {
+        crate::fd::Kind::Console => {}
+        crate::fd::Kind::Closed => return Err(crate::syserr::CELL_E_BADF),
+        _ => return Err(crate::syserr::CELL_E_NOTTY),
+    }
+    let size = core::mem::size_of::<termios>();
+    match request {
+        TCGETS => {
+            if !range_ok(argument, size as u32) {
+                return Err(CELL_E_FAULT);
+            }
+            let value = crate::tty::termios();
+            let source = &value as *const termios as *const u8;
+            for index in 0..size {
+                unsafe {
+                    core::ptr::write_volatile(
+                        (argument as *mut u8).add(index),
+                        core::ptr::read(source.add(index)),
+                    );
+                }
+            }
+            Ok(())
+        }
+        TCSETS | TCSETSW | TCSETSF => {
+            if !range_ok(argument, size as u32) {
+                return Err(CELL_E_FAULT);
+            }
+            let mut value = crate::tty::termios();
+            let target = &mut value as *mut termios as *mut u8;
+            for index in 0..size {
+                unsafe {
+                    core::ptr::write(
+                        target.add(index),
+                        core::ptr::read_volatile((argument as *const u8).add(index)),
+                    );
+                }
+            }
+            crate::tty::set_termios(value, request == TCSETSF);
+            Ok(())
+        }
+        TIOCGWINSZ => tcgetwinsize_user(fd, argument),
+        TIOCSWINSZ => tcsetwinsize_user(fd, argument),
+        TIOCGPGRP => {
+            if !range_ok(argument, 4) {
+                return Err(CELL_E_FAULT);
+            }
+            unsafe {
+                core::ptr::write_volatile(argument as *mut u32, crate::tty::foreground());
+            }
+            Ok(())
+        }
+        TIOCSPGRP => {
+            if !range_ok(argument, 4) {
+                return Err(CELL_E_FAULT);
+            }
+            let group = unsafe { core::ptr::read_volatile(argument as *const u32) };
+            if !process::group_exists(group) {
+                return Err(crate::syserr::CELL_E_PERM);
+            }
+            crate::tty::set_foreground(group);
+            Ok(())
+        }
+        _ => Err(crate::syserr::CELL_E_NOTTY),
+    }
+}
+
+/// `sigaction(sig, disposition, old)`: both pointers name a 32-bit word.
+pub fn sigaction_user(signal: u32, new_address: u32, old_address: u32) -> SysResult<()> {
+    if old_address != 0 && !range_ok(old_address, 4) {
+        return Err(CELL_E_FAULT);
+    }
+    let new = if new_address != 0 {
+        if !range_ok(new_address, 4) {
+            return Err(CELL_E_FAULT);
+        }
+        Some(unsafe { core::ptr::read_volatile(new_address as *const u32) })
+    } else {
+        None
+    };
+    let old = process::set_disposition(signal, new)?;
+    if old_address != 0 {
+        unsafe {
+            core::ptr::write_volatile(old_address as *mut u32, old);
+        }
+    }
+    Ok(())
+}
+
 /// Create a pipe and write `[read_fd, write_fd]` to the user buffer.
 pub fn pipe_user(address: u32) -> SysResult<()> {
     pipe2_user(address, 0)
@@ -1247,6 +1341,18 @@ pub fn getdents_user(fd: u32, address: u32, length: u32) -> SysResult<u32> {
 /// copied out.  The wait stays inside this gate: it cannot hand the CPU to
 /// another cell, which needs the M9.5 readiness wait queue.
 pub fn read_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
+    read_fd_with(fd, address, length, true)
+}
+
+/// One read attempt for the native gate.
+///
+/// An empty pipe or an idle console is `CELL_E_AGAIN` at once; the gate
+/// restarts the call for a blocking descriptor so another cell can run.
+pub fn read_fd_once(fd: u32, address: u32, length: u32) -> SysResult<u32> {
+    read_fd_with(fd, address, length, false)
+}
+
+fn read_fd_with(fd: u32, address: u32, length: u32, wait: bool) -> SysResult<u32> {
     if !range_ok(address, length) {
         return Err(CELL_E_FAULT);
     }
@@ -1263,7 +1369,7 @@ pub fn read_fd(fd: u32, address: u32, length: u32) -> SysResult<u32> {
                 if total != 0 {
                     break;
                 }
-                if crate::fd::nonblocking(fd as i32) {
+                if !wait || crate::fd::nonblocking(fd as i32) {
                     return Err(CELL_E_AGAIN);
                 }
                 let elapsed = crate::traps::count_read().wrapping_sub(start);

@@ -70,6 +70,7 @@ pub mod thread;
 pub mod tlb;
 pub mod tls;
 pub mod traps;
+pub mod tty;
 pub mod user;
 pub mod wasm_probe;
 
