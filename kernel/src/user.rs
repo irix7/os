@@ -886,6 +886,56 @@ pub fn mkdir_user(address: u32, mode: u32) -> SysResult<()> {
     crate::fd::mkdir(&path[..length], mode)
 }
 
+/// `openat(dirfd, path, flags, mode)`.
+pub fn openat_user(dirfd: u32, address: u32, flags: u32, mode: u32) -> SysResult<i32> {
+    let start = crate::fd::dir_node(dirfd as i32)?;
+    let (path, length) = read_path(address)?;
+    crate::fd::open_path_at(start, &path[..length], flags, mode)
+}
+
+/// `fstatat(dirfd, path, stat_block, flags)`.  `flags` has no bits defined in
+/// v0: there are no symlinks, so `AT_SYMLINK_NOFOLLOW` has no effect, and an
+/// empty path with `AT_EMPTY_PATH` is not implemented.
+pub fn fstatat_user(dirfd: u32, address: u32, stat_address: u32, _flags: u32) -> SysResult<()> {
+    let start = crate::fd::dir_node(dirfd as i32)?;
+    let (path, length) = read_path(address)?;
+    let (mode, size, ino) = crate::fd::metadata_path_at(start, &path[..length])?;
+    fill_stat(stat_address, mode, size, ino)
+}
+
+/// `mkdirat(dirfd, path, mode)`.
+pub fn mkdirat_user(dirfd: u32, address: u32, mode: u32) -> SysResult<()> {
+    let start = crate::fd::dir_node(dirfd as i32)?;
+    let (path, length) = read_path(address)?;
+    crate::fd::mkdir_at(start, &path[..length], mode)
+}
+
+/// `unlinkat(dirfd, path, flags)`; `AT_REMOVEDIR` selects `rmdir` semantics.
+pub fn unlinkat_user(dirfd: u32, address: u32, flags: u32) -> SysResult<()> {
+    let start = crate::fd::dir_node(dirfd as i32)?;
+    let (path, length) = read_path(address)?;
+    crate::fd::unlink_at(start, &path[..length], flags & native_abi::AT_REMOVEDIR as u32 != 0)
+}
+
+/// `renameat2(olddirfd, oldpath, rename_at *, flags)`.  `flags` must be 0:
+/// `RENAME_NOREPLACE`/`RENAME_EXCHANGE`/`RENAME_WHITEOUT` are not implemented.
+pub fn renameat2_user(old_dirfd: u32, old_address: u32, block_address: u32) -> SysResult<()> {
+    if !range_ok(block_address, core::mem::size_of::<native_abi::rename_at>() as u32) {
+        return Err(CELL_E_FAULT);
+    }
+    let new_dirfd = unsafe { core::ptr::read_volatile(block_address as *const u32) };
+    let new_address = unsafe { core::ptr::read_volatile((block_address + 4) as *const u32) };
+    let flags = unsafe { core::ptr::read_volatile((block_address + 8) as *const u32) };
+    if flags != 0 {
+        return Err(crate::syserr::CELL_E_INVAL);
+    }
+    let old_start = crate::fd::dir_node(old_dirfd as i32)?;
+    let new_start = crate::fd::dir_node(new_dirfd as i32)?;
+    let (old, old_length) = read_path(old_address)?;
+    let (new, new_length) = read_path(new_address)?;
+    crate::fd::rename_at(old_start, &old[..old_length], new_start, &new[..new_length])
+}
+
 /// Assemble the 64-bit offset split across two argument registers.
 fn split_offset(low: u32, high: u32) -> i64 {
     (((high as u64) << 32) | low as u64) as i64

@@ -114,6 +114,8 @@ _Static_assert(__builtin_offsetof(struct pollfd, revents) == 6, "pollfd revents 
 #define AT_PAGESZ 1
 #define AT_ENTRY 2
 #define AT_CLKTCK 13
+#define AT_FDCWD (-100)
+#define AT_REMOVEDIR 0x200
 
 #define O_RDONLY 0
 #define O_WRONLY 1
@@ -162,6 +164,12 @@ extern int fstat(int, struct stat *);
 extern int unlink(const char *);
 extern int rmdir(const char *);
 extern int fchdir(int);
+extern int openat(int, const char *, int, ...);
+extern int fstatat(int, const char *, struct stat *, int);
+extern int mkdirat(int, const char *, int);
+extern int unlinkat(int, const char *, int);
+extern int renameat2(int, const char *, int, const char *, unsigned int);
+
 extern int fsync(int);
 extern int fdatasync(int);
 extern void sync(void);
@@ -712,6 +720,41 @@ int main(int argc, char **argv) {
     check(read(fd, buffer, 4) == 4 && bytes_are(buffer, "kept", 4),
           "the open descriptor still reads the inode");
     check(close(fd) == 0, "close the unlinked file");
+
+    /* The *at family resolves against a real open directory, not only the
+     * process cwd: openat, fstatat, mkdirat, unlinkat and renameat2. */
+    check(mkdirat(AT_FDCWD, "/at-dir", 0755) == 0, "mkdirat at AT_FDCWD");
+    int at_dir = open("/at-dir", O_RDONLY | O_DIRECTORY);
+    check(at_dir >= 0, "open the at-dir directory");
+    fd = openat(at_dir, "child.txt", O_RDWR | O_CREAT | O_EXCL, 0644);
+    check(fd >= 0, "openat relative to a directory descriptor");
+    check(write(fd, "atfile", 6) == 6, "write through an openat descriptor");
+    check(close(fd) == 0, "close the openat descriptor");
+    check(fstatat(at_dir, "child.txt", &st, 0) == 0 && st.st_size == 6,
+          "fstatat sees the file created through openat");
+    check(mkdirat(at_dir, "sub", 0755) == 0, "mkdirat relative to a directory descriptor");
+    check(renameat2(at_dir, "child.txt", at_dir, "renamed.txt", 0) == 0,
+          "renameat2 relative to a directory descriptor");
+    errno = 0;
+    check(fstatat(at_dir, "child.txt", &st, 0) == -1 && errno == ENOENT,
+          "the old renameat2 name is gone");
+    check(fstatat(at_dir, "renamed.txt", &st, 0) == 0, "the new renameat2 name exists");
+    errno = 0;
+    check(unlinkat(at_dir, "sub", 0) == -1 && errno == EISDIR,
+          "unlinkat without AT_REMOVEDIR on a directory is EISDIR");
+    check(unlinkat(at_dir, "sub", AT_REMOVEDIR) == 0, "unlinkat AT_REMOVEDIR removes a directory");
+    check(unlinkat(at_dir, "renamed.txt", 0) == 0, "unlinkat removes a file");
+    check(close(at_dir) == 0, "close the at-dir descriptor");
+    check(rmdir("/at-dir") == 0, "rmdir the now-empty at-dir");
+    errno = 0;
+    check(openat(999, "x", O_RDONLY) == -1 && errno == EBADF,
+          "openat with a closed dirfd is EBADF");
+    fd = open("/hello.txt", O_RDONLY);
+    check(fd >= 0, "open hello.txt as a non-directory dirfd");
+    errno = 0;
+    check(openat(fd, "x", O_RDONLY) == -1 && errno == ENOTDIR,
+          "openat against a non-directory dirfd is ENOTDIR");
+    check(close(fd) == 0, "close the non-directory dirfd");
 
     /* Removing the entries restores the fixture tree. */
     check(unlink("/moved.txt") == 0, "unlink the renamed file");

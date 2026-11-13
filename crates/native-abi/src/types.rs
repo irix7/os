@@ -99,6 +99,15 @@ pub struct pollfd {
     pub revents: c_short,
 }
 
+/// Out-of-band third argument for `renameat2`: 12 bytes, 4-aligned.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct rename_at {
+    pub new_dirfd: u32,
+    pub new_path: u32,
+    pub flags: u32,
+}
+
 /// The v0 `pread`/`pwrite` argument block: 16 bytes, 8-byte aligned.
 ///
 /// The flat gate passes four 32-bit arguments, so a 64-bit `off_t` cannot be

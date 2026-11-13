@@ -498,12 +498,31 @@ pub fn copy_cwd(out: &mut [u8; 64]) -> Option<usize> {
 
 /// `open`/`openat` after the libc resolved `dirfd`.  `mode` is used only when
 /// `O_CREAT` creates a regular file.
+/// The directory node `dirfd` names: `AT_FDCWD` (-100) is the process cwd,
+/// any other value must be an open directory descriptor.
+pub fn dir_node(dirfd: i32) -> SysResult<u16> {
+    const AT_FDCWD: i32 = native_abi::AT_FDCWD;
+    if dirfd == AT_FDCWD {
+        return Ok(cwd());
+    }
+    match kind(dirfd) {
+        Kind::Dir(node) => Ok(node),
+        Kind::Closed => Err(CELL_E_BADF),
+        _ => Err(CELL_E_NOTDIR),
+    }
+}
+
 pub fn open_path(path: &[u8], flags: u32, mode: u32) -> SysResult<i32> {
+    open_path_at(cwd(), path, flags, mode)
+}
+
+/// `openat`: as [`open_path`], resolved from `start` instead of the cwd.
+pub fn open_path_at(start: u16, path: &[u8], flags: u32, mode: u32) -> SysResult<i32> {
     let access = flags & O_ACCMODE;
     if access == O_ACCMODE {
         return Err(CELL_E_INVAL);
     }
-    let node = match ramfs::resolve(cwd(), path)? {
+    let node = match ramfs::resolve(start, path)? {
         Resolved::Node(node) => {
             if flags & O_CREAT != 0 && flags & O_EXCL != 0 {
                 return Err(crate::syserr::CELL_E_EXIST);
@@ -551,7 +570,12 @@ pub fn open_path(path: &[u8], flags: u32, mode: u32) -> SysResult<i32> {
 /// `unlink` (or `rmdir` when `remove_dir` is set).  The inode is reclaimed
 /// immediately unless an open descriptor still refers to it.
 pub fn unlink(path: &[u8], remove_dir: bool) -> SysResult<()> {
-    let node = match ramfs::resolve(cwd(), path)? {
+    unlink_at(cwd(), path, remove_dir)
+}
+
+/// `unlinkat`: as [`unlink`], resolved from `start` instead of the cwd.
+pub fn unlink_at(start: u16, path: &[u8], remove_dir: bool) -> SysResult<()> {
+    let node = match ramfs::resolve(start, path)? {
         Resolved::Node(node) => node,
         Resolved::Missing { .. } => return Err(CELL_E_NOENT),
     };
@@ -583,7 +607,12 @@ pub fn unlink(path: &[u8], remove_dir: bool) -> SysResult<()> {
 
 /// `mkdir`.  The name must be new; the parent must be a directory.
 pub fn mkdir(path: &[u8], mode: u32) -> SysResult<()> {
-    match ramfs::resolve(cwd(), path)? {
+    mkdir_at(cwd(), path, mode)
+}
+
+/// `mkdirat`: as [`mkdir`], resolved from `start` instead of the cwd.
+pub fn mkdir_at(start: u16, path: &[u8], mode: u32) -> SysResult<()> {
+    match ramfs::resolve(start, path)? {
         Resolved::Node(_) => Err(crate::syserr::CELL_E_EXIST),
         Resolved::Missing { parent, name } => {
             ramfs::create(parent, name, true, directory_mode(mode)).map(|_| ())
@@ -593,12 +622,17 @@ pub fn mkdir(path: &[u8], mode: u32) -> SysResult<()> {
 
 /// `rename`.  An existing destination is replaced when the types agree.
 pub fn rename(old_path: &[u8], new_path: &[u8]) -> SysResult<()> {
-    let old = match ramfs::resolve(cwd(), old_path)? {
+    rename_at(cwd(), old_path, cwd(), new_path)
+}
+
+/// `renameat2`: as [`rename`], each path resolved from its own start node.
+pub fn rename_at(old_start: u16, old_path: &[u8], new_start: u16, new_path: &[u8]) -> SysResult<()> {
+    let old = match ramfs::resolve(old_start, old_path)? {
         Resolved::Node(node) => node,
         Resolved::Missing { .. } => return Err(CELL_E_NOENT),
     };
     let mut name = [0u8; ramfs::NAME_MAX];
-    let (parent, length) = match ramfs::resolve(cwd(), new_path)? {
+    let (parent, length) = match ramfs::resolve(new_start, new_path)? {
         Resolved::Node(node) => {
             if node == ramfs::ROOT {
                 return Err(CELL_E_INVAL);
@@ -1105,7 +1139,12 @@ pub fn metadata(fd: i32) -> SysResult<(u32, i64, u64)> {
 }
 
 pub fn metadata_path(path: &[u8]) -> SysResult<(u32, i64, u64)> {
-    let node = match ramfs::resolve(cwd(), path)? {
+    metadata_path_at(cwd(), path)
+}
+
+/// `fstatat`: as [`metadata_path`], resolved from `start` instead of the cwd.
+pub fn metadata_path_at(start: u16, path: &[u8]) -> SysResult<(u32, i64, u64)> {
+    let node = match ramfs::resolve(start, path)? {
         Resolved::Node(node) => node,
         Resolved::Missing { .. } => return Err(CELL_E_NOENT),
     };
