@@ -1046,7 +1046,11 @@ pub fn setpgid(pid: u32, pgid: u32) -> SysResult<()> {
     // SAFETY: single-threaded kernel; the slot is live.
     unsafe {
         let process = &mut (*core::ptr::addr_of_mut!(PROCESSES))[index];
-        process.pgid = if pgid == 0 { process.identity.pid } else { pgid };
+        process.pgid = if pgid == 0 {
+            process.identity.pid
+        } else {
+            pgid
+        };
     }
     Ok(())
 }

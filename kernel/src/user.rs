@@ -914,13 +914,20 @@ pub fn mkdirat_user(dirfd: u32, address: u32, mode: u32) -> SysResult<()> {
 pub fn unlinkat_user(dirfd: u32, address: u32, flags: u32) -> SysResult<()> {
     let start = crate::fd::dir_node(dirfd as i32)?;
     let (path, length) = read_path(address)?;
-    crate::fd::unlink_at(start, &path[..length], flags & native_abi::AT_REMOVEDIR as u32 != 0)
+    crate::fd::unlink_at(
+        start,
+        &path[..length],
+        flags & native_abi::AT_REMOVEDIR as u32 != 0,
+    )
 }
 
 /// `renameat2(olddirfd, oldpath, rename_at *, flags)`.  `flags` must be 0:
 /// `RENAME_NOREPLACE`/`RENAME_EXCHANGE`/`RENAME_WHITEOUT` are not implemented.
 pub fn renameat2_user(old_dirfd: u32, old_address: u32, block_address: u32) -> SysResult<()> {
-    if !range_ok(block_address, core::mem::size_of::<native_abi::rename_at>() as u32) {
+    if !range_ok(
+        block_address,
+        core::mem::size_of::<native_abi::rename_at>() as u32,
+    ) {
         return Err(CELL_E_FAULT);
     }
     let new_dirfd = unsafe { core::ptr::read_volatile(block_address as *const u32) };

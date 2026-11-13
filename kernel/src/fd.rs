@@ -626,7 +626,12 @@ pub fn rename(old_path: &[u8], new_path: &[u8]) -> SysResult<()> {
 }
 
 /// `renameat2`: as [`rename`], each path resolved from its own start node.
-pub fn rename_at(old_start: u16, old_path: &[u8], new_start: u16, new_path: &[u8]) -> SysResult<()> {
+pub fn rename_at(
+    old_start: u16,
+    old_path: &[u8],
+    new_start: u16,
+    new_path: &[u8],
+) -> SysResult<()> {
     let old = match ramfs::resolve(old_start, old_path)? {
         Resolved::Node(node) => node,
         Resolved::Missing { .. } => return Err(CELL_E_NOENT),

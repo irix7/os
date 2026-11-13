@@ -12,6 +12,7 @@
 //! libc is compiled for the `irix7` target only.
 
 #![no_std]
+#![feature(asm_experimental_arch)]
 
 pub mod parse;
 
@@ -32,7 +33,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     unsafe { libc::_exit(101) }
 }
 
-/// C entry point; relibc's crt0 calls it.
+/// C entry point; called by `_start` with the argc/argv the kernel passes.
 #[cfg(target_os = "irix7")]
 #[no_mangle]
 pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
@@ -40,3 +41,4 @@ pub extern "C" fn main(argc: i32, argv: *const *const u8) -> i32 {
     let args = unsafe { core::slice::from_raw_parts(argv, argc.max(0) as usize) };
     shell::run(args)
 }
+

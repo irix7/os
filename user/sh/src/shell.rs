@@ -242,7 +242,7 @@ impl Shell {
     fn redirect(command: &Command) -> bool {
         if !command.input.is_null() {
             // SAFETY: the path is NUL-terminated.
-            let fd = unsafe { libc::open(command.input, libc::O_RDONLY) };
+            let fd = unsafe { libc::open(command.input, libc::O_RDONLY, 0) };
             if fd < 0 {
                 // SAFETY: as above.
                 perror("sh", unsafe { libc::cstr(command.input) });
@@ -265,7 +265,7 @@ impl Shell {
                 libc::open(
                     command.output,
                     libc::O_WRONLY | libc::O_CREAT | mode,
-                    0o644u32,
+                    0o644,
                 )
             };
             if fd < 0 {

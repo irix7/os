@@ -28,7 +28,7 @@ import sys
 SCHEMA = "irix7-native-libc-symbols"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
-DEFAULT_MANIFEST = os.path.join(REPO_ROOT, "docs", "spec", "native-libc-symbols.json")
+DEFAULT_MANIFEST = os.path.join(REPO_ROOT, "docs", "programming", "native-libc-symbols.json")
 
 # The cfg model of the native target, from the std research report section 3.2.
 # These are the only values the audit claims to know.  Anything else is
