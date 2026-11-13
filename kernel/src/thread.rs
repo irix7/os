@@ -578,7 +578,21 @@ fn bounded_wait(tf: &mut TrapFrame, address: u32, expected: u32, limit: u32) -> 
         }) {
             return Wait::Switched;
         }
-        crate::traps::wait_until(next_wake(start.wrapping_add(limit)));
+        // Wait in short slices so a terminal signal ends the sleep: the
+        // console is polled, and nothing else would run the line discipline
+        // while this cell holds the CPU.
+        let slice = crate::traps::count_read().wrapping_add(SIGNAL_SLICE_TICKS);
+        let wake = next_wake(start.wrapping_add(limit));
+        crate::traps::wait_until(if (slice.wrapping_sub(wake) as i32) < 0 {
+            slice
+        } else {
+            wake
+        });
+        crate::tty::pump();
+        if crate::process::signal_pending() {
+            set_result(tf, native_abi::status::CELL_E_INTR);
+            return Wait::Continue;
+        }
     }
 }
 
@@ -598,6 +612,9 @@ fn next_wake(own: u32) -> u32 {
     }
     wake
 }
+
+/// How long a solo sleep waits before it polls the console for a signal.
+const SIGNAL_SLICE_TICKS: u32 = 10 * crate::fd::TICKS_PER_MS;
 
 /// Park the running thread until `limit` CP0 Count ticks have passed.
 ///
@@ -638,7 +655,21 @@ pub fn sleep_current(tf: &mut TrapFrame, limit: u32) -> Wait {
         if crate::process::park_current(tf, |frame| prepare_sleep(frame, limit - elapsed)) {
             return Wait::Switched;
         }
-        crate::traps::wait_until(next_wake(start.wrapping_add(limit)));
+        // Wait in short slices so a terminal signal ends the sleep: the
+        // console is polled, and nothing else would run the line discipline
+        // while this cell holds the CPU.
+        let slice = crate::traps::count_read().wrapping_add(SIGNAL_SLICE_TICKS);
+        let wake = next_wake(start.wrapping_add(limit));
+        crate::traps::wait_until(if (slice.wrapping_sub(wake) as i32) < 0 {
+            slice
+        } else {
+            wake
+        });
+        crate::tty::pump();
+        if crate::process::signal_pending() {
+            set_result(tf, native_abi::status::CELL_E_INTR);
+            return Wait::Continue;
+        }
     }
 }
 

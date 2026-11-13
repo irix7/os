@@ -57,7 +57,6 @@ pub const TICKS_PER_MS: u32 = 33_000;
 /// than spun between checks; 1 ms keeps the console responsive.
 pub const WAIT_SLICE_MS: u32 = 1;
 pub const WAIT_SLICE_TICKS: u32 = WAIT_SLICE_MS * TICKS_PER_MS;
-const WAIT_LIMIT_TICKS: u32 = WAIT_LIMIT_MS * TICKS_PER_MS;
 
 static mut PIPE_DATA: [[u8; PIPE_CAPACITY]; MAX_PIPES] = [[0; PIPE_CAPACITY]; MAX_PIPES];
 static mut PIPE_HEAD: [usize; MAX_PIPES] = [0; MAX_PIPES];
@@ -132,6 +131,7 @@ pub fn reset() {
         PIPE_USED = [false; MAX_PIPES];
         CONSOLE_WINSIZE = [24, 80, 0, 0];
     }
+    crate::tty::reset();
 }
 
 /// Build the standard console table for a new root process and make it live.
@@ -842,26 +842,6 @@ fn write_at(kind: Kind, start: usize, buffer: &[u8]) -> SysResult<usize> {
     }
 }
 
-/// Wait for `ready` until the fixed kernel bound.  Returns the final state.
-///
-/// The CPU is parked on CP0 Compare for each slice instead of spinning; a
-/// device interrupt ends a slice early so the condition is rechecked promptly.
-/// This remains a syscall-local wait: it cannot run another cell.
-fn wait_for(mut ready: impl FnMut() -> bool) -> bool {
-    let start = crate::traps::count_read();
-    loop {
-        if ready() {
-            return true;
-        }
-        let elapsed = crate::traps::count_read().wrapping_sub(start);
-        if elapsed >= WAIT_LIMIT_TICKS {
-            return ready();
-        }
-        let slice = WAIT_SLICE_TICKS.min(WAIT_LIMIT_TICKS - elapsed);
-        crate::traps::wait_until(crate::traps::count_read().wrapping_add(slice));
-    }
-}
-
 fn read_pipe(index: usize, buffer: &mut [u8]) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
@@ -888,29 +868,18 @@ fn read_pipe(index: usize, buffer: &mut [u8]) -> SysResult<usize> {
     Ok(count)
 }
 
-fn write_pipe(index: usize, buffer: &[u8], nonblocking: bool) -> SysResult<usize> {
+fn write_pipe(index: usize, buffer: &[u8]) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
     if !pipe_has_reader(index) {
         return Err(CELL_E_PIPE);
     }
-    let mut len = unsafe { PIPE_LEN[index] };
-    let mut free = PIPE_CAPACITY.saturating_sub(len);
+    let len = unsafe { PIPE_LEN[index] };
+    let free = PIPE_CAPACITY.saturating_sub(len);
     if free == 0 {
-        if !nonblocking
-            && !wait_for(|| !pipe_has_reader(index) || unsafe { PIPE_LEN[index] } < PIPE_CAPACITY)
-        {
-            return Err(CELL_E_AGAIN);
-        }
-        if !pipe_has_reader(index) {
-            return Err(CELL_E_PIPE);
-        }
-        len = unsafe { PIPE_LEN[index] };
-        free = PIPE_CAPACITY.saturating_sub(len);
-        if free == 0 {
-            return Err(CELL_E_AGAIN);
-        }
+        // The pipe is full: the syscall layer owns the blocking wait.
+        return Err(CELL_E_AGAIN);
     }
     let count = buffer.len().min(free);
     let head = unsafe { PIPE_HEAD[index] };
@@ -934,12 +903,7 @@ fn read_console(buffer: &mut [u8]) -> SysResult<usize> {
     if buffer.is_empty() {
         return Ok(0);
     }
-    let count = crate::kbd::read_input(buffer);
-    if count == 0 {
-        Err(CELL_E_AGAIN)
-    } else {
-        Ok(count)
-    }
+    crate::tty::read(buffer).ok_or(CELL_E_AGAIN)
 }
 
 /// Readiness for `poll`.
@@ -976,7 +940,7 @@ pub fn poll_events(fd: i32, events: i16) -> i16 {
             }
         }
         Kind::Console => {
-            if events & POLLIN != 0 && crate::kbd::input_ready() {
+            if events & POLLIN != 0 && crate::tty::readable() {
                 revents |= POLLIN;
             }
             if events & POLLOUT != 0 {
@@ -1035,7 +999,7 @@ pub fn write(fd: i32, buffer: &[u8]) -> SysResult<usize> {
         return Err(CELL_E_BADF);
     }
     if let Kind::PipeWrite(index) = file {
-        return write_pipe(index as usize, buffer, nonblocking(fd));
+        return write_pipe(index as usize, buffer);
     }
     // O_APPEND writes at the current end of file, not at the saved offset.
     let start = if status_flags(fd) & O_APPEND != 0 {

@@ -184,6 +184,22 @@ LDFLAGS="-mabi=n32 -march=mips3 -msoft-float -mno-abicalls -fno-pic \
     -Wl,--start-group "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
     -Wl,--end-group
 
+# The interactive shell is a Rust staticlib linked against the same relibc.
+# cargo runs in user/sh, so rustup selects this repository's toolchain there,
+# not the one relibc pins.
+(
+    cd "$REPO/user/sh"
+    CARGO_TARGET_DIR="$TARGET_DIR/sh" $CARGO rustc --release --lib \
+        --crate-type staticlib -Zbuild-std=core -Zjson-target-spec \
+        --target "$TARGET"
+)
+# shellcheck disable=SC2086
+"$CC" $LDFLAGS -T "$LINKER" -o "$OUT/sh.elf" \
+    -Wl,--start-group \
+    "$TARGET_DIR/sh/mips3-sgi-irix7-native-n32/release/libirix7_sh.a" \
+    "$OUT/lib/libcrt0.a" "$OUT/lib/librelibc.a" \
+    -Wl,--end-group
+
 # The kernel's ELF loader reads a 256 KiB raw target-2 image.  The linked
 # segment ends well inside the slot, but the unstripped symbol table pushes the
 # file over it; strip before padding.
@@ -217,6 +233,7 @@ sleep_size=$(finish_image "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw")
 sleep_cell_size=$(finish_image "$OUT/sleep-cell-probe.elf" "$OUT/sleep-cell-probe.raw")
 forkexec_size=$(finish_image "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw")
 forkexec_child_size=$(finish_image "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw")
+sh_size=$(finish_image "$OUT/sh.elf" "$OUT/sh.raw")
 
 {
     echo "relibc=$have"
@@ -230,6 +247,7 @@ forkexec_child_size=$(finish_image "$OUT/forkexec-child.elf" "$OUT/forkexec-chil
     echo "sleep_cell_probe_elf=$sleep_cell_size bytes"
     echo "forkexec_probe_elf=$forkexec_size bytes"
     echo "forkexec_child_elf=$forkexec_child_size bytes"
+    echo "sh_elf=$sh_size bytes"
 } >"$OUT/BUILD-PROVENANCE.txt"
 sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
     "$OUT/thread-probe.elf" "$OUT/thread-probe.raw" \
@@ -238,7 +256,8 @@ sha256sum "$OUT/probe.elf" "$OUT/probe.raw" \
     "$OUT/sleep-probe.elf" "$OUT/sleep-probe.raw" \
     "$OUT/sleep-cell-probe.elf" "$OUT/sleep-cell-probe.raw" \
     "$OUT/forkexec-probe.elf" "$OUT/forkexec-probe.raw" \
-    "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw" >"$OUT/SHA256SUMS"
+    "$OUT/forkexec-child.elf" "$OUT/forkexec-child.raw" \
+    "$OUT/sh.elf" "$OUT/sh.raw" >"$OUT/SHA256SUMS"
 
 echo "build-relibc-probe: ELF $OUT/probe.elf"
 echo "build-relibc-probe: raw $OUT/probe.raw"
@@ -256,4 +275,6 @@ echo "build-relibc-probe: forkexec ELF $OUT/forkexec-probe.elf"
 echo "build-relibc-probe: forkexec raw $OUT/forkexec-probe.raw"
 echo "build-relibc-probe: forkexec child ELF $OUT/forkexec-child.elf"
 echo "build-relibc-probe: forkexec child raw $OUT/forkexec-child.raw"
+echo "build-relibc-probe: sh ELF $OUT/sh.elf"
+echo "build-relibc-probe: sh raw $OUT/sh.raw"
 cat "$OUT/BUILD-PROVENANCE.txt"

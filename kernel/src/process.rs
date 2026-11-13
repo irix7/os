@@ -128,6 +128,12 @@ struct Process {
     /// CP0 Count value at which a `Sleeping` cell may run again.  It is the
     /// earliest deadline of the cell's parked threads.
     sleep_deadline: u32,
+    /// Process group; terminal signals go to the console's foreground group.
+    pgid: u32,
+    /// Signals whose disposition is `SIG_IGN`, one bit per signal number.
+    ignored: u32,
+    /// Fatal signals posted to the running cell, taken at the gate epilogue.
+    pending: u32,
 }
 
 impl Process {
@@ -146,6 +152,9 @@ impl Process {
         wait: None,
         pending_wait: None,
         sleep_deadline: 0,
+        pgid: 0,
+        ignored: 0,
+        pending: 0,
     };
 }
 
@@ -328,9 +337,13 @@ pub fn start_first(
             wait: None,
             pending_wait: None,
             sleep_deadline: 0,
+            pgid: 1,
+            ignored: 0,
+            pending: 0,
         };
         CURRENT = 0;
     }
+    crate::tty::set_foreground(1);
     thread::install(thread::single(frame));
     fd::restore(fds);
     space.activate(asid);
@@ -379,7 +392,10 @@ pub fn fork(tf: &TrapFrame) -> SysResult<u32> {
     let asid = 0;
     // SAFETY: single-threaded kernel; the child slot is free and no process can
     // run until this syscall returns.
-    let abi = unsafe { (*core::ptr::addr_of!(PROCESSES))[from].abi };
+    let (abi, pgid, ignored) = unsafe {
+        let parent = &(*core::ptr::addr_of!(PROCESSES))[from];
+        (parent.abi, parent.pgid, parent.ignored)
+    };
     unsafe {
         let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
         processes[to] = Process {
@@ -397,6 +413,9 @@ pub fn fork(tf: &TrapFrame) -> SysResult<u32> {
             wait: None,
             pending_wait: None,
             sleep_deadline: 0,
+            pgid,
+            ignored,
+            pending: 0,
         };
     }
     crate::print_str("fork: pid=");
@@ -480,7 +499,7 @@ fn reap_child(from: usize, index: usize) -> u32 {
     // SAFETY: single-threaded kernel; both indices are live slots.
     unsafe {
         let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
-        let status = encode_status(processes[index].exit_status);
+        let status = processes[index].exit_status;
         let pid = processes[index].identity.pid;
         let request = processes[from].wait;
         let status_address = request.map(|request| request.status).unwrap_or(0);
@@ -609,33 +628,25 @@ fn zero_rusage(address: u32) {
     }
 }
 
-/// Retire the current cell with `status`.
-pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
-    let from = match current_index() {
-        Some(index) => index,
-        None => return Exit::Last,
-    };
-    // The live descriptor table belongs to this process.  Take it now: a
-    // process can open and close descriptors after its last context switch,
-    // so the saved snapshot may be stale.  Clear the saved copy so `reap_child`
-    // cannot release the same descriptions twice.
-    let live_fds = fd::snapshot();
-    // SAFETY: single-threaded kernel; the current slot is live.
+/// Turn a live cell into a zombie and report it to its parent.
+///
+/// `wait_status` is the encoded `waitpid` status word.  `fds` is the cell's
+/// descriptor table: the live one for the running cell, the saved snapshot
+/// for any other.  A parent already blocked in `waitpid` is made runnable
+/// with the result and the child is reaped; an orphan is reclaimed at once.
+fn retire(index: usize, wait_status: u32, fds: fd::Snapshot) {
+    // SAFETY: single-threaded kernel; `index` is a live slot.
     let (pid, parent_actor, parent_pid) = unsafe {
         let processes = &mut *core::ptr::addr_of_mut!(PROCESSES);
-        let process = &mut processes[from];
+        let process = &mut processes[index];
         process.state = State::Zombie;
-        process.exit_status = status;
+        process.exit_status = wait_status;
+        process.pending = 0;
         process.space.release();
-        fd::release_snapshot(&live_fds);
+        fd::release_snapshot(&fds);
         process.fds = fd::Snapshot::EMPTY;
         (process.identity.pid, process.parent, process.ppid)
     };
-    crate::print_str("process: exit pid=");
-    print_dec(pid);
-    crate::print_str(" status=0x");
-    crate::print_hex32(status);
-    crate::println("");
 
     // Wake a parent already blocked in waitpid().  The status is written
     // through the parent's own page map, then the child is reaped.
@@ -661,13 +672,13 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
             let request = processes[parent_index].wait;
             if let Some(request) = request {
                 if child_matches(
-                    &processes[from],
+                    &processes[index],
                     processes[parent_index].identity.pid,
                     request.pid,
                 ) {
                     processes[parent_index].pending_wait = Some(PendingWait {
                         pid,
-                        status: encode_status(status),
+                        status: wait_status,
                         status_address: request.status,
                         rusage: request.rusage,
                     });
@@ -676,7 +687,7 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
                     processes[parent_index].wait = None;
                     processes[parent_index].state = State::Runnable;
                     // The child is consumed by this wait.
-                    processes[from] = Process::EMPTY;
+                    processes[index] = Process::EMPTY;
                     woke = true;
                 }
             }
@@ -690,10 +701,35 @@ pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
         if !parent_alive {
             // SAFETY: single-threaded kernel.
             unsafe {
-                (*core::ptr::addr_of_mut!(PROCESSES))[from] = Process::EMPTY;
+                (*core::ptr::addr_of_mut!(PROCESSES))[index] = Process::EMPTY;
             }
         }
     }
+}
+
+/// Retire the current cell with exit code `status`.
+pub fn exit_current(tf: &mut TrapFrame, status: u32) -> Exit {
+    if let Some(index) = current_index() {
+        let pid = unsafe { (*core::ptr::addr_of!(PROCESSES))[index].identity.pid };
+        crate::print_str("process: exit pid=");
+        print_dec(pid);
+        crate::print_str(" status=0x");
+        crate::print_hex32(status);
+        crate::println("");
+    }
+    retire_current(tf, encode_status(status))
+}
+
+/// Retire the current cell with an encoded wait status and pick a successor.
+fn retire_current(tf: &mut TrapFrame, wait_status: u32) -> Exit {
+    let from = match current_index() {
+        Some(index) => index,
+        None => return Exit::Last,
+    };
+    // The live descriptor table belongs to this process.  Take it now: a
+    // process can open and close descriptors after its last context switch,
+    // so the saved snapshot may be stale.
+    retire(from, wait_status, fd::snapshot());
 
     let Some(to) = next_runnable_or_expired(from) else {
         // A blocked parent with no runnable child would otherwise abandon the
@@ -913,6 +949,260 @@ fn switch_to(tf: &mut TrapFrame, from: usize, to: usize) {
         *tf = target.frame;
         tf.entryhi = 0;
         traps::set_user_abi(target.abi);
+    }
+}
+
+/// Signals whose default action is to do nothing.
+///
+/// The stop signals are here too: v0 has no stopped state, so `SIGTSTP`,
+/// `SIGSTOP`, `SIGTTIN` and `SIGTTOU` are discarded instead of stopping the
+/// cell.
+fn default_ignored(signal: u32) -> bool {
+    use native_abi::{SIGCHLD, SIGCONT, SIGSTOP, SIGTSTP, SIGTTIN, SIGTTOU, SIGURG, SIGWINCH};
+    matches!(
+        signal as i32,
+        SIGCHLD | SIGCONT | SIGSTOP | SIGTSTP | SIGTTIN | SIGTTOU | SIGURG | SIGWINCH
+    )
+}
+
+fn valid_signal(signal: u32) -> bool {
+    signal >= 1 && signal < native_abi::NSIG as u32
+}
+
+fn live(process: &Process) -> bool {
+    matches!(
+        process.state,
+        State::Runnable | State::Running | State::Blocked | State::Sleeping
+    )
+}
+
+/// Read and optionally replace the calling cell's disposition for `signal`.
+///
+/// Only `SIG_DFL` and `SIG_IGN` exist in v0; a handler address is
+/// `CELL_E_NOSYS` because the kernel cannot run one.  `SIGKILL` and `SIGSTOP`
+/// cannot be changed.
+pub fn set_disposition(signal: u32, new: Option<u32>) -> SysResult<u32> {
+    use native_abi::{SIGKILL, SIGSTOP, SIG_DFL, SIG_IGN};
+    if !valid_signal(signal) {
+        return Err(CELL_E_INVAL);
+    }
+    let index = current_index().ok_or(CELL_E_SRCH)?;
+    let bit = 1u32 << signal;
+    // SAFETY: single-threaded kernel; the current slot is live.
+    let process = unsafe { &mut (*core::ptr::addr_of_mut!(PROCESSES))[index] };
+    let old = if process.ignored & bit != 0 {
+        SIG_IGN
+    } else {
+        SIG_DFL
+    };
+    if let Some(new) = new {
+        if signal as i32 == SIGKILL || signal as i32 == SIGSTOP {
+            return Err(CELL_E_INVAL);
+        }
+        match new {
+            SIG_DFL => process.ignored &= !bit,
+            SIG_IGN => process.ignored |= bit,
+            _ => return Err(crate::syserr::CELL_E_NOSYS),
+        }
+    }
+    Ok(old)
+}
+
+/// Whether any live cell belongs to process group `group`.
+pub fn group_exists(group: u32) -> bool {
+    // SAFETY: single-threaded kernel.
+    unsafe {
+        (*core::ptr::addr_of!(PROCESSES))
+            .iter()
+            .any(|process| live(process) && process.pgid == group)
+    }
+}
+
+/// The caller, or a child of the caller, named by `pid` (0 is the caller).
+fn self_or_child(pid: u32) -> SysResult<usize> {
+    let current = current_index().ok_or(CELL_E_SRCH)?;
+    if pid == 0 {
+        return Ok(current);
+    }
+    let index = index_of_pid(pid).ok_or(CELL_E_SRCH)?;
+    // SAFETY: single-threaded kernel.
+    let (own, parent) = unsafe {
+        let processes = &*core::ptr::addr_of!(PROCESSES);
+        (processes[current].identity.pid, processes[index].ppid)
+    };
+    if index == current || parent == own {
+        Ok(index)
+    } else {
+        Err(CELL_E_SRCH)
+    }
+}
+
+/// `setpgid(pid, pgid)`: move the caller or one of its children to a group.
+pub fn setpgid(pid: u32, pgid: u32) -> SysResult<()> {
+    if (pid as i32) < 0 || (pgid as i32) < 0 {
+        return Err(CELL_E_INVAL);
+    }
+    let index = self_or_child(pid)?;
+    // SAFETY: single-threaded kernel; the slot is live.
+    unsafe {
+        let process = &mut (*core::ptr::addr_of_mut!(PROCESSES))[index];
+        process.pgid = if pgid == 0 { process.identity.pid } else { pgid };
+    }
+    Ok(())
+}
+
+/// `getpgid(pid)`: the group of any live local cell (0 is the caller).
+pub fn getpgid(pid: u32) -> SysResult<u32> {
+    let index = if pid == 0 {
+        current_index().ok_or(CELL_E_SRCH)?
+    } else {
+        index_of_pid(pid).ok_or(CELL_E_SRCH)?
+    };
+    // SAFETY: single-threaded kernel.
+    Ok(unsafe { (*core::ptr::addr_of!(PROCESSES))[index].pgid })
+}
+
+/// Post `signal` to one cell.
+///
+/// An ignored signal is dropped.  A fatal signal for the running cell is
+/// recorded and taken at the gate epilogue, where its frame can be replaced.
+/// Any other cell is not executing, so it is retired here.
+fn post(index: usize, signal: u32) {
+    let bit = 1u32 << signal;
+    // SAFETY: single-threaded kernel; `index` is in range.
+    let (ignored, fds, pid) = unsafe {
+        let process = &(*core::ptr::addr_of!(PROCESSES))[index];
+        if !live(process) {
+            return;
+        }
+        (process.ignored, process.fds, process.identity.pid)
+    };
+    if signal as i32 != native_abi::SIGKILL && (ignored & bit != 0 || default_ignored(signal)) {
+        return;
+    }
+    if Some(index) == current_index() {
+        // SAFETY: single-threaded kernel.
+        unsafe {
+            (*core::ptr::addr_of_mut!(PROCESSES))[index].pending |= bit;
+        }
+        return;
+    }
+    crate::print_str("process: signal pid=");
+    print_dec(pid);
+    crate::print_str(" sig=");
+    print_dec(signal);
+    crate::println("");
+    retire(index, signal & 0x7F, fds);
+}
+
+/// Post `signal` to every cell in process group `group`.
+pub fn signal_group(group: u32, signal: i32) -> bool {
+    let mut found = false;
+    for index in 0..MAX_PROCESSES {
+        // SAFETY: single-threaded kernel.
+        let member = unsafe {
+            let process = &(*core::ptr::addr_of!(PROCESSES))[index];
+            live(process) && process.pgid == group
+        };
+        if member {
+            found = true;
+            if signal != 0 {
+                post(index, signal as u32);
+            }
+        }
+    }
+    found
+}
+
+/// `kill(pid, sig)`.
+pub fn kill(pid: i32, signal: u32) -> SysResult<()> {
+    if signal != 0 && !valid_signal(signal) {
+        return Err(CELL_E_INVAL);
+    }
+    let current = current_index().ok_or(CELL_E_SRCH)?;
+    let found = if pid > 0 {
+        match index_of_pid(pid as u32) {
+            Some(index) => {
+                if signal != 0 {
+                    post(index, signal);
+                }
+                true
+            }
+            None => false,
+        }
+    } else if pid == -1 {
+        let mut found = false;
+        for index in 0..MAX_PROCESSES {
+            // SAFETY: single-threaded kernel.
+            let target = unsafe { live(&(*core::ptr::addr_of!(PROCESSES))[index]) };
+            if target && index != current {
+                found = true;
+                if signal != 0 {
+                    post(index, signal);
+                }
+            }
+        }
+        found
+    } else {
+        let group = if pid == 0 {
+            // SAFETY: single-threaded kernel.
+            unsafe { (*core::ptr::addr_of!(PROCESSES))[current].pgid }
+        } else {
+            pid.unsigned_abs()
+        };
+        signal_group(group, signal as i32)
+    };
+    if found {
+        Ok(())
+    } else {
+        Err(CELL_E_SRCH)
+    }
+}
+
+/// Whether the running cell has a fatal signal waiting.
+pub fn signal_pending() -> bool {
+    match current_index() {
+        // SAFETY: single-threaded kernel.
+        Some(index) => unsafe { (*core::ptr::addr_of!(PROCESSES))[index].pending != 0 },
+        None => false,
+    }
+}
+
+/// Apply the running cell's pending fatal signal.
+///
+/// Called at the gate epilogue.  Returns `true` when the trap frame now
+/// belongs to another cell or to the kernel console, so the caller must not
+/// advance `EPC`.
+pub fn deliver_pending(tf: &mut TrapFrame) -> bool {
+    let mut replaced = false;
+    loop {
+        let Some(index) = current_index() else {
+            return replaced;
+        };
+        // SAFETY: single-threaded kernel; the current slot is live.
+        let (pending, pid) = unsafe {
+            let process = &mut (*core::ptr::addr_of_mut!(PROCESSES))[index];
+            let pending = process.pending;
+            process.pending = 0;
+            (pending, process.identity.pid)
+        };
+        if pending == 0 {
+            return replaced;
+        }
+        let signal = pending.trailing_zeros();
+        crate::print_str("process: signal pid=");
+        print_dec(pid);
+        crate::print_str(" sig=");
+        print_dec(signal);
+        crate::println("");
+        replaced = true;
+        match retire_current(tf, signal & 0x7F) {
+            Exit::Switched => {}
+            Exit::Last => {
+                traps::finish_user_exit(tf, 128 + signal);
+                return true;
+            }
+        }
     }
 }
 

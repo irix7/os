@@ -2,7 +2,7 @@
 //! Provisional native IRIX 7 n32 constants.
 //!
 //! The numeric values are the recommended defaults in
-//! `docs/spec/native-libc.md`; they are frozen only when the C oracle and the
+//! `docs/programming/native-libc.md`; they are frozen only when the C oracle and the
 //! layout review accept them.  `EWOULDBLOCK == EAGAIN` and
 //! `ENOTSUP == EOPNOTSUPP` are intentional.
 
@@ -179,3 +179,67 @@ pub const AT_EACCESS: c_int = 0x200;
 pub const WNOHANG: c_int = 1;
 pub const WUNTRACED: c_int = 2;
 pub const WCONTINUED: c_int = 8;
+
+// termios(3).  The values are relibc's (`src/header/termios`), which the
+// `irix7-pal` branch shares with its Linux target.
+pub const NCCS: usize = 32;
+pub const VINTR: usize = 0;
+pub const VQUIT: usize = 1;
+pub const VERASE: usize = 2;
+pub const VKILL: usize = 3;
+pub const VEOF: usize = 4;
+pub const VTIME: usize = 5;
+pub const VMIN: usize = 6;
+pub const VSTART: usize = 8;
+pub const VSTOP: usize = 9;
+pub const VSUSP: usize = 10;
+pub const VEOL: usize = 11;
+pub const VWERASE: usize = 14;
+pub const ISTRIP: u32 = 0o000_040;
+pub const INLCR: u32 = 0o000_100;
+pub const IGNCR: u32 = 0o000_200;
+pub const ICRNL: u32 = 0o000_400;
+pub const IXON: u32 = 0o002_000;
+pub const OPOST: u32 = 0o000_001;
+pub const ONLCR: u32 = 0o000_004;
+pub const B9600: u32 = 0o000_015;
+pub const CS8: u32 = 0o000_060;
+pub const CREAD: u32 = 0o000_200;
+pub const ISIG: u32 = 0o000_001;
+pub const ICANON: u32 = 0o000_002;
+pub const ECHO: u32 = 0o000_010;
+pub const ECHOE: u32 = 0o000_020;
+pub const ECHOK: u32 = 0o000_040;
+pub const ECHONL: u32 = 0o000_100;
+pub const NOFLSH: u32 = 0o000_200;
+pub const IEXTEN: u32 = 0o100_000;
+
+// ioctl(2) terminal requests.
+pub const TCGETS: u32 = 0x5401;
+pub const TCSETS: u32 = 0x5402;
+pub const TCSETSW: u32 = 0x5403;
+pub const TCSETSF: u32 = 0x5404;
+pub const TIOCGPGRP: u32 = 0x540F;
+pub const TIOCSPGRP: u32 = 0x5410;
+pub const TIOCGWINSZ: u32 = 0x5413;
+pub const TIOCSWINSZ: u32 = 0x5414;
+
+// signal(7).  The numbers are relibc's generic set.
+pub const SIGHUP: c_int = 1;
+pub const SIGINT: c_int = 2;
+pub const SIGQUIT: c_int = 3;
+pub const SIGKILL: c_int = 9;
+pub const SIGPIPE: c_int = 13;
+pub const SIGTERM: c_int = 15;
+pub const SIGCHLD: c_int = 17;
+pub const SIGCONT: c_int = 18;
+pub const SIGSTOP: c_int = 19;
+pub const SIGTSTP: c_int = 20;
+pub const SIGTTIN: c_int = 21;
+pub const SIGTTOU: c_int = 22;
+pub const SIGURG: c_int = 23;
+pub const SIGWINCH: c_int = 28;
+/// One past the highest signal the v0 kernel tracks.
+pub const NSIG: c_int = 32;
+pub const SIG_DFL: u32 = 0;
+pub const SIG_IGN: u32 = 1;
