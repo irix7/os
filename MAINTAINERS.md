@@ -19,8 +19,8 @@
 | Hardware lab | @belikh |
 
 The project is recruiting reviewers and a second maintainer. See
-[`docs/plan/community.md`](docs/plan/community.md) and the bus-factor risk in
-[`docs/plan/risks.md`](docs/plan/risks.md).
+[`docs/project/community.md`](docs/project/community.md) and the bus-factor risk in
+[`docs/project/risks.md`](docs/project/risks.md).
 
 ## Emeritus
 

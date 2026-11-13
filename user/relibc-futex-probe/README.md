@@ -1,7 +1,7 @@
 # relibc-linked futex probe
 
 `probe.c` is linked against the relibc IRIX 7 PAL and exercises the raw
-cooperative futex gate from `docs/spec/native-abi.md` §5.9.  It reuses the
+cooperative futex gate from `docs/programming/native-abi.md` §5.9.  It reuses the
 fixed 256 KiB image slot and linker script of
 [`../relibc-probe`](../relibc-probe).
 

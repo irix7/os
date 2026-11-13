@@ -19,7 +19,7 @@
 ## Consequences
 
 - **M1 gate rewritten.** "Boot with no network" is replaced by "boot with network; zero
-  mesh RPCs at boot". The offline boot evidence in `docs/plan/milestones.md` is withdrawn.
+  mesh RPCs at boot". The offline boot evidence in `docs/project/milestones.md` is withdrawn.
 - **AGENTS.md ROM rules replaced.** The ROM is no longer a pure assembly stub. The rule that
   the kernel lives in the PROM is removed. The "one program" description of ROM and kernel
   is replaced by a two-stage boot: a downloader, then a separately loaded kernel.

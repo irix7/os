@@ -168,7 +168,7 @@ fn poll_constants_match_posix() {
 
 #[test]
 fn v0_syscall_table_is_pinned_and_distinct() {
-    // The numbers are the v0 table in docs/spec/native-abi.md §5.8.  They are
+    // The numbers are the v0 table in docs/programming/native-abi.md §5.8.  They are
     // replaced outright when the capability form lands; until then a change
     // here is an ABI change and must move the document with it.
     let table = [

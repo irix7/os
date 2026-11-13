@@ -380,7 +380,7 @@ write` for project automation).
 | Rulesets | Yes | Branch protection |
 | Signed commits | Yes (optional) | Verify authorship |
 
-The security policy and threat model live in [`security.md`](security.md) and
+The security policy and threat model live in [`security.md`](../administration/security.md) and
 [`../SECURITY.md`](../../SECURITY.md).
 
 ## 12. Discussions, wiki and pages

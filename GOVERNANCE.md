@@ -19,7 +19,7 @@ The current maintainers are listed in [MAINTAINERS.md](MAINTAINERS.md).
    within 72 hours is accepted.
 2. **ADR** for architecture, cross-boundary interfaces, security or licence changes. The ADR
    lives in `irix7/project/docs/adr/`; the template is in
-   [`docs/plan/risks.md`](docs/plan/risks.md).
+   [`docs/project/risks.md`](docs/project/risks.md).
 3. **Maintainer decision** for direction, releases, conduct and security, after hearing the
    community.
 4. **No silent decisions.** If it is not in an issue or an ADR, it did not happen.
@@ -33,7 +33,7 @@ The current maintainers are listed in [MAINTAINERS.md](MAINTAINERS.md).
 
 ## Releases
 
-- Releases follow the checklist in [`docs/plan/release.md`](docs/plan/release.md).
+- Releases follow the checklist in [`docs/administration/release.md`](docs/administration/release.md).
 - A release requires a maintainer approval and the required CI gates.
 - Release tags are immutable.
 

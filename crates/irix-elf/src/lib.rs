@@ -24,7 +24,7 @@
 //!
 //! The loader contract, including the accepted subset and the deliberate
 //! limitations, is documented in
-//! [`docs/spec/elf.md`](https://github.com/irix7/os/blob/main/docs/spec/elf.md).
+//! [`docs/programming/elf.md`](https://github.com/irix7/os/blob/main/docs/programming/elf.md).
 
 #![no_std]
 #![deny(unsafe_code)]

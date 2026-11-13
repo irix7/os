@@ -5,8 +5,8 @@
 **Deciders:** M2-5, for review at the M2 gate
 **Related:** [M2-ADR-0004](m2-0004-actor-runtime.md), [M2-ADR-0005](m2-0005-join-epoch.md),
 [M2-ADR-0006](m2-0006-homes.md), [M2-ADR-0007](m2-0007-route.md),
-[M2-ADR-0008](m2-0008-failure-fence.md), [`../spec/system.md`](../spec/system.md) §5 and §8,
-[`../plan/milestones.md`](../plan/milestones.md) §2, [`../plan/m2-rig.md`](../plan/m2-rig.md)
+[M2-ADR-0008](m2-0008-failure-fence.md), [`../spec/system.md`](../internals/system.md) §5 and §8,
+[`../plan/milestones.md`](../project/milestones.md) §2, [`../plan/m2-rig.md`](../project/m2-rig.md)
 
 ## Context
 

@@ -138,7 +138,7 @@ What is missing or narrower than the issue:
 - **The `MOVED` path is a lab fixture.** The root-signed `HOME_MOVE` in
   `crates/mesh-route` is a controlled one-object move, not a general
   membership-change home-migration policy; the milestone text says so
-  (`docs/plan/milestones.md:198-215`).
+  (`docs/project/milestones.md:198-215`).
 - **The actor is a deterministic native fixture**, not a general actor runtime
   or a Wasm actor. The issue permits an L0 proof, but M3 cannot treat this as an
   actor scheduler.
@@ -149,7 +149,7 @@ What is missing or narrower than the issue:
   short list.
 
 Evidence grade: real two-kernel CI, plus host fabric tests. The M2 behaviours
-listed in `docs/spec/system.md:216` are met; the unqualified "one-node failure"
+listed in `docs/internals/system.md:216` are met; the unqualified "one-node failure"
 and the persistence provisioning are not.
 
 ### #245 — direct peer transport
@@ -345,7 +345,7 @@ What is implemented:
   passed in this audit.
 - Four real `iris` kernels converged on one epoch over the bounded host hub;
   the full shard/route bundle was recorded for three because the fourth member's
-  HTTP slot stalled (`docs/plan/m3-rig.md:1-5,173-179`).
+  HTTP slot stalled (`docs/project/m3-rig.md:1-5,173-179`).
 
 What is missing or wrong with the closure:
 
@@ -370,10 +370,10 @@ What is missing or wrong with the closure:
   bytes per change set at the root, and it is root fan-out, not gossip.
 - **The four-node evidence is hub-mediated and not in CI.** The hub is a host
   link switch that forwards whole envelopes by destination
-  (`docs/plan/m3-rig.md:100-140`); `--nodes 3..8` requires `--hub`
-  (`docs/plan/m3-rig.md:73`). It is not a directory, but it is a central
+  (`docs/project/m3-rig.md:100-140`); `--nodes 3..8` requires `--hub`
+  (`docs/project/m3-rig.md:73`). It is not a directory, but it is a central
   process required for more than two nodes. Eight real kernels are explicitly
-  not achieved (`docs/plan/m3-rig.md:173-180`). There is no four-node CI job.
+  not achieved (`docs/project/m3-rig.md:173-180`). There is no four-node CI job.
 - **#264's item 3 is stale.** It lists "epoch persistence and floor" as
   remaining, but `restore_epoch_store` and the CI root-restart scenario already
   implement it (`modules/mcp/src/mesh.rs:4266-4365`,
@@ -387,13 +387,13 @@ The protocol and library work is substantial; the closure is not. A reader of
 
 ### 4.1 Membership is a single-root star, not gossip
 
-`docs/spec/system.md:148-150` says membership uses "SWIM-style failure detection
+`docs/internals/system.md:148-150` says membership uses "SWIM-style failure detection
 and a bounded gossip fan-out". The failure detector is real. The gossip fan-out
 is not in the live path: the member sends a summary to the root
 (`mesh.rs:1852-1860`), the root signs one aggregate and sends a copy to every
 peer (`mesh.rs:2504-2525`), and the module has one decoder and one queue for all
 sources (`mesh.rs:207-221`). The four-kernel run depends on the host hub
-(`docs/plan/m3-rig.md:100-140`). A root failure is a single point of authority
+(`docs/project/m3-rig.md:100-140`). A root failure is a single point of authority
 failure; a member cannot take over because the root key is on the root only.
 
 This is the largest gap between the M2/M3 narrative and the code. It is also the
@@ -450,7 +450,7 @@ The receive path rejects any frame whose destination is neither zero nor the
 local node (`mesh.rs:2006-2009`). There is no forwarding branch. The M2 and
 M3-hub paths are one hop (the hub is a link switch, not a mesh router). The
 system.md invariant "at most two hops in the normal case"
-(`docs/spec/system.md:53`) and the M4 gate are not implemented; the live design
+(`docs/internals/system.md:53`) and the M4 gate are not implemented; the live design
 is one logical link per node or a star. This should be stated as an M3/M4 design
 gap, not assumed from the `MeshHeader.ttl` field.
 
@@ -461,7 +461,7 @@ kernels (`crates/mesh-core/src/lib.rs:30,115-157`, M2-3 evidence). The route
 cache, capability check and one `MOVED` retry are real (`crates/mesh-route`).
 But the `MOVED` is driven by a controlled root-signed `HOME_MOVE` in the rig, not
 by a membership change or a general `DRAINING` handover
-(`docs/plan/milestones.md:198-215`). Failure removal recomputes homes and fences
+(`docs/project/milestones.md:198-215`). Failure removal recomputes homes and fences
 the dead node, which is a different path. The system.md `DRAINING`/forwarding
 grace behaviour is a lab fixture.
 
@@ -564,7 +564,7 @@ through `console_read` and MCP `serial.read`
 The evidence to reconcile is the acceptance test. CI boots `userelf` and checks
 `hello from user` on serial (`.github/workflows/ci.yml:1215`), but it does not
 assert the same bytes on telnet or through MCP, and it has no mid-line
-interleaving or escape case. `docs/plan/testing.md:172-175` records the sash as a
+interleaving or escape case. `docs/project/testing.md:172-175` records the sash as a
 manual check on both transports. If the core verdict treats the routing as
 sufficient, the missing cross-surface assertion is still worth recording as a
 test gap rather than reopening #115.

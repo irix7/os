@@ -5,9 +5,9 @@
 **Deciders:** M3 shard slice, for review at the M3 gate
 **Related:** [M2-ADR-0003](m2-0003-authority.md), [M2-ADR-0005](m2-0005-join-epoch.md),
 [M2-ADR-0006](m2-0006-homes.md), [M2-ADR-0007](m2-0007-route.md),
-[`../spec/system.md`](../spec/system.md) §5 and §9,
-[`../plan/milestones.md`](../plan/milestones.md) Phase 5,
-[`../plan/m3-rig.md`](../plan/m3-rig.md)
+[`../spec/system.md`](../internals/system.md) §5 and §9,
+[`../plan/milestones.md`](../project/milestones.md) Phase 5,
+[`../plan/m3-rig.md`](../project/m3-rig.md)
 
 ## Context
 

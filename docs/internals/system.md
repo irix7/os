@@ -4,9 +4,9 @@
 **Version:** 1.0
 **Owner:** kernel / mesh
 **Related:** [`architecture.md`](architecture.md) (native and compatibility layers),
-[`native-abi.md`](native-abi.md), [`native-libc.md`](native-libc.md),
-[`elf.md`](elf.md), [`boot-protocol.md`](boot-protocol.md),
-[`../plan/milestones.md`](../plan/milestones.md)
+[`native-abi.md`](../programming/native-abi.md), [`native-libc.md`](../programming/native-libc.md),
+[`elf.md`](../programming/elf.md), [`boot-protocol.md`](boot-protocol.md),
+[`../plan/milestones.md`](../project/milestones.md)
 
 ## 1. Definition
 
@@ -81,7 +81,7 @@ The same core image runs on every node. It owns scheduling policy, the
 namespace, the capability engine, the actor directory, the global placement
 view and the service graph. It never sees native pointers, Rust trait objects
 or device registers; the shim exposes a small `i7host` import surface
-([`../plan/milestones.md`](../plan/milestones.md)).
+([`../plan/milestones.md`](../project/milestones.md)).
 
 The v1 core runs in kernel mode on the Indy via a deterministic wasmi
 interpreter. A user-mode interpreter is a later PC/cloud option; it is an open
@@ -206,7 +206,7 @@ All wire and state metadata is little-endian. Wasm linear-memory bytes are
 never blanket-swapped when moving between big-endian MIPS and little-endian
 x86_64/AArch64; the module sees the same bytes. Pointers are rebased; globals
 and tables are decoded by type; canonical state hashes and section lengths
-catch corruption. See the endian matrix in `docs/plan/milestones.md`.
+catch corruption. See the endian matrix in `docs/project/milestones.md`.
 
 ## 9. Gate summary
 

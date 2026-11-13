@@ -3,7 +3,7 @@
 **Status:** draft
 **Version:** 0.1
 **Owner:** infra
-**Related:** [`mcp.md`](mcp.md), [`../plan/milestones.md`](../plan/milestones.md) M9
+**Related:** [`mcp.md`](mcp.md), [`../plan/milestones.md`](../project/milestones.md) M9
 
 ## 1. Purpose and current reality
 

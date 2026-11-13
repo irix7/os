@@ -3,8 +3,8 @@
 **Status:** draft
 **Version:** 0.1
 **Owner:** kernel / console
-**Related:** [`architecture.md`](architecture.md), [`modules.md`](modules.md),
-[`mcp.md`](mcp.md), [`boot-protocol.md`](boot-protocol.md).
+**Related:** [`architecture.md`](../internals/architecture.md), [`modules.md`](../spec/modules.md),
+[`mcp.md`](mcp.md), [`boot-protocol.md`](../internals/boot-protocol.md).
 
 ## 1. One ordered byte stream
 
@@ -96,6 +96,6 @@ fd 1/2 for `println!`; the full POSIX fd table and VFS remain future work.
 
 The kernel emits one `BOOT-READY` or `BOOT-NOT-READY` line after the RTC, network
 and module autoload have run (see
-[`boot-protocol.md`](boot-protocol.md) §10).  Test harnesses must poll that line;
+[`boot-protocol.md`](../internals/boot-protocol.md) §10).  Test harnesses must poll that line;
 the individual `network: dns`, `mcp: listening` and `autoload: module returned`
 messages are diagnostics, not the readiness contract.

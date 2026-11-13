@@ -20,7 +20,7 @@ Discussion or comment on an issue.
 ## Development setup
 
 The toolchain is pinned by `rust-toolchain.toml` and supplied by the Nix devshell;
-[`docs/toolchain.md`](docs/toolchain.md) has the full setup and cross-build commands.
+[`docs/installation/toolchain.md`](docs/installation/toolchain.md) has the full setup and cross-build commands.
 The short version:
 
 ```sh
@@ -39,7 +39,7 @@ cargo test
 The emulator is `irix7/iris`, driven by `iris` and `iris-ci`; the two-kernel rig is
 [`tools/m2-rig`](tools/m2-rig/README.md) and the one-prompt M2 transcript is
 [`tools/one-computer`](tools/one-computer/README.md). The MCP development loop is
-described in [`docs/spec/mcp.md`](docs/spec/mcp.md).
+described in [`docs/using/mcp.md`](docs/using/mcp.md).
 
 ## Pre-release compatibility
 
@@ -47,7 +47,7 @@ IRIX 7 has no stable base or deployed users. Internal interfaces are Version 1 a
 replaced without compatibility shims, dual-stack paths or migration code. Update every
 in-tree caller and delete the old path; keep only safety/security invariants, explicit
 external standards and M1/M2/M3 marker evidence. See
-[`docs/spec/pre-release.md`](docs/spec/pre-release.md) before adding any compatibility or
+[`docs/administration/pre-release.md`](docs/administration/pre-release.md) before adding any compatibility or
 version-negotiation code.
 
 ## Clean-room rules
@@ -61,7 +61,7 @@ source and decompilation.
 - Every kernel PR is screened by `irix7/harness`; a similarity hit blocks the merge.
 - If you are unsure, ask a clean-room reviewer before writing code.
 
-See [`docs/plan/legal.md`](docs/plan/legal.md) and ADR-0009/0014/0015.
+See [`docs/project/legal.md`](docs/project/legal.md) and ADR-0009/0014/0015.
 
 ## Developer Certificate of Origin
 
@@ -110,14 +110,14 @@ Review expectations:
 
 ## Documentation
 
-- Architecture: [`docs/spec/architecture.md`](docs/spec/architecture.md).
-- Plan: [`docs/plan/`](docs/plan/).
+- Architecture: [`docs/internals/architecture.md`](docs/internals/architecture.md).
+- Plan: [`docs/project/`](docs/project/).
 - Research: [`docs/research/`](docs/research/).
 - Every decision becomes an ADR in `irix7/project/docs/adr/`.
 
 ## Hardware testing
 
-The lab is described in [`docs/plan/hardware-lab.md`](docs/plan/hardware-lab.md). Do not
+The lab is described in [`docs/project/hardware-lab.md`](docs/project/hardware-lab.md). Do not
 modify a real Indy's NVRAM, disks or firmware without recording the original state.
 
 ## Security

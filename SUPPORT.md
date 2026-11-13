@@ -2,11 +2,11 @@
 
 ## Documentation
 
-- [Architecture](docs/spec/architecture.md)
-- [Project plan](docs/plan/README.md)
-- [Milestones](docs/plan/milestones.md)
-- [Hardware lab](docs/plan/hardware-lab.md)
-- [Testing](docs/plan/testing.md)
+- [Architecture](docs/internals/architecture.md)
+- [Project plan](docs/project/README.md)
+- [Milestones](docs/project/milestones.md)
+- [Hardware lab](docs/project/hardware-lab.md)
+- [Testing](docs/project/testing.md)
 - [Research](docs/research/)
 
 ## Questions

@@ -96,7 +96,7 @@ log, the native SCSI user image and the module loader.
 ### One diskless boot
 
 This is the path the CI `Boot (iris)` job runs
-([`.github/workflows/ci.yml`](../.github/workflows/ci.yml), `Boot (iris)`):
+([`.github/workflows/ci.yml`](../../.github/workflows/ci.yml), `Boot (iris)`):
 
 ```sh
 mkdir -p /tmp/irix7-boot && cd /tmp/irix7-boot
@@ -177,7 +177,7 @@ rendezvous homes, the remote capability route and `MOVED` retry, L0 actor migrat
 both directions, and the failure/partition scenarios. Evidence is written under
 `target/m2-rig/evidence/`, with `summary.md` as the entry point. The fault modes are
 `--fault no-peer`, `wrong-authority`, `no-route`, `kill-peer` and `partition`. See
-[`plan/m2-rig.md`](plan/m2-rig.md) for the full contract.
+[`plan/m2-rig.md`](../project/m2-rig.md) for the full contract.
 
 The one-prompt M2 object/actor proof runs from `tools/one-computer/run.sh`; the transcript
 is written under `target/one-computer/demo/`.
@@ -192,7 +192,7 @@ cargo run --release --manifest-path tools/m2-rig/Cargo.toml -- shard \
 ```
 
 Two real kernels converge on the same shard table; eight-node convergence is not claimed.
-See [`plan/m3-rig.md`](plan/m3-rig.md).
+See [`plan/m3-rig.md`](../project/m3-rig.md).
 
 ## Running tests
 
@@ -227,7 +227,7 @@ CARGO_TARGET_MIPS3_SGI_IRIX7_N32_RUSTFLAGS="-Clink-arg=-Trom/linker.ld" \
 
 | Milestone | Status |
 |-----------|--------|
-| M0 — Toolchain unblocked | Complete: pinned nightly, `rust-src`, LLVM-only backend ([M0-ADR-0001](adr/m0-0001-llvm-only.md)) |
+| M0 — Toolchain unblocked | Complete: pinned nightly, `rust-src`, LLVM-only backend ([M0-ADR-0001](../adr/m0-0001-llvm-only.md)) |
 | M1 — Single-node logical computer | Complete on iris; the real-Indy gate remains open (#16) |
 | M2 — Two-node join, route, migration and failure | Complete on iris (2026-10-27); one-prompt object/actor proof 2026-11-03 (#329) |
 | M3 — Sharded homes and multi-member | First shard slice: two real kernels converge; eight-node convergence not claimed |
@@ -262,10 +262,10 @@ M2 and M3 remaining:
 
 ## Contributing
 
-See [`CONTRIBUTING.md`](../CONTRIBUTING.md) for the development setup, clean-room rules, DCO
+See [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for the development setup, clean-room rules, DCO
 sign-off, pull request process and code style. Every commit must carry a DCO sign-off
 (`git commit -s`).
 
 ## Licence
 
-IRIX 7 is GPL-3.0. See [`LICENCE`](../LICENCE) for details.
+IRIX 7 is GPL-3.0. See [`LICENCE`](../../LICENCE) for details.

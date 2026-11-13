@@ -5,7 +5,8 @@
 *                       @belikh
 
 # Kernel and architecture
-/docs/spec/             @belikh
+/docs/programming/      @belikh
+/docs/internals/        @belikh
 /src/kernel/            @belikh
 /kernel/                @belikh
 
@@ -38,7 +39,7 @@
 /rust-toolchain.toml    @belikh
 
 # Clean-room and legal
-/docs/plan/legal.md     @belikh
-/docs/plan/security.md  @belikh
+/docs/project/legal.md     @belikh
+/docs/administration/security.md  @belikh
 /SECURITY.md            @belikh
 /CODE_OF_CONDUCT.md     @belikh

@@ -3,7 +3,7 @@
 **Status:** draft (the kernel consumes a `BootInfo` when one is present; the current assembly ROM passes none)
 **Version:** 1.0
 **Owner:** boot
-**Related:** [`architecture.md`](architecture.md) §10, [`../plan/milestones.md`](../plan/milestones.md) M1–M2.
+**Related:** [`architecture.md`](architecture.md) §10, [`../plan/milestones.md`](../project/milestones.md) M1–M2.
 
 ## 1. Scope
 
@@ -18,7 +18,7 @@ console and the network stack — is the kernel's.
 
 It does not define the kernel's own boot sequence, the boot bundle format or the root image;
 those are in `image-format.md` (planned) and `architecture.md` §10.
-Loadable modules are specified in [`modules.md`](modules.md).
+Loadable modules are specified in [`modules.md`](../spec/modules.md).
 
 ## 2. Handoff
 

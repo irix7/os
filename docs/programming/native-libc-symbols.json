@@ -1,7 +1,7 @@
 {
   "schema": "irix7-native-libc-symbols",
   "version": "0.1",
-  "profile": "docs/spec/native-libc.md",
+  "profile": "docs/programming/native-libc.md",
   "status": "draft",
   "target": {
     "target_os": "irix7",
@@ -17,7 +17,7 @@
     "panic": "unwind"
   },
   "notes": [
-    "Name-level manifest for the native libc C ABI.  Layout, signature and errno values are in docs/spec/native-libc.md.",
+    "Name-level manifest for the native libc C ABI.  Layout, signature and errno values are in docs/programming/native-libc.md.",
     "class is one of posix-2024, xsi, extension, compat-only or unsupported.",
     "v1=false means the name is documented but not promised by the v1 native profile.",
     "The Rust std audit (tools/std-abi-surface.py) reads this file; see that tool's --help for its limits."

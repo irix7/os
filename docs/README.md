@@ -12,25 +12,25 @@ The current bring-up is smaller: the native Indy ROM/kernel and a static Rust
 `std` image run, while the Wasm/mesh crates are host-tested and the kernel has
 not yet joined a mesh. See [Current status](#current-status).
 
-> **Explore the roadmap:** [The Tree of IRIX 7](roadmap-tree.md) is an
+> **Explore the roadmap:** [The Tree of IRIX 7](project/roadmap-tree.md) is an
 > interactive view of the Indy baseline, the 1/2/8/128 mesh gates and the
 > native compatibility tracks. The active sequencing is in
-> [`plan/milestones.md`](plan/milestones.md).
+> [`plan/milestones.md`](project/milestones.md).
 >
-> **Watch the argument:** [The Logical Computer](documentary.md) is a
+> **Watch the argument:** [The Logical Computer](project/documentary.md) is a
 > 12-chapter documentary that follows one frame from a 1994 Indy through the
 > object space, the fabric and a failed node. [Watch the film](https://irix7.github.io/os/film/)
-> or read [the notes](documentary.md).
+> or read [the notes](project/documentary.md).
 
 Start here:
 
-- [Install guide](install.md) — build from source, run in the iris emulator,
+- [Install guide](installation/install.md) — build from source, run in the iris emulator,
   run tests.
-- [System architecture](spec/system.md) — the 1–128-node logical computer.
-- [Milestone plan](plan/milestones.md) — phases, M1–M4 gates, compatibility and rollback.
-- [Project map](map.md) — the destination, decisions and scope.
-- [Architecture](spec/architecture.md) — the native and compatibility layers.
-- [Plan](plan/README.md) — milestones, GitHub, risks, interfaces, hardware,
+- [System architecture](internals/system.md) — the 1–128-node logical computer.
+- [Milestone plan](project/milestones.md) — phases, M1–M4 gates, compatibility and rollback.
+- [Project map](introduction/map.md) — the destination, decisions and scope.
+- [Architecture](internals/architecture.md) — the native and compatibility layers.
+- [Plan](project/README.md) — milestones, GitHub, risks, interfaces, hardware,
   testing, security, release, legal, community and cost.
 - [Research](research/README.md) — the evidence base.
 
@@ -54,6 +54,6 @@ The relibc n32 big-endian Linux/QEMU gate has passed (TLS, `setjmp`, pthreads).
 A provisional IRIX PAL scaffold builds and links C probes but has not been
 booted on IRIX 7; the kernel error channel, TLS and `stat` ABI remain open.
 There is no process table, real threads/TLS, `posix_spawn`, signal delivery,
-termios or socket API yet. See [`install.md`](install.md),
-[`plan/milestones.md`](plan/milestones.md) and
+termios or socket API yet. See [`install.md`](installation/install.md),
+[`plan/milestones.md`](project/milestones.md) and
 [`research/std-hello-bringup.md`](research/std-hello-bringup.md).

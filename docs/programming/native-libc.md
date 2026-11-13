@@ -3,11 +3,11 @@
 **Status:** draft
 **Version:** 0.1
 **Owner:** ABI / libc
-**Related:** [`posix.md`](posix.md) (API baseline), [`architecture.md`](architecture.md) §5 (native ABI and
+**Related:** [`posix.md`](posix.md) (API baseline), [`architecture.md`](../internals/architecture.md) §5 (native ABI and
 process model) and §6 (compatibility container), [`native-abi.md`](native-abi.md) (the kernel capability ABI
 under this C ABI), [`elf.md`](elf.md) (ELF loader contract),
 [`driver-interface.md`](driver-interface.md) (`ctl`/`data`/`status` and `posix_devctl`),
-[`modules.md`](modules.md) (kernel modules are `no_std`), the
+[`modules.md`](../spec/modules.md) (kernel modules are `no_std`), the
 [`std` research report](../research/rust-std-irix7.md), the
 [first running std image](../research/std-hello-bringup.md), the
 [relibc n32 gate](../research/relibc-n32-bringup.md), and the
@@ -37,7 +37,7 @@ status, the 136-byte n32 `stat`, the `$28` TCB with `errno` at `TP+8` and the
 `$a3` auxiliary vector.  Threads, signals, sockets and the capability boundary
 are still absent.
 M9 builds the full POSIX libc and M9.5 the first native `std` subset
-([`../plan/milestones.md`](../plan/milestones.md)).  Every statement below is a
+([`../plan/milestones.md`](../project/milestones.md)).  Every statement below is a
 requirement on that work, not a report of shipped behaviour.
 
 **v0 implementation (2026-10-25):** [`user/libc`](../../user/libc) is a small freestanding
@@ -708,7 +708,7 @@ it fails on a referenced name that is missing from v1 or absent from the manifes
 
 - The specification is versioned independently of the libc.  v0.1 is a draft; v1.0 is the
   accepted profile.  A breaking change to the profile is a new major version, not a silent
-  edit (the same rule as [`../plan/interfaces.md`](../plan/interfaces.md)).
+  edit (the same rule as [`../plan/interfaces.md`](interfaces.md)).
 - The libc ABI version starts at 1 (`__irix7_libc_abi_version()` returns 1).  Additive
   symbols keep the version; a changed layout, a removed symbol or a changed `errno` value
   needs a new major version and, when shared, a new soname.
@@ -758,12 +758,12 @@ specification (report §3.3, §9.4).  It never defines the native ABI.
 - [`posix.md`](posix.md) — the adopted POSIX.1-2024 baseline, profile and ABI obligations.
 - [`../research/rust-std-irix7.md`](../research/rust-std-irix7.md) — the std research report
   (evidence, target matrix, §5.1/§5.3 surface, §9.2 first-PR plan).
-- [`architecture.md`](architecture.md) §2 (D2, D3, D4, D11, D32), §5 (native ABI) and §6
+- [`architecture.md`](../internals/architecture.md) §2 (D2, D3, D4, D11, D32), §5 (native ABI) and §6
   (compatibility container).
 - [`elf.md`](elf.md) — the IRIX ELF loader contract (compat container; not the native loader).
 - [`driver-interface.md`](driver-interface.md) — `ctl`/`data`/`status`; `posix_devctl` is the
   POSIX-2024 device-control call.
-- [`modules.md`](modules.md) — loadable modules are kernel-mode `no_std`; they do not link
+- [`modules.md`](../spec/modules.md) — loadable modules are kernel-mode `no_std`; they do not link
   this libc.
 - The Open Group, *POSIX.1-2024 / Base Specifications, Issue 8*:
   <https://pubs.opengroup.org/onlinepubs/9799919799/>.

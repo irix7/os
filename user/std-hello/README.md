@@ -27,5 +27,5 @@ The provisional libc shim is deliberately single-threaded.  The kernel provides
 console descriptors, `/dev/null` and a small read/write ramfs; it has no process
 table, pthread/TLS, signals or termios.  The production POSIX layer will be a
 relibc fork; see
-[`docs/spec/userland-services.md`](../../docs/spec/userland-services.md) and
+[`docs/programming/userland-services.md`](../../docs/programming/userland-services.md) and
 [`docs/research/std-hello-bringup.md`](../../docs/research/std-hello-bringup.md).

@@ -77,7 +77,7 @@ The architecture also inherits the native risks below.
 ## 4. Decision backlog
 
 The architecture decisions D1–D31 in
-[`../spec/architecture.md`](../spec/architecture.md) §2.2 become **ADR-0021 onward** in
+[`../spec/architecture.md`](../internals/architecture.md) §2.2 become **ADR-0021 onward** in
 `irix7/project/docs/adr/`.
 
 Suggested grouping:

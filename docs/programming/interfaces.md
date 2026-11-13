@@ -9,24 +9,24 @@ version, not a silent edit.
 
 | Interface | File | Status | Owner | Version | Tests |
 |---|---|---|---|---|---|
-| Logical computer / mesh | [`../spec/system.md`](../spec/system.md) | draft | kernel / mesh | 1.0 | `mesh-core`, `mesh-service`, `mesh-sim`; M1–M4 gates |
+| Logical computer / mesh | [`../spec/system.md`](../internals/system.md) | draft | kernel / mesh | 1.0 | `mesh-core`, `mesh-service`, `mesh-sim`; M1–M4 gates |
 | Wasm host-call ABI | [`irix7/os-sdk/wasm-abi`](https://github.com/irix7/os-sdk/tree/main/wasm-abi) | draft | ABI / SDK | 1.0 (SDK v0.5.0) | `guest-abi`, `wasm-host`, wasm32 check |
-| Fabric `MessageFrame` / `MeshHeader` | [`../spec/system.md`](../spec/system.md) §3 | draft | kernel / mesh | 1.0 | `sys-primitives` wire tests, `fabric` tests |
-| Capability v2 / root manifest | [`../spec/system.md`](../spec/system.md) §4 | draft | security / mesh | 2.0 | `sys-primitives`, `cap-engine` tests |
-| CAS manifest | [`../spec/system.md`](../spec/system.md) §6 | draft | storage | 1.0 | `cas-core` manifest/verification tests |
-| Native `PlatformShim` | [`../spec/system.md`](../spec/system.md) §3.1 | draft | kernel / targets | 1.0 | `platform-api`; mock + Indy/PC/cloud later |
-| ROM ↔ kernel boot handoff | [`../spec/boot-protocol.md`](../spec/boot-protocol.md) | draft | boot | 1.0 | iris + Indy |
-| MCP control plane | [`../spec/mcp.md`](../spec/mcp.md) | draft | infra | 1.0 | MCP conformance + agent loop |
-| MCP application endpoints | [`../spec/mcp-apps.md`](../spec/mcp-apps.md) | draft | infra | 0.1 | broker + local MCP app harness |
-| Driver `ctl`/`data`/`status` | [`../spec/driver-interface.md`](../spec/driver-interface.md) | draft | drivers | 1.0 | mock + iris + Indy |
-| Native capability ABI | [`../spec/native-abi.md`](../spec/native-abi.md) | draft | kernel | 0.1 | unit + fuzz |
-| Native libc ABI | [`../spec/native-libc.md`](../spec/native-libc.md) | draft | ABI / libc | 0.1 | `tools/std-abi-surface.py`, layout assertions, static `std` image, POSIX subset |
+| Fabric `MessageFrame` / `MeshHeader` | [`../spec/system.md`](../internals/system.md) §3 | draft | kernel / mesh | 1.0 | `sys-primitives` wire tests, `fabric` tests |
+| Capability v2 / root manifest | [`../spec/system.md`](../internals/system.md) §4 | draft | security / mesh | 2.0 | `sys-primitives`, `cap-engine` tests |
+| CAS manifest | [`../spec/system.md`](../internals/system.md) §6 | draft | storage | 1.0 | `cas-core` manifest/verification tests |
+| Native `PlatformShim` | [`../spec/system.md`](../internals/system.md) §3.1 | draft | kernel / targets | 1.0 | `platform-api`; mock + Indy/PC/cloud later |
+| ROM ↔ kernel boot handoff | [`../spec/boot-protocol.md`](../internals/boot-protocol.md) | draft | boot | 1.0 | iris + Indy |
+| MCP control plane | [`../spec/mcp.md`](../using/mcp.md) | draft | infra | 1.0 | MCP conformance + agent loop |
+| MCP application endpoints | [`../spec/mcp-apps.md`](../using/mcp-apps.md) | draft | infra | 0.1 | broker + local MCP app harness |
+| Driver `ctl`/`data`/`status` | [`../spec/driver-interface.md`](driver-interface.md) | draft | drivers | 1.0 | mock + iris + Indy |
+| Native capability ABI | [`../spec/native-abi.md`](native-abi.md) | draft | kernel | 0.1 | unit + fuzz |
+| Native libc ABI | [`../spec/native-libc.md`](native-libc.md) | draft | ABI / libc | 0.1 | `tools/std-abi-surface.py`, layout assertions, static `std` image, POSIX subset |
 | Boot bundle / image manifest | `../spec/image-format.md` | planned | infra | 0.1 | digest + boot |
 | 9P profile | `../spec/9p.md` | planned | network | 0.1 | interoperability |
 | Display protocol | `../spec/display-protocol.md` | planned | display | 0.1 | golden frames |
 | Audio protocol | `../spec/audio.md` | planned | display | 0.1 | latency/glitch |
 | X11 wire profile | `../spec/x11.md` | planned | display | 0.1 | X Test Suite |
-| EROFS on-disk profile | [`../spec/erofs.md`](../spec/erofs.md) | draft | storage | 0.1 | golden `mkfs.erofs` fixtures + `fsck.erofs` |
+| EROFS on-disk profile | [`../spec/erofs.md`](../internals/erofs.md) | draft | storage | 0.1 | golden `mkfs.erofs` fixtures + `fsck.erofs` |
 | XFS v4 read-only profile | `../spec/xfs.md` | planned | storage | 0.1 | tree diff |
 | I7FS on-disk format | `../spec/i7fs.md` | planned | storage | 0.1 | fsck + crash tests |
 

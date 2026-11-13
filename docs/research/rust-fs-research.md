@@ -628,7 +628,7 @@ Proposed rule, to be recorded in ADR-0012's annex:
 - **Allowed:** MIT, BSD-2-Clause, BSD-3-Clause, ISC, Apache-2.0, MPL-2.0, LGPL-2.1/3.0 (with relinking), public domain/CC0.
 - **Allowed with care:** MPL-2.0 (file-level copyleft; keep notices; make MPL files available), LGPL (dynamic link or relink), Apache-2.0 (patent termination clause; keep NOTICE).
 - **Not allowed:** GPL-2.0-only, CDDL-1.0, proprietary, "source-available" licences with field-of-use restrictions, and any crate whose manifest and repository disagree until the discrepancy is resolved.
-- **Always required:** a `LICENSE`/`NOTICE` audit, a provenance statement for filesystem code, and a record in `docs/map.md`'s crate dependency table.
+- **Always required:** a `LICENSE`/`NOTICE` audit, a provenance statement for filesystem code, and a record in `docs/introduction/map.md`'s crate dependency table.
 
 ---
 

@@ -91,8 +91,8 @@ because the header fields name it.
 - Little-endian and ELF64 images are rejected: every IRIX o32 and n32 binary is
   ELF32 big-endian.
 
-The full contract is in [`docs/spec/elf.md`](../../docs/spec/elf.md), and the
-container context is in [`docs/spec/architecture.md`](../../docs/spec/architecture.md)
+The full contract is in [`docs/programming/elf.md`](../../docs/programming/elf.md), and the
+container context is in [`docs/internals/architecture.md`](../../docs/internals/architecture.md)
 §6.
 
 ## Tests

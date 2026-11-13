@@ -4,7 +4,7 @@
 **Date:** 2026-10-26
 **Deciders:** M2-0, for review at the M2 gate
 **Related:** [M2-ADR-0001](m2-0001-two-node-rig.md), [M2-ADR-0002](m2-0002-transport.md),
-[`../spec/system.md`](../spec/system.md) §5, [`../plan/milestones.md`](../plan/milestones.md)
+[`../spec/system.md`](../internals/system.md) §5, [`../plan/milestones.md`](../project/milestones.md)
 Phase 3 and Phase 8
 
 ## Context

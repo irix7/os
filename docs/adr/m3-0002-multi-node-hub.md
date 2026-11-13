@@ -5,8 +5,8 @@
 **Deciders:** M3 shard slice, for review at the M3 gate
 **Related:** [M3-ADR-0001](m3-0001-shard-slice.md), [M2-ADR-0002](m2-0002-transport.md),
 [M2-ADR-0005](m2-0005-join-epoch.md), [M2-ADR-0006](m2-0006-homes.md),
-[`../spec/system.md`](../spec/system.md) §5 and §9,
-[`../plan/m3-rig.md`](../plan/m3-rig.md)
+[`../spec/system.md`](../internals/system.md) §5 and §9,
+[`../plan/m3-rig.md`](../project/m3-rig.md)
 
 ## Context
 

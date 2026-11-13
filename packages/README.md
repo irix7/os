@@ -16,7 +16,7 @@ kind name version url sha256 [depends=...] [abi=...] [region=N] \
 - `sha256` covers the exact bytes served at `url`.
 - `depends=` is an exact `name@version:sha256` list for the runtime manager.
 - `abi=`, `region=`, `exports=` and `sig=` are the v2 runtime fields described
-  in `docs/spec/packages.md`.
+  in `docs/using/packages.md`.
 - `description` is free text to the end of the line.
 - Records with the same name are newest first; `sash` loads the first match.
 

@@ -7,7 +7,7 @@ This document describes the development environment and cross-build commands for
 The project uses a **pinned Rust nightly** with custom MIPS/IRIX target specs. All target
 builds use `-Z build-std` because there is no prebuilt standard library for the
 freestanding targets. rustc's LLVM backend is the only Rust code generator; see
-[M0-ADR-0001](adr/m0-0001-llvm-only.md), which amends ADR-0018 in the project series.
+[M0-ADR-0001](../adr/m0-0001-llvm-only.md), which amends ADR-0018 in the project series.
 
 ## Pinned toolchain
 
@@ -246,7 +246,7 @@ the kernel, ROM and modules link with `rust-lld`.
    `Address` enum is non-exhaustive.
 5. rustc's LLVM backend is the only code generator. There is no `rustc_codegen_gcc` build
    path; `irix7/gcc` remains the IRIX system toolchain for the compatibility container.
-   See [M0-ADR-0001](adr/m0-0001-llvm-only.md).
+   See [M0-ADR-0001](../adr/m0-0001-llvm-only.md).
 6. The kernel stack top is `0x883f_0000`; the module area starts at `0x8840_0000`.
 
 ## Verification
@@ -283,4 +283,4 @@ python3 rom/tools/make_prom.py \
   pass on iris (`tools/m2-rig`), and the one-prompt object/actor transcript is
   `tools/one-computer`.
 - M3: the first shard slice converges two real kernels; eight-node convergence is not
-  claimed. See [`plan/m3-rig.md`](plan/m3-rig.md).
+  claimed. See [`plan/m3-rig.md`](../project/m3-rig.md).

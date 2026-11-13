@@ -362,7 +362,7 @@ where compression buys more than it costs. Do not schedule a compressed-RAM prot
 M2's TLB/frame allocator and M5's MMU work are on the critical path; M9's capability ABI
 follows, and M4 already delivers the useful compression.
 
-The smallest concrete plan change is **one row in `docs/spec/architecture.md` §16,
+The smallest concrete plan change is **one row in `docs/internals/architecture.md` §16,
 "Alternatives rejected"**:
 
 ```markdown
@@ -437,12 +437,12 @@ which are the project's priorities.
 
 **Project sources.**
 
-- `docs/spec/architecture.md` §7.2 (address space/TLB), §7.3 (huge pages/cache colouring),
+- `docs/internals/architecture.md` §7.2 (address space/TLB), §7.3 (huge pages/cache colouring),
   §7.6 (allocation, "No swap in v1"), §9.3–§9.4 (hardware inventory), §11.2 (EROFS),
   §16 (alternatives rejected).
 - `docs/research/erofs-big-endian-research.md` §5.4 (LZ4/DEFLATE/LZMA/zstd decode rates)
   and §5.5 (10 Mbit link).
 - `docs/research/indy-hardware.md` §2 (CPU/caches/TLB) and the memory-controller section
   (266 MB/s peak).
-- `docs/plan/risks.md` R12; `docs/plan/milestones.md` M2/M4; `docs/plan/hardware-lab.md`
+- `docs/project/risks.md` R12; `docs/project/milestones.md` M2/M4; `docs/project/hardware-lab.md`
   §10 (32 MiB is below the full-stack floor; 64 MiB is the minimum candidate).

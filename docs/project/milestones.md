@@ -1,7 +1,7 @@
 # IRIX 7 — Milestone Plan
 
 **Status:** active plan
-**Architecture:** [`../spec/system.md`](../spec/system.md)
+**Architecture:** [`../spec/system.md`](../internals/system.md)
 **Strategy:** one logical computer built from 1–128 kernel replicas. Every
 phase is a vertical slice with a runnable demo and a hard gate.
 
@@ -325,7 +325,7 @@ boots an x86_64 machine under QEMU's PVH path to a serial console with the
 loader's memory map, an IDT that reports a deliberate fault, a PIT tick, the
 virtio net and block devices, the module loader protocol and service table from
 `kernel-core`, and the two-guest M2 gate. UEFI, ACPI/APIC, an x86 userland and a
-native syscall gate are still ahead; see [`x86.md`](x86.md).
+native syscall gate are still ahead; see [`x86.md`](../hardware/x86.md).
 
 ### Phase 7 — Cloud VirtIO and 128-node gate
 

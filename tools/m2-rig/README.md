@@ -19,7 +19,7 @@ The `shard` command is the first M3 slice: two real kernels converge on the same
 rendezvous table and serve `/mesh/shard`, while the 1/2/8/128-node shard policy is a host
 gate.  Eight live kernels are not claimed; see the M3 runbook.
 
-- Runbook: [`../../docs/plan/m2-rig.md`](../../docs/plan/m2-rig.md)
+- Runbook: [`../../docs/project/m2-rig.md`](../../docs/project/m2-rig.md)
 - Decisions: [`../../docs/adr/README.md`](../../docs/adr/README.md)
   ([M2-ADR-0005](../../docs/adr/m2-0005-join-epoch.md) is the join/epoch design,
   [M2-ADR-0006](../../docs/adr/m2-0006-homes.md) is the homes/evidence design and
@@ -48,7 +48,7 @@ The default work directory is `<repo>/target/m2-rig`. The evidence bundle is wri
 | Command | Purpose |
 |---|---|
 | `run` | Start both, wait for `BOOT-READY`, probe HTTP, mesh framing, join and homes, drive the five route steps, restart the member (default), drive the eleven migration steps, restart the root, stop, write evidence. In `kill-peer`/`partition` it runs the failure scenario instead of the restarts and does not drive migration. |
-| `shard` | Start `--nodes` kernels (two by default), join them through the M2 relay, verify `/mesh/shard`, `/mesh/homes`, the stale-epoch negative and one remote stat, stop, write the M3 evidence bundle. `--hub` enables the experimental multi-node link switch; see [`../../docs/plan/m3-rig.md`](../../docs/plan/m3-rig.md). |
+| `shard` | Start `--nodes` kernels (two by default), join them through the M2 relay, verify `/mesh/shard`, `/mesh/homes`, the stale-epoch negative and one remote stat, stop, write the M3 evidence bundle. `--hub` enables the experimental multi-node link switch; see [`../../docs/project/m3-rig.md`](../../docs/project/m3-rig.md). |
 | `up` | Start both and leave them running. |
 | `status` | Show CI state and the serial boot/join/home markers. |
 | `probe` | Probe HTTP, mesh framing, join, homes and the route against running nodes; no restart. |

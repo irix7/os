@@ -7,8 +7,8 @@
 <https://github.com/irix7/os/issues/3#issuecomment-6425534591>; M2-8 roster
 <https://github.com/irix7/os/issues/3#issuecomment-6403421732>
 **Scope:** issue #3 body, its closure comment and the M2-8 roster comment; issue #16;
-`docs/spec/system.md` §5/§9; `docs/plan/milestones.md`; `docs/plan/m2-rig.md`;
-`docs/plan/testing.md`; ADR m2-0001..0009; `crates/mesh-*`, `cap-engine`, `fabric`,
+`docs/internals/system.md` §5/§9; `docs/project/milestones.md`; `docs/project/m2-rig.md`;
+`docs/project/testing.md`; ADR m2-0001..0009; `crates/mesh-*`, `cap-engine`, `fabric`,
 `sys-primitives`; `modules/mcp/src/mesh.rs`; `tools/m2-rig`; `.github/workflows/ci.yml`;
 the evidence bundles under `/tmp/opencode`.
 
@@ -42,7 +42,7 @@ Three things prevent an unqualified "M2 complete":
    flow-control-exhaustion, 10k-outstanding-tag or two-node trace-context test. The
    `fabric` crate is a standalone reference model that no production crate links; the
    live MCP module has an **8-entry** pending table, not 10k. The milestone doc's own
-   Phase 3 exit still lists these items ([`docs/plan/milestones.md`](../plan/milestones.md)
+   Phase 3 exit still lists these items ([`docs/project/milestones.md`](../project/milestones.md)
    lines 246-247), and the closure comment does not defer them.
 2. **The epoch is not persistent.** The member restart box is ticked, but the recorded
    rejoin request starts at `last_epoch=1`, not the confirmed epoch 2; it is the root's
@@ -67,7 +67,7 @@ itself specified.
 an explicit follow-up that records (a) item 8 as deferred to Phase 3/M3 with a named
 owner, (b) the non-persistent epoch as a known limit that excludes root restart, and
 (c) a two-node `mesh-real` CI job before M3 work depends on M2. If the project's
-definition of M2 is only the six behaviours in `docs/spec/system.md` §9, then amend the
+definition of M2 is only the six behaviours in `docs/internals/system.md` §9, then amend the
 issue's acceptance list to say so; the current text says more.
 
 ---
@@ -84,10 +84,10 @@ Confidence is the auditor's confidence in the verdict, not in the project.
 | 4 | A capability issued on A routes to a home on B without a central directory; stale route returns `MOVED`, sender retries once | **Verified** | `/tmp/opencode/m2-rig-run4/evidence/summary.md` lines 228-299: step 1 is a remote stat at B; steps 3 and 5 consume one `MOVED` with exactly two attempts; `rejects=0`, `timeouts=0`; values recomputed. Homes come from `mesh_core::home_for` over the confirmed snapshot; no directory RPC exists (`crates/mesh-core/src/lib.rs:115-157`; `modules/mcp/src/mesh.rs:288-290`). Caveats: the issuer is always the authority root (member-issued capabilities cannot verify because the trust store is one key), and the `MOVED` is driven by a root-signed **lab `HOME_MOVE`** (M2-ADR-0007 §5), not by a real membership change; the M2-6 path fences instead of `MOVED`. | High for the literal criterion; Medium for generality |
 | 5 | L0 stackless actor migration both ways at a message boundary, matching source/destination state hashes | **Partially verified** | The transcript is strong: n0→n1→n0, queued message 11 and unacknowledged message 10 cross the boundary, source and destination rows have the same hash at both moves (`246A7909…` then `C0C3BD12…`), duplicates and stale homes are refused (summary lines 326-402). The rig independently recomputes identity, rendezvous home, message chain and hash (`tools/m2-rig/src/migrate.rs:561-628`). But: (a) the bundle names commit `93fc663` while the image contains `IRIX7-M2-CAP-NONCE-v1`, which only exists in `f9029a3` (`crates/mesh-migrate/src/node.rs:1860`); (b) the recorded module `5458c108…`/344,328 bytes does not reproduce (this audit built `f9029a3` as `b1bcc694…`/356,792 and `93fc663` as `5c0d645c…`/344,056; the `93fc663` image contains no `CAP-NONCE` string); (c) the actor is a single deterministic fixture in the MCP module, not a general actor runtime; (d) no CI job runs `mesh-migrate` or the rig. The run is probably genuine, but the merged artefact was not the one evidenced. | Medium |
 | 6 | One-node failure removes the node, moves homes, fences a stale home with a lease | **Verified** | `/tmp/opencode/m2-final-kill2/evidence/summary.md` lines 293-371: `suspect` at 6 s, `failed` at 12 s, `removed` at epoch 3 with one member; six `mesh-route: fence` rows name the stale home and the new home; a replayed lease frame is refused `stale-epoch`; the survivor commits and reads with `mutable=1` and no timeout. The failure path is real code (`crates/mesh-service/src/lib.rs:47-48`, `modules/mcp/src/mesh.rs` failure config). Caveat: the summary records commit `5ada151` (the M2-4 base), not the merged `d3b8298`; the image itself is genuine — this audit rebuilt d3b8298 and reproduced module `002e3077…`/286,456 bytes exactly. It predates M2-5, so the final f9029a3 module was not re-run for `kill-peer`. The M2-5 PR claims the negative modes still pass, but no bundle with the M2-5 module (`5458…`) exists for `kill-peer`/`partition`. | High |
-| 7 | Partition makes a mutable object unavailable rather than split-brain; normal path does not wait for quorum | **Verified** | `/tmp/opencode/m2-final-part4/evidence/summary.md` lines 310-378: the isolated member logs `authority state=lost epoch=2 mutable=0`, refuses the commit with `no-authority`, and creates no new home or self-fence; the root removes it at epoch 3, commits with `mutable=1` and no timeout, then the member rejoins at epoch 4 and the two kernels agree. The safety argument is explicit: 6 s write lease vs 12 s failure window, worst case 11 s of writes (`crates/mesh-route/src/tests.rs:1256-1304`). Reads remain available under the unexpired home lease, which the criterion permits; linearisable write handover is explicitly left open (`docs/plan/milestones.md:243-244`). | High |
+| 7 | Partition makes a mutable object unavailable rather than split-brain; normal path does not wait for quorum | **Verified** | `/tmp/opencode/m2-final-part4/evidence/summary.md` lines 310-378: the isolated member logs `authority state=lost epoch=2 mutable=0`, refuses the commit with `no-authority`, and creates no new home or self-fence; the root removes it at epoch 3, commits with `mutable=1` and no timeout, then the member rejoins at epoch 4 and the two kernels agree. The safety argument is explicit: 6 s write lease vs 12 s failure window, worst case 11 s of writes (`crates/mesh-route/src/tests.rs:1256-1304`). Reads remain available under the unexpired home lease, which the criterion permits; linearisable write handover is explicitly left open (`docs/project/milestones.md:243-244`). | High |
 | 8 | Fabric tests cover cancellation races, flow-control exhaustion, 10k outstanding tags and trace-context propagation across two nodes | **Overclaimed / not met** | No such test exists. `crates/fabric` has 7 unit tests (`crates/fabric/src/lib.rs:460-545`): tag uniqueness, 2-tag exhaustion, stream windows, completion FIFO, cancel set, wait graph. It has no cancellation-vs-completion interleaving, no 10k tag test and no trace field. No production crate links `fabric` (`grep -rn "fabric" crates/*/Cargo.toml modules/*/Cargo.toml kernel/Cargo.toml` returns only fabric's own manifest). The live MCP module caps pending tags at **8** (`modules/mcp/src/mesh.rs:88`). `trace_id` is never set outside `sys-primitives` wire tests (`grep -rn trace_id crates/mesh-* modules/mcp` is empty). The only flow-control tests are the transport's `send_queue_rejects_oversize_work` and `would_block_keeps_the_queue_until_retry` (`crates/mesh-transport/src/lib.rs:1143-1203`); they are host-level, not two-node. | High |
-| 9 | M1 still passes unchanged; M2 is a real-kernel run, not `mesh-sim` alone | **Verified** | M1: CI at `f9029a3` is green, including `Boot (iris)`; the boot job asserts `m1-post: mesh=0/0/0` and the `mesh=single` marker (`.github/workflows/ci.yml:440-447`). M2: the evidence is two real `iris` kernels, not `mesh-sim`, and the rig rejects a single-process fake. The literal criterion is met. Separate process gap: there is no two-node CI job (the CI job list is fmt/dco/clippy/test/tools/std-surface/cross/boot/modules/docs/lint, and `docs/plan/testing.md:67` still says "the rig is a manual command until the M2-8 CI job wraps it"), and the evidence is a mosaic of runs rather than one run of `f9029a3`. | High |
-| 10 | No hidden dependency that narrows the completion claim | **Documented, but under-stated** | Host relay (both nodes listen; no node-to-node connect) — M2-ADR-0002 implementation note. 1-of-1 authority and root-issued capabilities — M2-ADR-0003, M2-ADR-0007 §2. Plain TCP, no TLS/peer auth/replay window — M2-ADR-0002 §6. Non-persistent epoch — M2-ADR-0005 §4, **not in the closure comment**. Fixture actor and native `mesh-migrate` not using `agnostic-core` — M2-ADR-0009 §2/§6. Combined MCP+mesh module and `mesh.route=2` opt-in — M2-ADR-0002 note, `modules/mcp/src/mesh.rs`. External `iris` 0.1.7+ binary, version not recorded in the bundle — `docs/plan/m2-rig.md:42-44`. | High |
+| 9 | M1 still passes unchanged; M2 is a real-kernel run, not `mesh-sim` alone | **Verified** | M1: CI at `f9029a3` is green, including `Boot (iris)`; the boot job asserts `m1-post: mesh=0/0/0` and the `mesh=single` marker (`.github/workflows/ci.yml:440-447`). M2: the evidence is two real `iris` kernels, not `mesh-sim`, and the rig rejects a single-process fake. The literal criterion is met. Separate process gap: there is no two-node CI job (the CI job list is fmt/dco/clippy/test/tools/std-surface/cross/boot/modules/docs/lint, and `docs/project/testing.md:67` still says "the rig is a manual command until the M2-8 CI job wraps it"), and the evidence is a mosaic of runs rather than one run of `f9029a3`. | High |
+| 10 | No hidden dependency that narrows the completion claim | **Documented, but under-stated** | Host relay (both nodes listen; no node-to-node connect) — M2-ADR-0002 implementation note. 1-of-1 authority and root-issued capabilities — M2-ADR-0003, M2-ADR-0007 §2. Plain TCP, no TLS/peer auth/replay window — M2-ADR-0002 §6. Non-persistent epoch — M2-ADR-0005 §4, **not in the closure comment**. Fixture actor and native `mesh-migrate` not using `agnostic-core` — M2-ADR-0009 §2/§6. Combined MCP+mesh module and `mesh.route=2` opt-in — M2-ADR-0002 note, `modules/mcp/src/mesh.rs`. External `iris` 0.1.7+ binary, version not recorded in the bundle — `docs/project/m2-rig.md:42-44`. | High |
 
 ### Smallest experiments that would close the remaining gaps
 
@@ -139,7 +139,7 @@ Confidence is the auditor's confidence in the verdict, not in the project.
 ### 3.1 "M2 is complete" (item 8 is covered)
 
 **Risk:** the closure treats the gate as done while one of its own acceptance items has no
-implementation. A reader of `docs/spec/system.md` §9 would not notice, because that table
+implementation. A reader of `docs/internals/system.md` §9 would not notice, because that table
 does not list fabric conformance; a reader of issue #3 would.
 
 **Falsifier:** run the four required tests. They do not exist; the live pending table is
@@ -187,7 +187,7 @@ two that should appear in the closure text are marked **closure gap**.
 
 | Dependency | Where it is recorded | Effect on the claim |
 |---|---|---|
-| Host relay `tools/m2-rig` | M2-ADR-0002 §7 and implementation note; `docs/plan/m2-rig.md` | Both guests listen; the host relay is the only path. The lower-NodeId-initiates rule is not exercised. The relay is a byte pump, not a directory, but it is a central process in the data path. |
+| Host relay `tools/m2-rig` | M2-ADR-0002 §7 and implementation note; `docs/project/m2-rig.md` | Both guests listen; the host relay is the only path. The lower-NodeId-initiates rule is not exercised. The relay is a byte pump, not a directory, but it is a central process in the data path. |
 | 1-of-1 authority root | M2-ADR-0003; M2-ADR-0005 | Membership changes have one failure domain. No threshold, no Byzantine safety, no key rotation/revocation. |
 | Root-issued capabilities only | M2-ADR-0007 §2; `/tmp/opencode/m2-rig-run4/.../summary.md:274` ("member initiated no operation") | Only the root can issue a routable capability; the member cannot delegate. The data path has no directory but the authority is central. |
 | Plain TCP, no TLS/peer auth | M2-ADR-0002 §6 | Any host attacker can observe/inject. Not a production transport claim. |
@@ -196,7 +196,7 @@ two that should appear in the closure text are marked **closure gap**.
 | `mesh-migrate` does not use `agnostic-core` | `crates/mesh-migrate/Cargo.toml` (no `agnostic-core` dependency) | The portable actor table/run queue are not on the migration path; the ADR's "agnostic-core remains the policy layer" is not literally true. |
 | Combined MCP+mesh module | M2-ADR-0002 implementation note; `docs/spec/modules.md:153-156` | Mesh shares slot A with MCP and owns TCP slot 1; a future module needs to coordinate or replace the combined module. |
 | `mesh.route=2` opt-in | M2-ADR-0009 §6 | Migration is disabled unless NVRAM sets it; a normal boot does not exercise it. |
-| External `iris` 0.1.7+ | `docs/plan/m2-rig.md:42-44` | The bundle records the binary path but not the version/commit; the audit host had 0.1.10+irix7 (`8da7ae2`). Reproducibility depends on an unpinned emulator. |
+| External `iris` 0.1.7+ | `docs/project/m2-rig.md:42-44` | The bundle records the binary path but not the version/commit; the audit host had 0.1.10+irix7 (`8da7ae2`). Reproducibility depends on an unpinned emulator. |
 | PROM headroom | Evidence PROM 523,296 bytes vs 524,288 | 992 bytes of headroom at the M2-5 path; this audit's build is 523,168. The kernel is unchanged, but the budget is fragile and path-dependent (the evidence PROMs differ across worktrees). |
 
 ---

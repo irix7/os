@@ -2,7 +2,7 @@
 
 **Status:** living document
 **Target:** **$0/month** in recurring service costs; a small one-off hardware budget.
-**Related:** [`github.md`](github.md) §17, [`release.md`](release.md).
+**Related:** [`github.md`](github.md) §17, [`release.md`](../administration/release.md).
 
 ## 1. Free tiers
 

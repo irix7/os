@@ -40,7 +40,7 @@ The API is deliberately small:
 | `stat` | Report the node kind |
 
 It is not a VFS: there are no inodes, permissions, timestamps, symbolic links or
-rename.  See [`docs/spec/overlay.md`](../../docs/spec/overlay.md) for the
+rename.  See [`docs/internals/overlay.md`](../../docs/internals/overlay.md) for the
 contract.
 
 The nineteen host tests cover lower reads, upper shadowing, whiteouts, directory

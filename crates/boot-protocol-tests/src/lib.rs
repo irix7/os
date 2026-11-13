@@ -2,7 +2,7 @@
 //! Boot protocol (ROM <-> kernel) contract and conformance checks.
 //!
 //! This crate is the single implementation of the `BootInfo` binary contract
-//! from [`docs/spec/boot-protocol.md`](https://github.com/irix7/os/blob/main/docs/spec/boot-protocol.md):
+//! from [`docs/internals/boot-protocol.md`](https://github.com/irix7/os/blob/main/docs/internals/boot-protocol.md):
 //! the 256-byte `#[repr(C, align(8))]` structure, its big-endian field
 //! encoding, the CRC32C checksum, the bounded memory-map walk and the kernel's
 //! validation order.
@@ -48,7 +48,7 @@ pub const MEM_KIND_RESERVED: u32 = 1;
 
 /// The binary boot-info contract between the loader and the n32 kernel.
 ///
-/// Field offsets match [`docs/spec/boot-protocol.md`](docs/spec/boot-protocol.md) §3 exactly
+/// Field offsets match [`docs/internals/boot-protocol.md`](docs/internals/boot-protocol.md) §3 exactly
 /// and are enforced by the `const` assertions below. The associated `OFF_*`
 /// constants are derived from the struct with `offset_of!`, so the parser and
 /// serialiser cannot silently use a different layout from the declared struct.

@@ -9,9 +9,9 @@ plan with testable gates.
 [`powerbook-qemu-boot.md`](powerbook-qemu-boot.md),
 [`native-window-system-research.md`](native-window-system-research.md),
 [`rust-x11-research.md`](rust-x11-research.md),
-[`../spec/architecture.md`](../spec/architecture.md) D17 and §13,
-[`../spec/system.md`](../spec/system.md) §7,
-[`../spec/driver-interface.md`](../spec/driver-interface.md).
+[`../spec/architecture.md`](../internals/architecture.md) D17 and §13,
+[`../spec/system.md`](../internals/system.md) §7,
+[`../spec/driver-interface.md`](../programming/driver-interface.md).
 
 **Contents:** [1 Summary](#1-summary) · [2 Method](#2-method-and-evidence) ·
 [3 Chip and board](#3-the-chip-and-the-board) · [4 Register map](#4-register-block-map) ·
@@ -783,7 +783,7 @@ The following have no emulator coverage and must be tested on the M4753:
 ### 7.1 The object model
 
 The GPU is a global device object in the one-logical-computer model
-([`system.md`](../spec/system.md) §7). The driver cell is its home in the single-node case;
+([`system.md`](../internals/system.md) §7). The driver cell is its home in the single-node case;
 on a mesh, the object's home is the node with the GPU, and remote clients submit command
 buffers and fences over the fabric. A remote client never maps the GPU's BARs.
 
@@ -808,7 +808,7 @@ for the GPU unless the framework explicitly grants a raw-device capability for d
 ### 7.2 Capabilities
 
 The cell receives the standard driver capabilities from
-[`driver-interface.md`](../spec/driver-interface.md):
+[`driver-interface.md`](../programming/driver-interface.md):
 
 | Capability | Use in this driver |
 |---|---|
@@ -932,7 +932,7 @@ buffer and waits on a fence. A remote client on another node submits the same co
 buffer over the fabric; the GPU cell executes it locally and returns a CAS object or a
 shared-memory ring. The remote client never maps the GPU's MMIO. Offscreen 3D can run on
 the GPU node while the application runs elsewhere; the result is copied back as a normal
-object. This is the model in [`system.md`](../spec/system.md) §7, applied to the Rage LT
+object. This is the model in [`system.md`](../internals/system.md) §7, applied to the Rage LT
 Pro. For the M4753, the single-node path is the only implemented path in this slice.
 
 ---

@@ -30,7 +30,7 @@ uses the provisional kernel syscall codes:
 The kernel also implements the provisional `read`, `open`, `close`, `fcntl`,
 `dup`, `getcwd`, `chdir`, `poll`, `signal`, `getentropy`, `clock_gettime`,
 `getpid`, `fstat`, `stat`, `readdir` and `nanosleep` calls used by the std image.
-The full table is documented in [`../docs/spec/elf.md`](../docs/spec/elf.md).
+The full table is documented in [`../docs/programming/elf.md`](../docs/programming/elf.md).
 
 The hello ELF is built at `-O1` because the n32 backend currently
 miscompiles this libc write/exit flow at `-Oz` (the post-write continuation can

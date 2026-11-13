@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! The x86 machine under QEMU: one boot disk, one guest, a host HTTP check.
 //!
-//! This is the first slice of the rig's QEMU backend (docs/plan/x86-rig.md).
+//! This is the first slice of the rig's QEMU backend (docs/project/x86-rig.md).
 //! It boots one x86 guest, waits for `BOOT-READY`, and fetches MCP's status page
 //! through the forwarded port.  The two-node M2 flow is built on this.
 

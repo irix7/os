@@ -17,5 +17,4 @@
 *.chd binary
 
 docs/research/*.md linguist-documentation
-docs/spec/*.md linguist-documentation
-docs/plan/*.md linguist-documentation
+docs/**/*.md linguist-documentation

@@ -6,7 +6,7 @@
 **Related:** ADR-0018 (GCC backend primary, LLVM parallel) and ADR-0019 (IRIX fork on
 `rust-lang/gcc`), both in [`irix7/project/docs/adr`](https://github.com/irix7/project/tree/main/docs/adr);
 ADR-0010 (Rust monolith, n32/MIPS III),
-[`../toolchain.md`](../toolchain.md), [`../spec/architecture.md`](../spec/architecture.md) §3.2
+[`../toolchain.md`](../installation/toolchain.md), [`../spec/architecture.md`](../internals/architecture.md) §3.2
 
 ## Context
 
@@ -16,8 +16,8 @@ libgccjit and would carry the kernel and userland, with LLVM as a cross-check.
 
 Nothing in this repository uses it. The kernel, ROM, loadable modules, the native `std`
 spike, the x86_64 kernel and the PowerBook target all build with rustc's LLVM backend and
-`-Z build-std` against JSON target specs. `docs/toolchain.md` already said the GCC backend
-was unavailable while `docs/spec/architecture.md` still called it primary, so the two
+`-Z build-std` against JSON target specs. `docs/installation/toolchain.md` already said the GCC backend
+was unavailable while `docs/internals/architecture.md` still called it primary, so the two
 documents contradicted each other. The audit for #1 recorded the GCC backend as never
 delivered: there is no `rustc_codegen_gcc`, libgccjit or dual-backend build path in the
 tree, and the fork build was blocked on host disk space. CI proves the LLVM path on every
@@ -64,8 +64,8 @@ IRIX 6.5 system toolchain for the compatibility container, and the host `cc` bui
   by switching backends.
 - The devshell is reproducible from the repository: pinned nightly plus `rust-src`, with
   no multi-gigabyte libgccjit build and no second compiler to keep in step with rustc.
-- The documentation has one answer. `docs/spec/architecture.md` §3.2, §3.5,
-  `docs/toolchain.md` and the install guide no longer describe a GCC-primary build.
+- The documentation has one answer. `docs/internals/architecture.md` §3.2, §3.5,
+  `docs/installation/toolchain.md` and the install guide no longer describe a GCC-primary build.
 - The compatibility container's GCC work is unaffected and remains a separate track.
 - If a future requirement needs Rust code generated through GCC — for example a backend
   bug that blocks n32 or a supported ABI LLVM cannot express — this decision must be

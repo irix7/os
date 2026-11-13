@@ -42,10 +42,10 @@ reports covers all 39.
   `kernel/src/native_sys.rs`, `crates/native-abi`, `crates/irix7-libc`,
   `tools/powerpc-qemu.sh`, `tools/powerpc-floppy.sh`, `tools/ppc-xcoff`,
   `tools/relibc-pal/`, `user/relibc-*`.
-- Contracts: `docs/spec/native-abi.md` §5.8, §5.9, §6.5, §6.6;
-  `docs/spec/native-libc.md` §1, §3.1, §4.7; `docs/spec/posix.md`;
-  `docs/spec/architecture.md` §4.3, §5.4, §8.1–8.3; `docs/spec/system.md`;
-  `docs/plan/milestones.md`; `docs/spec/pre-release.md`; `AGENTS.md`.
+- Contracts: `docs/programming/native-abi.md` §5.8, §5.9, §6.5, §6.6;
+  `docs/programming/native-libc.md` §1, §3.1, §4.7; `docs/programming/posix.md`;
+  `docs/internals/architecture.md` §4.3, §5.4, §8.1–8.3; `docs/internals/system.md`;
+  `docs/project/milestones.md`; `docs/administration/pre-release.md`; `AGENTS.md`.
 
 ### 1.3 Commands and gates run
 
@@ -144,8 +144,8 @@ The tree does not do that. `kernel-x86` is a separate kernel binary. Its
 shared kernel core is not linked in yet; the machine layer is being built
 first" (`kernel-x86/src/main.rs:8-10`). It has its own `module.rs`,
 `services.rs`, `net.rs`, `tcp.rs`, `fetch.rs`, `heap.rs` and `memory.rs`.
-`docs/plan/x86.md:4-5` repeats that the shared core is not linked, and
-`docs/plan/x86.md:180-193` says the service-table bodies and HTTP clients stay
+`docs/hardware/x86.md:4-5` repeats that the shared core is not linked, and
+`docs/hardware/x86.md:180-193` says the service-table bodies and HTTP clients stay
 in each kernel. This is the "x86 fork of kernel logic" the issue prohibited.
 
 The machine work that was delivered is real. `kernel-x86` boots through PVH,
@@ -168,9 +168,9 @@ What is missing:
   and M2 mesh level were reached. The issue's non-goals exclude "POSIX/IRIX
   userland parity" for the first slice, so the closure is at machine/M2
   parity, not at the stated goal.
-- The documentation is stale in the other direction: `docs/plan/x86.md:195-205`
+- The documentation is stale in the other direction: `docs/hardware/x86.md:195-205`
   still lists the module loader, M1 probe and two-guest M2 gate as "next
-  slices", and `docs/plan/milestones.md:296-300` says "the virtio devices and
+  slices", and `docs/project/milestones.md:296-300` says "the virtio devices and
   the shared core are still ahead", although the tree has virtio and the M2
   gate. The acceptance item "architecture boundary and remaining x86
   limitations are documented" is therefore only partly satisfied.
@@ -547,7 +547,7 @@ What is missing or weak:
   no-ops (`kernel/src/native_sys.rs:84`; `kernel/src/user.rs:235-310`).
 - `getpid` always returns 1 (`kernel/src/native_sys.rs:98`); there is no
   process identity or parent.
-- The flat v0 gate is deliberately transitional (`docs/spec/native-abi.md:1518-1522`);
+- The flat v0 gate is deliberately transitional (`docs/programming/native-abi.md:1518-1522`);
   it is not the capability cell ABI and must be replaced, not extended.
 
 Follow-up: add a CI job that builds the pinned relibc and boots the four
@@ -565,7 +565,7 @@ per-descriptor `FD_CLOEXEC` state (`fd.rs:600-627`). Pipes are a bounded
 4 KiB ring with `EAGAIN` on an empty read while a writer is live and `EPIPE`
 when no reader remains (`fd.rs:42-43`, `749-823`). `getdents` fills whole
 280-byte records and advances a cookie; `d_off` is the next cookie, and the
-one-name `readdir` remains a wrapper (`docs/spec/native-abi.md:1620-1640`).
+one-name `readdir` remains a wrapper (`docs/programming/native-abi.md:1620-1640`).
 The relibc PAL maps the calls and passes 64-bit offsets across two registers
 (`tools/relibc-pal/README.md:90-110`).
 
@@ -662,7 +662,7 @@ Limits within the issue's non-goals: no persistence, block-backed storage,
 permissions, ownership, timestamps, hard links or symlinks. The 32-inode and
 4 KiB limits are bring-up limits. Directory cookies are positional, so
 mutation between `getdents` calls can repeat or skip an entry
-(`docs/spec/native-abi.md:1640-1648`).
+(`docs/programming/native-abi.md:1640-1648`).
 
 Follow-up: a block-backed root with EROFS/overlay and a per-cell namespace
 belongs to #10/#326. The current ramfs is a test fixture, not a root
@@ -695,7 +695,7 @@ join primitive in the kernel (the libc implements one with an exit word);
 thread ids are reused after a slot dies; the table is eight slots; and the
 address space is shared with no per-thread kernel stack
 (`thread.rs:2-27`, `456-468`). This is not the preemptive EDF/fair scheduler
-in `docs/spec/architecture.md:893-935`.
+in `docs/internals/architecture.md:893-935`.
 
 Follow-up: preemption, per-thread kernel stacks and a real join under #326;
 \#322 for parking sleeps. Keep the cooperative gate until the scheduler
@@ -800,10 +800,10 @@ the native gate. `SYS_GETPID` returns 1 unconditionally
 (`kernel/src/native_sys.rs:98`), and unknown calls return `CELL_E_NOSYS`
 (`native_sys.rs:121`). The specs are explicit that general `fork` is
 deferred in the kseg0 SAS model and `posix_spawn`/`exec` are the process
-creation path (`docs/spec/native-abi.md:1912-1916`; §6.6). The tree has
+creation path (`docs/programming/native-abi.md:1912-1916`; §6.6). The tree has
 neither. The cell model requires a process to be one cell with a `Job`
 capability, a capability table and a per-cell fd table
-(`docs/spec/architecture.md:393-400`, `536-558`); the current kernel has none
+(`docs/internals/architecture.md:393-400`, `536-558`); the current kernel has none
 of those objects.
 
 Consequences:
@@ -874,11 +874,11 @@ enough to hide it.
 ### 4.3 Userland POSIX coverage versus the native-libc contract
 
 The v0 gate has 41 flat calls (`crates/native-abi/src/syscall.rs:20-81`;
-`docs/spec/native-abi.md:1537-1610`). The native-libc profile requires the
+`docs/programming/native-abi.md:1537-1610`). The native-libc profile requires the
 process/signal set (`fork`, `posix_spawn`, `execve`, `waitpid`, `kill`,
 `sigaction`, signal masks), sockets, termios, the `*at` family,
 `readv`/`writev`, `link`/`symlink`, `chmod`/`chown`, `statvfs`, `realpath`,
-`getaddrinfo` and dynamic loading (`docs/spec/native-libc.md:108-118`). The
+`getaddrinfo` and dynamic loading (`docs/programming/native-libc.md:108-118`). The
 tree has none of those. It has a narrow file/console/ramfs surface, a
 cooperative thread table and a futex.
 
@@ -929,7 +929,7 @@ The thread model is cooperative by construction (`kernel/src/thread.rs:2-10`).
 A thread runs until it yields, exits, parks on a futex or the image exits.
 There is no timer preemption, no per-thread kernel stack, no join primitive,
 eight slots and a 100 ms bound on every wait (`thread.rs:34`, `456-468`). The
-scheduler in `docs/spec/architecture.md:893-935` is preemptive EDF/fair with
+scheduler in `docs/internals/architecture.md:893-935` is preemptive EDF/fair with
 one run queue per CPU, a saved register context and a kernel stack per task.
 The tree is not that scheduler.
 
@@ -970,16 +970,16 @@ transcript with no gate.
 
 The documentation has drifted in both directions:
 
-- `docs/plan/x86.md:4-5` says the shared core is not linked; that is accurate,
+- `docs/hardware/x86.md:4-5` says the shared core is not linked; that is accurate,
   but the same file's "Next slices" (`:195-205`) still lists the module
   loader, M1 probe and two-guest M2 gate, which the tree now has.
-- `docs/plan/milestones.md:296-300` says virtio and the shared core are
+- `docs/project/milestones.md:296-300` says virtio and the shared core are
   "still ahead", although virtio and the x86 M2 gate exist.
-- `docs/spec/native-libc.md:48-50` says there is "still no pthread/TLS,
+- `docs/programming/native-libc.md:48-50` says there is "still no pthread/TLS,
   process table, signals, termios or capability boundary"; cooperative
   pthreads now exist (though no TLS block, process table, signals or
   capability boundary). The sentence is stale in the pthread half.
-- `docs/spec/native-abi.md` is accurate for the v0 gate, including the
+- `docs/programming/native-abi.md` is accurate for the v0 gate, including the
   cooperative thread model and the deferred `fork`.
 
 These are low-risk fixes, but #266's acceptance includes documented limits,
@@ -994,7 +994,7 @@ so the stale x86 status is a real gap, not a cosmetic one.
    `SYS_WAITPID`, per-process TLB sets and a per-process fd table with
    close-on-exec. This closes the single-global-address-space and
    single-fd-table findings in #296 and #310/#318, and is the M9 contract in
-   `docs/spec/native-abi.md` §6.5–6.6.
+   `docs/programming/native-abi.md` §6.5–6.6.
 
 2. **#266 — shared core and x86 userland, or a formal re-scope.**
    Reopen #266 or split it: the machine layer is done and the M2 gate is real,
@@ -1030,14 +1030,14 @@ so the stale x86 status is a real gap, not a cosmetic one.
 
 6. **Per-cell fd and capability tables, and the capability gate (#10).**
    The flat `syscall 0x1F7` gate is a bring-up path, not the capability cell
-   ABI. Replace it per `docs/spec/native-abi.md` §5.8; move fds to capability
+   ABI. Replace it per `docs/programming/native-abi.md` §5.8; move fds to capability
    handles; make `signal` either real or `ENOSYS`, not a no-op success; make
    `getentropy` a real entropy source or fail. This is the contract-level
    follow-up to #288/#296.
 
 7. **Reconcile the docs (#14).**
-   Update `docs/plan/x86.md` to the post-#278 state, update the Phase 6
-   status in `docs/plan/milestones.md`, and correct the native-libc status
+   Update `docs/hardware/x86.md` to the post-#278 state, update the Phase 6
+   status in `docs/project/milestones.md`, and correct the native-libc status
    sentence for cooperative pthreads. Add the PPC hardware caveats from
    #301/#305/#313/#317/#321 to the PowerBook documents.
 
@@ -1122,7 +1122,7 @@ no continuation, so a `poll` or read cannot install another cell in the middle
 of the gate and resume its scan; that is the M9.5 readiness wait queue, still
 a follow-up.  `nanosleep` is a complete park, so it is the call that yields a
 cell (§8.2).  A negative `poll` timeout is still clamped to 100 ms, which the
-issue permits and `docs/spec/native-abi.md` §5.8 documents.
+issue permits and `docs/programming/native-abi.md` §5.8 documents.
 
 ### 8.2 #343 — per-cell sleep deadlines
 

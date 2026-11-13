@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //! Native IRIX 7 n32 C types and public layouts.
 //!
-//! These are the provisional v0 layouts from `docs/spec/native-libc.md` §4.1.
+//! These are the provisional v0 layouts from `docs/programming/native-libc.md` §4.1.
 //! The C oracle and the layout review will freeze them; they are not yet a
 //! shipped ABI.
 

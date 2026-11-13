@@ -3,7 +3,7 @@
 **Status:** draft
 **Version:** 1.0
 **Owner:** drivers
-**Related:** [`architecture.md`](architecture.md) §9, [`../plan/milestones.md`](../plan/milestones.md) M2–M4.
+**Related:** [`architecture.md`](../internals/architecture.md) §9, [`../plan/milestones.md`](../project/milestones.md) M2–M4.
 
 ## 1. Purpose
 

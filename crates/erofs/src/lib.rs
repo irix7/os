@@ -20,7 +20,7 @@
 //! metabox images are recognised and rejected with a typed error.  They are
 //! the next layer, not a silent misinterpretation.
 //!
-//! See [`docs/spec/erofs.md`](https://github.com/irix7/os/blob/main/docs/spec/erofs.md).
+//! See [`docs/internals/erofs.md`](https://github.com/irix7/os/blob/main/docs/internals/erofs.md).
 
 #![no_std]
 #![deny(unsafe_code)]

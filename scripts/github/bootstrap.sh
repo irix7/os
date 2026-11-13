@@ -251,8 +251,8 @@ $demo
 - [ ] The next milestone's dependencies are unblocked.
 
 ## Links
-- Plan: https://github.com/$REPO/blob/main/docs/plan/milestones.md
-- Architecture: https://github.com/$REPO/blob/main/docs/spec/architecture.md
+- Plan: https://github.com/$REPO/blob/main/docs/project/milestones.md
+- Architecture: https://github.com/$REPO/blob/main/docs/internals/architecture.md
 
 ## Out of scope
 See the milestone entry in the plan.
