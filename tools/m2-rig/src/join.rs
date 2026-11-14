@@ -424,7 +424,7 @@ pub fn evaluate(
                         .into();
             }
         }
-        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition | Fault::KillRoot => {
             let root = match evidence.nodes[0].converged.as_deref().and_then(|line| {
                 JoinLine::parse(line).or_else(|| JoinLine::parse_with_role(line, "root"))
             }) {

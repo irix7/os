@@ -1369,7 +1369,7 @@ pub fn evaluate_disabled(
     let expected_reason = match fault {
         Fault::NoPeer => "peer",
         Fault::NoRoute | Fault::WrongAuthority => "config",
-        Fault::None | Fault::KillPeer | Fault::Partition | Fault::Udp => {
+        Fault::None | Fault::KillPeer | Fault::Partition | Fault::KillRoot | Fault::Udp => {
             unreachable!("the migration mode is evaluated by run")
         }
     };

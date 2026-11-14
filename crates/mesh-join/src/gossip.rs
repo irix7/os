@@ -66,6 +66,54 @@ pub const SUMMARY_INTERVAL_MS: u64 = 5_000;
 /// Maximum summaries one node keeps for relay in one tick.
 pub const RELAY_CAPACITY: usize = 32;
 
+/// Deterministic bounded peers for one gossip record.
+///
+/// The selector is shared by the host model and the live module.  Candidates
+/// are sorted and de-duplicated, the local node and `exclude` are removed, and
+/// the window starts at an offset derived from the sender's `NodeId` and
+/// `round`, the caller's gossip round counter.  The offset only rotates the
+/// window; it is public and no key or digest depends on it.  Different
+/// senders therefore choose different windows, so a root that seeds
+/// [`FANOUT`] peers plus one forward per recipient covers a bounded overlay
+/// without an O(N) broadcast.
+pub fn targets(
+    self_id: NodeId,
+    members: &[NodeId],
+    exclude: &[NodeId],
+    round: u64,
+    fanout: usize,
+) -> Vec<NodeId> {
+    let mut candidates: Vec<NodeId> = members
+        .iter()
+        .copied()
+        .filter(|node| !node.is_zero())
+        .filter(|node| *node != self_id && !exclude.contains(node))
+        .collect();
+    candidates.sort_unstable();
+    candidates.dedup();
+    if candidates.is_empty() || fanout == 0 {
+        return Vec::new();
+    }
+    let origin = u64::from_le_bytes([
+        self_id.0[0],
+        self_id.0[1],
+        self_id.0[2],
+        self_id.0[3],
+        self_id.0[4],
+        self_id.0[5],
+        self_id.0[6],
+        self_id.0[7],
+    ]);
+    let start = (origin.wrapping_add(round) as usize) % candidates.len();
+    let take = fanout.min(candidates.len());
+    candidates
+        .into_iter()
+        .cycle()
+        .skip(start)
+        .take(take)
+        .collect()
+}
+
 /// A summary or aggregate that failed validation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GossipError {
@@ -955,6 +1003,48 @@ mod tests {
         let selected = member.fanout(&peers, &excluded, 1);
         assert!(selected.iter().all(|peer| !excluded.contains(peer)));
         assert!(selected.len() <= FANOUT);
+    }
+
+    #[test]
+    fn live_targets_cover_eight_members_in_three_hops() {
+        let members: Vec<NodeId> = (1..=8).map(node).collect();
+        let root = node(1);
+        // The root seeds one bounded window; each recipient forwards once per
+        // hop, up to the live gossip TTL.
+        let mut reached: BTreeSet<NodeId> = BTreeSet::new();
+        reached.insert(root);
+        let mut frontier: Vec<NodeId> = targets(root, &members, &[], 1, FANOUT);
+        for target in &frontier {
+            reached.insert(*target);
+        }
+        for hop in 0..3 {
+            let mut next = Vec::new();
+            for sender in &frontier {
+                // The root is already excluded from a member's candidates.
+                let forwarded = targets(*sender, &members, &[root], 1 + hop, FANOUT);
+                assert!(forwarded.len() <= FANOUT);
+                assert!(!forwarded.contains(sender));
+                for target in forwarded {
+                    if reached.insert(target) {
+                        next.push(target);
+                    }
+                }
+            }
+            frontier = next;
+        }
+        assert_eq!(reached.len(), members.len());
+    }
+
+    #[test]
+    fn live_targets_are_bounded_and_spread_between_senders() {
+        let members: Vec<NodeId> = (1..=9).map(node).collect();
+        let first = targets(node(2), &members, &[node(1)], 0, FANOUT);
+        let second = targets(node(3), &members, &[node(1)], 0, FANOUT);
+        assert_eq!(first.len(), FANOUT);
+        assert_eq!(second.len(), FANOUT);
+        assert_ne!(first, second);
+        assert!(!first.contains(&node(1)) && !first.contains(&node(2)));
+        assert!(!second.contains(&node(1)) && !second.contains(&node(3)));
     }
 
     #[test]

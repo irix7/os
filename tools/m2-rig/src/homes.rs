@@ -958,7 +958,7 @@ pub fn evaluate(
         wrong_authority,
     };
     match fault {
-        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
+        Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition | Fault::KillRoot => {
             match &evidence.before {
                 Some(before) if before.ok => {}
                 Some(before) => errors.push(before.message.clone()),
@@ -1015,7 +1015,7 @@ pub fn evaluate(
     evidence.ok = errors.is_empty();
     evidence.message = if evidence.ok {
         match fault {
-            Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition => {
+            Fault::None | Fault::NoRoute | Fault::KillPeer | Fault::Partition | Fault::KillRoot => {
                 let suffix = if require_rejoin {
                     "before and after the member rejoin"
                 } else {

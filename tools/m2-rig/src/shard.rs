@@ -462,11 +462,7 @@ impl LinkMonitor {
 }
 
 fn node_converged(node: &Node, expected: &Expected) -> bool {
-    read_serial(node)
-        .lines()
-        .filter(|line| line.contains("mesh-join: converged role="))
-        .filter_map(join::JoinLine::parse)
-        .any(|line| line.epoch == expected.epoch && line.members == expected.members.len())
+    serial_converged(node, expected).is_ok()
 }
 
 fn disconnect_count(node: &Node) -> usize {
@@ -519,17 +515,9 @@ fn wait_converged(
         let mut lines = Vec::new();
         let mut missing = Vec::new();
         for node in nodes {
-            let text = read_serial(node);
-            let line = text
-                .lines()
-                .filter(|line| line.contains("mesh-join: converged role="))
-                .filter_map(join::JoinLine::parse)
-                .rfind(|line| {
-                    line.epoch == expected.epoch && line.members == expected.members.len()
-                });
-            match line {
-                Some(line) => lines.push(line.raw),
-                None => missing.push(node.name.clone()),
+            match serial_converged(node, expected) {
+                Ok(line) => lines.push(line.raw),
+                Err(_) => missing.push(node.name.clone()),
             }
         }
         if missing.is_empty() {
@@ -819,14 +807,25 @@ pub fn run(options: &Options) -> Result<i32, String> {
 
 /// The member's last confirmed line for the expected view.
 fn serial_converged(node: &Node, expected: &Expected) -> Result<join::JoinLine, String> {
+    let role = if node.instance == 0 { "root" } else { "member" };
     read_serial(node)
         .lines()
-        .filter(|line| line.contains("mesh-join: converged role="))
-        .filter_map(join::JoinLine::parse)
-        .rfind(|line| line.epoch == expected.epoch && line.members == expected.members.len())
+        .rev()
+        .filter_map(|line| {
+            if line.contains("mesh-join: converged role=") {
+                join::JoinLine::parse(line)
+            } else if line.contains("mesh-join: refreshed ") {
+                join::JoinLine::parse_with_role(line, "member")
+            } else if line.contains("mesh-join: duplicate ") || line.contains("mesh-join: local ") {
+                join::JoinLine::parse_with_role(line, role)
+            } else {
+                None
+            }
+        })
+        .find(|line| line.epoch == expected.epoch && line.members == expected.members.len())
         .ok_or_else(|| {
             format!(
-                "{}: no converged serial line for epoch {} members {}",
+                "{}: no confirmed serial line for epoch {} members {}",
                 node.name,
                 expected.epoch,
                 expected.members.len()
@@ -1566,14 +1565,32 @@ fn run_started(
     }
     let _ = writeln!(
         summary,
-        "- The multi-member defect was a guest receive-path ordering bug: the module \
-         checked its receive and heartbeat deadlines before draining bytes already queued \
-         in the socket, and confirmed a join after logging the previous table.  Both are \
-         fixed in `crates/mcp/src/mesh.rs`, together with a compact M3 transcript.  The \
-         kernel's module TCP receive buffer is 16 KiB (the only kernel change); the ROM \
-         source is unchanged, but the embedded kernel image and PROM digest move.  The \
-         hub keeps one bounded session per peer and applies backpressure instead of \
-         silently dropping complete frames."
+        "- The control plane keeps one link record per source: a send queue, stream mux, \
+         pending tags, \
+         heartbeat, last-seen time, summary counter and last-sent aggregate epoch.  The \
+         record decoder is shared because the length prefix belongs to the one TCP session.  \
+         The link table is bounded to eight sources and lives on the heap.  A member \
+         signs one summary per 5 s interval; the root signs at most one aggregate per \
+         changed view and seeds a bounded window; each member forwards the same signed \
+         object once per epoch.  The root remains the single 1-of-1 epoch writer."
+    );
+    let _ = writeln!(
+        summary,
+        "- Every node has a dedicated SCSI target 3 scratch volume for the signed epoch \
+         record.  A root restart restores that record before it listens; a root without one \
+         refuses a live member's higher epoch with `epoch-regression`, so recovery cannot \
+         create a second root.  Root failure itself is exercised by the two-kernel \
+         `run --fault kill-root`, not by this cluster."
+    );
+    let _ = writeln!(
+        summary,
+        "- The multi-member receive-path ordering bug remains fixed: the module drains bytes \
+         already queued in the socket before evaluating its receive and heartbeat deadlines, \
+         and confirms a join before logging the previous table.  The kernel's module TCP \
+         receive buffer is 16 KiB (the only kernel change); the ROM source is unchanged, but \
+         the embedded kernel image and PROM digest move.  The hub keeps one bounded session \
+         per peer, counts every refused or dropped frame in `run.json`, and never drops a \
+         complete frame silently while its destination session is open."
     );
     let _ = writeln!(
         summary,
@@ -1582,8 +1599,9 @@ fn run_started(
     );
     let _ = writeln!(
         summary,
-        "- This is the first shard slice: no GPU placement, two-node simultaneous failure, \
-         full migration churn, persistent directory, CAS fetch-by-OID or whole-M3 gate."
+        "- This is the first shard slice: no eight-kernel claim, no threshold authority, no \
+         four-kernel root failure, no GPU placement, two-node simultaneous failure, full \
+         migration churn, persistent directory, CAS fetch-by-OID or whole-M3 gate."
     );
     let _ = writeln!(
         summary,

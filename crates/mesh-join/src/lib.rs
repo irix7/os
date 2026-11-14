@@ -83,8 +83,8 @@ pub use authority::{
     AuthorityError, AuthorityRoot, AuthorityVerifier, Expectation, SigningAuthority,
 };
 pub use gossip::{
-    Aggregator, Follower, GossipError, GossipStats, Ingest, FANOUT, MAX_HOPS, RELAY_CAPACITY,
-    SUMMARY_INTERVAL_MS,
+    targets as gossip_targets, Aggregator, Follower, GossipError, GossipStats, Ingest, FANOUT,
+    MAX_HOPS, RELAY_CAPACITY, SUMMARY_INTERVAL_MS,
 };
 pub use mesh_service::{
     Change, ChangeSet, FailureDetector, NodeState, Observe, Transition, FAIL_AFTER_MS,
