@@ -98,7 +98,8 @@ goal, not a reason to retain our own old versions. See
 - **`0x0800_0000` is the alias.** Physical `0x0000_0000` is aliased to
   `LOMEM_BASE + 0`; writing there lands in DRAM.
 - **The SCC is in the IOC**, not the HPC3. The serial console is the Z85C30 at kseg1
-  `0xBFBD_9830` (channel B), reached through the IOC's PIO window. Register access is
+  `0xBFBD_9833` (channel B; the low byte lane of the word at `0xBFBD_9830`), reached
+  through the IOC's PIO window. Register access is
   indirect: write the register number to the control port, then the data through the
   same port.
 - **The PS/2 controller is also in the IOC** (offsets `0x40` data, `0x44` command).

@@ -128,6 +128,11 @@ const DMA_XFER_SPINS: u32 = 1_000_000;
 /// static is sufficient.
 static mut DMA_DISABLED: bool = false;
 
+/// Error every entry point returns in a `factory-prom` build.  That build runs
+/// on a machine that may hold an IRIX disk, so it sends no SCSI command and
+/// does not reset the controller.
+const FACTORY_PROM: &str = "SCSI is disabled in the factory-PROM build";
+
 /// Result of the controller probe.
 #[derive(Clone, Copy, Debug)]
 pub struct Probe {
@@ -809,6 +814,9 @@ fn read_pio(target: u8, lba: u32, blocks: usize, buf: &mut [u8]) -> Result<(), &
 /// target; this is used by the optional cache module and never by the boot
 /// path.
 pub fn write_blocks(target: u8, lba: u32, buf: &[u8]) -> Result<(), &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     if buf.is_empty() || buf.len() % SECTOR != 0 {
         return Err("write length is not a whole number of sectors");
     }
@@ -834,11 +842,17 @@ pub fn write_blocks(target: u8, lba: u32, buf: &[u8]) -> Result<(), &'static str
 
 /// Write one 512-byte sector to `target` with WRITE(6).
 pub fn write_sector(target: u8, lba: u32, buf: &[u8; 512]) -> Result<(), &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     write_blocks(target, lba, buf)
 }
 
 /// Reset the HPC3 SCSI channel and the WD33C93, then read back its identity.
 pub fn probe() -> Result<Probe, &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     let asr_before = read_asr();
 
     // Reset the DMA channel and the external controller together.
@@ -882,6 +896,9 @@ pub fn probe() -> Result<Probe, &'static str> {
 
 /// Issue a polled INQUIRY to `target` and return the 36-byte response.
 pub fn inquiry(target: u8) -> Result<[u8; 36], &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     let csr = select(target)?;
     if csr == (CSR_PHASE_MISMATCH | PHASE_MESG_OUT) {
         send_identify()?;
@@ -904,6 +921,9 @@ pub fn inquiry(target: u8) -> Result<[u8; 36], &'static str> {
 /// bounce buffer; everything else, and every DMA failure, uses the polled PIO
 /// data path.
 pub fn read_blocks(target: u8, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     if buf.is_empty() || buf.len() % SECTOR != 0 {
         return Err("read length is not a whole number of sectors");
     }
@@ -936,6 +956,9 @@ pub fn read_blocks(target: u8, lba: u32, buf: &mut [u8]) -> Result<(), &'static 
 
 /// Read one 512-byte sector from `target` with READ(6).
 pub fn read_sector(target: u8, lba: u32, buf: &mut [u8; 512]) -> Result<(), &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     read_blocks(target, lba, buf)
 }
 
@@ -946,6 +969,9 @@ pub fn read_sector(target: u8, lba: u32, buf: &mut [u8; 512]) -> Result<(), &'st
 /// the previous command's data.  PIO has no bounce buffer or descriptor chain,
 /// so a short or failed transfer cannot silently reuse an earlier block.
 pub fn read_blocks_pio(target: u8, lba: u32, buf: &mut [u8]) -> Result<(), &'static str> {
+    if cfg!(feature = "factory-prom") {
+        return Err(FACTORY_PROM);
+    }
     if buf.is_empty() || buf.len() % SECTOR != 0 {
         return Err("read length is not a whole number of sectors");
     }

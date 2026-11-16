@@ -2,8 +2,9 @@
 //! PS/2 keyboard input.
 //!
 //! The controller lives in the IOC: the data port is at IOC offset 0x40 and
-//! the command/status port at 0x44 (IOC base 0x1FBD_9800, so kseg1
-//! 0xBFBD_9840 and 0xBFBD_9844).
+//! the command/status port at 0x44 (IOC base 0x1FBD_9800).  The IOC is an
+//! 8-bit device on the low byte lane of each big-endian word, so the byte
+//! addresses are kseg1 0xBFBD_9843 and 0xBFBD_9847.
 //!
 //! The keyboard is put into scancode set 1 and scanning is enabled, so the
 //! bytes delivered are the familiar set-1 make/break codes with 0xE0 as the
@@ -12,12 +13,23 @@
 use core::ptr::{read_volatile, write_volatile};
 
 /// Data port (read: scancode; write: keyboard command parameter).
-const DATA: u32 = 0xBFBD_9840;
+const DATA: u32 = 0xBFBD_9843;
 /// Command/status port.
-const CMD: u32 = 0xBFBD_9844;
+const CMD: u32 = 0xBFBD_9847;
 
 /// Status bit 0: the output buffer holds a byte.
 const STATUS_OUTPUT_FULL: u8 = 0x01;
+/// Status bit 1: the controller has not yet taken the last byte written.
+const STATUS_INPUT_FULL: u8 = 0x02;
+/// Status bit 5: the byte in the output buffer came from the mouse port.
+const STATUS_AUX: u8 = 0x20;
+/// Controller command: disable the mouse port.
+const CTRL_DISABLE_AUX: u8 = 0xA7;
+/// Keyboard replies to a command byte: acknowledge and resend.
+const KBD_ACK: u8 = 0xFA;
+const KBD_RESEND: u8 = 0xFE;
+/// Status polls before a handshake step gives up.
+const HANDSHAKE_POLLS: u32 = 200_000;
 
 /// A key event.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -156,15 +168,48 @@ fn write8(addr: u32, val: u8) {
 /// it uses and the set number follows on the data port; 0xF4 enables
 /// scanning so key events are delivered.
 pub fn init() {
-    write8(DATA, 0xF0);
-    write8(DATA, 0x01);
-    write8(DATA, 0xF4);
+    // The SGI PROM leaves the mouse port enabled; its movement packets would
+    // arrive on the same data port.
+    wait_input_empty();
+    write8(CMD, CTRL_DISABLE_AUX);
+    send(0xF0);
+    send(0x01);
+    send(0xF4);
     // Drain the acknowledgements so they are not mistaken for key presses.
     for _ in 0..4 {
         if read8(CMD) & STATUS_OUTPUT_FULL == 0 {
             break;
         }
         let _ = read8(DATA);
+    }
+}
+
+/// Wait until the controller can take another byte.
+fn wait_input_empty() {
+    for _ in 0..HANDSHAKE_POLLS {
+        if read8(CMD) & STATUS_INPUT_FULL == 0 {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Send one byte to the keyboard and wait for its reply.
+///
+/// A real controller drops a byte written while the previous one is still in
+/// its input buffer, and the keyboard answers each byte before it accepts the
+/// next.  Both waits are bounded.
+fn send(byte: u8) {
+    wait_input_empty();
+    write8(DATA, byte);
+    for _ in 0..HANDSHAKE_POLLS {
+        if read8(CMD) & STATUS_OUTPUT_FULL != 0 {
+            let reply = read8(DATA);
+            if reply == KBD_ACK || reply == KBD_RESEND {
+                return;
+            }
+        }
+        core::hint::spin_loop();
     }
 }
 
@@ -203,7 +248,6 @@ fn decode(code: u8, mods: &mut Mods) -> Option<Key> {
         // Break codes only update the modifier state.
         match sc {
             0x2A | 0x36 => mods.shift = false,
-            0x3A => mods.caps = false,
             _ => {}
         }
         return None;
@@ -215,7 +259,8 @@ fn decode(code: u8, mods: &mut Mods) -> Option<Key> {
             return None;
         }
         0x3A => {
-            mods.caps = true;
+            // Caps Lock toggles on each press; its release carries no state.
+            mods.caps = !mods.caps;
             return None;
         }
         _ => {}
@@ -260,10 +305,10 @@ fn decode(code: u8, mods: &mut Mods) -> Option<Key> {
                     ch = *sym;
                 }
             }
-            // Letter case: shift and caps lock are exclusive, so the letters
-            // are upper case exactly when the two agree.
+            // Letter case: shift and caps lock cancel, so the letters are
+            // upper case exactly when one of the two is on.
             if ch.is_ascii_alphabetic() {
-                ch = if shifted == caps {
+                ch = if shifted != caps {
                     ch.to_ascii_uppercase()
                 } else {
                     ch.to_ascii_lowercase()
@@ -288,10 +333,14 @@ pub fn poll_key() -> Option<Key> {
     // static is what the 2024 edition lint warns about.
     let mods = unsafe { &mut *core::ptr::addr_of_mut!(MODS) };
     loop {
-        if read8(CMD) & STATUS_OUTPUT_FULL == 0 {
+        let status = read8(CMD);
+        if status & STATUS_OUTPUT_FULL == 0 {
             return None;
         }
         let code = read8(DATA);
+        if status & STATUS_AUX != 0 {
+            continue;
+        }
         if let Some(key) = decode(code, mods) {
             return Some(key);
         }
@@ -389,21 +438,21 @@ mod tests {
     }
 
     #[test]
-    fn letters_are_upper_case_without_shift() {
+    fn letters_are_lower_case_without_shift() {
         let mut mods = Mods::default();
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
-        assert_eq!(decode(0x10, &mut mods), Some(Key::Char(b'Q')));
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
+        assert_eq!(decode(0x10, &mut mods), Some(Key::Char(b'q')));
     }
 
     #[test]
     fn shift_gives_the_shifted_character() {
         let mut mods = Mods::default();
-        assert_eq!(decode(0x2A, &mut mods), None); // shift down
-                                                   // Letters go lower case and digits pick up their shifted symbol.
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
+        // Shift down: letters go upper case and digits pick up their symbol.
+        assert_eq!(decode(0x2A, &mut mods), None);
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
         assert_eq!(decode(0x02, &mut mods), Some(Key::Char(b'!')));
         assert_eq!(decode(0xAA, &mut mods), None); // shift up
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
     }
 
     #[test]
@@ -424,18 +473,23 @@ mod tests {
         let mut mods = Mods::default();
         assert_eq!(decode(0xE0, &mut mods), None);
         // A key that is not an extended one still comes through.
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
         // And the prefix is spent.
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
     }
 
     #[test]
-    fn caps_lock_inverts_the_letter_case() {
+    fn caps_lock_toggles_the_letter_case() {
         let mut mods = Mods::default();
-        assert_eq!(decode(0x3A, &mut mods), None); // caps on
-        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
-        assert_eq!(decode(0xBA, &mut mods), None); // caps off
+        assert_eq!(decode(0x3A, &mut mods), None); // press: caps on
+        assert_eq!(decode(0xBA, &mut mods), None); // release: still on
         assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'A')));
+        // Shift cancels caps lock for letters.
+        assert_eq!(decode(0x2A, &mut mods), None);
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
+        assert_eq!(decode(0xAA, &mut mods), None);
+        assert_eq!(decode(0x3A, &mut mods), None); // press: caps off
+        assert_eq!(decode(0x1E, &mut mods), Some(Key::Char(b'a')));
     }
 
     #[test]

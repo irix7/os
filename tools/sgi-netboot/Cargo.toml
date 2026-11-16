@@ -1,0 +1,11 @@
+[package]
+name = "sgi-netboot"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Netboot an IRIX 7 kernel from the SGI factory PROM: ELF to ECOFF conversion and a BOOTP/TFTP server"
+publish = false
+
+# Standalone host tool: it is not part of the kernel workspace, so a plain
+# `cargo build` in the repository root does not build it.
+[workspace]

@@ -43,7 +43,15 @@ fn read_mac(out: &mut [u8; 6]) {
 }
 
 /// Validate the NVRAM environment at boot and repair a blank/corrupt chip.
+///
+/// A `factory-prom` build leaves the chip alone.  The SGI PROM keeps its own
+/// fixed-field variables and the MAC in this range, and a repair would erase
+/// them.
 pub fn init() {
+    if cfg!(feature = "factory-prom") {
+        crate::console_println("nvram: factory PROM layout; not validated or written");
+        return;
+    }
     let mut env = [0u8; ENV_MAX];
     read_environment(&mut env);
     if !environment_valid(&env) {
@@ -82,6 +90,11 @@ pub fn init() {
 ///
 /// Returns the value length, or `None` if the name is absent.
 pub fn get(name: &str, out: &mut [u8]) -> Option<usize> {
+    // The SGI PROM's variables are fixed binary fields, so there are no
+    // `name=value` strings to search in a `factory-prom` build.
+    if cfg!(feature = "factory-prom") {
+        return None;
+    }
     let end = ENV_START + ENV_MAX;
     let mut p = ENV_START;
     while p < end {

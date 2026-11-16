@@ -101,6 +101,13 @@ fn configured_off() -> bool {
 /// control for the interrupt measurement and the fallback if a real machine's
 /// acknowledge ordering turns out to differ.
 fn configured_rx_off() -> bool {
+    // A factory-PROM build cannot read `net.rx`, and its first runs are on
+    // real machines where the acknowledge ordering is unproven.  It polls, so
+    // an interrupt that will not clear cannot stall a machine with no serial
+    // console.
+    if cfg!(feature = "factory-prom") {
+        return true;
+    }
     let mut value = [0u8; 8];
     match crate::nvram::get("net.rx", &mut value) {
         Some(n) => matches!(&value[..n], b"off" | b"none" | b"0"),
@@ -374,9 +381,27 @@ pub fn poll() {
         if let (Some(stack), Some(dev)) = (STACK.as_mut(), seeq()) {
             let _ = stack.iface.poll(now, dev, &mut stack.sockets);
             service_dhcp(stack);
+            // With the interrupt masked nothing else notices a stopped
+            // receive channel.  The HPC3 stops it when frames arrive faster
+            // than the ring is emptied, which a long screen repaint on a busy
+            // LAN is enough to cause; the rebuild is the same recovery the
+            // interrupt path uses.
+            if !armed() && rx_ctrl() & ENET_CTRL_ACTIVE == 0 {
+                dev.restart_rx();
+                RX_RESTARTS = RX_RESTARTS.wrapping_add(1);
+            }
         }
     }
     after_frame_service();
+}
+
+/// Receive-channel rebuilds made by the polled path since boot.
+static mut RX_RESTARTS: u32 = 0;
+
+/// Receive-channel rebuilds made by the polled path since boot.
+pub fn rx_restarts() -> u32 {
+    // SAFETY: single-threaded kernel.
+    unsafe { RX_RESTARTS }
 }
 
 /// Thread-side bookkeeping shared by [`poll`] and [`drain`].

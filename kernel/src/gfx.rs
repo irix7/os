@@ -12,6 +12,13 @@
 //! `COLORBLUE` registers hold 12.11 fixed point (the integer part in bits
 //! [22:11]), and a block or span fill writes the colour straight into the
 //! framebuffer, which the video path reads as BGR.
+//!
+//! A `factory-prom` build draws 8-bit colour index instead.  The SGI PROM has
+//! already set the video timing, the XMAP mode and the RAMDAC for its own
+//! colour-index display, on the 8-bit and the 24-bit board alike, so that
+//! build keeps them, loads a 3-3-2 RGB palette into the CMAP and reduces each
+//! colour to an index.  The register use follows the Linux `newport_con` and
+//! NetBSD `newport` drivers, which run on the same PROM state.
 
 use core::ptr::{read_volatile, write_volatile};
 
@@ -173,6 +180,46 @@ const DM0_BLOCK: u32 = 0x0306;
 /// DRAWMODE0: DRAW opcode, span address mode, stop on X.
 const DM0_SPAN: u32 = 0x0102;
 
+/// True when the display was set up by the SGI PROM and is drawn in 8-bit
+/// colour index.
+const PROM_DISPLAY: bool = cfg!(feature = "factory-prom");
+
+/// DRAWMODE1 for the PROM display: RGB/CI planes, 8-bit draw depth, packed
+/// 8-bit host depth, compare always passes, logicop SRC, rgbmode clear.
+const DM1_CI8: u32 = 0x3000_7189;
+/// DRAWMODE0: let the engine derive the Bresenham setup from the integer
+/// coordinates.  Both reference drivers set it on every block fill.
+const DM0_DOSETUP: u32 = 1 << 5;
+/// STATUS bit 4: the DCB back end is busy.
+const STATUS_BACKBUSY: u32 = 1 << 4;
+/// DCB address of both colour maps.
+const DCB_ADDR_CMAP_ALL: u32 = 1;
+/// DCBMODE chip-select timing for the CMAP: width 4, hold 1, setup 1.
+const DCB_CMAP_TIMING: u32 = 0x0084_8000;
+/// DCBMODE: send the low byte of a multi-byte transfer first.
+const DCB_SWAPENDIAN: u32 = 1 << 28;
+/// DCBMODE: step the register select after each byte.
+const DCB_ENCRSINC: u32 = 1 << 3;
+/// CMAP register selects: palette address (low byte, then high) and data.
+const CMAP_CRS_ADDRESS: u32 = 0;
+const CMAP_CRS_PALETTE: u32 = 2;
+/// Polls before a wait gives up in a PROM-display build.  That build may have
+/// no serial console, so a stuck status bit must not stop the boot.
+const PROM_WAIT_POLLS: u32 = 2_000_000;
+
+/// Reduce an 8-bit-per-channel colour to its 3-3-2 palette index.
+fn colour_index(r: u32, g: u32, b: u32) -> u32 {
+    (r & 0xE0) | ((g & 0xE0) >> 3) | ((b & 0xC0) >> 6)
+}
+
+/// The RGB value of palette entry `index`, packed as `r << 16 | g << 8 | b`.
+fn palette_rgb(index: u32) -> u32 {
+    let r = ((index >> 5) & 7) * 255 / 7;
+    let g = ((index >> 2) & 7) * 255 / 7;
+    let b = (index & 3) * 255 / 3;
+    (r << 16) | (g << 8) | b
+}
+
 /// Stage a register value (no pipeline start).
 #[inline]
 fn reg(off: u32, val: u32) {
@@ -233,7 +280,12 @@ fn wait_idle() {
     unsafe {
         WAITS = WAITS.wrapping_add(1);
     }
+    let mut polls = 0u32;
     loop {
+        polls += 1;
+        if PROM_DISPLAY && polls > PROM_WAIT_POLLS {
+            return;
+        }
         let status = read_reg(STATUS);
         let busy = status & STATUS_GFXBUSY != 0;
         let level = (status >> STATUS_GFIFOLEVEL_SHIFT) & STATUS_GFIFOLEVEL_MASK;
@@ -405,12 +457,52 @@ fn program_identity_gamma() {
     wait_idle();
 }
 
+/// Wait for the DCB back end, with a bound.
+fn wait_dcb() {
+    for _ in 0..PROM_WAIT_POLLS {
+        if read_reg(STATUS) & STATUS_BACKBUSY == 0 {
+            return;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Load the 3-3-2 RGB palette into CMAP entries 0 to 255.
+///
+/// Each entry is addressed on its own: a 16-bit address write, low byte
+/// first, then one 24-bit RGB write.  DCB data is left-justified in the
+/// 32-bit data register.
+fn program_cmap_332() {
+    for index in 0..256u32 {
+        wait_dcb();
+        reg(
+            DCBMODE,
+            dcb_mode(DCB_ADDR_CMAP_ALL, CMAP_CRS_ADDRESS, DCB_WIDTH_16)
+                | DCB_CMAP_TIMING
+                | DCB_SWAPENDIAN
+                | DCB_ENCRSINC,
+        );
+        reg(DCBDATA0, index << 16);
+        reg(
+            DCBMODE,
+            dcb_mode(DCB_ADDR_CMAP_ALL, CMAP_CRS_PALETTE, 3) | DCB_CMAP_TIMING,
+        );
+        reg(DCBDATA0, palette_rgb(index) << 8);
+    }
+    wait_dcb();
+}
+
 /// Bring the drawing engine up: reset the pipeline state and leave it
-/// configured for 24-bit RGB block and span fills.
+/// configured for block and span fills (24-bit RGB, or 8-bit colour index on
+/// a display the SGI PROM set up).
 pub fn init() {
     // SAFETY: the shadow is reserved for the renderer.
     unsafe {
         core::ptr::write_bytes(SHADOW_BASE as *mut u8, 0, SHADOW_SIZE);
+    }
+    if PROM_DISPLAY {
+        // The PROM may still have a fill in the pipeline.
+        wait_idle();
     }
     reg(LSMODE, 0);
     reg(LSPATTERN, 0);
@@ -450,6 +542,12 @@ pub fn init() {
     // Permit every two-bit CID so nothing is clipped away.
     reg(CLIPMODE, 0xF << 9);
     reg(STALL1, 0);
+    if PROM_DISPLAY {
+        // CONFIG holds the bus settings the PROM chose for this board, and
+        // the video timing, XMAP mode and RAMDAC are already live.
+        program_cmap_332();
+        return;
+    }
     reg(CONFIG, 0);
     clear_aux_planes();
     program_vc2_1280x1024();
@@ -457,8 +555,15 @@ pub fn init() {
     program_identity_gamma();
 }
 
-/// Stage the RGB24 draw state used by every fill.
+/// Stage the draw state used by every fill: RGB24, or the palette index of
+/// the colour on a PROM display.
 fn stage_rgb(r: u32, g: u32, b: u32) {
+    if PROM_DISPLAY {
+        reg(DRAWMODE1, DM1_CI8);
+        reg(WRMASK, 0xFFFF_FFFF);
+        reg(COLORI, colour_index(r, g, b));
+        return;
+    }
     reg(DRAWMODE1, DM1_RGB24);
     reg(WRMASK, 0x00FF_FFFF);
     reg(COLORRED, r << 11);
@@ -470,11 +575,18 @@ fn stage_rgb(r: u32, g: u32, b: u32) {
 fn block_go(x0: i32, y0: i32, x1: i32, y1: i32) {
     reg(XYENDI, xy(x1, y1));
     reg(XYSTARTI, xy(x0, y0));
-    reg_go(DRAWMODE0, DM0_BLOCK);
+    let setup = if PROM_DISPLAY { DM0_DOSETUP } else { 0 };
+    reg_go(DRAWMODE0, DM0_BLOCK | setup);
 }
 
 /// Issue one span fill from the staged state.  The caller waits.
 fn span_go(x0: i32, x1: i32, y: i32) {
+    // The reference drivers draw everything as blocks; a span is a block one
+    // row high.
+    if PROM_DISPLAY {
+        block_go(x0, y, x1, y);
+        return;
+    }
     reg(XYENDI, xy(x1, y));
     reg(XYSTARTI, xy(x0, y));
     reg_go(DRAWMODE0, DM0_SPAN);

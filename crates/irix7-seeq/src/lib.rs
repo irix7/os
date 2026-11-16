@@ -43,6 +43,11 @@ pub const DESC_COUNT_MASK: u32 = 0x3FFF;
 /// Original driver's receive buffer size (`MAX_RPKT` in seeq.h).
 pub const MAX_RPKT: u32 = 1517;
 
+/// Flags of a receive descriptor the HPC3 may fill: owned by the engine, one
+/// packet per descriptor, interrupt on completion, full buffer count.  Linux
+/// `sgiseeq` and NetBSD `sq` both set end-of-packet on receive descriptors.
+pub const RX_DESC_ARMED: u32 = DESC_EOP | DESC_XIE | DESC_ROWN | MAX_RPKT;
+
 /// HPC3 interrupt status (`istat0`, physical `0x1FBB_0000`).
 ///
 /// SGI documents a bug: `istat0` reliably reports only bits 4:0, and
@@ -55,6 +60,33 @@ pub const HPC3_INTSTAT1: *mut u32 = 0xBFBB_000C as *mut u32;
 /// `CLRINT` clears every Ethernet interrupt except a receive-buffer overflow.
 pub const ENET_RX_RESET: *mut u32 = 0xBFB9_5014 as *mut u32;
 pub const ENET_RX_RESET_CLRINT: u32 = 0x02;
+/// `ENET_RX_RESET`: hold both Ethernet DMA channels and the Seeq in reset.
+pub const ENET_RX_RESET_CH_RESET: u32 = 0x01;
+/// HPC3 Ethernet DMA and PIO timing registers, beside the reset register.
+pub const ENET_DMA_CONFIG: *mut u32 = 0xBFB9_5018 as *mut u32;
+pub const ENET_PIO_CONFIG: *mut u32 = 0xBFB9_501C as *mut u32;
+
+/// Reset both Ethernet DMA channels and the Seeq.
+///
+/// Whatever ran before (the IRIX 7 ROM or the SGI PROM's TFTP client) may
+/// have left a channel active on its own descriptor ring.  The timing
+/// registers are read first and written back, so the bus timing chosen for
+/// this board survives a reset that clears them.
+pub fn channel_reset() {
+    unsafe {
+        let dma_config = read_volatile(ENET_DMA_CONFIG);
+        let pio_config = read_volatile(ENET_PIO_CONFIG);
+        hpc3_wr32(RX_ENGINE, ENET_CTRL, 0);
+        hpc3_wr32(TX_ENGINE, ENET_CTRL, 0);
+        write_volatile(ENET_RX_RESET, ENET_RX_RESET_CH_RESET | ENET_RX_RESET_CLRINT);
+        for _ in 0..20_000 {
+            core::hint::spin_loop();
+        }
+        write_volatile(ENET_RX_RESET, 0);
+        write_volatile(ENET_DMA_CONFIG, dma_config);
+        write_volatile(ENET_PIO_CONFIG, pio_config);
+    }
+}
 
 /// Ethernet receive channel control register (HPC3 `+0x1_5004`).
 pub const ENET_RX_CTRL: usize = 0x1004;
@@ -63,8 +95,8 @@ pub const ENET_RX_CTRL: usize = 0x1004;
 /// rebuilt.
 pub const ENET_CTRL_RBO: u32 = 0x0800;
 
-/// IOC2 local-0 interrupt mask (physical `0x1FBD_9884`), byte-wide.
-pub const IOC_L0_MASK: *mut u8 = 0xBFBD_9884 as *mut u8;
+/// IOC2 local-0 interrupt mask (word at physical `0x1FBD_9884`, low byte lane).
+pub const IOC_L0_MASK: *mut u8 = 0xBFBD_9887 as *mut u8;
 /// IOC local 0, bit 3: the Seeq's `ENET_INT` pin.
 pub const IOC_L0_ETHERNET: u8 = 0x08;
 
@@ -76,10 +108,14 @@ pub const RX_CMD_STA_MULTI: u8 = 0xC0;
 /// Interrupt on a good end of frame (`SEQ_RC_INTEOF`).
 pub const RX_CMD_INT_EOF: u8 = 0x10;
 
-/// Write one byte to a Seeq register (lane 0).
+/// Byte offset of an 8-bit register inside its big-endian word.  The Seeq
+/// and the IOC sit on the low byte lane of the HPC3 PIO bus.
+const LOW_LANE: usize = 3;
+
+/// Write one byte to a Seeq register.
 pub fn seeq_wr8(reg: u8, data: u8) {
     unsafe {
-        write_volatile(SEEQ_BASE.add((reg as usize) << 2), data);
+        write_volatile(SEEQ_BASE.add(((reg as usize) << 2) + LOW_LANE), data);
     }
 }
 
@@ -89,7 +125,7 @@ pub fn seeq_wr8(reg: u8, data: u8) {
 /// register's `NEW` bit and drops the chip's `INT` pin, so the interrupt
 /// handler must do it before it writes `CLRINT`.
 pub fn seeq_rd8(reg: u8) -> u8 {
-    unsafe { read_volatile(SEEQ_BASE.add((reg as usize) << 2)) }
+    unsafe { read_volatile(SEEQ_BASE.add(((reg as usize) << 2) + LOW_LANE)) }
 }
 
 /// Write one 32-bit word to an HPC3 engine register.
@@ -149,6 +185,7 @@ pub struct SeeqDevice {
 impl SeeqDevice {
     /// Probe the Seeq and start its receive DMA.
     pub fn new(mac_bytes: [u8; 6]) -> Option<Self> {
+        channel_reset();
         // Bank 0 exposes the station-address registers.
         seeq_wr8(REG_TX_CMD, 0x00);
         for (i, b) in mac_bytes.iter().enumerate() {
@@ -218,7 +255,7 @@ impl SeeqDevice {
                 // its DMA completion when this descriptor fills.  On the Indy
                 // both that bit and the Seeq's own INT pin land on the same
                 // HPC3 ENET interrupt, so either one is enough to wake.
-                write_volatile(&raw mut (*desc).flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
+                write_volatile(&raw mut (*desc).flags, RX_DESC_ARMED);
                 write_volatile(&raw mut (*desc).next, next);
             }
         }
@@ -248,7 +285,7 @@ impl SeeqDevice {
         let desc = self.rx_desc_ptr(index);
         unsafe {
             write_volatile(&raw mut (*desc).addr, buf_phys);
-            write_volatile(&raw mut (*desc).flags, DESC_XIE | DESC_ROWN | MAX_RPKT);
+            write_volatile(&raw mut (*desc).flags, RX_DESC_ARMED);
         }
     }
 

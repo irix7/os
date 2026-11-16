@@ -2,7 +2,8 @@
 //! Serial console driver (Z85C30 ESCC inside the IOC2).
 //!
 //! Hardware facts (see `docs/research/indy-hardware.md` §15.3):
-//! - Z85C30 ESCC base physical 0x1FBD_9830, mapped at kseg1 0xBFBD_9830.
+//! - Z85C30 ESCC at physical 0x1FBD_9830; its byte registers are on the low
+//!   lane, so channel B control is kseg1 0xBFBD_9833.
 //! - Indirect register access: write the register number to `(reg << 2) + 3`,
 //!   then the data byte to the same address (byte in lane 3).
 //! - Ports are wired in reverse: channel A = rear-panel "Serial Port 1"
@@ -16,7 +17,7 @@
 use core::ptr::{read_volatile, write_volatile};
 
 /// Z85C30 ESCC register window, kseg1 virtual base.
-const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
+const Z85C30_BASE: *mut u8 = 0xBFBD_9833 as *mut u8;
 
 /// Write a Z85C30 control register (indirect, lane 3).
 fn wr(reg: u8, data: u8) {

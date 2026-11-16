@@ -31,6 +31,7 @@ pub mod diagnostics;
 pub mod dns;
 #[cfg(feature = "erofs-debug")]
 pub mod erofs_cmd;
+pub mod factory_prom;
 pub mod fd;
 pub mod font;
 pub mod frames;
@@ -77,13 +78,14 @@ pub mod wasm_probe;
 // ---------------------------------------------------------------------------
 // Serial console driver (Z85C30 ESCC inside the IOC2).
 // Hardware facts (see docs/research/indy-hardware.md §15.3):
-// - Z85C30 ESCC base physical 0x1FBD_9830, mapped at kseg1 0xBFBD_9830.
+// - Z85C30 ESCC at physical 0x1FBD_9830; its byte registers are on the low
+//   lane, so channel B control is kseg1 0xBFBD_9833.
 // - Indirect register access: write register number to `(reg << 2) + 3`,
 //   then data byte to same address (byte lane 3).
 // - PCLK = 3.672 MHz; PROM default is 9600 8N1.
 // - Polled output only; interrupts left disabled.
 
-const Z85C30_BASE: *mut u8 = 0xBFBD_9830 as *mut u8;
+const Z85C30_BASE: *mut u8 = 0xBFBD_9833 as *mut u8;
 
 /// kseg0 offset for MIPS physical-to-virtual address translation.
 pub(crate) const KSEG0_OFFSET: u64 = 0x8000_0000;
@@ -333,7 +335,7 @@ static mut BOOT_HANDOFF: BootHandoff = BootHandoff {
 // an `asm!` block, so capture them in a tiny real entry stub.  The earlier
 // inline-asm capture could be scheduled after `$a0` had been reused as a
 // string pointer, which handed the BootInfo parser a rodata address.
-#[cfg(not(test))]
+#[cfg(all(not(test), not(feature = "factory-prom")))]
 core::arch::global_asm!(
     r#"
     .section .text._start, "ax", @progbits
@@ -344,6 +346,35 @@ _start:
     addiu   $t0, $t0, %lo(BOOT_HANDOFF)
     sw      $a0, 0($t0)
     sw      $a1, 4($t0)
+    sw      $a2, 8($t0)
+    j       _start_rust
+    nop
+    .size _start, .-_start
+"#
+);
+
+// Entry from the SGI factory PROM (`boot -f bootp()...`).  ARCS passes
+// argc/argv/envp in `$a0`-`$a2` and leaves its own stack and CP0 state, so
+// this stub sets what the IRIX 7 ROM would have: Cause clear, Status = CU0
+// with interrupts off, the boot stack, no BootInfo and the RAM base.  The RAM
+// size is read from the memory controller in `_start_rust`.
+#[cfg(all(not(test), feature = "factory-prom"))]
+core::arch::global_asm!(
+    r#"
+    .section .text._start, "ax", @progbits
+    .globl _start
+    .type _start, @function
+_start:
+    mtc0    $zero, $13
+    lui     $t0, 0x1000
+    mtc0    $t0, $12
+    lui     $sp, %hi(__stack_top)
+    addiu   $sp, $sp, %lo(__stack_top)
+    lui     $t0, %hi(BOOT_HANDOFF)
+    addiu   $t0, $t0, %lo(BOOT_HANDOFF)
+    sw      $zero, 0($t0)
+    sw      $zero, 4($t0)
+    lui     $a2, 0x0800
     sw      $a2, 8($t0)
     j       _start_rust
     nop
@@ -367,6 +398,13 @@ pub extern "C" fn _start_rust() -> ! {
         unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).bootinfo_phys)) };
     let ram_bytes = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).ram_bytes)) };
     let ram_base = unsafe { core::ptr::read_volatile(core::ptr::addr_of!((*handoff).ram_base)) };
+    // The factory PROM passes no RAM size; the memory controller it programmed
+    // holds the bank layout.
+    #[cfg(feature = "factory-prom")]
+    let ram_bytes = {
+        let _ = ram_bytes;
+        factory_prom::ram_bytes()
+    };
 
     init();
 
@@ -700,18 +738,38 @@ pub fn poweroff() -> ! {
     }
 }
 
-/// Restart from the PROM entry point.
+/// Memory controller `CPUCTRL0` (kseg1).  Bit 9 is `SYSINIT`: setting it
+/// resets the machine as a power cycle does.
+const MC_CPUCTRL0: *mut u32 = 0xBFA0_0004 as *mut u32;
+const MC_CPUCTRL0_SYSINIT: u32 = 1 << 9;
+
+/// Restart the machine.
+///
+/// The memory controller's system-init bit is the hardware reset: it restarts
+/// the CPU, the DMA engines and the PROM together.  A jump to the PROM entry
+/// with the kernel's CP0, TLB and DMA state still live hangs a real machine.
+/// The jump remains as the fallback if the reset does not take effect.
 pub fn reboot() -> ! {
     console_println("kernel: rebooting");
-    // Interrupts off, then jump to the PROM reset window (kseg1).
     let status = traps::status_read();
     traps::status_write(status & !1);
+    // SAFETY: the memory controller register is a fixed kseg1 MMIO word.
+    unsafe {
+        let control = core::ptr::read_volatile(MC_CPUCTRL0);
+        core::ptr::write_volatile(MC_CPUCTRL0, control | MC_CPUCTRL0_SYSINIT);
+    }
+    for _ in 0..10_000_000u32 {
+        core::hint::spin_loop();
+    }
+    // The address is sign-extended: a zero-extended 0xBFC0_0000 in a 64-bit
+    // register is not a kseg1 address.
+    let prom_entry = 0xBFC0_0000u32 as i32 as isize;
     unsafe {
         core::arch::asm!(
             ".set noat",
             "jr {0}",
             "nop",
-            in(reg) 0xBFC0_0000u32,
+            in(reg) prom_entry,
             options(noreturn)
         );
     }
